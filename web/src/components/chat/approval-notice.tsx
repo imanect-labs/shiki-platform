@@ -18,15 +18,16 @@ const TITLE_MARK = "（承認待ち）";
 ///
 /// 生成中は回答の先頭で追従を止めるので、承認カードは画面の下に出て気付けないことがある。
 /// 位置を勝手に動かさず、外にあるときだけ入力欄の上に帯を出すために使う。
-/// 最初の判定が届くまでは「見えている」扱いにする（出た瞬間に帯がちらつかないように）。
 export function useOffscreen(
   scroller: HTMLElement | null,
   target: HTMLElement | null,
   bottomInset: number,
 ): boolean {
-  const [offscreen, setOffscreen] = React.useState(false);
+  // 判定はどのカードについてのものかと組で持つ。入力欄の高さが変わって observer を作り直しても、
+  // 同じカードなら直前の判定を使い続ける（作り直しのたびに帯が消えてちらつかないように）。
+  // 新しいカードは最初の判定が届くまで「見えている」扱い。
+  const [state, setState] = React.useState<{ el: HTMLElement; offscreen: boolean } | null>(null);
   React.useEffect(() => {
-    setOffscreen(false);
     if (!scroller || !target || typeof IntersectionObserver === "undefined") return;
     const io = new IntersectionObserver(
       ([e]) => {
@@ -36,7 +37,9 @@ export function useOffscreen(
           e.isIntersecting &&
           (e.intersectionRatio >= VISIBLE_RATIO ||
             (rootHeight > 0 && e.intersectionRect.height >= rootHeight * VISIBLE_RATIO));
-        setOffscreen(!seen);
+        setState((prev) =>
+          prev?.el === target && prev.offscreen === !seen ? prev : { el: target, offscreen: !seen },
+        );
       },
       {
         root: scroller,
@@ -48,7 +51,7 @@ export function useOffscreen(
     io.observe(target);
     return () => io.disconnect();
   }, [scroller, target, bottomInset]);
-  return offscreen;
+  return state !== null && state.el === target && state.offscreen;
 }
 
 /// 承認待ちの間、タブのタイトルの先頭に印を付ける（別のタブにいても気付けるように）。
