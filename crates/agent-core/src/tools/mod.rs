@@ -22,6 +22,7 @@ mod subagent_prompts;
 mod subagent_sink;
 pub mod web_fetch;
 pub mod web_search;
+pub mod web_translate;
 
 pub use code_interpreter::CodeInterpreterTool;
 pub use doc_search::{run_doc_search, DocSearchResult, DocSearchTool};
@@ -33,3 +34,4 @@ pub use shell::ShellTool;
 pub use subagent::{SubagentLimits, SubagentTool};
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
+pub use web_translate::{TranslateLimits, WebTranslateTool};

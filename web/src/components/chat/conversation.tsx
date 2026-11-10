@@ -92,6 +92,7 @@ import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
+import { TranslationBlock } from "./translation-block";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
@@ -135,6 +136,8 @@ type StreamState = {
   noteRefs: unknown[];
   /// 未保存の下書きノート（issue #282・save_note の下書き確定型）。
   noteDrafts: unknown[];
+  /// Web ページの訳文（web_translate）。
+  translations: unknown[];
   /// 未保存の下書きスライド（Task 11.3・save_slide の下書き確定型）。
   slideDrafts: unknown[];
   /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
@@ -178,6 +181,7 @@ const EMPTY_STREAM: StreamState = {
   workflowRefs: [],
   noteRefs: [],
   noteDrafts: [],
+  translations: [],
   slideDrafts: [],
   csvDrafts: [],
   skillDrafts: [],
@@ -456,6 +460,8 @@ export function Conversation({
         ),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
+      onTranslation: (raw) =>
+        updateStream((s) => (s ? { ...s, translations: [...s.translations, raw] } : s)),
       onNoteDraft: (raw) => {
         // 下書きをストリームに残しつつ、クライアント下書きストアへ upsert（source=ai＝流し込み）。
         // 主線は下書きノート画面へ遷移。下書き画面自身は onNoteDraftOpened を渡してアクティブ切替のみ。
@@ -1111,6 +1117,8 @@ function finalizeStream(
   for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
   // 未保存の下書きノートカード（issue #282）。履歴からも下書きへ辿れるよう残す。
   for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
+  // Web ページの訳文。
+  for (const translation of s.translations) blocks.push({ type: "translation", translation });
   // 未保存の下書きスライドカード（Task 11.3）。
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   // 未保存の下書き CSV カード（Task 11.11）。
@@ -1390,6 +1398,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const noteDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "note_draft" }> => b.type === "note_draft",
   );
+  const translations = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "translation" }> => b.type === "translation",
+  );
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
   );
@@ -1421,6 +1432,10 @@ const AssistantRow = React.memo(function AssistantRow({
               />
             </div>
           </YuiActionContext.Provider>
+          {/* 訳文は外部ページ由来なので、図のボタンの文脈（YuiActionContext）の外に置く。 */}
+          {translations.map((b, i) => (
+            <TranslationBlock key={i} raw={b.translation} imageProxy={imageProxy} />
+          ))}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
           ))}
@@ -1555,6 +1570,9 @@ function StreamingRow({
               cardRef={approvalRef}
             />
           ) : null}
+          {stream.translations.map((translation, i) => (
+            <TranslationBlock key={i} raw={translation} imageProxy={streamImageProxy} />
+          ))}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
           ))}

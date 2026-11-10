@@ -541,6 +541,8 @@ export type StreamHandlers = {
   onNoteRef?: (note: unknown) => void;
   /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。下書き画面を開く/流し込む。
   onNoteDraft?: (draft: unknown) => void;
+  /// Web ページの訳文（web_translate）。会話に訳文のカードとして出す。
+  onTranslation?: (translation: unknown) => void;
   /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。下書き画面を開く/流し込む。
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
@@ -647,6 +649,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "note_draft":
         handlers.onNoteDraft?.(kind.draft);
+        break;
+      case "translation":
+        handlers.onTranslation?.(kind.translation);
         break;
       case "slide_draft":
         handlers.onSlideDraft?.(kind.draft);

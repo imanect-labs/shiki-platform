@@ -190,7 +190,11 @@ pub struct ToolOutcome {
     /// `{objective, boundary, steps, tool_calls, tokens}` の JSON。**監査と再現性のため**に
     /// run イベントへ append される（`message.content` へは projection しない＝親の履歴を汚さない）。
     pub subagent_runs: Vec<serde_json::Value>,
-    /// ツールの内側で起きた LLM 消費（`subagent` のみ・#391）。
+    /// ページの訳文（`web_translate` のみ・設計メモ web-translate §4.6）。
+    /// `{source_url, title, target_lang, markdown, failed_chunks, …}` の JSON。chat 側で
+    /// translation ブロックへ写り、**訳文はモデルの履歴へ戻さない**（履歴には 1 行の要約だけ）。
+    pub translations: Vec<serde_json::Value>,
+    /// ツールの内側で起きた LLM 消費（`subagent`・`web_translate`・#391）。
     /// ループが親の [`Spent`](crate::budget::Spent) へ `add_external` で積む。
     pub usage: Option<ToolUsage>,
     /// 実行がエラーだったか（tool_result.is_error）。
@@ -223,6 +227,7 @@ impl ToolOutcome {
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
+            translations: Vec::new(),
             usage: None,
             is_error: false,
         }
@@ -243,6 +248,7 @@ impl ToolOutcome {
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
+            translations: Vec::new(),
             usage: None,
             is_error: true,
         }

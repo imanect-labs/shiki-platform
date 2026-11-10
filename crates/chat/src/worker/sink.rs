@@ -176,6 +176,13 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            // ページの訳文（web_translate）。表示と開き直しのために content に残す。
+            // 履歴の組み立て（history.rs）では本文を戻さず 1 行の要約にする。
+            StreamEventKind::Translation { translation } => {
+                self.content.push(ContentBlock::Translation {
+                    translation: translation.clone(),
+                });
+            }
             StreamEventKind::SlideDraft { draft } => {
                 self.content.push(ContentBlock::SlideDraft {
                     draft: draft.clone(),
@@ -376,6 +383,20 @@ mod tests {
         assert_eq!(kind.tag(), "skill_draft");
         match kind {
             StreamEventKind::SkillDraft { draft: d } => assert_eq!(d, draft),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn translation_event_maps_to_sse() {
+        // AgentEvent::Translation → SSE translation（content の translation ブロックへ写る）。
+        let translation = serde_json::json!({ "source_url": "https://e.x/a", "markdown": "訳" });
+        let kind = to_stream_kind(&AgentEvent::Translation {
+            translation: translation.clone(),
+        });
+        assert_eq!(kind.tag(), "translation");
+        match kind {
+            StreamEventKind::Translation { translation: t } => assert_eq!(t, translation),
             other => panic!("unexpected: {other:?}"),
         }
     }

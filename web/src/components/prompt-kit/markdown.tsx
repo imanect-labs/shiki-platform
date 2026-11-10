@@ -182,16 +182,20 @@ function codeClassName(child: React.ReactNode): string | undefined {
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
 /// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
 /// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
+/// `page` は外部ページ由来の本文（Web ページの訳文）。図・表・引用番号にせず、リンク先を見せる。
+/// 数式と、出所の判定を通った画像だけは描く（docs/agent/web-translate.md §4.6）。
 const SourceContext = React.createContext<{
   text: string;
   streaming: boolean;
   untrusted: boolean;
+  page: boolean;
   imageSources: ImageSources;
   imageProxy: ImageProxy | null;
 }>({
   text: "",
   streaming: false,
   untrusted: false,
+  page: false,
   imageSources: NO_IMAGE_SOURCES,
   imageProxy: null,
 });
@@ -381,7 +385,7 @@ export function renderFigureTable(markdown: string) {
 
 /// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
 function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
-  const { text, streaming, untrusted } = React.useContext(SourceContext);
+  const { text, streaming, untrusted, page } = React.useContext(SourceContext);
   const { code, raw, lang, ui, uiKind, dataGrid } = extractCode(children);
   const closed = fenceEnded(text, node);
   const nested = React.useContext(YuiNestedContext);
@@ -390,6 +394,9 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   if (untrusted) return <CodeBlock code={code} lang={lang} />;
   // 別行立ての数式（remark-math が pre > code.math-display にする・数式を読み込んだときだけ現れる）。
   if (mathKind(codeClassName(children)) === "display") return <MathTex tex={code} display />;
+  // 外部ページの本文が書いたフェンスは、言語名が ui・data_grid でも図・表・ボタンにしない
+  // （ページの内容が会話の操作を生まないように）。
+  if (page) return <CodeBlock code={code} lang={lang} />;
   // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
   if (dataGrid && gridHost && !nested && closed) {
     const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
@@ -428,9 +435,10 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
 
 /// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
 function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
-  const { untrusted } = React.useContext(SourceContext);
+  const { untrusted, page } = React.useContext(SourceContext);
   const url = href ?? "";
-  if (untrusted) return <UserLink href={url}>{children}</UserLink>;
+  // 外部ページの本文のリンクも、引用番号・アプリ内の遷移にしない（http(s) だけ・行き先のホストを見せる）。
+  if (untrusted || page) return <UserLink href={url}>{children}</UserLink>;
   // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
   // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
   const cite = citeNumberFromHref(url);
@@ -594,6 +602,7 @@ export function Markdown({
   streaming = false,
   breaks = false,
   untrusted = false,
+  page = false,
   imageSources = NO_IMAGE_SOURCES,
   imageProxy = null,
 }: {
@@ -606,6 +615,9 @@ export function Markdown({
   /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
   /// リンクには行き先のホストを添える。
   untrusted?: boolean;
+  /// 外部ページ由来の本文（Web ページの訳文）。図・表・引用番号・アプリ内リンクにせず、リンクには
+  /// 行き先のホストを添える。数式は描き、画像は `imageSources` の出所の判定に従う。
+  page?: boolean;
   /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
   /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
   imageSources?: ImageSources;
@@ -624,7 +636,7 @@ export function Markdown({
         className,
       )}
     >
-      <SourceContext.Provider value={{ text, streaming, untrusted, imageSources, imageProxy }}>
+      <SourceContext.Provider value={{ text, streaming, untrusted, page, imageSources, imageProxy }}>
         <ReactMarkdown
           remarkPlugins={[
             remarkGfm,
@@ -634,7 +646,7 @@ export function Markdown({
             ...(breaks ? [remarkSoftBreaks] : []),
             ...(mathPlugins ?? []),
           ]}
-          rehypePlugins={untrusted ? undefined : [rehypeCiteNowrap]}
+          rehypePlugins={untrusted || page ? undefined : [rehypeCiteNowrap]}
           components={components}
           disallowedElements={untrusted ? ["img"] : undefined}
         >
