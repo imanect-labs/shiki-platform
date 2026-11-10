@@ -61,14 +61,9 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_run_gc_idx
 CREATE INDEX CONCURRENTLY IF NOT EXISTS effect_journal_gc_idx
     ON effect_journal (tenant_id, created_at);
 
--- #829 / migration 0082: 監査ログを 1 回答・1 会話の記録で絞る（持つ行だけの部分索引）
-CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_message_idx
-    ON audit_log (tenant_id, org, (metadata ->> 'message_id'), created_at DESC, id DESC)
-    WHERE metadata ? 'message_id';
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_thread_idx
-    ON audit_log (tenant_id, org, (metadata ->> 'thread_id'), created_at DESC, id DESC)
-    WHERE metadata ? 'thread_id';
+-- #829 / migration 0082 の audit_log_tenant_message_idx / audit_log_tenant_thread_idx は
+-- migration 0115 が普通の列の索引に置き換えて落とす。0115 より前のバージョンへ入れるときだけ作る。
+-- 0115 の事前作業は §6。
 
 -- #879 / migration 0083: サイドバー履歴のピン留め一覧・スレッドの run を thread_id で引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS thread_owner_pinned_idx
@@ -216,7 +211,8 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
 | --- | --- |
 | `data_*` | `tenant_int`・パーティション・プール分割の上にある。別の段で扱う |
 | `outbox_delivery_seq` | `tenant_id` が NULL を取り得る（consumer 単位の採番） |
-| `audit_log`・`storage_event_outbox` | jsonb の式インデックスと GIN（`@>`）で引いている。RLS の付いた表では leakproof でない演算子をインデックス条件に使えず、文脈が未設定でも全行走査に落ちる。生成列＋btree に置き換えてから対象に入れる（#1074） |
+
+`audit_log`・`storage_event_outbox` は 0114 では対象外にし、migration 0115（#1074）で対象に入れた（§6）。
 
 - **今は移行モード。** トランザクションのテナント文脈（`app.tenant_id`）が未設定なら従来どおり通し、設定されて
   いればその `tenant_id` の行だけを読み書きさせる。文脈は `storage::db_tenant::begin_tenant_tx`（または
@@ -260,3 +256,61 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
   GIN（leakproof でない演算子でしか引けないインデックス）を足したときも同じテストが落ちる。
 - psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
   `SELECT set_config('app.tenant_id', '<tenant>', false)` する。
+
+## 6. `audit_log`・`storage_event_outbox` の RLS（migration 0115・#1074）
+
+RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`・`@>`、配列の `@>` 等）を含む条件を
+インデックス条件に使えない。この 2 表は jsonb の式インデックスと GIN で引いていたので、0115 は引く値を
+普通の列に写し、btree で引くように置き換えてから RLS を付ける。
+
+| 表 | 追加する列・表 | 値の出どころ（挿入時のトリガで写す） |
+| --- | --- | --- |
+| `audit_log` | `meta_thread_id`・`meta_message_id` | `metadata ->> 'thread_id'` / `'message_id'` |
+| `audit_cited_chunk`（新表・1 行 = 1 引用） | `audit_id`・`chunk_id`・`tenant_id`・`org`・`created_at` | `action = 'rag.search'` の `metadata -> 'cited_chunk_ids'` の各要素。親の削除で消える（`ON DELETE CASCADE`） |
+| `storage_event_outbox` | `payload_event_type`・`payload_table_id` | `payload ->> 'event_type'` / `'table_id'` |
+
+- **行数の多い環境ではデプロイ前に手で済ませておく。** 0115 は既存行を `UPDATE` / `INSERT` で埋め、索引を通常の
+  `CREATE INDEX` で作る。その間は 2 表への書込が止まる（目安: 各 20 万行で合計 15 秒ほど）。先に済ませておけば、
+  0115 の該当部分は条件付きの `UPDATE`・`IF NOT EXISTS` なのでほぼ何もしない。手順は次のとおり
+  （**単独セッションで 1 文ずつ**。列とトリガは 0115 と同じ定義を先に入れる）:
+  ```sql
+  -- 1) 列とトリガ（一瞬で終わる）。0115 の §1〜§3 の ALTER TABLE ... ADD COLUMN・CREATE FUNCTION・
+  --    CREATE TRIGGER・CREATE TABLE audit_cited_chunk をそのまま流す。以後の挿入はトリガが埋める。
+  -- 2) 既存行の埋め戻し。長いトランザクションを避けるため id の範囲で区切って繰り返す。
+  UPDATE audit_log
+     SET meta_thread_id = metadata ->> 'thread_id', meta_message_id = metadata ->> 'message_id'
+   WHERE id BETWEEN :lo AND :hi
+     AND ((metadata ? 'thread_id' AND meta_thread_id IS NULL)
+       OR (metadata ? 'message_id' AND meta_message_id IS NULL));
+  INSERT INTO audit_cited_chunk (audit_id, chunk_id, tenant_id, org, created_at)
+  SELECT a.id, c, a.tenant_id, a.org, a.created_at
+    FROM audit_log a, jsonb_array_elements_text(a.metadata -> 'cited_chunk_ids') AS c
+   WHERE a.id BETWEEN :lo AND :hi
+     AND a.action = 'rag.search' AND jsonb_typeof(a.metadata -> 'cited_chunk_ids') = 'array'
+  ON CONFLICT DO NOTHING;
+  UPDATE storage_event_outbox
+     SET payload_event_type = payload ->> 'event_type', payload_table_id = payload ->> 'table_id'
+   WHERE id BETWEEN :lo AND :hi
+     AND ((payload ? 'event_type' AND payload_event_type IS NULL)
+       OR (payload ? 'table_id' AND payload_table_id IS NULL));
+  -- 3) 索引（§1 と同じく CONCURRENTLY。失敗したら無効な索引を落としてやり直す）
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_meta_thread_idx
+      ON audit_log (tenant_id, org, meta_thread_id, created_at DESC, id DESC)
+      WHERE meta_thread_id IS NOT NULL;
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_meta_message_idx
+      ON audit_log (tenant_id, org, meta_message_id, created_at DESC, id DESC)
+      WHERE meta_message_id IS NOT NULL;
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_cited_chunk_lookup_idx
+      ON audit_cited_chunk (tenant_id, org, chunk_id, created_at DESC, audit_id DESC);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS storage_event_outbox_table_change_idx
+      ON storage_event_outbox (tenant_id, payload_table_id, id)
+      WHERE payload_event_type = 'data.record.changed';
+  ```
+  旧索引（`audit_log_tenant_thread_idx`・`audit_log_tenant_message_idx`・`audit_log_cited_chunks_idx`・
+  `storage_event_outbox_data_change_idx`）は 0115 が落とす。落とす前に新しいコードが動いている必要があるので、
+  手で先に落とさない。
+- **書込のコスト。** `audit_log` の挿入はトリガの分だけ重くなる（引用 3 件の `rag.search` で 1 行あたり約 0.1 ms）。
+  `storage_event_outbox` は 1 行あたり数 µs。
+- **jsonb を直接書き換えるとき**（手作業の修正など）も、`UPDATE OF metadata` / `UPDATE OF payload` でトリガが列を
+  写し直す。`audit_cited_chunk` は挿入時にだけ作るので、`cited_chunk_ids` を書き換えたら手で直す
+  （監査ログは追記専用なので、通常は起きない）。

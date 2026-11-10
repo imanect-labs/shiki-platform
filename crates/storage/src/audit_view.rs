@@ -216,19 +216,22 @@ fn build_query<'a>(
 ) -> QueryBuilder<'a, Postgres> {
     let mut q = QueryBuilder::new("");
     let source = if let Some(chunk) = &f.chunk_id {
+        // 引用チャンクの索引表（migration 0115）で先に絞る。jsonb の `?` は RLS の下では
+        // インデックス条件に使えないため、btree で引ける別表に切り出してある（#1074）。
         q.push(
             // tenant-sql: allow(QueryBuilder が直後に tenant_id を push する)
-            "WITH cited AS MATERIALIZED (SELECT * FROM audit_log \
-             WHERE action = 'rag.search' AND metadata -> 'cited_chunk_ids' ? ",
+            "WITH cited AS MATERIALIZED (SELECT a.* FROM audit_cited_chunk c \
+             JOIN audit_log a ON a.id = c.audit_id AND a.tenant_id = c.tenant_id \
+             WHERE a.action = 'rag.search' AND c.chunk_id = ",
         )
         .push_bind(chunk)
-        .push(" AND tenant_id = ")
+        .push(" AND c.tenant_id = ")
         .push_bind(ctx.tenant_id())
-        .push(" AND org = ")
+        .push(" AND c.org = ")
         .push_bind(ctx.org())
-        .push(" AND created_at >= ")
+        .push(" AND c.created_at >= ")
         .push_bind(f.from)
-        .push(" AND created_at < ")
+        .push(" AND c.created_at < ")
         .push_bind(f.to)
         .push(") ");
         "cited"
@@ -281,14 +284,13 @@ fn build_query<'a>(
     if let Some(trace) = &f.trace_id {
         q.push(" AND a.trace_id = ").push_bind(trace);
     }
-    // 部分索引（0076）に載るよう、索引の述語（metadata ? '...'）も同じ形で書く。
+    // metadata の thread_id / message_id は列に写してある（migration 0115・#1074）。jsonb の `->>` は
+    // RLS の下ではインデックス条件に使えないため、列の `=` で部分索引に載せる。
     if let Some(thread) = &f.thread_id {
-        q.push(" AND a.metadata ? 'thread_id' AND a.metadata ->> 'thread_id' = ")
-            .push_bind(thread);
+        q.push(" AND a.meta_thread_id = ").push_bind(thread);
     }
     if let Some(message) = &f.message_id {
-        q.push(" AND a.metadata ? 'message_id' AND a.metadata ->> 'message_id' = ")
-            .push_bind(message);
+        q.push(" AND a.meta_message_id = ").push_bind(message);
     }
     if let Some(c) = after {
         q.push(" AND (a.created_at, a.id) < (")
@@ -368,7 +370,7 @@ mod tests {
         let sql = build_query(&c, &f, Some("u-bob"), after, 50).into_sql();
         assert!(sql.starts_with("WITH cited AS MATERIALIZED"));
         assert!(sql.contains(
-            "cited_chunk_ids' ? $1 AND tenant_id = $2 AND org = $3 AND created_at >= $4 AND created_at < $5"
+            "c.chunk_id = $1 AND c.tenant_id = $2 AND c.org = $3 AND c.created_at >= $4 AND c.created_at < $5"
         ));
         assert!(sql.contains("FROM cited a"));
         assert!(sql.contains("du.org = a.org"));
@@ -377,8 +379,8 @@ mod tests {
         assert!(sql.contains("a.action LIKE"));
         assert!(sql.contains("a.action = ANY($12)"));
         assert!(sql.contains("(a.created_at, a.id) <"));
-        assert!(sql.contains("a.metadata ->> 'thread_id' = $17"));
-        assert!(sql.contains("a.metadata ->> 'message_id' = $18"));
+        assert!(sql.contains("a.meta_thread_id = $17"));
+        assert!(sql.contains("a.meta_message_id = $18"));
         assert!(sql.ends_with("ORDER BY a.created_at DESC, a.id DESC LIMIT $21"));
         // 利用者の入力は SQL に埋め込まない。
         assert!(!sql.contains("bob@example.com"));

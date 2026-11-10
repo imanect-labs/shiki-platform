@@ -319,8 +319,8 @@ impl DataStore {
         let rows = sqlx::query(
             "WITH skip AS ( \
                SELECT o.id FROM storage_event_outbox o \
-               WHERE o.tenant_id = $3 AND o.payload ->> 'event_type' = $8 \
-                 AND o.payload ->> 'table_id' = $4 \
+               WHERE o.tenant_id = $3 AND o.payload_event_type = $8 \
+                 AND o.payload_table_id = $4 \
                  AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
                                  WHERE d.consumer = $5 AND d.event_id = o.id)), \
              vc AS MATERIALIZED (SELECT x.field_id, x.val, count(DISTINCT x.record_int) AS c \

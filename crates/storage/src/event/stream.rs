@@ -261,7 +261,8 @@ impl StreamBounds {
 /// `private_payload` が無い行の 2 つ目は `None`。
 ///
 /// 件数は `limit` で打ち切る（呼び出し側は `limit` 件に達したら数え切れないとして扱う）。
-/// `payload ->> 'table_id'` は索引（`storage_event_outbox_data_change_idx`）の式と同じ形で書く。
+/// event_type / table_id は列に写してある（migration 0115・#1074）。索引
+/// `storage_event_outbox_table_change_idx` に載るよう、列の `=` で引く。
 #[allow(clippy::too_many_arguments)]
 pub async fn undelivered_table_events(
     conn: &mut PgConnection,
@@ -280,8 +281,8 @@ pub async fn undelivered_table_events(
                     (SELECT coalesce(jsonb_object_agg(k, o.private_payload #> string_to_array(k, '.')), \
                                      '{}'::jsonb) FROM unnest($6::text[]) k) END \
          FROM storage_event_outbox o \
-         WHERE o.tenant_id = $1 AND o.payload ->> 'event_type' = $2 \
-           AND o.payload ->> 'table_id' = $3 \
+         WHERE o.tenant_id = $1 AND o.payload_event_type = $2 \
+           AND o.payload_table_id = $3 \
            AND NOT EXISTS ( \
                SELECT 1 FROM outbox_delivery d WHERE d.event_id = o.id AND d.consumer = $4 \
            ) \
