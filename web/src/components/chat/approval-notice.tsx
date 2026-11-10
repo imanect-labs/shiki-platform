@@ -9,6 +9,8 @@ import { describeTool } from "@/lib/tool-display";
 
 /// 承認カードがこれだけ見えていれば「見えている」とみなす（カードの高さ比 or 表示領域の高さ比）。
 const VISIBLE_RATIO = 0.5;
+/// 交差の比率がこの段を越えるたびに判定し直す（0.05 刻み）。
+const THRESHOLDS = Array.from({ length: 21 }, (_, i) => i / 20);
 /// 「確認する」でカードを出すとき、カードの下端と入力欄の間に空ける余白。
 const REVEAL_GAP_PX = 16;
 /// 承認待ちの間、タブのタイトルに付ける印。
@@ -45,7 +47,8 @@ export function useOffscreen(
         root: scroller,
         // 入力欄は本文の上に重なっているので、その高さぶんは見えていない領域として扱う。
         rootMargin: `0px 0px -${Math.max(0, Math.round(bottomInset))}px 0px`,
-        threshold: [0, 0.25, VISIBLE_RATIO, 0.75, 1],
+        // 表示領域より高いカードは見えている高さで判定するので、比率の段を細かく取る。
+        threshold: THRESHOLDS,
       },
     );
     io.observe(target);
@@ -99,7 +102,6 @@ export function ApprovalBanner({ request, onReveal }: { request: ApprovalRequest
   const what = `${d.lead}${d.verb}`;
   return (
     <div
-      role="status"
       data-testid="approval-banner"
       className="flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-background/95 py-1 pl-3 pr-1 text-[13px] shadow-md backdrop-blur"
     >
@@ -117,6 +119,21 @@ export function ApprovalBanner({ request, onReveal }: { request: ApprovalRequest
         確認する
         <ArrowDown className="size-3.5" aria-hidden />
       </button>
+    </div>
+  );
+}
+
+/// 承認待ちになったことをスクリーンリーダーへ知らせる（常に置いておく live region）。
+/// 帯は画面外のときだけ出るので、帯そのものを live region にすると読み上げられないことがある。
+export function ApprovalAnnouncer({ request }: { request: ApprovalRequest | null }) {
+  let text = "";
+  if (request) {
+    const d = describeTool(request);
+    text = `承認が必要です：${d.lead}${d.verb}`;
+  }
+  return (
+    <div role="status" aria-live="polite" className="sr-only">
+      {text}
     </div>
   );
 }

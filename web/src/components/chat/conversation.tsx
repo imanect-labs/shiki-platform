@@ -114,7 +114,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
-import { ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
+import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
 import { useMarkThreadViewing } from "@/lib/thread-viewing";
@@ -968,6 +968,7 @@ export function Conversation({
             {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、PC ではその左右に「一つ前／一つ後の
                 自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。スマホは本文を隠すので
                 「最新へ」だけにする。 */}
+            <ApprovalAnnouncer request={approval} />
             {/* 承認待ちの帯は「一つ前・最新へ・一つ後」より優先する（同じ位置に出す）。 */}
             {approval && approvalOffscreen ? (
               <div

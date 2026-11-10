@@ -118,6 +118,7 @@ export function ApprovalCard({
   return (
     <div
       ref={cardRef}
+      role="group"
       tabIndex={-1}
       aria-label="承認が必要です"
       data-testid="approval-card"

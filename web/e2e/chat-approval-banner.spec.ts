@@ -86,7 +86,16 @@ test("承認カードが画面外の間だけ帯を出し、「確認する」�
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("承認が必要です");
   await expect(page.getByTestId("jump-to-latest")).toHaveCount(0);
-  // 帯を出しても読んでいる位置は動かさない。
+  // 帯を出しても読んでいる位置は動かさない（ホイールのスクロールが止まってから測る）。
+  let last = Number.NaN;
+  await expect
+    .poll(async () => {
+      const now = await scrollTop(page);
+      const settled = now === last;
+      last = now;
+      return settled;
+    })
+    .toBe(true);
   const reading = await scrollTop(page);
   await page.waitForTimeout(800);
   expect(Math.abs((await scrollTop(page)) - reading)).toBeLessThanOrEqual(1);
