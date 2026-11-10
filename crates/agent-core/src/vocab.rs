@@ -91,6 +91,9 @@ vocab_enum! {
         /// 本人に見えるワークフローを名前・説明で探すツール（図のボタン `-> workflow 名前` に
         /// 実在する名前を書くため・入力の項目も返す・読み取りのみ）。
         SearchWorkflows => "search_workflows",
+        /// 保存したワークフローの版を、承認カードを経て発話ユーザーの権限で試運転し、結果を観測に返す
+        /// （editor 以上・版は必須・会話の 1 回の生成あたり 5 本まで・T04・D-197）。
+        TryWorkflow => "try_workflow",
         /// ノート（md/Yjs）の共同編集ツール（AI が編集参加者として編集・Task 11P.4）。
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
@@ -229,6 +232,8 @@ impl ToolName {
             | Self::ReadWorkflow
             | Self::ListWorkflows
             | Self::SearchWorkflows
+            // 作ったワークフローを確かめるときだけ使う（承認カードを出す・破壊的になりうる）。
+            | Self::TryWorkflow
             | Self::DocumentEdit
             | Self::DocumentRead
             | Self::DocumentEmbed
@@ -272,6 +277,10 @@ impl ToolName {
                  仕組みを作る。create or update a workflow automation: scheduled cron jobs, event triggers, \
                  multi-step flows."
             }
+            // 説明文は観測・上限・待ち方の仕様を載せて長い。何をする道具かだけを索引に入れる。
+            Self::TryWorkflow => {
+                "保存したワークフローの版を、承認を得て本人の権限で試しに実行し、結果を確かめる"
+            }
             _ => "",
         }
     }
@@ -293,6 +302,9 @@ impl ToolName {
             Self::SearchWorkflows => {
                 "workflow search find list lookup name button launch app form automation \
                  ワークフロー 探す 検索 一覧 名前 ボタン 起動 実行 フォーム 自動化"
+            }
+            Self::TryWorkflow => {
+                "workflow try test run trial execute 試運転 試す 実行 テスト 動作確認"
             }
             Self::DocumentEdit => {
                 "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"

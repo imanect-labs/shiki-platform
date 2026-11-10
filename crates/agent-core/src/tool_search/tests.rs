@@ -388,3 +388,45 @@ fn fixing_an_existing_workflow_loads_the_list_tool() {
         );
     }
 }
+
+/// 作ったワークフローを試す依頼では試運転の道具（try_workflow）が上位に入り、作る依頼では保存の道具
+/// （emit_workflow）が試運転より上に来る（T04）。どちらも説明文ではなく検索用の短い文で索引に入る（D-41）。
+#[test]
+fn trying_a_workflow_loads_the_try_tool_and_making_one_prefers_emit() {
+    let mut defs = catalog();
+    defs.push(def(
+        "emit_workflow",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。",
+    ));
+    defs.push(def(
+        "read_workflow",
+        "既存ワークフローの最新 IR（JSON）を読む。",
+    ));
+    defs.push(def(
+        "list_workflows",
+        "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。",
+    ));
+    defs.push(def(
+        "try_workflow",
+        "保存したワークフローの版を試運転する。承認カードを出し、結果を <run_output> で返す。",
+    ));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in [
+        "作ったワークフローを試して",
+        "ワークフローを試運転して動作確認",
+        "test run the workflow",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "try_workflow"),
+            "{q}: {hits:?}"
+        );
+    }
+    let hits = query(&s, "ワークフローを作って");
+    let at = |name: &str| hits.iter().position(|h| h == name);
+    let emit = at("emit_workflow").expect("作る依頼で emit_workflow が当たる");
+    assert!(
+        at("try_workflow").is_none_or(|t| emit < t),
+        "emit_workflow が try_workflow より上: {hits:?}"
+    );
+}
