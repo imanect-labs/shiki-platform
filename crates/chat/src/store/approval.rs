@@ -356,7 +356,11 @@ impl ChatStore {
 }
 
 impl ChatStore {
-    /// スレッドの回答の本文のうち、```ui ブロックを含みうる text ブロック（実行前フェーズの門・#400）。
+    /// 生成対象（`leaf`）に至る枝の回答の本文のうち、```ui ブロックを含みうる text ブロック
+    /// （実行前フェーズの門・#400）。
+    ///
+    /// **枝は生成対象の祖先に限る**（#1166）。発話の編集で分かれた別の枝で出した質問・計画を
+    /// 根拠に、この枝の実行段階を開けない（履歴と同じく、見えていない枝を材料にしない）。
     ///
     /// 戻り値は `(メッセージ id, 本文)` を会話の順に並べたもの。ask・plan の有無は呼び出し側が
     /// `yui::extract_action_blocks` で読む（ボタンの経路と同じく、text ブロックごとに読む）。
@@ -365,16 +369,25 @@ impl ChatStore {
         &self,
         thread_id: uuid::Uuid,
         tenant_id: &str,
+        leaf: uuid::Uuid,
     ) -> Result<Vec<(uuid::Uuid, String)>, crate::ChatError> {
         sqlx::query_as(
-            "SELECT m.id, b.value->>'text' \
-             FROM message m, jsonb_array_elements(m.content) WITH ORDINALITY AS b(value, ord) \
+            "WITH RECURSIVE path(id, parent_id, depth) AS ( \
+                 SELECT id, parent_id, 0 FROM message \
+                  WHERE id = $3 AND thread_id = $1 AND tenant_id = $2 \
+                 UNION ALL \
+                 SELECT p.id, p.parent_id, c.depth + 1 FROM message p JOIN path c ON p.id = c.parent_id \
+                  WHERE p.thread_id = $1 AND p.tenant_id = $2 AND c.depth < 10000) \
+             SELECT m.id, b.value->>'text' \
+             FROM message m JOIN path ON path.id = m.id, \
+                  jsonb_array_elements(m.content) WITH ORDINALITY AS b(value, ord) \
              WHERE m.thread_id = $1 AND m.tenant_id = $2 AND m.role = 'assistant' \
                AND b.value->>'type' = 'text' AND b.value->>'text' ~ '(```|~~~)' \
              ORDER BY m.created_at, m.id, b.ord",
         )
         .bind(thread_id)
         .bind(tenant_id)
+        .bind(leaf)
         .fetch_all(&self.db)
         .await
         .map_err(|e| crate::ChatError::Internal(format!("回答の本文の取得に失敗: {e}")))

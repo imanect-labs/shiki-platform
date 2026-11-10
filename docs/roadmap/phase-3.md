@@ -34,6 +34,7 @@
   - `thread(id, org, owner, title, created_at)` / `message(id, thread_id, role, parent_id, content JSONB, created_at)`。
   - **content = 構造化ブロック配列**: `text` / `tool_call` / `tool_result` / `citation` / `generative_ui` / `file_ref`。
   - 添付は**ストレージ参照のみ**（実体二重持ち無し）。`parent_id` でブランチ可能構造（UIは線形）。
+    （#1166 で user 発話の親を「送ったときの枝の葉」にし、取得は表示中の枝の経路になった。トラックBR 参照）
 - **受け入れ条件**:
   - [ ] 1メッセージに複数種ブロックを格納/取得できる
   - [ ] 添付がストレージnodeを参照する

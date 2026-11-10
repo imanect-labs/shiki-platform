@@ -8,6 +8,7 @@ pub mod auth;
 pub mod chat;
 pub mod chat_approval;
 pub mod chat_autonomous;
+pub mod chat_branches;
 pub mod chat_dto;
 pub mod chat_feedback;
 pub mod chat_images;

@@ -441,6 +441,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || get(routes::chat_images::get_answer_image),
         ),
+        // 会話の分岐（表示する枝の切り替え・新しいチャットに分岐・#1166）。
+        r("/threads/{id}/branch", &["PUT"], Session, || {
+            put(routes::chat_branches::select_branch)
+        }),
+        r("/threads/{id}/fork", &["POST"], Session, || {
+            post(routes::chat_branches::fork_thread)
+        }),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),

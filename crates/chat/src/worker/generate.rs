@@ -35,14 +35,18 @@ pub(super) struct ThreadHistory {
 }
 
 impl ChatWorker {
-    /// 直前までのメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
+    /// 生成対象までの枝のメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
     pub(super) async fn build_history(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         assistant_message_id: Uuid,
     ) -> Result<ThreadHistory, ChatError> {
-        let msgs = self.store.get_messages(ctx, thread_id, None).await?;
+        // 生成対象の祖先だけ（編集で枝分かれした会話の、他の枝の発話を混ぜない・#1166）。
+        let msgs = self
+            .store
+            .get_message_path(ctx, thread_id, assistant_message_id, None)
+            .await?;
         // スキルごとに、最新の内容（編集中の内容・下書き）を持つメッセージの位置（#919）。
         // それより前の内容は履歴では 1 行の印にする（往復のたびに全体を積み上げない）。
         // 最新の位置では、それまでの内容を重ねた全体像を見せる（下書きは部分更新のことがある）。

@@ -269,7 +269,7 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
 | ~~資料作成 v2（ブラウザ内編集）~~ | **Phase 11 に昇格**（2026-07） | V2 トラックは Phase 11（Collabora）へ統合 |
 | 専用ストア（cell 隔離）＋テナント単位プール分割 | 専用環境契約 or 数千社規模になったら | **既定はフルプール**（design §4.1・2026-07 正本化で本項と旧「フルプール最適化」項が反転）。数十〜数百社の一次目標は単一プールで充足するため、Phase 15 では**プール解決の継ぎ目とシャード安全の禁止事項の明文化のみ**を行い、実分割・テナント引越ツールは需要発生時に着手する（[data-platform.md §12](./data-platform.md)） |
 | ミニアプリ marketplace（第三者公開） | Phase 9 安定後 | 信頼ティアに審査付き第三者枠を追加 |
-| 会話ブランチUI | 任意 | データ構造は Phase 3 で用意済み |
+| 会話ブランチUI | 任意 | 発話の編集による枝の切り替えと「新しいチャットに分岐」は実装済み（#1166）。再生成の枝は未着手（[parallel-tracks.md](./roadmap/parallel-tracks.md) トラックBR） |
 | **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |
 | **一太郎（JTD）→ docx 変換（トラックJTD）** | Phase 1・2 の後ならいつでも | 官公庁・学会が現在も配布する `.jtd` を扱う。**Collabora / LibreOffice は JTD を読めない**ため Phase 11 の Office 経路は流用できず、変換器を自前で持つ（所有フォーク `vendor/openjtd`）。原本は保持し docx 派生を rendition として生成、以後は既存 docx 経路に乗せる。[parallel-tracks.md](./roadmap/parallel-tracks.md) / [fork-policy](./jtd/fork-policy.md) |
 

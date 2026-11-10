@@ -363,9 +363,13 @@ pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
     pub agent_mode: bool,
-    /// ブランチ構造の親（UI は線形取得）。
+    /// 木の親（user 発話の親＝送ったときの枝の葉、assistant の親＝応答した発話・#1166）。
     #[serde(default)]
     pub parent_id: Option<Uuid>,
+    /// 同じ親を持つメッセージ（古い順・自分を含む）。過去の発話を編集して枝ができたときだけ
+    /// 2 件以上入る（1 件＝枝なしは空）。UI は「< 2/3 >」の切り替えに使う。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sibling_ids: Vec<Uuid>,
     /// このメッセージで**実行済み**の単発 UI アクション id（#410）。
     ///
     /// 質問カード・計画カードの「送信済み」はこれを根拠に描く。ローカル state だけだと
