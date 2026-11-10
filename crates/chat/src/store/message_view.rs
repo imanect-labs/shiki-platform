@@ -10,6 +10,7 @@ use super::*;
 use storage::audit::AuditAction;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use authz::{AuthContext, CheckTuple, Consistency, Relation};
 use futures::stream::{BoxStream, StreamExt};
@@ -21,6 +22,10 @@ use super::threads::map_db;
 
 /// 1 回にまとめて見直すイベントの上限（再訪で数千件届いても、最初の表示を待たせすぎない）。
 const MAX_REDACT_BATCH: usize = 1000;
+/// BatchCheck 1 往復の問数（OpenFGA の上限 `MAX_CHECKS_PER_BATCH` と揃える）。
+const CHECK_CHUNK: usize = 50;
+/// BatchCheck の往復を並行させる本数。
+const CHECK_CONCURRENCY: usize = 8;
 
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
@@ -48,7 +53,7 @@ impl ChatStore {
             .into_iter()
             .collect();
         let decisions = self.can_view_files(ctx, &node_ids).await;
-        if decisions.values().all(|v| *v) {
+        if decisions.values().all(|v| *v == Some(true)) {
             return Ok(()); // 全て閲覧可（所有者/十分な権限）なら何もしない
         }
         for m in messages.iter_mut() {
@@ -57,7 +62,8 @@ impl ChatStore {
                 .into_iter()
                 .filter_map(|b| match b {
                     ContentBlock::Citation(c)
-                        if !c.is_web() && !*decisions.get(&c.node_id).unwrap_or(&false) =>
+                        if !c.is_web()
+                            && decisions.get(&c.node_id).copied().flatten() != Some(true) =>
                     {
                         (c.cite_id > 0)
                             .then(|| ContentBlock::Citation(Citation::withheld(c.cite_id)))
@@ -248,10 +254,16 @@ impl ChatStore {
                 match &mut ev.event {
                     StreamEventKind::Citation(c) if c.is_web() => {}
                     StreamEventKind::Citation(c) => {
-                        let allowed = !denied.contains(&c.node_id)
-                            && decisions.get(&c.node_id).copied().unwrap_or(false);
-                        if !allowed {
-                            denied.insert(c.node_id.clone());
+                        let decision = if denied.contains(&c.node_id) {
+                            Some(false)
+                        } else {
+                            decisions.get(&c.node_id).copied().flatten()
+                        };
+                        if decision != Some(true) {
+                            // 「読めない」と答えが出たものだけ覚える。判定に失敗した分はこの回だけ伏せる。
+                            if decision == Some(false) {
+                                denied.insert(c.node_id.clone());
+                            }
                             // 番号を持たない旧形式は保存済みの経路と同じく落とす。
                             if c.cite_id == 0 {
                                 return None;
@@ -267,8 +279,12 @@ impl ChatStore {
             .collect()
     }
 
-    /// 閲覧者が各ファイルを閲覧できるか（citation 再評価用）。BatchCheck で 1 往復にまとめる
-    /// （OpenFGA 実装は 50 問ごとに 1 往復）。判定に失敗したら全件 false（fail-closed）。
+    /// 閲覧者が各ファイルを閲覧できるか（citation 再評価用）。BatchCheck にまとめ、
+    /// [`CHECK_CHUNK`] 問ずつの往復を [`CHECK_CONCURRENCY`] 本まで並行させる（長い run の送り直しで
+    /// 文書が数百あっても、直列に往復を重ねて最初の表示を待たせない）。
+    ///
+    /// 値は判定できたものだけ `Some(可否)`。判定に失敗した往復の分は `None`（呼び出し側は伏せる＝
+    /// fail-closed。ただし「読めない」とは覚えない。一時的な失敗でその後の引用まで伏せ続けないため）。
     ///
     /// 引用は**文書の本文**（抜粋）を含むので、共有解除の反映が遅れると読めないはずの中身が
     /// 見えたままになる。thread の認可（`require_thread`）と同じ理由で HigherConsistency を使う
@@ -277,28 +293,43 @@ impl ChatStore {
         &self,
         ctx: &AuthContext,
         node_ids: &[String],
-    ) -> HashMap<String, bool> {
-        if node_ids.is_empty() {
-            return HashMap::new();
-        }
+    ) -> HashMap<String, Option<bool>> {
         let subject = ctx.subject();
-        let items: Vec<CheckTuple> = node_ids
+        let chunks: Vec<&[String]> = node_ids.chunks(CHECK_CHUNK).collect();
+        // 往復ごとの問いは手元に持ち切ってから流す（借用を future に持ち込まない）。
+        let calls: Vec<_> = chunks
             .iter()
-            .map(|id| CheckTuple {
-                subject: subject.clone(),
-                relation: Relation::Viewer,
-                object: ctx.ns().file(id),
+            .map(|ids| {
+                let items: Vec<CheckTuple> = ids
+                    .iter()
+                    .map(|id| CheckTuple {
+                        subject: subject.clone(),
+                        relation: Relation::Viewer,
+                        object: ctx.ns().file(id),
+                    })
+                    .collect();
+                let authz = Arc::clone(&self.authz);
+                async move {
+                    authz
+                        .batch_check(&items, Consistency::HigherConsistency)
+                        .await
+                        .ok()
+                        .filter(|v| v.len() == items.len())
+                }
             })
             .collect();
-        let allowed = self
-            .authz
-            .batch_check(&items, Consistency::HigherConsistency)
-            .await
-            .unwrap_or_else(|_| vec![false; items.len()]);
-        node_ids
+        let answers: Vec<Option<Vec<bool>>> = futures::stream::iter(calls)
+            .buffered(CHECK_CONCURRENCY)
+            .collect()
+            .await;
+        chunks
             .iter()
-            .cloned()
-            .zip(allowed.into_iter().chain(std::iter::repeat(false)))
+            .zip(answers)
+            .flat_map(|(ids, answer)| {
+                ids.iter()
+                    .enumerate()
+                    .map(move |(i, id)| (id.clone(), answer.as_ref().map(|v| v[i])))
+            })
             .collect()
     }
 }

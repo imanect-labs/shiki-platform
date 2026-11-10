@@ -12,6 +12,8 @@ export const ANCHOR_ATTR = "data-anchor";
 const NEAR_BOTTOM_PX = 80;
 /// スクロール中の保存の間引き。
 const SAVE_EVERY_MS = 400;
+/// スクロール中に位置を写す間引き（会話を離れた時点の記録の古さはこれ以内）。
+const CAPTURE_EVERY_MS = 150;
 
 /// 会話ごとのスクロール位置を覚え、戻ったときにそこから表示する（#1154）。
 ///
@@ -37,6 +39,10 @@ export function useScrollMemory({
 }): (opts: { resuming: boolean }) => void {
   // 戻すかどうかを決め終えるまでは保存しない（読み込み直後の下端の位置で記録を上書きしない）。
   const decided = React.useRef<string | null>(null);
+  // 会話が替わったら決め直す（同じ部品のまま別の会話を開く場合。前の会話の行で写さない）。
+  React.useEffect(() => {
+    decided.current = null;
+  }, [threadId]);
 
   const anchors = React.useCallback(
     () => (content ? Array.from(content.querySelectorAll<HTMLElement>(`[${ANCHOR_ATTR}]`)) : []),
@@ -90,11 +96,19 @@ export function useScrollMemory({
   React.useEffect(() => {
     if (!scroller) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastCapture = 0;
     const onScroll = () => {
-      capture();
+      // 写すのも間引く（追従中はトークンごとにスクロールが起きる）。間引いた分は書き込みの
+      // 直前に写し直す。会話を離れた後始末では写さない（もう次の会話が描かれている）。
+      const now = performance.now();
+      if (now - lastCapture > CAPTURE_EVERY_MS) {
+        lastCapture = now;
+        capture();
+      }
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;
+        capture();
         flush();
       }, SAVE_EVERY_MS);
     };

@@ -168,9 +168,9 @@ type StreamState = {
 };
 
 /// 再訪時の送り直しが途切れてから、届き終わったとみなすまでの時間（#1152）。
-const RESTORE_IDLE_MS = 600;
+const RESTORE_IDLE_MS = 2_000;
 /// 再訪時に送り直しが始まらないまま待つ上限（これを過ぎたら届いた分だけで出す）。
-const RESTORE_GIVE_UP_MS = 8_000;
+const RESTORE_GIVE_UP_MS = 15_000;
 
 /// 順番待ちの発話（サーバは受理済み・生成がまだ始まっていない）。
 ///
@@ -393,8 +393,17 @@ export function Conversation({
 
   // 実行中の会話へ戻った直後の送り直しが届き終わった: ここまでの操作を畳み、いまの手順から見せる。
   const restoreTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // 送り直しを待つ間に保留した位置の復元（届き終わる前に生成が終わった・停止した場合も必ず行う。
+  // 行わないと、その訪問の間は位置を覚えない・#1154）。
+  const scrollRestorePending = React.useRef(false);
   const finishRestore = React.useCallback(() => {
     clearTimeout(restoreTimer.current);
+    if (scrollRestorePending.current) {
+      scrollRestorePending.current = false;
+      // 経過が出そろってから、覚えておいた位置へ戻す（届く前に戻すと、短い本文の下端に着いて
+      // 追従へ戻ってしまう）。描画後に決めるので、下の state 更新より先に呼んでよい。
+      restoreScrollRef.current({ resuming: true });
+    }
     const was = streamRef.current;
     if (!was || was.restoreUntil === null) return;
     updateStream((s) =>
@@ -407,9 +416,6 @@ export function Conversation({
           }
         : s,
     );
-    // 経過が出そろってから、覚えておいた位置へ戻す（届く前に戻すと、短い本文の下端に着いて
-    // 追従へ戻ってしまう・#1154）。
-    restoreScrollRef.current({ resuming: true });
   }, [updateStream]);
   React.useEffect(() => () => clearTimeout(restoreTimer.current), []);
 
@@ -582,7 +588,8 @@ export function Conversation({
           return;
         }
         // 送り直しの最後のイベントが閲覧者向けに落とされると、その seq には届かない。
-        // 一度に届く送り直しが途切れたら（少し待っても次が来なければ）終わりとみなす。
+        // 送り直しの分が途切れたら（しばらく次が来なければ）終わりとみなす。サーバは送り直しを
+        // まとめて見直してから流すので、まとまりの合間は空くことがある。閾値は長めに取る。
         clearTimeout(restoreTimer.current);
         restoreTimer.current = setTimeout(finishRestore, RESTORE_IDLE_MS);
       },
@@ -892,6 +899,7 @@ export function Conversation({
           // 間は、届き終わってから戻す（finishRestore）。
           followLatestRef.current();
           if (streamRef.current.restoreUntil === null) restoreScrollRef.current({ resuming: true });
+          else scrollRestorePending.current = true;
           return;
         }
         restoreScrollRef.current({ resuming: false });

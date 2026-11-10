@@ -56,6 +56,13 @@ export function useStickToBottom() {
   // 止まり位置を使わず、下端（最新）を追い続ける（実行中の会話へ戻ったとき・`followLatest`）。
   // 次に送信するまで続く（送信した回答は、従来どおり先頭で止まって上から読める）。
   const followAll = React.useRef(false);
+  // 覚えておいた位置への合わせ直し（`holdAt`）を止める関数。送信・最新へ・追従の再開で止める
+  // （止めないと、画像の読み込みなどで伸びたときに元の位置へ引き戻す）。
+  const holdStop = React.useRef<(() => void) | null>(null);
+  const endHold = () => {
+    holdStop.current?.();
+    holdStop.current = null;
+  };
 
   const distance = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight;
 
@@ -222,6 +229,7 @@ export function useStickToBottom() {
 
   // 送信した: 自分の発話を見せ、次の回答の先頭まで追う。
   const scrollToBottom = React.useCallback(() => {
+    endHold();
     followAll.current = false;
     stick.current = true;
     stopped.current = false;
@@ -233,6 +241,7 @@ export function useStickToBottom() {
   // 最新の位置（いま行っている操作・書いている途中）へ移って追い続ける（#1152）。
   // 上へスクロールすれば、従来どおり追従をやめる。
   const followLatest = React.useCallback(() => {
+    endHold();
     followAll.current = true;
     stopped.current = false;
     leaving.current = false;
@@ -269,6 +278,8 @@ export function useStickToBottom() {
         clearTimeout(timer);
         for (const ev of inputs) el.removeEventListener(ev, stop);
       };
+      endHold();
+      holdStop.current = stop;
       for (const ev of inputs) el.addEventListener(ev, stop, { passive: true });
       const timer = setTimeout(stop, HOLD_MS);
     },
@@ -278,6 +289,7 @@ export function useStickToBottom() {
   // 「最新へ」: 下端へ一度動かす。生成中は追わない（止まり位置を過ぎたものとして扱う）。
   // 実行中の会話へ戻って追っている間（`followLatest`）は、追従へ戻す。
   const jumpToLatest = React.useCallback(() => {
+    endHold();
     leaving.current = false;
     if (stopAtEl.current && !followAll.current) {
       stick.current = false;
@@ -307,6 +319,9 @@ export function useStickToBottom() {
     // scrollend の無いブラウザ（Safari の一部）向けの保険。
     const timer = setTimeout(onEnd, 1_000);
   }, [scroller]);
+
+  // 会話を離れたら合わせ直しを止める。
+  React.useEffect(() => () => endHold(), []);
 
   return {
     scrollerRef: setScroller,

@@ -40,6 +40,8 @@ struct SlowAuthz {
     deny: Mutex<Vec<String>>,
     /// 問われた整合性（剥奪の即時反映のため HigherConsistency であること）。
     consistencies: Mutex<Vec<Consistency>>,
+    /// 次の batch_check を失敗させる回数（OpenFGA の一時的な障害の再現）。
+    fail_next: AtomicUsize,
 }
 
 impl SlowAuthz {
@@ -74,6 +76,16 @@ impl AuthzClient for SlowAuthz {
         self.batch_items.fetch_add(items.len(), Ordering::SeqCst);
         self.consistencies.lock().unwrap().push(c);
         tokio::time::sleep(ROUND_TRIP).await;
+        if self
+            .fail_next
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(AuthzError::Unexpected {
+                status: 503,
+                body: "一時的な障害".into(),
+            });
+        }
         Ok(items.iter().map(|i| self.allowed(&i.object)).collect())
     }
     async fn write_tuple(
@@ -361,5 +373,146 @@ async fn live_citations_are_rechecked_and_revocation_applies() {
         authz.batches.load(Ordering::SeqCst),
         2,
         "届くたびに確かめる"
+    );
+}
+
+/// 判定が一時的に失敗した引用はその回だけ伏せ、「読めない」とは覚えない（次の引用は確かめ直して出す）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transient_check_failure_withholds_once_without_caching_denial() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(SlowAuthz::default());
+    let store = ChatStore::connect(pool.clone(), Arc::clone(&authz) as _, None)
+        .await
+        .unwrap();
+    let owner = ctx(&tenant, "alice");
+    let thread = store
+        .create_thread(&owner, "障害中の会話", true, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(true),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    let node = uuid::Uuid::new_v4().to_string();
+    let mut s = store
+        .viewer_event_stream(&owner, thread.id, res.run_id, 0, None)
+        .await
+        .unwrap();
+
+    authz.fail_next.store(1, Ordering::SeqCst);
+    store
+        .append_stream_event(res.run_id, claimed.fencing_token, &cite(1, &node))
+        .await
+        .unwrap();
+    match next_event(&mut s).await {
+        StreamEventKind::Citation(c) => {
+            assert!(c.withheld && c.node_id.is_empty(), "判定できない間は伏せる");
+        }
+        other => panic!("引用が届くこと: {other:?}"),
+    }
+    store
+        .append_stream_event(res.run_id, claimed.fencing_token, &cite(2, &node))
+        .await
+        .unwrap();
+    match next_event(&mut s).await {
+        StreamEventKind::Citation(c) => {
+            assert!(!c.withheld && c.node_id == node, "失敗を拒否として覚えない");
+        }
+        other => panic!("引用が届くこと: {other:?}"),
+    }
+}
+
+/// 文書の多い送り直しでも、BatchCheck の往復を直列に重ねない（50 問ずつの往復を並行させる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn many_documents_are_checked_in_parallel_round_trips() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(SlowAuthz::default());
+    let store = ChatStore::connect(pool.clone(), Arc::clone(&authz) as _, None)
+        .await
+        .unwrap();
+    let owner = ctx(&tenant, "alice");
+    let thread = store
+        .create_thread(&owner, "文書の多い会話", true, None, None)
+        .await
+        .unwrap();
+    let res = store
+        .post_message(
+            &owner,
+            thread.id,
+            "調べて",
+            &[],
+            None,
+            Some(true),
+            false,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let claimed = store
+        .claim_run(res.run_id, "w1", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    for i in 0..300u32 {
+        store
+            .append_stream_event(
+                res.run_id,
+                claimed.fencing_token,
+                &cite(i + 1, &uuid::Uuid::new_v4().to_string()),
+            )
+            .await
+            .unwrap();
+    }
+    store
+        .append_stream_event(
+            res.run_id,
+            claimed.fencing_token,
+            &StreamEventKind::Done {
+                message_id: res.assistant_message_id,
+            },
+        )
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let mut s = store
+        .viewer_event_stream(&owner, thread.id, res.run_id, 0, None)
+        .await
+        .unwrap();
+    let mut n = 0;
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(30), s.next()).await {
+        n += 1;
+        if matches!(ev.event, StreamEventKind::Done { .. }) {
+            break;
+        }
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "文書 300 種の送り直し: {elapsed:?}（batch_check {} 回）",
+        authz.batches.load(Ordering::SeqCst)
+    );
+    assert_eq!(n, 301);
+    // 直列なら 6 往復（180 ms 以上）。並行なら 1〜2 往復ぶんで済む。
+    assert!(
+        elapsed < ROUND_TRIP * 4,
+        "往復を直列に重ねない: {elapsed:?}"
     );
 }
