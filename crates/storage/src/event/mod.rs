@@ -313,9 +313,9 @@ pub async fn peek_app_events_after(
 /// 最大 `limit` 件読む（読み取り専用・配送状態に触れない・配送済みかを問わない）。
 ///
 /// ワークフローの wait(event) の受付の突合（BUG-42）が、購読の commit より先に配送された変更を引き直すのに
-/// 使う。保持期間の GC で消えたイベントは返らない。2 種のイベントを別々の部分索引
-/// （`storage_event_outbox_data_change_idx`・`storage_event_outbox_app_event_idx`）で引けるよう、述語は索引と
-/// 同じ形で書く。
+/// 使う。保持期間の GC で消えたイベントは返らない。event_type / table_id は列に写してある（migration 0115・
+/// #1074）。2 種とも索引 `storage_event_outbox_table_change_idx`（tenant_id, payload_table_id, payload_event_type, id）
+/// を id の順にたどれるよう、列の `=` で引く（RLS の下でも jsonb の取り出しは索引の条件に使えない）。
 #[allow(clippy::too_many_arguments)]
 pub async fn data_change_events_after(
     conn: &mut PgConnection,
@@ -329,19 +329,18 @@ pub async fn data_change_events_after(
     const COLS: &str =
         "o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
                         o.payload, o.created_at";
-    const MATCH: &str = "o.tenant_id = $1 AND o.payload ->> 'table_id' = $2 \
+    const MATCH: &str = "o.tenant_id = $1 AND o.payload_table_id = $2 \
                          AND ($3::text IS NULL OR o.payload ->> 'record_id' = $3) \
                          AND o.id > $4 AND o.version > $5";
     // tenant-sql: allow(tenant 条件は MATCH の o.tenant_id = $1 にあり format! で差し込む・字句の誤検知)
     let sql = format!(
         "SELECT * FROM ( \
            (SELECT {COLS} FROM storage_event_outbox o \
-             WHERE o.payload ->> 'event_type' = 'data.record.changed' AND {MATCH} \
+             WHERE o.payload_event_type = 'data.record.changed' AND {MATCH} \
              ORDER BY o.id LIMIT $6) \
            UNION ALL \
            (SELECT {COLS} FROM storage_event_outbox o \
-             WHERE o.payload ? 'event_type' AND o.payload ->> 'event_type' <> 'data.record.changed' \
-               AND o.payload ->> 'event_type' = 'data.record.transitioned' AND {MATCH} \
+             WHERE o.payload_event_type = 'data.record.transitioned' AND {MATCH} \
              ORDER BY o.id LIMIT $6) \
          ) e ORDER BY e.id LIMIT $6"
     );
