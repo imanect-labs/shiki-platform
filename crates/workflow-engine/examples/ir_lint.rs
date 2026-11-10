@@ -15,9 +15,13 @@
 //! - `warnings`: 保存を止めない警告（`save_warnings`）。
 //! - `run_blockers`: 対話の実行の前に止める理由（`run_blockers`）。
 //! - `enable_blockers`: 自動実行をオンにする前に止める理由（`enable_blockers`・schedule / event のきっかけで、
-//!   保存先や一覧のフォルダを省いたなど。採点はきっかけが schedule・event の課題だけで数える）。
+//!   保存先や一覧のフォルダを省いたなど。採点はきっかけが schedule・event の課題だけで数える）。有効化の口の 409 は、
+//!   環境に依存するモデルの理由（有効化する人のアカウントの制限・`user_model_blockers`・D-196）も含むが、ir_lint は
+//!   `Catalog::default()` なので照らさない。
 //! - `output_paths`: `$from: nodes.<id>.output` の path の先頭が、そのノードの出力の項目に無い参照（[`output_paths`]・
-//!   製品の検証には無い採点の検査。出力の項目はカタログの単一定義 `output_fields`・`present_if` で決める・GAP-112）。
+//!   採点の検査。出力の項目はカタログの単一定義 `output_fields` で、設定で決まる項目は製品の
+//!   `OutputField::present_in` で決める・GAP-112）。製品の検証が出力の形で照らす種類（data.query・data.record.*・
+//!   `NodeType::closed_output_keys`）は、`errors` の `ir.unknown_output_path` に出るので、ここでは見ない（GAP-137）。
 //! - `node_ports`: ノードの出口（検証 API と同じ `node_ports`）。
 //! - `declared_scopes`: スコープを補った後の宣言。
 //!
@@ -137,31 +141,15 @@ fn first_segment(path: &str) -> Option<String> {
     Some(seg.replace("~1", "/").replace("~0", "~"))
 }
 
-/// 設定（params）の `present_if` の場所に値があるか（[`workflow_engine::vocab::OutputField::present_if`] の約束:
-/// 無い・`null`・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。空の `present_if` は常にある）。
-///
-/// 製品の Rust には、この約束を判定する関数が無い（判定するのは右パネルの
-/// `web/src/components/workflow/editor/config-panel/value-refs.ts` の `hasParamAt` だけ）。ここはその写しなので、
-/// 製品が決め方を変えたら合わせる（`lint_bin` の突き合わせでは気づけない・GAP-112）。
-fn present(params: &Value, present_if: &str) -> bool {
-    if present_if.is_empty() {
-        return true;
-    }
-    match params.pointer(present_if) {
-        None | Some(Value::Null | Value::Bool(false)) => false,
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(m)) => !m.is_empty(),
-        Some(_) => true,
-    }
-}
-
 /// 出力の項目の名前（設定で決まる項目は設定があるときだけ・`on_error: continue` なら `error` も読める）。
+///
+/// 「設定がある」は製品の判定（`OutputField::present_in`・画面の値の候補と同じ約束）を呼ぶ。設定が値式で実行の値で
+/// 決まる（`None`）ときは、あるものとして数える（誤りにしない）。
 fn output_field_names(entry: &NodeCatalogEntry, target: &Node) -> Vec<&'static str> {
     let mut names: Vec<&'static str> = entry
         .output_fields
         .iter()
-        .filter(|f| present(&target.params, f.present_if))
+        .filter(|f| f.present_in(&target.params) != Some(false))
         .map(|f| f.name)
         .collect();
     if target.on_error == OnError::Continue {
@@ -174,7 +162,9 @@ fn output_field_names(entry: &NodeCatalogEntry, target: &Node) -> Vec<&'static s
 ///
 /// 出力の項目はカタログの `output_fields`（単一定義）で、設定で決まる項目は `present_if` で決める（右パネルの値の
 /// 候補と同じ約束）。出力の形の決まらないノード（項目の無い script.run・control.* など）、無いノード（`ir.bad_ref`
-/// が言う）、path の無い参照（出力の全体）は見ない。
+/// が言う）、path の無い参照（出力の全体）は見ない。製品の検証が照らす種類
+/// （[`workflow_engine::vocab::NodeType::closed_output_keys`]）も見ない（同じ参照を `errors` と二重に数えない・
+/// GAP-137）。
 fn output_paths(ir: &WorkflowIr) -> Vec<ValidationError> {
     let catalog: HashMap<&'static str, NodeCatalogEntry> = node_catalog()
         .into_iter()
@@ -200,7 +190,7 @@ fn output_paths(ir: &WorkflowIr) -> Vec<ValidationError> {
             let Some(entry) = catalog.get(target.node_type.as_str()) else {
                 continue;
             };
-            if entry.output_fields.is_empty() {
+            if entry.output_fields.is_empty() || entry.node_type.closed_output_keys().is_some() {
                 continue;
             }
             let names = output_field_names(entry, target);
@@ -557,16 +547,40 @@ mod tests {
         assert_eq!(codes(&out, "output_paths"), [OUTPUT_PATH], "{out:#}");
     }
 
+    /// 製品の検証が出力の形で照らす種類（data.query・data.record.*）の誤りは `errors` の `ir.unknown_output_path` に出て、
+    /// `output_paths` には重ねない（GAP-137）。照らさない種類（llm.invoke）は `output_paths` が見る。
     #[test]
-    fn present_follows_the_output_field_contract() {
-        let params = json!({ "a": 1, "z": 0, "t": "x", "e": "", "f": false, "n": null,
-            "l": [1], "el": [], "o": { "k": 1 }, "eo": {}, "nested": { "x": [0] } });
-        for at in ["", "/a", "/z", "/t", "/l", "/o", "/nested/x", "/nested/x/0"] {
-            assert!(present(&params, at), "{at}");
+    fn closed_kinds_go_to_errors_and_not_to_output_paths() {
+        let ir = |path: &str| {
+            json!({
+                "ir_version": 1, "name": "wf", "declared_scopes": ["data.read"],
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [
+                    { "id": "q", "type": "data.query", "params": {
+                        "table": "00000000-0000-0000-0000-0000000000a1", "query": { "limit": 1 } } },
+                    { "id": "br", "type": "control.branch", "params": { "condition": { "cmp": {
+                        "left": { "$from": "nodes.q.output", "path": path }, "op": "eq", "right": "貸出中" } } } }
+                ],
+                "edges": [{ "from": "q", "to": "br" }]
+            })
+        };
+        let out = lint_one(&ir("/items/0/status"));
+        assert_eq!(codes(&out, "errors"), ["ir.unknown_output_path"], "{out:#}");
+        assert_eq!(out["errors"][0]["node_id"], "br", "{out:#}");
+        assert!(codes(&out, "output_paths").is_empty(), "{out:#}");
+        // 集計を書いていない data.query の groups・件数を求めていない count も、製品の誤り。
+        for path in ["/groups", "/count"] {
+            let out = lint_one(&ir(path));
+            assert_eq!(
+                codes(&out, "errors"),
+                ["ir.unknown_output_path"],
+                "{path}: {out:#}"
+            );
+            assert!(codes(&out, "output_paths").is_empty(), "{path}: {out:#}");
         }
-        for at in ["/e", "/f", "/n", "/el", "/eo", "/missing", "/nested/y"] {
-            assert!(!present(&params, at), "{at}");
-        }
+        let out = lint_one(&ir("/items/0/data/status"));
+        assert!(codes(&out, "errors").is_empty(), "{out:#}");
+        assert!(codes(&out, "output_paths").is_empty(), "{out:#}");
     }
 
     #[test]

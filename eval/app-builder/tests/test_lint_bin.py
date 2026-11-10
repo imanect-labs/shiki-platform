@@ -141,7 +141,11 @@ def _uses(paths: list[dict]) -> dict:
 
 
 def test_output_paths_follow_the_catalog_fields_and_present_if():
-    """ir_lint の出力の path の検査（GAP-112）: カタログの項目・present_if・on_error continue の error。"""
+    """ir_lint の出力の path の検査（GAP-112）: カタログの項目・present_if・on_error continue の error。
+
+    製品の検証が出力の形で照らす種類（data.query など）の誤りは errors の `ir.unknown_output_path` に出て、
+    output_paths には重ねない（GAP-137）。
+    """
     refs = [
         {"$from": "nodes.plain.output", "path": "/text"},
         {"$from": "nodes.plain.output", "path": "/category"},
@@ -157,21 +161,24 @@ def test_output_paths_follow_the_catalog_fields_and_present_if():
     ]
     r = run_ir_lint([("p", _uses(refs))], BIN)[0]["p"]
     bad = sorted(e["path"] for e in r.output_paths)
-    assert bad == [
-        "/params/input/v/1",
-        "/params/input/v/3",
-        "/params/input/v/5",
-        "/params/input/v/8",
-    ], r.output_paths
+    assert bad == ["/params/input/v/1", "/params/input/v/3"], r.output_paths
     assert {e["code"] for e in r.output_paths} == {"ir_lint.output_path"}
     assert {e["node_id"] for e in r.output_paths} == {"use"}
+    shaped = [e for e in r.errors if e["code"] == "ir.unknown_output_path"]
+    assert sorted(e["path"] for e in shaped) == ["/params/input/v/5", "/params/input/v/8"], r.errors
+    assert {e["node_id"] for e in shaped} == {"use"}
 
 
 @pytest.mark.parametrize("with_count", [True, False, None])
 def test_present_if_treats_false_as_absent(with_count):
-    """製品の present_if の約束どおり、false も「値が無い」（with_count: false の /count は読めない）。"""
+    """製品の present_if の約束どおり、false も「値が無い」（with_count: false の /count は読めない）。
+
+    data.query の出力の path は製品の検証が照らす（errors の `ir.unknown_output_path`・GAP-137）。
+    """
     ir = _uses([{"$from": "nodes.q.output", "path": "/count"}])
     if with_count is not None:
         ir["nodes"][2]["params"]["query"]["with_count"] = with_count
     r = run_ir_lint([("c", ir)], BIN)[0]["c"]
-    assert bool(r.output_paths) is (with_count is not True), r.output_paths
+    shaped = [e for e in r.errors if e["code"] == "ir.unknown_output_path"]
+    assert bool(shaped) is (with_count is not True), r.errors
+    assert not r.output_paths, r.output_paths
