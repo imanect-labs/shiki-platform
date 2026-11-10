@@ -24,7 +24,7 @@ import type { Citation } from "@/lib/chat-api";
 import { ExportPrint } from "./answer-print";
 import { useMessageCitations } from "./citations/citation-context";
 import { useExportActions } from "./export-actions";
-import { answerImageSources, type TimelineSegment } from "./message-timeline";
+import { answerImageSources, answerLinkSourcesOf, type TimelineSegment } from "./message-timeline";
 import { footerButtonClass } from "./message-footer";
 
 export function MessageExportMenu({
@@ -57,7 +57,7 @@ export function MessageExportMenu({
   const printItems = React.useMemo(
     () =>
       printing
-        ? [{ key: "answer", question: null, text, citations, imageSources: answerImageSources(segments, citations) }]
+        ? [{ key: "answer", question: null, text, citations, imageSources: answerImageSources(segments, citations), linkSources: answerLinkSourcesOf(segments, citations) }]
         : null,
     [printing, segments, text, citations],
   );

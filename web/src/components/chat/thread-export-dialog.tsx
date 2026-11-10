@@ -31,7 +31,7 @@ import { isUnresolvable, useNodeMetas } from "@/lib/node-name-cache";
 import { cn } from "@/lib/utils";
 import { ExportPrint, type PrintItem } from "./answer-print";
 import { useExportActions } from "./export-actions";
-import { answerImageSources, segmentsFromBlocks, type TimelineSegment } from "./message-timeline";
+import { answerImageSources, answerLinkSourcesOf, segmentsFromBlocks, type TimelineSegment } from "./message-timeline";
 
 type Turn = ThreadTurn & { key: string; segments: TimelineSegment[] };
 
@@ -110,6 +110,7 @@ export function ThreadExportDialog({
         text: t.answer,
         citations: t.citations,
         imageSources: answerImageSources(t.segments, [...t.citations]),
+        linkSources: answerLinkSourcesOf(t.segments, [...t.citations]),
       })),
     );
   };
