@@ -238,6 +238,17 @@ function hostOf(url: string): string {
   }
 }
 
+/// 解決すると自分のオリジンになるリンクか（外から来た文章のホストの注記を省くだけに使う。遷移の判定は `isAppPath`）。
+/// サーバー側の描画（window が無い）では決められないので、自分のオリジンと見なさない（注記を出す側に倒す）。
+function isSameOrigin(url: string): boolean {
+  if (!url || typeof window === "undefined") return false;
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 /// 利用者が書いたリンク。表示の文字と行き先が違うときは行き先のホストを添える（文字で行き先を偽れない）。
 function UserLink({ href, children }: { href: string; children: React.ReactNode }) {
   let host: string | null = null;
@@ -509,8 +520,9 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
       {children}
     </a>
   );
-  // 外から来た文章の外部リンクにはホスト名を添える（釣りのリンクに気づきやすくする・GAP-09）。
-  const host = external ? hostOf(url) : "";
+  // 外から来た文章の外部リンクにはホスト名を添える（釣りのリンクに気づきやすくする・GAP-09）。自分のオリジンへの
+  // 絶対 URL・相対リンクには添えない（BUG-276）。
+  const host = external && !isSameOrigin(url) ? hostOf(url) : "";
   if (!host) return link;
   return (
     <>
