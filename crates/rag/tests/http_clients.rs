@@ -149,8 +149,23 @@ async fn embedding_batches_and_checks_model_version() {
             assert_eq!(body["tenant_id"], "a-corp");
             assert_eq!(body["input_type"], "document");
             let n = body["texts"].as_array().unwrap().len();
+            assert!(n <= 8, "CPU worker へ長い表を一括送信しない");
+            let vectors: Vec<Vec<f32>> = body["texts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|text| {
+                    let ordinal: f32 = text
+                        .as_str()
+                        .unwrap()
+                        .trim_start_matches("文書")
+                        .parse()
+                        .unwrap();
+                    vec![ordinal, 0.8]
+                })
+                .collect();
             Json(serde_json::json!({
-                "vectors": vec![vec![0.6f32, 0.8f32]; n],
+                "vectors": vectors,
                 "model_version": "cl-nagoya/ruri-v3-30m",
                 "dimension": 2
             }))
@@ -159,13 +174,16 @@ async fn embedding_batches_and_checks_model_version() {
     let base = serve(router).await;
     let provider =
         HttpEmbeddingProvider::new(reqwest::Client::new(), &base, "cl-nagoya/ruri-v3-30m");
-    // batch_size(64) を跨ぐ 100 件でバッチ分割経路も通す。
+    // 複数の HTTP バッチと端数を通し、ベクトルの順序も確認する。
     let texts: Vec<String> = (0..100).map(|i| format!("文書{i}")).collect();
     let resp = provider
         .embed(&ctx(), EmbedInput::Document, &texts)
         .await
         .unwrap();
     assert_eq!(resp.vectors.len(), 100);
+    for (i, vector) in resp.vectors.iter().enumerate() {
+        assert_eq!(vector, &vec![i as f32, 0.8]);
+    }
     assert_eq!(resp.dimension, 2);
     assert_eq!(provider.model_version(), "cl-nagoya/ruri-v3-30m");
 }
