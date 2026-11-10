@@ -3,7 +3,7 @@ import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { GhEntry, GhMetaMap, PromptEntry, SessionLog } from '../types'
 
-import { fetchMeta, key } from './github'
+import { fetchMeta, key, unavailable } from './github'
 import { linkedTargets, toMarkdown } from './view'
 
 const PANE = 'session-log'
@@ -22,7 +22,7 @@ const LINKED_LIMIT = 20
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull)\/(\d+)/g
 // コマンドの先頭か、;・&&・|・( の直後に置かれた gh だけを作成とみなす（grep の引数などは除く）
-const GH_CLI_CREATE = /(?:^|[;&|(]\s*)gh\s+(issue|pr)\s+create\b/m
+const GH_CLI_CREATE = /(?:^|[;&|(]\s*)gh\s+(issue|pr)\s+create\b/gm
 
 // 人が送ったものではない、ハーネスが差し込むメッセージの書き出し
 const AUTO_PREFIXES = [
@@ -57,39 +57,46 @@ function textOf(v: unknown): string {
   }
 }
 
-function createKind(tool: string, input: Record<string, unknown>): GhEntry['kind'] | null {
-  if (tool === 'mcp__github__issue_write' && str(input.method) === 'create') return 'issue'
-  if (tool === 'mcp__github__create_pull_request') return 'pr'
+// 1 回の呼び出しで作られうる種類（Bash は gh issue create と gh pr create を連ねられる）
+function createKinds(tool: string, input: Record<string, unknown>): Set<GhEntry['kind']> {
+  const kinds = new Set<GhEntry['kind']>()
+  if (tool === 'mcp__github__issue_write' && str(input.method) === 'create') kinds.add('issue')
+  if (tool === 'mcp__github__create_pull_request') kinds.add('pr')
   if (tool === 'Bash') {
-    const m = GH_CLI_CREATE.exec(str(input.command))
-    if (m) return m[1] === 'pr' ? 'pr' : 'issue'
+    for (const m of str(input.command).matchAll(GH_CLI_CREATE)) kinds.add(m[1] === 'pr' ? 'pr' : 'issue')
   }
-  return null
+  return kinds
 }
 
-/** 作成系の呼び出しとその出力から 1 件作る。出力に作成先の URL が無ければ作成扱いにしない。 */
-function ghEntry(
+/** 作成系の呼び出しとその出力から作成された項目を拾う。出力に作成先の URL が無ければ作成扱いにしない。 */
+export function ghEntries(
   id: string,
   tool: string,
   input: Record<string, unknown>,
   output: string,
-): GhEntry | null {
-  const kind = createKind(tool, input)
-  if (kind === null) return null
-  const want = kind === 'pr' ? 'pull' : 'issues'
-  // gh は作成した URL を最後に出す。途中に出てくる別の URL は拾わない。
-  const urls = [...output.matchAll(GH_URL)].filter(m => m[2] === want)
-  const url = urls[urls.length - 1]
-  if (!url) return null
-  if (tool === 'Bash' && /already exists/i.test(output)) return null
-  return {
-    id,
-    kind,
-    number: Number(url[3]),
-    title: str(input.title) || '(タイトル不明)',
-    url: url[0],
-    repo: url[1] ?? '',
+): GhEntry[] {
+  const kinds = createKinds(tool, input)
+  if (kinds.size === 0) return []
+  if (tool === 'Bash' && /already exists/i.test(output)) return []
+  const urls = [...output.matchAll(GH_URL)]
+  const pick = (kind: GhEntry['kind']) => urls.filter(m => m[2] === (kind === 'pr' ? 'pull' : 'issues'))
+  const out: GhEntry[] = []
+  for (const kind of kinds) {
+    const found = pick(kind)
+    // MCP は 1 回で 1 件。応答の最後の URL が作成先。gh は作成ごとに URL を 1 行出す。
+    const chosen = tool === 'Bash' ? found : found.slice(-1)
+    for (const url of chosen) {
+      out.push({
+        id: `${id}:${url[0]}`,
+        kind,
+        number: Number(url[3]),
+        title: tool === 'Bash' ? '(タイトル不明)' : str(input.title) || '(タイトル不明)',
+        url: url[0],
+        repo: url[1] ?? '',
+      })
+    }
   }
+  return out
 }
 
 function collect(messages: readonly SessionMessage[]): SessionLog {
@@ -106,8 +113,9 @@ function collect(messages: readonly SessionMessage[]): SessionLog {
     for (const use of m.toolUses) {
       if (use.isError === true) continue
       const output = `${str(use.text)}\n${textOf(use.result)}`
-      const entry = ghEntry(use.tool_use_id, use.tool, use.input, output)
-      if (entry !== null) (entry.kind === 'pr' ? prs : issues).push(entry)
+      for (const entry of ghEntries(use.tool_use_id, use.tool, use.input, output)) {
+        ;(entry.kind === 'pr' ? prs : issues).push(entry)
+      }
     }
   }
   return { prompts, issues, prs }
@@ -161,13 +169,15 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-async function addEntry($: EngineInterface, entry: GhEntry): Promise<void> {
+async function addEntries($: EngineInterface, entries: GhEntry[]): Promise<void> {
   try {
     await update($, log, cur => {
       const base = cur ?? EMPTY
-      return entry.kind === 'pr'
-        ? { ...base, prs: mergeGh(base.prs, [entry]) }
-        : { ...base, issues: mergeGh(base.issues, [entry]) }
+      return {
+        ...base,
+        prs: mergeGh(base.prs, entries.filter(g => g.kind === 'pr')),
+        issues: mergeGh(base.issues, entries.filter(g => g.kind === 'issue')),
+      }
     })
   } catch {
     // turn.complete の再集計で拾われる
@@ -198,8 +208,10 @@ async function syncOnce($: EngineInterface, force: boolean): Promise<void> {
   const run = (targets: Target[]) =>
     Promise.all(
       targets.map(async t => {
-        const m = await fetchMeta($, t.repo, t.number, t.kind).catch(() => null)
-        if (m) fresh[key(t.repo, t.number)] = m
+        // 接続障害などの例外も取得失敗として記録し、表示と再試行間隔を保つ
+        fresh[key(t.repo, t.number)] = await fetchMeta($, t.repo, t.number, t.kind).catch(() =>
+          unavailable(t.repo, t.number, t.kind === 'pr' ? 'pr' : 'issue'),
+        )
       }),
     )
 
@@ -280,11 +292,11 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
     const input = e as unknown as Record<string, unknown>
-    if (ran.deny === undefined && ran.isError !== true && createKind(e.tool, input) !== null) {
+    if (ran.deny === undefined && ran.isError !== true && createKinds(e.tool, input).size > 0) {
       const out = `${str(ran.text)}\n${textOf(ran.result)}`
-      const entry = ghEntry(e.tool_use_id, e.tool, input, out)
-      if (entry !== null) {
-        await addEntry($, entry)
+      const entries = ghEntries(e.tool_use_id, e.tool, input, out)
+      if (entries.length > 0) {
+        await addEntries($, entries)
         void syncGithub($, true)
       }
     }

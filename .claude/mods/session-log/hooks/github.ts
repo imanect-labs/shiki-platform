@@ -44,13 +44,24 @@ async function callJson(
 ): Promise<Record<string, unknown> | null> {
   const res = await $.mcp.call('github', tool, args)
   if (res.isError) return null
-  if (res.structuredContent !== undefined) return obj(res.structuredContent)
+  const sc = unwrap(obj(res.structuredContent))
+  if (sc.number !== undefined) return sc
   const text = res.content.map(b => b.text ?? '').join('')
   try {
-    return obj(JSON.parse(text))
+    return unwrap(obj(JSON.parse(text)))
   } catch {
     return null
   }
+}
+
+/** 構造化応答は `{ method: "get", issue: {...} }` のように本体を包むことがあるので取り出す。 */
+export function unwrap(j: Record<string, unknown>): Record<string, unknown> {
+  if (j.number !== undefined) return j
+  for (const k of ['issue', 'pull_request', 'pullRequest']) {
+    const inner = obj(j[k])
+    if (inner.number !== undefined) return inner
+  }
+  return j
 }
 
 function issueStatus(j: Record<string, unknown>): GhStatus {

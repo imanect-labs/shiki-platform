@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { key, linksFromBody } from '../hooks/github'
-import { mergePrompts } from '../hooks/register'
+import { key, linksFromBody, unwrap } from '../hooks/github'
+import { ghEntries, mergePrompts } from '../hooks/register'
 import { toMarkdown } from '../hooks/view'
 import type { GhMetaMap, PromptEntry, SessionLog } from '../types'
 
@@ -69,4 +69,23 @@ test('ステータスと Issue⇔PR の関係を両方向に出す', async () =>
   expect(md).not.toContain('#1](')
   // 未取得の Issue は取得中、PR が無ければその旨
   expect(md).toContain('- … 取得中 **[#20](https://github.com/acme/app/issues/20)** 別件\n  - _対応 PR なし_')
+})
+
+test('1 回の Bash で作った Issue と PR を両方拾い、grep の引数は作成扱いしない', async () => {
+  const out = [
+    'https://github.com/acme/app/issues/40',
+    'Creating pull request for feat into main',
+    'https://github.com/acme/app/pull/41',
+  ].join('\n')
+  const got = ghEntries('t1', 'Bash', { command: 'gh issue create -t a -b b && gh pr create --fill' }, out)
+  expect(got.map(g => [g.kind, g.number])).toEqual([
+    ['issue', 40],
+    ['pr', 41],
+  ])
+  expect(ghEntries('t2', 'Bash', { command: 'grep -rn "gh pr create" .' }, out)).toEqual([])
+})
+
+test('構造化応答の包み（{ method, issue }）から本体を取り出す', async () => {
+  expect(unwrap({ method: 'get', issue: { number: 3, state: 'closed' } })).toEqual({ number: 3, state: 'closed' })
+  expect(unwrap({ number: 5 })).toEqual({ number: 5 })
 })
