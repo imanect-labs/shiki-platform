@@ -37,36 +37,51 @@ function urlKey(raw: string): string | null {
   }
 }
 
-/// Web 検索の結果の見出し行（`web 検索結果 N 件:`）。
-const SEARCH_HEADER = /^web 検索結果 \d+ 件:$/;
+/// Web 検索の結果の見出し行（`web 検索結果 N 件:`）。N は件数。
+const SEARCH_HEADER = /^web 検索結果 (\d+) 件:$/;
 /// 引用番号付きの件の先頭行（台帳で振り直した `[n] ` か、振り直す前の仮の印 `⟦cite:n⟧ `）。
 const CITED_ENTRY = /^(?:\[\d+\]|⟦cite:\d+⟧) /;
 
 /// Web 検索の結果の **URL の欄**に現れたもの。
 ///
-/// 結果は 1 件ずつ空行で区切られた「タイトル／URL／スニペット」の 3 行（サーバがタイトルとスニペットを
-/// 1 行に潰す・`web_search.rs` の `outcome`）。スニペットやタイトルに書かれた URL を拾うと、検索結果に
-/// 無いホストまで信頼してしまう（レビュー指摘）ので、各件の 2 行目だけを見る。
+/// 結果は見出し（件数入り）のあと、1 件ずつ空行で区切られた「タイトル／URL／スニペット」の 3 行
+/// （サーバがタイトルとスニペットを 1 行に潰す・`web_search.rs` の `outcome`）。各件の 2 行目だけを見る。
+///
+/// **書式どおりでない結果は丸ごと信頼しない**（fail-closed）: 区切った件の数が見出しの件数と一致し、
+/// どの件もちょうど 3 行のときだけ読む。1 行に潰す前に保存された結果で、スニペットやタイトルに改行・
+/// 空行・`[9] ` のような番号が仕込まれていると、件の数か行数が必ず合わなくなる（CodeRabbit の指摘）。
+/// その結果を引用した回答のリンクは、確認付きになるだけ（安全側）。
 function searchResultUrls(tools: Iterable<{ name: string; result?: string }>): Set<string> {
   const out = new Set<string>();
   for (const t of tools) {
     if (t.name !== WEB_SEARCH_TOOL || !t.result) continue;
-    // 見出しは結果の**先頭行だけ**除く。各件の中の同じ文字列（タイトルを見出しに似せた結果）まで除くと、
-    // スニペットが URL の欄に繰り上がる（CodeRabbit の指摘）。
-    const [first, ...rest] = t.result.split("\n");
-    const body = SEARCH_HEADER.test((first ?? "").trim()) ? rest.join("\n") : t.result;
-    for (const block of body.split(/\n{2,}/)) {
-      const lines = block.replace(/^\n+/, "").split("\n");
-      // 引用になるのは番号付きの件だけ（引用できない URL の件は番号が無い）。先頭行が引用番号で始まらない塊は
-      // 数えない: 1 行に潰す前に保存された結果では、スニペットの改行・空行の断片が 1 件に見えることがある。
-      if (!CITED_ENTRY.test(lines[0] ?? "")) continue;
-      const urlLine = lines[1]?.trim();
-      if (!urlLine || !/^https?:\/\//i.test(urlLine)) continue;
-      const key = urlKey(urlLine);
-      if (key) out.add(key);
-    }
+    for (const url of wellFormedSearchUrls(t.result)) out.add(url);
   }
   return out;
+}
+
+/// 1 回の Web 検索の結果から URL の欄を読む。書式どおりでなければ空。
+function wellFormedSearchUrls(result: string): string[] {
+  // 見出しは結果の**先頭行だけ**。各件の中の同じ文字列（タイトルを見出しに似せた結果）は見出しではない。
+  const [first, ...rest] = result.split("\n");
+  const count = SEARCH_HEADER.exec((first ?? "").trim())?.[1];
+  if (count === undefined) return [];
+  const blocks = rest
+    .join("\n")
+    .split(/\n{2,}/)
+    .map((b) => b.replace(/^\n+|\n+$/g, ""))
+    .filter((b) => b !== "");
+  if (blocks.length !== Number(count)) return [];
+  const entries = blocks.map((b) => b.split("\n"));
+  if (entries.some((lines) => lines.length !== 3)) return [];
+  const urls: string[] = [];
+  for (const [title, urlLine] of entries) {
+    // 引用になるのは番号付きの件だけ（引用できない URL の件は番号が無い）。
+    if (!CITED_ENTRY.test(title ?? "") || !/^https?:\/\//i.test(urlLine?.trim() ?? "")) continue;
+    const key = urlKey(urlLine ?? "");
+    if (key) urls.push(key);
+  }
+  return urls;
 }
 
 /// 回答の Web の引用のうち、Web 検索の結果に現れたページのホストを集める。

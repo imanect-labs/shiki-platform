@@ -88,16 +88,25 @@ impl Tool for WebSearchTool {
     }
 }
 
+/// 空白と改行を 1 つの空白に潰す（取得先が制御できる文字列で行の構造を偽装させない）。
+/// 空なら `empty` を返す（空行を作ると 1 件が 3 行にならず、web 側が結果全体を信頼しなくなる）。
+fn one_line(s: &str, empty: &str) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        empty.to_string()
+    } else {
+        flat
+    }
+}
+
 /// 検索結果 → 観測テキスト＋引用。
 ///
 /// 番号は仮の印（[`crate::cite::placeholder`]）で書き、ループの台帳が社内文書と同じ通し番号に
 /// 置き換える（#891）。ここで `[1]` から振ると、同じ応答の doc_search の `[1]` と衝突する。
 /// 引用にできない URL（http/https 以外）の結果は番号を付けずに残す。
-/// 空白と改行を 1 つの空白に潰す（取得先が制御できる文字列で行の構造を偽装させない）。
-fn one_line(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
+///
+/// 書式は「`web 検索結果 N 件:`」の見出しのあと、空行で区切った N 件の「タイトル／URL／スニペット」
+/// の 3 行。web の `answer-links.ts` はこの書式どおりの結果だけを出典として信頼する（#1143）。
 fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
     use crate::cite::defuse;
     use std::fmt::Write as _;
@@ -118,9 +127,9 @@ fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
         let _ = write!(
             s,
             "{label}{}\n{}\n{}\n\n",
-            defuse(&one_line(&h.title)),
-            defuse(&one_line(&h.url)),
-            defuse(&one_line(&h.snippet))
+            defuse(&one_line(&h.title, "（タイトルなし）")),
+            defuse(&one_line(&h.url, "（URL なし）")),
+            defuse(&one_line(&h.snippet, "（説明なし）"))
         );
     }
     let mut out = ToolOutcome::ok(s);
@@ -225,6 +234,34 @@ mod tests {
         );
         assert_eq!(lines[1], "https://news.example.com/x");
         assert_eq!(lines[2], "本文 https://evil.example/login 続き");
+    }
+
+    /// タイトル・スニペットが空でも 3 行を保つ（空行を作ると件の区切りに見える）。
+    /// 見出しの件数と、空行で区切った件の数も一致する。
+    #[test]
+    fn empty_fields_keep_three_lines_and_the_count() {
+        let hits = vec![
+            websearch::SearchHit {
+                title: "  ".into(),
+                url: "https://a.example/".into(),
+                snippet: String::new(),
+            },
+            websearch::SearchHit {
+                title: "B".into(),
+                url: "https://b.example/".into(),
+                snippet: "説明".into(),
+            },
+        ];
+        let out = outcome(&hits);
+        let body = out.content.strip_prefix("web 検索結果 2 件:\n").unwrap();
+        let blocks: Vec<&str> = body.split("\n\n").filter(|b| !b.is_empty()).collect();
+        assert_eq!(blocks.len(), 2, "{}", out.content);
+        for b in blocks {
+            assert_eq!(b.lines().count(), 3, "{b}");
+        }
+        assert!(out
+            .content
+            .contains("（タイトルなし）\nhttps://a.example/\n（説明なし）"));
     }
 
     fn doc(chunk: &str) -> crate::tool::Citation {
