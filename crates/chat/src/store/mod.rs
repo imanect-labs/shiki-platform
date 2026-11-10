@@ -10,6 +10,7 @@
 mod answer_images;
 mod approval;
 mod autonomous;
+mod branches;
 mod custom_instructions;
 mod feedback;
 mod message_view;

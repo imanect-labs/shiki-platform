@@ -287,7 +287,7 @@ pub async fn get_thread(
     ))
 }
 
-/// メッセージを線形取得する（viewer 認可・引用は閲覧者権限で再評価）。
+/// 表示中の枝のメッセージを線形取得する（viewer 認可・引用は閲覧者権限で再評価・枝の切り替え先つき）。
 #[utoipa::path(
     get, path = "/threads/{id}/messages",
     params(("id" = Uuid, Path, description = "スレッド ID")),
@@ -386,7 +386,7 @@ pub async fn post_message(
     };
     let model = resolve_run_model(&state, &ctx, req.model.as_deref(), req.effort).await?;
     let r = chat_store(&state)?
-        .post_message_with_model(
+        .post_message_on_branch(
             &ctx,
             id,
             &req.text,
@@ -397,6 +397,7 @@ pub async fn post_message(
             &once_skills,
             model.as_ref(),
             &requested_tools,
+            req.edit_of,
             trace.as_deref(),
         )
         .await?;

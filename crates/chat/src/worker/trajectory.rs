@@ -203,6 +203,7 @@ mod tests {
             content,
             agent_mode: true,
             parent_id: None,
+            sibling_ids: Vec::new(),
             invoked_actions: Vec::new(),
             bound_actions: Vec::new(),
             ui_runs: Vec::new(),

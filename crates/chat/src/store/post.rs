@@ -66,6 +66,42 @@ impl ChatStore {
         thread_id: Uuid,
         text: &str,
         attachments: &[Attachment],
+        selection: Option<crate::model::SelectionContext>,
+        agent_mode_override: Option<bool>,
+        autonomous: bool,
+        once_skills: &[SkillPin],
+        model: Option<&RunModel>,
+        requested_tools: &[agent_core::ToolName],
+        trace_id: Option<&str>,
+    ) -> Result<PostResult, ChatError> {
+        self.post_message_on_branch(
+            ctx,
+            thread_id,
+            text,
+            attachments,
+            selection,
+            agent_mode_override,
+            autonomous,
+            once_skills,
+            model,
+            requested_tools,
+            None,
+            trace_id,
+        )
+        .await
+    }
+
+    /// [`Self::post_message_with_model`] に**編集元の発話**（`edit_of`・#1166）を足したもの。
+    ///
+    /// `edit_of` が無ければ表示中の枝の葉に続ける。あれば編集元と同じ親に新しい発話を置く
+    /// （編集元とその続きは消さずに別の枝として残る）。どちらでも新しい応答が表示中の枝になる。
+    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所）。
+    pub async fn post_message_on_branch(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        text: &str,
+        attachments: &[Attachment],
         // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
         // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
         selection: Option<crate::model::SelectionContext>,
@@ -81,6 +117,8 @@ impl ChatStore {
         // 語彙照合・重複除去・件数上限は API 層で済んでいる。run にスナップショットするだけで、
         // 提示ツール・承認・認可は変えない（ワーカーが誘導＝常時ロード＋注記に使う）。
         requested_tools: &[agent_core::ToolName],
+        // 編集元の user 発話（このスレッドの user 発話でなければ NotFound）。
+        edit_of: Option<Uuid>,
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         let post = AuditAction::ThreadPost;
@@ -151,15 +189,18 @@ impl ChatStore {
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
         touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
+        // 親を決める（スレッドの行ロックの後＝並行する投稿・枝の切り替えと直列）。
+        let parent = parent_for_post(&mut tx, thread_id, ctx.tenant_id(), edit_of).await?;
         let user_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
-             VALUES ($1, $2, $3, 'user', $4, $5) RETURNING id",
+            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode, parent_id) \
+             VALUES ($1, $2, $3, 'user', $4, $5, $6) RETURNING id",
         )
         .bind(thread_id)
         .bind(ctx.org())
         .bind(ctx.tenant_id())
         .bind(Json(&user_content))
         .bind(agent_mode)
+        .bind(parent)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -176,6 +217,8 @@ impl ChatStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
+        // 新しい応答を表示中の枝にする（編集で作った枝へ画面が移る）。
+        super::branches::set_active_leaf(&mut tx, thread_id, ctx.tenant_id(), asst_id).await?;
 
         // 承認モードは投入時点の thread 値をスナップショットする（発話者はモードを見て投稿する
         // ＝その水準での実行に同意・実行中の緩和は actor 本人設定のみ有効・#350）。
@@ -228,6 +271,31 @@ impl ChatStore {
             agent_mode,
         })
     }
+}
+
+/// 新しい user 発話の親（編集なら編集元の親、それ以外は表示中の枝の葉）。
+async fn parent_for_post(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thread_id: Uuid,
+    tenant_id: &str,
+    edit_of: Option<Uuid>,
+) -> Result<Option<Uuid>, ChatError> {
+    if let Some(edit_of) = edit_of {
+        // 編集できるのは同じスレッドの user 発話だけ（応答や他スレッドの id は存在秘匿で 404）。
+        let row: Option<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT parent_id FROM message \
+             WHERE id = $1 AND thread_id = $2 AND tenant_id = $3 AND role = 'user'",
+        )
+        .bind(edit_of)
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        return row.ok_or(ChatError::NotFound);
+    }
+    let (tree, active) = super::branches::load_tree(tx, thread_id, tenant_id).await?;
+    Ok(tree.active_leaf(active))
 }
 
 /// スレッドの `updated_at` を更新して行ロックを取る（削除と直列化する・投稿の最初に呼ぶ）。

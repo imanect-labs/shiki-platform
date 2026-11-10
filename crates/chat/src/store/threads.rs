@@ -141,6 +141,7 @@ impl MessageRow {
             content: self.content.0,
             agent_mode: self.agent_mode,
             parent_id: self.parent_id,
+            sibling_ids: Vec::new(),
             invoked_actions: Vec::new(),
             bound_actions: Vec::new(),
             ui_runs: Vec::new(),
@@ -387,11 +388,44 @@ impl ChatStore {
         }))
     }
 
-    /// スレッドのメッセージを線形取得する（viewer 認可・作成順）。
+    /// スレッドの表示中の枝を線形取得する（viewer 認可・根から葉の順・#1166）。
+    ///
+    /// 葉は `thread.active_message_id`（無ければ最も新しいメッセージ）から最も新しい子を辿った
+    /// もの。各メッセージには枝の切り替え先（`sibling_ids`）を載せる。
     pub async fn get_messages(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<Message>, ChatError> {
+        self.messages_on_path(ctx, thread_id, None, trace_id).await
+    }
+
+    /// 根から `leaf` までの経路を取得する（viewer 認可・`leaf` から子は辿らない）。
+    ///
+    /// 生成ワーカーの履歴（生成対象の祖先だけ）と「新しいチャットに分岐」に使う。`leaf` が
+    /// このスレッドに無ければ NotFound。
+    pub async fn get_message_path(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        leaf: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<Message>, ChatError> {
+        let messages = self
+            .messages_on_path(ctx, thread_id, Some(leaf), trace_id)
+            .await?;
+        if messages.is_empty() {
+            return Err(ChatError::NotFound);
+        }
+        Ok(messages)
+    }
+
+    async fn messages_on_path(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        leaf: Option<Uuid>,
         trace_id: Option<&str>,
     ) -> Result<Vec<Message>, ChatError> {
         self.require_thread(
@@ -402,24 +436,37 @@ impl ChatStore {
             trace_id,
         )
         .await?;
-        // 並び順の tie-break に **因果（parent_id）** を使う。ユーザ発話とアシスタント枠は
-        // `post_message` の同一トランザクションで作られ、`now()` はトランザクション開始時刻を
-        // 返すため両者の `created_at` は必ず同値になる。ここを id（ランダム UUID）で崩すと
-        // 返信がユーザ発話より前に描画される（順序が実質ランダムになる）。返信は必ず親の後。
+        // 木（id・親・時刻だけ）を引いて経路を決め、本文は経路の分だけ引く（他の枝の本文は読まない）。
+        let mut conn = self.db.acquire().await.map_err(map_db)?;
+        let (tree, active) =
+            super::branches::load_tree(&mut conn, thread_id, ctx.tenant_id()).await?;
+        let leaf = match leaf {
+            Some(id) => Some(id).filter(|id| tree.contains(*id)),
+            None => tree.active_leaf(active),
+        };
+        let Some(leaf) = leaf else {
+            return Ok(Vec::new());
+        };
+        let path = tree.path_to(leaf);
         let rows: Vec<MessageRow> = sqlx::query_as(
             "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
-             WHERE thread_id = $1 AND tenant_id = $2 \
-             ORDER BY created_at, (parent_id IS NOT NULL), id",
+             WHERE id = ANY($1) AND thread_id = $2 AND tenant_id = $3",
         )
+        .bind(&path)
         .bind(thread_id)
         .bind(ctx.tenant_id())
-        .fetch_all(&self.db)
+        .fetch_all(&mut *conn)
         .await
         .map_err(map_db)?;
+        drop(conn);
+        let mut by_id: std::collections::HashMap<Uuid, MessageRow> =
+            rows.into_iter().map(|r| (r.id, r)).collect();
+        let rows: Vec<MessageRow> = path.iter().filter_map(|id| by_id.remove(id)).collect();
         let mut messages: Vec<Message> = rows
             .into_iter()
             .map(MessageRow::into_message)
             .collect::<Result<_, ChatError>>()?;
+        super::branches::attach_siblings(&tree, &mut messages);
 
         // 本文の図（```ui）のボタンの実行済み（#410・#604）・ワークフローの束縛・起動の記録を
         // 同梱する。図の「送信済み」はローカル state ではなくこれを根拠に描く（再描画・リロードで

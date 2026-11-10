@@ -153,6 +153,12 @@ pub struct PostMessageRequest {
     #[serde(default)]
     #[schema(schema_with = requested_tools_schema)]
     pub tools: Option<Vec<String>>,
+    /// 編集して送り直す元の発話（このスレッドの user 発話・#1166）。
+    ///
+    /// 指定すると編集元と同じ位置に新しい発話を置き、元の発話とその続きは別の枝として残す
+    /// （`GET /threads/{id}/messages` の `sibling_ids` で切り替えられる）。省略は表示中の枝の続き。
+    #[serde(default)]
+    pub edit_of: Option<Uuid>,
 }
 
 /// `PostMessageRequest.tools` の schema（[`agent_core::USER_SELECTABLE_TOOLS`] の名前の閉集合）。

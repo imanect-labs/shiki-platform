@@ -116,6 +116,11 @@ export type Message = {
   /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
   provisional?: "reloading" | "stopped";
   createdAt: string;
+  /// 同じ位置の枝（過去の発話を編集して送り直したもの・古い順・自分を含む・#1166）。
+  /// 枝が無ければ空。発話の下の「< 2/3 >」の切り替えに使う。
+  siblingIds?: string[];
+  /// 画面で楽観的に足した発話（id はサーバーのものではない）。読み直すまで編集できない。
+  local?: boolean;
   /// 仮の行（`provisional`）のときの、サーバ上の回答 ID（`id` は画面内の仮 ID）。
   /// 評価（👍/👎）など保存済みの回答を指す操作に使う。読み込んだ行では未設定（`id` がそれ）。
   serverId?: string;
@@ -455,6 +460,7 @@ export async function getThreadMessages(
       invokedActions: m.invoked_actions ?? [],
       boundActions: m.bound_actions ?? [],
       uiRuns: m.ui_runs ?? [],
+      siblingIds: m.sibling_ids ?? [],
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
@@ -573,6 +579,8 @@ export type StreamHandlers = {
   /// 生成先の assistant メッセージ id（**まだ本文は保存されていない**・本文の図のボタンは
   /// run 完了後に読み直してから押せる）。
   onAssistantMessageId?: (messageId: string) => void;
+  /// 投稿が受理された発話の、サーバ上の ID（画面で足した仮の発話を置き換える・#1166）。
+  onUserMessageId?: (messageId: string) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
   /// 1 件のイベントを処理し終えた（`seq` は SSE の id）。再訪時の送り直しの終わりを知るのに使う（#1152）。
@@ -767,17 +775,28 @@ export function streamMessage(
   model?: ModelChoice,
   /// **この発話にだけ**優先して使うツール（#734）。空・省略は指定なし。
   tools?: UserSelectableTool[],
+  /// 編集して送り直す元の発話（#1166）。元の発話とその続きは別の枝として残る。
+  editOf?: string,
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
   let stopped = false;
 
-  postMessage(threadId, text, attachments, { agentMode, autonomous, context, skills, model, tools })
+  postMessage(threadId, text, attachments, {
+    agentMode,
+    autonomous,
+    context,
+    skills,
+    model,
+    tools,
+    editOf,
+  })
     .then((posted) => {
       runId = posted.runId;
       // 承認 API 呼び出しのため run_id を UI へ渡す（自律プロファイル・Task 5.6）。
       handlers.onRunId?.(runId);
       handlers.onAssistantMessageId?.(posted.assistantMessageId);
+      handlers.onUserMessageId?.(posted.userMessageId);
       if (stopped) return;
       unsub = subscribe(threadId, handlers);
     })
@@ -808,6 +827,8 @@ export async function postMessage(
     model?: ModelChoice;
     /// この発話にだけ優先して使うツール（#734）。
     tools?: UserSelectableTool[];
+    /// 編集して送り直す元の発話（#1166）。
+    editOf?: string;
   } = {},
 ): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
   const res = await apiFetch(`/threads/${threadId}/messages`, {
@@ -826,6 +847,7 @@ export async function postMessage(
       model: opts.model?.model ?? undefined,
       effort: opts.model?.effort,
       tools: opts.tools && opts.tools.length > 0 ? opts.tools : undefined,
+      edit_of: opts.editOf,
     }),
   });
   if (!res.ok) {
@@ -851,6 +873,29 @@ export async function postMessage(
     userMessageId: body.user_message_id,
     assistantMessageId: body.assistant_message_id,
   };
+}
+
+/// 表示する枝を切り替える（そのメッセージを含む枝の、最も新しい続きを表示中にする・#1166）。
+export async function selectBranch(threadId: string, messageId: string): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}/branch`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) throw new Error(`枝の切り替えに失敗しました (${res.status})`);
+}
+
+/// その回答までの会話を新しいチャットへ複製する（「新しいチャットに分岐」・#1166）。
+export async function forkThread(threadId: string, messageId: string): Promise<Thread> {
+  const res = await apiFetch(`/threads/${threadId}/fork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message_id: messageId }),
+  });
+  if (!res.ok) throw new Error(`新しいチャットへの分岐に失敗しました (${res.status})`);
+  const thread = toThread(await ok<ApiThread>(res));
+  notifyThreadsChanged();
+  return thread;
 }
 
 /// 既存 run の生成イベントを購読して復元表示する（ページ再訪・POST しない）。
