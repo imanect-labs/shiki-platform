@@ -314,8 +314,8 @@ async fn parent_for_post(
     let after = branch.after.filter(|_| !busy);
     // 多くの投稿は「指定（または表示中）の葉に子が無い」ので、木を引かずに 1 問で確かめる。
     if let Some(leaf) = after.or(active) {
-        let (exists, has_child): (bool, bool) = sqlx::query_as(
-            "SELECT EXISTS (SELECT 1 FROM message WHERE id = $1 AND thread_id = $2 AND tenant_id = $3), \
+        let (role, has_child): (Option<String>, bool) = sqlx::query_as(
+            "SELECT (SELECT role FROM message WHERE id = $1 AND thread_id = $2 AND tenant_id = $3), \
                     EXISTS (SELECT 1 FROM message WHERE thread_id = $2 AND parent_id = $1 AND tenant_id = $3)",
         )
         .bind(leaf)
@@ -324,15 +324,21 @@ async fn parent_for_post(
         .fetch_one(&mut **tx)
         .await
         .map_err(map_db)?;
-        if after.is_some() {
-            // 続ける先はそのまま親にする（子があれば新しい枝になる）。無ければ 404。
-            return if exists {
-                Ok(after)
-            } else {
-                Err(ChatError::NotFound)
+        if let Some(after) = after {
+            return match role.as_deref() {
+                // 無ければ 404。
+                None => Err(ChatError::NotFound),
+                // 発話を指していたら（空の応答が画面に出ていない等）、その応答の側へ辿る。
+                // 発話の直下に発話を置くと、発話が 2 つ続き、空の応答との版の切り替えが出る。
+                Some("user") if has_child => {
+                    let (tree, _) = load_tree(tx, thread_id, tenant_id).await?;
+                    Ok(Some(tree.descend_latest(after)))
+                }
+                // 回答はそのまま親にする（子があれば新しい枝になる）。
+                Some(_) => Ok(Some(after)),
             };
         }
-        if exists && !has_child {
+        if role.is_some() && !has_child {
             return Ok(Some(leaf));
         }
     }

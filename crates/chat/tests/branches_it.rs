@@ -580,3 +580,63 @@ async fn gate_material_and_edit_context_follow_branch() {
         "別の枝の ```ui を材料にしない: {on_edited:?}"
     );
 }
+
+/// 続ける先が発話を指していたら（空の応答が画面に出ていない等）、その応答の側へ続ける。
+#[tokio::test]
+async fn after_pointing_to_user_follows_its_reply() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "会話", false, None, None)
+        .await
+        .unwrap();
+    // 応答が空のまま終わった（停止・失敗）往復。
+    let r = store
+        .post_message(&c, thread.id, "Q1", &[], None, None, false, &[], None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE generation_run SET status = 'cancelled' WHERE run_id = $1")
+        .bind(r.run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let next = store
+        .post_message_on_branch(
+            &c,
+            thread.id,
+            "Q2",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            &[],
+            chat::BranchTarget {
+                edit_of: None,
+                after: Some(r.user_message_id),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let path = store
+        .get_message_path(&c, thread.id, next.user_message_id, None)
+        .await
+        .unwrap();
+    let ids: Vec<uuid::Uuid> = path.iter().map(|m| m.id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            r.user_message_id,
+            r.assistant_message_id,
+            next.user_message_id
+        ]
+    );
+    assert!(
+        path.iter().all(|m| m.sibling_ids.is_empty()),
+        "版は増えない"
+    );
+}

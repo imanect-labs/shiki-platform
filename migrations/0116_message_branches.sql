@@ -28,4 +28,4 @@ update message u
 alter table thread add column active_message_id uuid;
 
 -- 枝の木を引く（スレッドのメッセージの id・親・作成時刻だけ）。親から子を引く用途にも使う。
-create index message_thread_parent_idx on message (thread_id, parent_id);
+create index if not exists message_thread_parent_idx on message (thread_id, parent_id);

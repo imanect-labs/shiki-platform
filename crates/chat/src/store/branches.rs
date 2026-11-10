@@ -45,8 +45,11 @@ pub(super) struct Tree {
 impl Tree {
     pub(super) fn new(rows: Vec<Node>) -> Self {
         let mut tree = Tree::default();
-        // 並びは従来の線形取得と同じ（作成時刻 → 同時刻なら親を持たない方 → id）。発話と
-        // 応答の枠は同じトランザクションで作られ時刻が同値なので、応答を後にする。
+        // 並びは作成時刻 → 親を持たない方 → id。発話と応答の枠は同じトランザクションで作られ
+        // 時刻が同値で、根以外はどちらも親を持つので、その組の前後は id（ランダム）で決まる。
+        // そのため `latest` が発話を指すことがあるが、表示中の葉は `descend_latest` が子を辿って
+        // 決めるので、葉としては応答に行き着く。兄弟の並び（版の番号）は時刻で決まる
+        // （同じ親の下の発話は別々のトランザクションで作られる）。
         let key = |n: &Node| (n.created_at, n.parent_id.is_some(), n.id);
         let mut rows = rows;
         rows.sort_by_key(key);
