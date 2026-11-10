@@ -339,6 +339,8 @@ export function Conversation({
   const followLatestRef = React.useRef(followLatest);
   followLatestRef.current = followLatest;
   const restoreScrollRef = React.useRef(restoreScroll);
+  // 最初の読み込みを済ませた会話（読み直しで「戻ってきた」扱いを繰り返さない）。
+  const firstLoadDone = React.useRef<string | null>(null);
   restoreScrollRef.current = restoreScroll;
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
@@ -873,6 +875,10 @@ export function Conversation({
           const latest = found ? parseSkillDraft(found.draft) : null;
           if (found && latest) onSkillDraftOpened(latest, found.key);
         }
+        // この会話を開いて最初の読み込みか（順番待ちの次の run への読み直しなど、同じ会話の読み直しでは
+        // 「戻ってきた」扱いをしない。読み返している人を最新へ引き戻さない）。
+        const firstLoad = firstLoadDone.current !== threadId;
+        firstLoadDone.current = threadId;
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
           // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
@@ -883,7 +889,8 @@ export function Conversation({
             runId: activeRunId,
             assistantMessageId: activeAssistantMessageId,
             // 離れていた間の経過があれば、届き終わるまで待ってから畳んで出す（#1152）。
-            restoreUntil: activeRunLastSeq && activeRunLastSeq > 0 ? activeRunLastSeq : null,
+            restoreUntil:
+              firstLoad && activeRunLastSeq && activeRunLastSeq > 0 ? activeRunLastSeq : null,
             // 上で経過を読んでいて離れたなら、畳まずに読んでいた位置へ戻す（#1154）。
             collapsePast: readThreadScroll(threadId)?.atBottom !== false,
           };
@@ -897,6 +904,7 @@ export function Conversation({
           // 実行中の会話へ戻った: 回答の先頭で止めず、最新の位置（いまの操作）を追う（#1152）。
           // 上で読んでいたなら、覚えておいた位置へ戻す方が勝つ（#1154）。経過の送り直しを待つ
           // 間は、届き終わってから戻す（finishRestore）。
+          if (!firstLoad) return;
           followLatestRef.current();
           if (streamRef.current.restoreUntil === null) restoreScrollRef.current({ resuming: true });
           else scrollRestorePending.current = true;

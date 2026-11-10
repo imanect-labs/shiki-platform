@@ -222,8 +222,12 @@ export function MessageTimeline({
         const live = streaming && i === segments.length - 1;
         if (collapsed(i)) {
           // 畳んだまとまりは、最初の 1 つの位置に 1 行だけ出す。
+          // 開いたときと同じ要素（この区切りの Fragment の先頭）に置く。位置が変わるとボタンが作り直され、
+          // キーボードで開閉したときにフォーカスが外れる。
           return i === firstCollapsed ? (
-            <PastWorkToggle key="past" tools={pastTools} open={false} onToggle={() => setPastOpen(true)} />
+            <React.Fragment key={s.key}>
+              <PastWorkToggle tools={pastTools} open={false} onToggle={() => setPastOpen(true)} />
+            </React.Fragment>
           ) : null;
         }
         if (s.kind === "work") {
@@ -231,7 +235,7 @@ export function MessageTimeline({
           const nth = segments.slice(0, i).filter((x) => x.kind === "work").length;
           const closer =
             pastOpen && i === segments.findIndex((x, j) => j < collapseBefore && x.kind === "work") ? (
-              <PastWorkToggle key="past" tools={pastTools} open onToggle={() => setPastOpen(false)} />
+              <PastWorkToggle tools={pastTools} open onToggle={() => setPastOpen(false)} />
             ) : null;
           return (
             <React.Fragment key={s.key}>
