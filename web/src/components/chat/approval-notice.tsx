@@ -90,7 +90,7 @@ export function revealApprovalCard(scroller: HTMLElement, card: HTMLElement, bot
   // 先頭を上端に合わせる（何を承認するのかを上から読めるように）。
   const top = r.height <= visibleBottom ? cardTop + r.height - visibleBottom : cardTop - REVEAL_GAP_PX;
   const max = scroller.scrollHeight - scroller.clientHeight;
-  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
   scroller.scrollTo({ top: Math.min(max, Math.max(0, top)), behavior: reduce ? "auto" : "smooth" });
   card.focus({ preventScroll: true });
 }
