@@ -7,6 +7,7 @@
 //! `app_id`（ミニアプリ経由のみ）を記録する。
 
 use authz::AuthContext;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -42,6 +43,17 @@ pub struct AppLlmUsage {
     pub model: String,
     pub calls: i64,
     pub tokens: i64,
+    pub cost_usd_micros: i64,
+}
+
+/// 1 つのトレースの LLM 利用量の合計（[`UsageRecorder::trace_usage`]）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, sqlx::FromRow)]
+pub struct TraceUsage {
+    /// 呼び出しの回数（会計の行の数）。
+    pub calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    /// 実コストの合計（マイクロ USD・整数）。
     pub cost_usd_micros: i64,
 }
 
@@ -106,6 +118,33 @@ impl UsageRecorder {
         .bind(ctx.org())
         .bind(app_id)
         .fetch_all(&self.db)
+        .await
+    }
+
+    /// 1 つのトレースの、`since` 以降の LLM 利用量の合計（会話の AI の試運転の費用・設計 §4.3 R13）。
+    ///
+    /// 呼ぶ人のテナントと組織の行だけを数える（組織はテナントの中の隔離の境界・PIT-45）。ワークフローの run の
+    /// trace_id は run_id の 32 桁の 16 進（`run_id.simple()`・ワーカーと `workflow_run.trace_id` の規約）。`since` は
+    /// 索引（`llm_usage_tenant_idx`・tenant_id・org・created_at）で走査を絞るための下限で、run を作った時刻を渡す。
+    pub async fn trace_usage(
+        &self,
+        ctx: &AuthContext,
+        trace_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<TraceUsage, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT COUNT(*)::bigint AS calls, \
+                    COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
+                    COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
+                    COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
+             FROM llm_usage \
+             WHERE tenant_id = $1 AND org = $2 AND created_at >= $3 AND trace_id = $4",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(since)
+        .bind(trace_id)
+        .fetch_one(&self.db)
         .await
     }
 
