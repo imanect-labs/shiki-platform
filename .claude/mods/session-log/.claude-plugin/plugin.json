@@ -1,0 +1,1 @@
+{ "name": "session-log", "version": "0.1.0", "description": "このセッションで送ったプロンプト・作成した Issue・PR をペインに一覧表示する", "types": "./types/index.d.ts" }
