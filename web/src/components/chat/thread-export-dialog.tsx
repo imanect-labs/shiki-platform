@@ -4,8 +4,8 @@
 /// （ノートとして開く・Word としてドライブに保存・Markdown・Word・PDF）で、操作の中身も共用する
 /// （[`useExportActions`]）。
 ///
-/// やり取りを順に（質問 → 回答 → その回答の出典）並べる。「質問も含める」をオフにすると回答だけ。
-/// 思考・ツールの実行・添付は含めない。会話画面が持つメッセージから組み立て、会話を取り直さない。
+/// やり取りを順に（質問 → 回答 → 訳文 → その回答の出典）並べる。「質問も含める」をオフにすると回答だけ。
+/// 思考・ツールの実行・添付は含めない。Web ページの訳文（translation ブロック）は回答の一部として含める。会話画面が持つメッセージから組み立て、会話を取り直さない。
 
 import { FileDown, FileText, FileType, Loader2, NotebookPen, Printer } from "lucide-react";
 import * as React from "react";
@@ -25,18 +25,26 @@ import {
   type SourceName,
   type ThreadTurn,
 } from "@/lib/answer-export";
+import { answerImageProxy, type ImageProxy } from "@/lib/answer-images";
 import type { Citation, ContentBlock, Message } from "@/lib/chat-api";
 import { isWebCitation } from "@/lib/citation";
 import { isUnresolvable, useNodeMetas } from "@/lib/node-name-cache";
+import { translationsOf } from "@/lib/translation";
 import { cn } from "@/lib/utils";
 import { ExportPrint, type PrintItem } from "./answer-print";
 import { useExportActions } from "./export-actions";
 import { answerImageSources, answerLinkSourcesOf, segmentsFromBlocks, type TimelineSegment } from "./message-timeline";
 
-type Turn = ThreadTurn & { key: string; segments: TimelineSegment[] };
+type Turn = ThreadTurn & {
+  key: string;
+  segments: TimelineSegment[];
+  /// 訳文の生のブロック（印刷で会話と同じ描き方にする）と、その画像を読む経路（保存前の回答は null）。
+  rawTranslations: unknown[];
+  imageProxy: ImageProxy | null;
+};
 
 /// 会話のメッセージを、やり取り（質問と、それへの回答）の並びにする。回答の無い質問（生成中など）は含めない。
-export function threadTurns(messages: readonly Message[]): Turn[] {
+export function threadTurns(messages: readonly Message[], threadId: string): Turn[] {
   const turns: Turn[] = [];
   let question: string | null = null;
   for (const m of messages) {
@@ -47,9 +55,14 @@ export function threadTurns(messages: readonly Message[]): Turn[] {
     if (m.role !== "assistant") continue;
     const segments = segmentsFromBlocks(m.content);
     const answer = segments.flatMap((s) => (s.kind === "text" ? [s.text] : [])).join("\n\n");
-    if (!answer.trim()) continue;
+    const translations = translationsOf(m.content);
+    if (!answer.trim() && translations.length === 0) continue;
     const citations = m.content.filter((b): b is Citation => b.type === "citation");
-    turns.push({ key: m.id, question, answer, citations, segments });
+    const rawTranslations = m.content.flatMap((b) => (b.type === "translation" ? [b.translation] : []));
+    // 画像はサーバ上の回答 ID で読む（生成直後の仮の回答はサーバの ID が分かるまで読まない・会話の表示と同じ）。
+    const savedId = m.provisional ? (m.serverId ?? null) : m.id;
+    const imageProxy = savedId ? answerImageProxy(threadId, savedId) : null;
+    turns.push({ key: m.id, question, answer, citations, segments, translations, rawTranslations, imageProxy });
     question = null;
   }
   return turns;
@@ -78,7 +91,7 @@ export function ThreadExportDialog({
   const [includeQuestions, setIncludeQuestions] = React.useState(true);
   // 開閉に関わらず持つ（Word の保存は、ダイアログを閉じた後の保存先の確定で組み立てるため）。
   // メッセージは生成の確定時にだけ変わる（生成中のトークンでは変わらない）。
-  const turns = React.useMemo(() => threadTurns(messages), [messages]);
+  const turns = React.useMemo(() => threadTurns(messages, threadId), [messages, threadId]);
   const citations = React.useMemo(() => turns.flatMap((t) => t.citations), [turns]);
 
   // 出典の文書名（回答の出典一覧と同じキャッシュから引く。書き出しは押した時点で引けている名前を使う）。
@@ -111,6 +124,8 @@ export function ThreadExportDialog({
         citations: t.citations,
         imageSources: answerImageSources(t.segments, [...t.citations]),
         linkSources: answerLinkSourcesOf(t.segments, [...t.citations]),
+        translations: t.rawTranslations,
+        imageProxy: t.imageProxy,
       })),
     );
   };

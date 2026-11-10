@@ -306,7 +306,9 @@ export function Conversation({
   // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
-  const canExport = messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "text" && b.text.trim()));
+  const canExport = messages.some(
+    (m) => m.role === "assistant" && m.content.some((b) => (b.type === "text" && b.text.trim()) || b.type === "translation"),
+  );
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
@@ -1509,6 +1511,11 @@ const AssistantRow = React.memo(function AssistantRow({
   const translations = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "translation" }> => b.type === "translation",
   );
+  // 書き出しに渡す訳文（生の値・描き直しのたびに配列を作り直さない）。
+  const rawTranslations = React.useMemo(
+    () => blocks.flatMap((b) => (b.type === "translation" ? [b.translation] : [])),
+    [blocks],
+  );
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
   );
@@ -1569,7 +1576,7 @@ const AssistantRow = React.memo(function AssistantRow({
           <ArtifactFiles files={files} />
           <CitationSources />
           {evidenceOpen ? <EvidenceTable /> : null}
-          {text ? (
+          {text || translations.length > 0 ? (
             <MessageFooter text={text} pinned={latest}>
               <MessageExportMenu
                 threadId={threadId}
@@ -1577,6 +1584,8 @@ const AssistantRow = React.memo(function AssistantRow({
                 segments={segments}
                 text={text}
                 citations={citations}
+                translations={rawTranslations}
+                imageProxy={imageProxy}
               />
               {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
