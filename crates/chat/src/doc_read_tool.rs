@@ -251,11 +251,13 @@ fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> S
                 }
                 None => "（文書の終わり）".to_string(),
             };
+            // 畳み込み（先頭 400 バイト）で文書名が残るよう、封筒を先に出し、長い案内・版の変化の
+            // 注記は封筒の後ろに置く（レビュー指摘・#1065）。
             format!(
-                "文書の本文（版 {}）{source}{changed}\n\
+                "文書の本文（版 {}）{}\n{}\n{source}{changed}\n\
                  この本文には引用番号が無い。ここで読んだ内容を根拠にするときは、文書名と\
                  ページ（または見出し）を本文に書く。doc_search の番号を、その番号が指していない\
-                 内容に付けない。{}\n\n{}\n---\n{tail}",
+                 内容に付けない。\n---\n{tail}",
                 page.version,
                 envelope::NOTICE,
                 envelope::wrap(&label, &page.text),
@@ -461,7 +463,10 @@ mod tests {
         let text = observation("規程.pdf", id, &input(ReadFrom::Start, Some(2)), read);
         assert!(text.starts_with("文書の本文（版 3）"));
         // 文書名と本文は封筒の内側（#1065）。
-        assert!(text.contains("<document>\n文書名: 規程.pdf\n\n本文 〚cite:0⟧\n</document>\n---\n"));
+        assert!(text.contains("<document>\n文書名: 規程.pdf\n\n本文 〚cite:0⟧\n</document>\n"));
+        // 畳み込み（先頭 400 バイト）で文書名が残る（レビュー指摘）。
+        let name_end = text.find("文書名: 規程.pdf").unwrap() + "文書名: 規程.pdf".len();
+        assert!(name_end <= 400, "{name_end}: {text}");
         assert!(text.contains("表が先に来ることがある"));
         assert!(text.contains("指定の版 2 から更新されていて、いま読んでいるのは版 3"));
         assert!(text.contains("本文 〚cite:0⟧"), "仮の引用印は無害化する");
@@ -476,7 +481,10 @@ mod tests {
             next: None,
         });
         let text = observation("a", id, &input(ReadFrom::Start, Some(3)), done);
-        assert!(text.starts_with("文書の本文（版 3）\n"));
+        assert!(text.starts_with(&format!(
+            "文書の本文（版 3）{}\n<document>\n文書名: a\n",
+            agent_core::tools::document_envelope::NOTICE
+        )));
         assert!(!text.contains("更新されていて"));
         assert!(text.ends_with("（文書の終わり）"));
     }

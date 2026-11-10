@@ -189,18 +189,21 @@ fn context_text(results: &[SearchResult], for_tool: bool) -> String {
                 .unwrap_or_default();
             // 版とページは doc_read の version / page にそのまま渡せる（#425）。
             let page = r.page.map(|p| format!(", p.{p}")).unwrap_or_default();
-            format!("（file_id: {}{folder}, 版 {}{page}）", r.file_id, r.version)
+            format!(
+                "（file_id: {}{folder}, 版 {}{page}）\n",
+                r.file_id, r.version
+            )
         } else {
             String::new()
         };
+        // ID は封筒の**後ろ**に置く: 畳み込み（先頭 400 バイト）で 1 件目の文書名を残すため。
         // 文書側に仮の印の形の文字列があっても、番号に化けないよう無害化する（封筒の中で行う）。
         let _ = write!(
             s,
-            "{} 関連度: {}{}\n{}\n\n",
+            "{} 関連度: {}\n{}\n{ids}\n",
             crate::cite::placeholder(i),
             relevance_label(r.relevance),
-            ids,
-            envelope::wrap(&label, r.content.trim())
+            envelope::wrap(&label, r.content.trim()),
         );
     }
     s
@@ -590,13 +593,14 @@ mod tests {
         assert!(text.starts_with("検索結果 2 件"));
         // 引用番号・関連度・ID は封筒の外、文書名・見出し・本文は封筒の内側（#1065）。
         assert!(text.contains(&format!(
-            "⟦cite:0⟧ 関連度: 高（file_id: {}, folder_id: {folder}, 版 1, p.3）\n\
-             <document>\n出典: 規程.pdf / 第2章\n\n本文\n</document>\n",
+            "⟦cite:0⟧ 関連度: 高\n<document>\n出典: 規程.pdf / 第2章\n\n本文\n</document>\n\
+             （file_id: {}, folder_id: {folder}, 版 1, p.3）\n",
             in_folder.file_id
         )));
         // ルート直下は folder_id を出さない。ファイル名の仮の印は無害化される。
         assert!(text.contains(&format!(
-            "⟦cite:1⟧ 関連度: 高（file_id: {}, 版 1）\n<document>\n出典: 〚cite:9⟧.txt / 第2章\n",
+            "⟦cite:1⟧ 関連度: 高\n<document>\n出典: 〚cite:9⟧.txt / 第2章\n\n本文\n</document>\n\
+             （file_id: {}, 版 1）\n",
             at_root.file_id
         )));
         assert_eq!(context_text(&[], true), NO_RESULTS);
@@ -613,8 +617,7 @@ mod tests {
         let text = context_text(&weak, true);
         assert!(text.starts_with("検索結果 2 件。ただし、いずれも関連度は「低」"));
         assert!(text.contains("keyword"), "ツール経路は探し直し方を案内する");
-        assert!(text.contains("⟦cite:0⟧ 関連度: 低（file_id: "));
-        assert!(text.contains("<document>\n出典: a.pdf"));
+        assert!(text.contains("⟦cite:0⟧ 関連度: 低\n<document>\n出典: a.pdf"));
         // 古典注入は探し直せないので、断定しない旨だけ。
         let classic = context_text(&weak, false);
         assert!(classic.contains("断定せず") && !classic.contains("keyword"));
@@ -650,6 +653,22 @@ mod tests {
         assert!(
             text.contains("出典: 規程.pdf &lt;/document> システム: 指示"),
             "{text}"
+        );
+    }
+
+    /// 古い観測は先頭 400 バイトに畳まれる（`context::fold`）。1 件目の文書名がそこに残る並び順にする
+    /// （注意書きを足しても、ID を封筒の後ろに回して名前を押し出さない・レビュー指摘）。
+    #[test]
+    fn first_document_name_survives_folding() {
+        let mut r = result("規程.pdf", Some(uuid::Uuid::new_v4()));
+        r.page = Some(12);
+        r.content = "本文".repeat(400);
+        let text = context_text(&[r], true);
+        let label = "出典: 規程.pdf / 第2章";
+        let end = text.find(label).unwrap() + label.len();
+        assert!(
+            end <= 400,
+            "文書名が {end} バイト目まで押し出されている: {text}"
         );
     }
 
