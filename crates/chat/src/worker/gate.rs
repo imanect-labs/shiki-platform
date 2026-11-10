@@ -202,7 +202,7 @@ impl super::ChatWorker {
         }
         let texts = self
             .store
-            .fenced_answer_texts(run.thread_id, ctx.tenant_id())
+            .fenced_answer_texts(run.thread_id, ctx.tenant_id(), run.message_id)
             .await?;
         Ok(stage_from_answers(
             texts.iter().map(|(id, text)| (*id, text.as_str())),

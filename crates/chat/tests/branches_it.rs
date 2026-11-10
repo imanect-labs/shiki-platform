@@ -527,3 +527,56 @@ async fn after_continues_seen_branch_and_busy_blocks_branch_ops() {
         Err(ChatError::NotFound)
     ));
 }
+
+/// 実行前フェーズの門の材料（回答の ```ui）は生成対象の祖先だけ。編集で分かれた別の枝の
+/// 質問・計画を根拠にしない。編集は元の run の生成材料（自律など）を引ける。
+#[tokio::test]
+async fn gate_material_and_edit_context_follow_branch() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "会話", true, None, None)
+        .await
+        .unwrap();
+    let r = store
+        .post_message(&c, thread.id, "Q1", &[], None, None, true, &[], None)
+        .await
+        .unwrap();
+    let ask = serde_json::json!([{ "type": "text", "text": "確認です\n```ui\nask\n```" }]);
+    sqlx::query("UPDATE message SET content = $1 WHERE id = $2")
+        .bind(ask)
+        .bind(r.assistant_message_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE run_id = $1")
+        .bind(r.run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let on_first = store
+        .fenced_answer_texts(thread.id, &tenant, r.assistant_message_id)
+        .await
+        .unwrap();
+    assert_eq!(on_first.len(), 1);
+
+    // 編集は元の run の生成材料（自律）を引ける。
+    let inherited = store
+        .edited_turn_context(&c, thread.id, r.user_message_id, None)
+        .await
+        .unwrap()
+        .expect("元の run がある");
+    assert!(inherited.autonomous);
+
+    let (_, a1b) = turn(&pool, &store, &c, thread.id, "Q1'", Some(r.user_message_id)).await;
+    let on_edited = store
+        .fenced_answer_texts(thread.id, &tenant, a1b)
+        .await
+        .unwrap();
+    assert!(
+        on_edited.is_empty(),
+        "別の枝の ```ui を材料にしない: {on_edited:?}"
+    );
+}

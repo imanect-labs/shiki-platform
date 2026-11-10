@@ -255,9 +255,10 @@ export function Conversation({
   const wide = useMediaQuery("(min-width: 1200px)");
   const sourceAside = !isPanel && wide;
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
-  // 送信時に「画面に出ている枝の末尾」を引くための写し（send を messages ごとに作り直さない）。
-  const messagesRef = React.useRef<ChatMessageT[]>([]);
-  messagesRef.current = messages;
+  // 表示中の枝の本当の末尾（サーバ上の id）。描画からは落とす空の回答（生成の失敗・停止）も含める。
+  // 送信時の「続ける先」（after）に使う: 描画の末尾（直前の発話）を渡すと、空の回答の兄弟として
+  // 新しい枝ができてしまう。読み込み・投稿の受理で更新する。
+  const leafRef = React.useRef<string | null>(null);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   // 作成した文書の遷移先。**run 完了後**に遷移する（#381）: document_ref はツール結果直後に
@@ -736,10 +737,9 @@ export function Conversation({
         return;
       }
       const localId = newId();
-      // 続ける先＝画面に出ている枝の末尾（保存済みのもの）。別のタブで版を切り替えられても、
-      // サーバはこの会話に続ける（編集のときは編集元の位置が決めるので送らない）。
-      const shownLast = [...messagesRef.current].reverse().find((m) => !m.local);
-      const after = editOf || !shownLast ? undefined : (savedMessageId(shownLast) ?? undefined);
+      // 続ける先＝画面に出ている枝の末尾。別のタブで版を切り替えられても、サーバはこの会話に
+      // 続ける（編集のときは編集元の位置が決めるので送らない）。
+      const after = editOf ? undefined : (leafRef.current ?? undefined);
       setMessages((prev) => {
         // 編集: 元の発話から後ろは別の版になる（「< 2/2 >」で戻れる）。
         const cut = editOf ? prev.findIndex((m) => m.id === editOf.messageId) : -1;
@@ -769,6 +769,11 @@ export function Conversation({
           onRunId: (runId) => {
             settleToolChoice(threadId, tools);
             handlers.onRunId?.(runId);
+          },
+          // 受理された回答の枠が新しい末尾（次の発話はこの後ろに続ける）。
+          onAssistantMessageId: (assistantMessageId) => {
+            leafRef.current = assistantMessageId;
+            handlers.onAssistantMessageId?.(assistantMessageId);
           },
           // 編集が受理されなかったら、画面から外した続きを読み直して戻す。
           onError: (msg) => {
@@ -947,6 +952,8 @@ export function Conversation({
         }) => {
         if (!active) return;
         setContextUsage(usage);
+        // 経路の本当の末尾（空の回答も含む）。順番待ちがあれば、その末尾が表示中の枝の葉。
+        leafRef.current = msgs.at(-1)?.id ?? null;
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
         // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
         const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));

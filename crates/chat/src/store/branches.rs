@@ -289,6 +289,46 @@ impl ChatStore {
             .map_err(map_storage)
     }
 
+    /// 編集元の発話に応答した run の生成材料（自律か・skill ピン・ツール指定）を引く。
+    ///
+    /// 発話の編集は「その発話の送り直し」なので、スラッシュコマンドで送った発話を直しても
+    /// 手順書（run 単位の skill）と自律の指定を落とさない。認可（editor）は
+    /// [`Self::message_run_context`] が先に取る。応答がまだ無ければ `None`。
+    pub async fn edited_turn_context(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        user_message_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Option<super::RunContext>, ChatError> {
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Editor,
+            AuditAction::ThreadRunGet,
+            trace_id,
+        )
+        .await?;
+        let reply: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM message \
+             WHERE thread_id = $1 AND tenant_id = $2 AND parent_id = $3 AND role = 'assistant' \
+             ORDER BY created_at, id LIMIT 1",
+        )
+        .bind(thread_id)
+        .bind(ctx.tenant_id())
+        .bind(user_message_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        match reply {
+            Some(reply) => {
+                self.message_run_context(ctx, thread_id, reply, trace_id)
+                    .await
+            }
+            None => Ok(None),
+        }
+    }
+
     /// その回答までの会話を新しいスレッドへ複製する（「新しいチャットに分岐」）。
     ///
     /// 元のスレッドの **editor** を要求する（閲覧だけの共有先が内容を自分の会話として持ち出し、
