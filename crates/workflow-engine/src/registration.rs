@@ -478,8 +478,13 @@ pub struct Revocation {
 
 mod access;
 mod consent;
+mod effects;
 
 pub use access::{AccessGap, AccessKind, AccessNeed, AccessObject, AccessUnchecked};
+pub use effects::{
+    ComputeEffect, ComputeKind, EffectTarget, ModelEffect, NotifyEffect, OtherEffect,
+    OutboundEffect, OutboundKind, RunEffects, StartEffect, WriteEffect, WriteOp,
+};
 
 /// registration を disabled にしてトリガを止める（呼び出し側 TX）。`forget_consent` は同意（consented_scopes）も
 /// 空にするか（委譲を取り消したとき）。
