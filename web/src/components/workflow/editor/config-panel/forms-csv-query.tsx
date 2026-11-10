@@ -17,6 +17,7 @@ import type { ValueExpr } from "@/generated/workflow-ir";
 import { deriveTableName, isValidTableName, MAX_EXTRA_TABLES, PRIMARY_TABLE } from "@/lib/csv/table-name";
 import type { NodeResponse } from "@/lib/storage";
 import {
+  getReservedWords,
   getSchema,
   runQuery,
   TabularLoadError,
@@ -280,7 +281,8 @@ export function CsvQueryForm(props: FormProps) {
   const primary = useDriveItem(fileId).item;
   const tables = p.tables as ValueExpr | undefined;
   const items = Array.isArray(tables) ? tables.map(tableItem) : [];
-  const preview = previewTables(tables);
+  const reserved = useReservedWords();
+  const preview = previewTables(tables, reserved);
   return (
     <div className="space-y-4">
       <FileField
@@ -321,7 +323,7 @@ export function CsvQueryForm(props: FormProps) {
         fileId={fileId}
         // 名前の欄の下で誤りと言う名前（空・data・形・重なり）は出さない（使える名前のように案内しない・BUG-266）。
         tableNames={items.flatMap((t, i) =>
-          typeof t.name === "string" && tableNameError(items, i) === null ? [t.name] : [],
+          typeof t.name === "string" && tableNameError(items, i, reserved) === null ? [t.name] : [],
         )}
       />
       {sql !== null ? (
@@ -357,20 +359,41 @@ const TABLE_PICKER = {
   pickerDescription: "集計するファイルとつなぐ CSV を選んでください（.csv のファイルだけを表示しています）。",
 };
 
-/// つなぐ CSV の名前の誤り（形・data との重なり・重複）。最後に確かめるのは実行の側で、ここは書いている間に気づける
-/// ようにする。前の結果から指定した名前は確かめない。
-function tableNameError(items: TableItem[], i: number): string | null {
+/// SQL の予約語（取れるまでは空＝避けないだけ・最後に断るのは実行の側のランナー・#1142）。
+function useReservedWords(): ReadonlySet<string> {
+  const [reserved, setReserved] = React.useState<ReadonlySet<string>>(() => new Set());
+  React.useEffect(() => {
+    let alive = true;
+    getReservedWords()
+      .then((words) => {
+        if (alive) setReserved(words);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return reserved;
+}
+
+/// つなぐ CSV の名前の誤り（形・data との重なり・予約語・重複）。最後に確かめるのは実行の側で、ここは書いている間に
+/// 気づけるようにする。前の結果から指定した名前は確かめない。
+function tableNameError(items: TableItem[], i: number, reserved: ReadonlySet<string>): string | null {
   const name = items[i].name ?? "";
   if (typeof name !== "string") return null;
   if (name === "") return "SQL での名前を入れてください。";
   if (name === PRIMARY_TABLE) return `${PRIMARY_TABLE} は集計するファイルの名前です。ほかの名前にしてください。`;
   if (!isValidTableName(name)) return "英小文字・数字・_ で書き、先頭は数字以外にしてください。";
+  if (reserved.has(name)) return `${name} は SQL の予約語なので使えません（例: ${name}_table）。`;
   if (items.findIndex((t) => t.name === name) !== i) return "同じ名前がほかにもあります。";
   return null;
 }
 
 /// 試しに実行で渡すつなぐ CSV。渡せないときは、試せない理由。
-function previewTables(value: ValueExpr | undefined): { tables: QueryTable[] } | { blocked: string } {
+function previewTables(
+  value: ValueExpr | undefined,
+  reserved: ReadonlySet<string>,
+): { tables: QueryTable[] } | { blocked: string } {
   if (value === undefined) return { tables: [] };
   const dynamic = { blocked: "つなぐ CSV を前の結果から指定しているときは、試せません" };
   if (!Array.isArray(value)) return dynamic;
@@ -378,7 +401,7 @@ function previewTables(value: ValueExpr | undefined): { tables: QueryTable[] } |
   const tables: QueryTable[] = [];
   for (const [i, t] of items.entries()) {
     if (isExpr(t.name) || isExpr(t.file)) return dynamic;
-    if (typeof t.name !== "string" || typeof t.file !== "string" || !UUID_RE.test(t.file) || tableNameError(items, i)) {
+    if (typeof t.name !== "string" || typeof t.file !== "string" || !UUID_RE.test(t.file) || tableNameError(items, i, reserved)) {
       return { blocked: "つなぐ CSV の名前とファイルを直すと試せます" };
     }
     tables.push({ name: t.name, file_id: t.file });
@@ -415,6 +438,7 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
   const [open, setOpen] = React.useState(false);
   const items = (Array.isArray(value) ? value : []).map(tableItem);
   const rowKeys = useRowKeys(items.length);
+  const reserved = useReservedWords();
   const listRef = React.useRef<HTMLUListElement>(null);
   /// ピッカーで CSV を選んで閉じたか（閉じた後、足した行へフォーカスを移す）。
   const added = React.useRef(false);
@@ -490,7 +514,7 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
         rememberDriveItem(n);
         const taken = items.flatMap((t) => (typeof t.name === "string" ? [t.name] : []));
         added.current = true;
-        write([...items, { name: deriveTableName(n.name, taken), file: n.id }]);
+        write([...items, { name: deriveTableName(n.name, taken, reserved), file: n.id }]);
       }}
       onCloseAutoFocus={(e) => {
         // 足したら足した行の「SQL での名前」へ移す。選ばずに閉じたら何もしない（DrivePicker の既定で、開いた
@@ -517,7 +541,7 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
           </p>
           <ul ref={listRef} className="space-y-2">
             {items.map((t, i) => {
-              const nameError = tableNameError(items, i) ?? serverNameError(i, t);
+              const nameError = tableNameError(items, i, reserved) ?? serverNameError(i, t);
               const nth = `${i + 1} つ目`;
               return (
                 <li key={rowKeys.keys[i]} className="min-w-0 space-y-1.5 rounded-md border p-2" data-testid="csv-table">
