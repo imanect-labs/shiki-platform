@@ -149,6 +149,9 @@ pub struct CurrentRun {
     pub status: RunStatus,
     /// 自律プロファイルか（再訪時の UI 復元・#350）。
     pub autonomous: bool,
+    /// この時点で追記済みの最新イベントの seq（まだ無ければ 0）。再訪時に「離れていた間までの
+    /// 経過」を畳む区切りに使う（SSE はこれ以下を送り直しとして一度に届ける・#1152）。
+    pub last_seq: i64,
 }
 
 // `post_message`（Transactional Outbox）は [`super::post`] に分離（行数規約）。
@@ -409,8 +412,8 @@ impl ChatStore {
         thread_id: Uuid,
         tenant_id: &str,
     ) -> Result<Option<CurrentRun>, ChatError> {
-        let row: Option<(Uuid, Uuid, String, bool)> = sqlx::query_as(
-            "SELECT run_id, message_id, status, autonomous FROM generation_run \
+        let row: Option<(Uuid, Uuid, String, bool, i64)> = sqlx::query_as(
+            "SELECT run_id, message_id, status, autonomous, event_seq FROM generation_run \
              WHERE thread_id = $1 AND tenant_id = $2 \
              ORDER BY (status IN ('queued', 'running')) DESC, \
                       CASE WHEN status IN ('queued', 'running') THEN created_at END ASC, \
@@ -422,14 +425,17 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(run_id, message_id, s, autonomous)| {
-            RunStatus::parse(&s).map(|status| CurrentRun {
-                run_id,
-                message_id,
-                status,
-                autonomous,
-            })
-        }))
+        Ok(
+            row.and_then(|(run_id, message_id, s, autonomous, last_seq)| {
+                RunStatus::parse(&s).map(|status| CurrentRun {
+                    run_id,
+                    message_id,
+                    status,
+                    autonomous,
+                    last_seq,
+                })
+            }),
+        )
     }
 
     /// スレッドで最後に記録されたコンテキスト使用量（再訪時のコンテキスト表示）。

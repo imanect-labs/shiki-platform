@@ -16,6 +16,7 @@ import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/an
 import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
+import { PastWorkToggle } from "./past-work-toggle";
 import type { ToolActivityItem } from "./tool-activity";
 
 /// 描画用の 1 区切り。
@@ -162,6 +163,7 @@ export function MessageTimeline({
   waitingLabel = null,
   memoryKey = null,
   imageProxy = null,
+  collapseBefore = 0,
 }: {
   segments: TimelineSegment[];
   citations: Citation[];
@@ -176,7 +178,17 @@ export function MessageTimeline({
   /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。回答がサーバに保存される前（ID が
   /// まだ無い）や会話以外の描画では null にし、画像はリンクに落とす。
   imageProxy?: ImageProxy | null;
+  /// 実行中の会話へ戻ったとき、離れていた間までの区切りの数（#1152）。これより前の操作のまとまりは
+  /// 1 行（「これまでの N 件の操作」）に畳み、押すとその場で開く。本文は畳まない（読むものなので）。
+  collapseBefore?: number;
 }) {
+  const [pastOpen, setPastOpen] = React.useState(false);
+  const collapsed = (i: number) => !pastOpen && i < collapseBefore && segments[i]?.kind === "work";
+  const firstCollapsed = segments.findIndex((_, i) => collapsed(i));
+  const pastTools = segments.reduce(
+    (n, x, i) => (i < collapseBefore && x.kind === "work" ? n + x.tools.length : n),
+    0,
+  );
   const firstWork = segments.findIndex((s) => s.kind === "work");
   const lastText = segments.findLastIndex((s) => s.kind === "text");
   // 生成中は本文のトークンごとに描き直すが、ツール結果と引用はその間変わらない。出典の本文
@@ -208,12 +220,23 @@ export function MessageTimeline({
       ) : null}
       {segments.map((s, i) => {
         const live = streaming && i === segments.length - 1;
+        if (collapsed(i)) {
+          // 畳んだまとまりは、最初の 1 つの位置に 1 行だけ出す。
+          return i === firstCollapsed ? (
+            <PastWorkToggle key="past" tools={pastTools} open={false} onToggle={() => setPastOpen(true)} />
+          ) : null;
+        }
         if (s.kind === "work") {
           // 何番目の操作のまとまりか（生成中と確定後で同じ並び。区切りの key は本文も数える）。
           const nth = segments.slice(0, i).filter((x) => x.kind === "work").length;
+          const closer =
+            pastOpen && i === segments.findIndex((x, j) => j < collapseBefore && x.kind === "work") ? (
+              <PastWorkToggle key="past" tools={pastTools} open onToggle={() => setPastOpen(false)} />
+            ) : null;
           return (
+            <React.Fragment key={s.key}>
+            {closer}
             <ChainOfThought
-              key={s.key}
               memoryKey={memoryKey && `${memoryKey}:w${nth}`}
               thinking={s.thinking}
               tools={s.tools}
@@ -222,6 +245,7 @@ export function MessageTimeline({
               phase={live ? phase : null}
               waitingLabel={live ? waitingLabel : null}
             />
+            </React.Fragment>
           );
         }
         return (

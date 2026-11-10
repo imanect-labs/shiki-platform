@@ -335,6 +335,7 @@ pub async fn get_messages(
         active_run_id: active.map(|r| r.run_id),
         active_run_autonomous: active.map(|r| r.autonomous),
         active_assistant_message_id: active.map(|r| r.message_id),
+        active_run_last_seq: active.map(|r| r.last_seq),
         queued_runs,
     }))
 }

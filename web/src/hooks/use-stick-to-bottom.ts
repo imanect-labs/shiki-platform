@@ -13,6 +13,8 @@ const RELEASE_SETTLE_MS = 250;
 /// 上へ動かすキー（押した時点で追従をやめる。スクロールが始まる前に止めないと、
 /// 次の追従がキーのスクロールを打ち消す）。
 const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
+/// 覚えておいた位置へ戻した後、本文の伸びに合わせ直し続ける最長時間（入力が来たらすぐやめる）。
+const HOLD_MS = 1_500;
 
 /// 会話のスクロール追従（チャット専用）。
 ///
@@ -27,6 +29,7 @@ const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 /// - 送信したときは `scrollToBottom()`（自分の発話を見せ、次の回答の先頭まで追う）。「最新へ」は
 ///   `jumpToLatest()`（下端へ一度動かすだけで、生成中は追わない）。
 /// - 実行中の会話へ戻ったときは `followLatest()`（回答の先頭では止めず、最新の位置を追い続ける）。
+/// - 覚えておいた位置へ戻すときは `holdAt()`（追従をやめ、描画が落ち着くまでその位置に合わせる・#1154）。
 ///
 /// 「上へ動かした」はスクロール位置の変化だけで判断しない。トラックパッドや指のゆっくりした操作は
 /// 1 回の動きが 1〜2px で、位置だけ見ると下端と区別できず、生成中は次のトークンで引き戻していた。
@@ -237,6 +240,41 @@ export function useStickToBottom() {
     if (scroller) pin(scroller);
   }, [scroller, pin]);
 
+  // 覚えておいた位置へ戻す（#1154）: 追従をやめ、`getTop` の位置に合わせる。読み込み直後は画像・数式・
+  // 引用チップで高さが伸びるので、利用者の入力が来るまで（最長 `HOLD_MS`）本文の伸びに合わせ直す。
+  // 下端付近まで戻ってきたら、通常どおり追従を再開する（scroll の規則のまま）。
+  const holdAt = React.useCallback(
+    (getTop: () => number | null) => {
+      const el = scroller;
+      if (!el) return;
+      followAll.current = false;
+      stick.current = false;
+      stopped.current = true;
+      leaving.current = false;
+      const apply = () => {
+        const top = getTop();
+        if (top === null) return;
+        el.scrollTop = Math.max(0, top);
+        lastTop.current = el.scrollTop;
+      };
+      apply();
+      const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+      let done = false;
+      const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => !done && apply());
+      if (ro && content) ro.observe(content, { box: "border-box" });
+      const stop = () => {
+        if (done) return;
+        done = true;
+        ro?.disconnect();
+        clearTimeout(timer);
+        for (const ev of inputs) el.removeEventListener(ev, stop);
+      };
+      for (const ev of inputs) el.addEventListener(ev, stop, { passive: true });
+      const timer = setTimeout(stop, HOLD_MS);
+    },
+    [scroller, content],
+  );
+
   // 「最新へ」: 下端へ一度動かす。生成中は追わない（止まり位置を過ぎたものとして扱う）。
   // 実行中の会話へ戻って追っている間（`followLatest`）は、追従へ戻す。
   const jumpToLatest = React.useCallback(() => {
@@ -279,6 +317,7 @@ export function useStickToBottom() {
     showJump,
     scrollToBottom,
     followLatest,
+    holdAt,
     jumpToLatest,
   };
 }

@@ -41,6 +41,8 @@ export function isUserDataKey(key: string): boolean {
     key.startsWith("shiki:pending-message:") ||
     // サイドバー履歴の既読の記録（会話 id・[`useThreadActivity`](@/components/shell/sidebar/use-thread-activity)）。
     key.startsWith("shiki:thread-seen@") ||
+    // 会話ごとのスクロール位置（会話 id・[`thread-scroll`](@/lib/thread-scroll)）。
+    key.startsWith("shiki:thread-scroll@") ||
     // 旧クライアント内チャット（backend 実装前のダミー保存）。今は書かないが残骸を消す。
     key === "shiki:chats:v1"
   );
