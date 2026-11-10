@@ -36,7 +36,6 @@ use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
 use super::public_fetch::{self, read_capped, PinError};
 
-pub(crate) use envelope::neutralize_tags;
 pub(crate) use render::Page;
 
 use crate::tool::{Tool, ToolError, ToolOutcome};

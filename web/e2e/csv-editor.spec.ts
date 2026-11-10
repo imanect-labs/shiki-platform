@@ -9,21 +9,41 @@ import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 /// - viewer は閲覧のみ
 
 /// CSV を API で作成して node_id を返す。
-async function createCsv(page: Page, name: string, csv: string): Promise<string> {
+async function createCsv(
+  page: Page,
+  name: string,
+  csv: string,
+  parentId: string | null = null,
+): Promise<string> {
   return page.evaluate(
-    async ({ n, body }) => {
+    async ({ n, body, parent }) => {
       const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/)?.[1] ?? "";
       const res = await fetch("/api/tabular/save", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
-        body: JSON.stringify({ parent_id: null, name: n, csv: body }),
+        body: JSON.stringify({ parent_id: parent, name: n, csv: body }),
       });
       if (!res.ok) throw new Error(`CSV 作成に失敗: ${res.status}`);
       return (await res.json()).node_id as string;
     },
-    { n: name, body: csv },
+    { n: name, body: csv, parent: parentId },
   );
+}
+
+/// フォルダを API で作成して id を返す。
+async function createFolder(page: Page, name: string): Promise<string> {
+  return page.evaluate(async (n) => {
+    const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/)?.[1] ?? "";
+    const res = await fetch("/api/folders", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ parent_id: null, name: n }),
+    });
+    if (!res.ok) throw new Error(`フォルダ作成に失敗: ${res.status}`);
+    return (await res.json()).id as string;
+  }, name);
 }
 
 async function shareCsv(page: Page, nodeId: string, role: "viewer" | "editor") {
@@ -174,6 +194,44 @@ test("CSV SQL コンソール: 別の CSV を追加して JOIN できる", async
   await expect(page.getByTestId("sql-table")).toHaveCount(0);
   await page.getByTestId("sql-run").click();
   await expect(page.getByTestId("sql-error")).toBeVisible({ timeout: 15_000 });
+});
+
+test("CSV SQL コンソール: 予約語になるファイル名はテーブル名の補完で避ける", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const id = await createCsv(page, uniqueName("items") + ".csv", "order_id,qty\n1,3\n2,5\n");
+  // `order.csv` は他の実行とぶつからないよう専用フォルダに置く（名前順で先頭近くに並ぶ名前）。
+  const folderName = `0rsv-${uniqueName("f")}`;
+  const folder = await createFolder(page, folderName);
+  await createCsv(page, "order.csv", "order_id,customer\n1,alice\n2,bob\n", folder);
+  await openCsv(page, id);
+
+  await page.getByTestId("csv-tab-sql").click();
+  await expect(page.getByTestId("sql-console")).toBeVisible();
+  await page.getByTestId("sql-add-table").click();
+  await page.getByRole("button", { name: folderName }).click();
+  await page.getByRole("button", { name: "order.csv" }).click();
+  // `order` は SQL の予約語なので `order_table` を補う（予約語の一覧は backend が DuckDB から引く）。
+  const tableName = page.getByTestId("sql-table-name");
+  await expect(tableName).toHaveValue("order_table");
+  await expect(page.getByTestId("sql-table-error")).toHaveCount(0);
+
+  // 手で予約語にすると、実行前に理由を出して止める。
+  await tableName.fill("select");
+  await expect(page.getByTestId("sql-table-error")).toContainText("予約語");
+  await expect(page.getByTestId("sql-run")).toBeDisabled();
+
+  // 補われた名前のまま JOIN できる。
+  await tableName.fill("order_table");
+  await page
+    .getByTestId("sql-input")
+    .fill(
+      "SELECT o.customer, d.qty FROM data d JOIN order_table o ON d.order_id = o.order_id ORDER BY d.qty",
+    );
+  await page.getByTestId("sql-run").click();
+  const rows = page.locator('[data-testid="sql-console"] table tbody tr');
+  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+  await expect(rows.nth(0)).toContainText("alice");
 });
 
 test("CSV viewer は閲覧のみ", async ({ page, browser }) => {

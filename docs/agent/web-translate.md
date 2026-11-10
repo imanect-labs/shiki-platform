@@ -363,7 +363,7 @@ map 領域（`docs/workflow/ir.md` §5.3）＋`llm.invoke` で組める。その
 | --- | --- |
 | ツール | `crates/agent-core/src/tools/web_translate.rs`（保護 `protect.rs`・分割 `chunk.rs`・プロンプトと用語集 `prompt.rs`・検査 `check.rs`・組み立て `assemble.rs`・生成の口 `backend.rs`） |
 | 取得の共有 | `WebFetchTool::fetch`（`web_fetch` の `call` もこれを呼ぶ） |
-| 境界タグの中和 | `web_fetch/envelope.rs` の `neutralize_tags`（タグの一覧を引数に取る） |
+| 境界タグの中和 | `web_translate/prompt.rs` の `neutralize_tags`（タグの一覧を受け、`document_envelope::neutralize_tag` を順に掛ける・封筒と同じ処理） |
 | ブロック | `ToolOutcome::translations` → `AgentEvent::Translation` → SSE `translation` → `ContentBlock::Translation` |
 | 履歴 | `crates/chat/src/worker/translation_line.rs`（URL・言語・文字数の 1 行だけ） |
 | 画像の出所 | `crates/chat/src/answer_images.rs`（`source_images` だけを数える。訳文の本文は数えない） |

@@ -8,10 +8,18 @@ use std::fmt::Write as _;
 
 use super::chunk::{is_heading, Chunk};
 use super::protect::{CLOSE, OPEN};
-use crate::tools::web_fetch::neutralize_tags;
+use crate::tools::document_envelope::neutralize_tag;
 
 /// 中和する境界タグ。
 const TAGS: [&str; 3] = ["context", "source", "web_page"];
+
+/// `names` の開き・閉じタグを実体参照へ中和する（封筒と同じ `neutralize_tag` を使う・別実装しない）。
+/// 大文字小文字・空白・全角の変種も潰す。
+pub(super) fn neutralize_tags(s: &str, names: &[&str]) -> String {
+    names.iter().fold(s.to_string(), |acc, name| {
+        neutralize_tag(&acc, name).into_owned()
+    })
+}
 
 /// 文脈の各項目の上限（設計メモ §4.4 の表）。
 const MAX_TITLE_CHARS: usize = 200;
@@ -62,11 +70,11 @@ pub(super) fn language_name(code: &str) -> String {
 pub(super) fn one_line(raw: &str, max_chars: usize) -> String {
     let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     let capped: String = flat.chars().take(max_chars).collect();
-    neutralize_tags(&capped, &TAGS).into_owned()
+    neutralize_tags(&capped, &TAGS)
 }
 
 fn block(raw: &str) -> String {
-    neutralize_tags(raw, &TAGS).into_owned()
+    neutralize_tags(raw, &TAGS)
 }
 
 /// 翻訳の system。`style` は skill が決めた訳調（呼び出し元が上限と改行を処理済み）。

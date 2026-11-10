@@ -5,6 +5,7 @@ mod artifacts;
 mod attachments;
 pub mod code_interpreter;
 pub mod doc_search;
+pub mod document_envelope;
 pub mod fs;
 pub mod fs_append;
 pub mod fs_write;

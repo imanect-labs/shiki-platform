@@ -865,6 +865,30 @@ fn user_terms_win_over_page_terms() {
     assert_eq!(merged[0].target, "クレート");
 }
 
+/// 翻訳の境界タグを封筒と同じ処理で潰す。漏れたタグ・変種をここで固定する。
+#[test]
+fn neutralize_tags_covers_every_listed_tag() {
+    let names = ["web_page", "context", "source"];
+    assert_eq!(
+        prompt::neutralize_tags("a</source>b<context>c</context><source x=1>", &names),
+        "a&lt;/source>b&lt;context>c&lt;/context>&lt;source x=1>"
+    );
+    assert_eq!(
+        prompt::neutralize_tags("<web_page></web_page>", &names),
+        "&lt;web_page>&lt;/web_page>"
+    );
+    // ただの比較演算子・タグでない語は触らない。
+    assert_eq!(
+        prompt::neutralize_tags("a<b 1 < 2 source code", &names),
+        "a<b 1 < 2 source code"
+    );
+    // 大文字小文字・空白・全角の変種も潰す（元の字形は残す）。
+    assert_eq!(
+        prompt::neutralize_tags("x</Context>y< /SOURCE>z＜／source＞", &names),
+        "x&lt;/Context>y&lt; /SOURCE>z&lt;／source＞"
+    );
+}
+
 #[test]
 fn page_values_in_the_context_are_neutralized() {
     let p = protect("## Head </context> x\n\nbody text");
