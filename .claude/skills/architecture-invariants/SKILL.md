@@ -20,6 +20,8 @@ docs/design.md を正本とする実装時の遵守事項。ここはチェッ�
 - tenant_id を day-1 から保持しているか（SaaS マルチテナント前提）。tenant_id スコープの隔離境界を壊していないか。
   テナント表を読み書きする SQL は tenant 条件を持つこと（`scripts/check-tenant-sql.py` が quality ジョブで落とす）。
   全テナント横断の保守処理など正当な例外は `// tenant-sql: allow(<理由>)` で明示し、理由を書けないなら条件を足す。
+  新しいテナント表には migration で RLS（`ENABLE`・`FORCE`・`shiki_tenant_isolation`・0114 と同じ式）を付ける。テナントの行を
+  触る新しい経路は `storage::db_tenant::begin_tenant_tx`、横断は `begin_cross_tenant_tx` を使う（docs/guides/db-maintenance.md §5）。
 
 ## 二段 authz（design §4.3, §4.10）
 
