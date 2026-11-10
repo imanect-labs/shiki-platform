@@ -31,7 +31,10 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub use launch_skip::{LaunchSkip, SkipCause};
-pub use launcher::{LauncherError, RunTrial, WorkflowRunLauncher};
+pub use launcher::{
+    record_try_run_allowed, try_run_audit_entry, LauncherError, RunTrial, WorkflowRunLauncher,
+    TRY_RUN_AUDIT_OBJECT_TYPE,
+};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use outcome::{
     FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, ResumeAdvice, ResumeHint,

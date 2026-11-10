@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use authz::AuthContext;
+use authz::{AuthContext, Relation};
 use serde_json::Value;
+use storage::audit::{AuditAction, AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
 use super::graph::RunGraph;
@@ -241,6 +242,54 @@ impl WorkflowRunLauncher {
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        let origin = trial.origin();
+        let blockers = crate::run_blockers(&ir);
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
+            .await
+    }
+
+    /// 版を固定して、ワークフローの editor 以上の人だけが起動する（会話の AI の試運転・D-197）。
+    ///
+    /// 承認カードで見せた版と実行する版を一致させるため、版は呼び出し側が必ず渡す（最新版を引かない・R5）。順は次のとおり。
+    ///
+    /// 1. 本人の viewer 権限で版の IR を読む（[`WorkflowStore::get_version`]）。見えない・無い・版が無いは
+    ///    [`LauncherError::Ir`]（呼び出し側は存在を秘匿して「見つからない」に写す）。
+    /// 2. editor の relation を確かめる（ArtifactStore の `require_relation`・HigherConsistency）。足りなければ
+    ///    `workflow.try_run` の deny を監査に残し、[`LauncherError::ReadOnly`]。viewer で読めた後なので、閲覧のみと
+    ///    答えても存在は漏れない。判定は既存の Editor の relation だけで、OpenFGA の schema は変えない。
+    /// 3. 実行の前に止める設定（[`crate::run_blockers`]）→ 入力の契約 → run の作成（[`Self::start_interactive`] と同じ
+    ///    入口の検証の順・run の主体は本人のまま）。
+    ///
+    /// 許可の監査はここでは書かない（承認を通した呼び出し側が [`record_try_run_allowed`] で、拒否と同じ対象に書く）。
+    /// 名前に trial を使わないのは、[`RunTrial`]（手動の実行で試す値）と紛れるため。
+    pub async fn start_version_as_editor(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        input: &Value,
+        trial: RunTrial<'_>,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Uuid>, LauncherError> {
+        let (version, ir) = self
+            .workflows
+            .get_version(ctx, workflow_id, version, trace_id)
+            .await
+            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        self.workflows
+            .artifacts
+            .require_relation(
+                ctx,
+                workflow_id,
+                Relation::Editor,
+                AuditAction::WorkflowTryRun,
+                trace_id,
+            )
+            .await
+            .map_err(|e| match e {
+                artifact::ArtifactError::Forbidden => LauncherError::ReadOnly,
+                other => LauncherError::Ir(format!("{other:?}")),
+            })?;
         let origin = trial.origin();
         let blockers = crate::run_blockers(&ir);
         self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
@@ -500,6 +549,10 @@ pub enum LauncherError {
     /// 実行主体の種類が run を作れないもの（ミニアプリのサービスの主体・[`run_principal_kind`]・BUG-145）。
     #[error("この主体ではワークフローを実行できません")]
     UnsupportedPrincipal,
+    /// 閲覧だけ共有されたワークフロー（editor 以上でない・[`WorkflowRunLauncher::start_version_as_editor`] だけが
+    /// 返す・D-197）。会話の AI はこの文をそのまま返す。
+    #[error("閲覧のみのワークフローは試運転できません。画面から実行してください")]
+    ReadOnly,
 }
 
 impl LauncherError {
@@ -522,6 +575,60 @@ impl LauncherError {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// 試運転の監査の対象の種類（拒否は [`WorkflowRunLauncher::start_version_as_editor`] の中で ArtifactStore が、この
+/// 種類とワークフローの id で書く）。許可の行も同じ対象で書き、監査ログの画面で対象を絞って突き合わせられるようにする。
+pub const TRY_RUN_AUDIT_OBJECT_TYPE: &str = "artifact";
+
+/// 試運転の監査の 1 行（[`record_try_run_allowed`] の中身・呼び出し側の Tx で `storage::audit::record_on` に渡すとき）。
+///
+/// `object_id` はワークフローの id の文字列（[`Uuid::to_string`]・拒否の行と同じ形）。`metadata` がオブジェクトなら、
+/// 拒否の行と同じ `relation: "editor"` を足す（呼び出し側が書いた `relation` は上書きする）。
+#[must_use]
+pub fn try_run_audit_entry<'a>(
+    object_id: &'a str,
+    decision: Decision,
+    trace_id: Option<&'a str>,
+    metadata: Value,
+) -> AuditEntry<'a> {
+    let metadata = match metadata {
+        Value::Object(mut m) => {
+            m.insert("relation".into(), Value::from(Relation::Editor.as_str()));
+            Value::Object(m)
+        }
+        Value::Null => serde_json::json!({ "relation": Relation::Editor.as_str() }),
+        other => other,
+    };
+    AuditEntry {
+        action: AuditAction::WorkflowTryRun,
+        object_type: TRY_RUN_AUDIT_OBJECT_TYPE,
+        object_id,
+        decision,
+        trace_id,
+        metadata,
+    }
+}
+
+/// 試運転の許可を監査に残す（承認を通して [`WorkflowRunLauncher::start_version_as_editor`] で起動した呼び出し側が呼ぶ・
+/// D-197）。
+///
+/// 対象は拒否の行と同じ（[`TRY_RUN_AUDIT_OBJECT_TYPE`]・ワークフローの id）。会話の run・スレッド・版・試運転の run・
+/// 入力のハッシュなどの相関（設計 §4.2）は、呼び出し側が `metadata` に入れる。
+pub async fn record_try_run_allowed(
+    audit: &AuditRecorder,
+    ctx: &AuthContext,
+    workflow_id: Uuid,
+    trace_id: Option<&str>,
+    metadata: Value,
+) -> Result<(), storage::StorageError> {
+    let object_id = workflow_id.to_string();
+    audit
+        .record(
+            ctx,
+            try_run_audit_entry(&object_id, Decision::Allow, trace_id, metadata),
+        )
+        .await
 }
 
 #[cfg(test)]
@@ -547,5 +654,33 @@ mod tests {
         // migration 0022 の check と同じ 2 つ（ワーカーの実行主体の組み方も同じ）。
         let check = include_str!("../../../../migrations/0022_workflow_principal_kind.sql");
         assert!(check.contains("check (principal_kind in ('user', 'workflow'))"));
+    }
+
+    /// 試運転の監査の行は、拒否（ArtifactStore の require）と同じ対象・同じ relation の項目で書く（D-197）。
+    #[test]
+    fn try_run_audit_entry_matches_the_deny_row() {
+        let id = Uuid::new_v4().to_string();
+        let meta = serde_json::json!({ "chat_run_id": "c", "relation": "viewer" });
+        let e = try_run_audit_entry(&id, Decision::Allow, Some("t"), meta);
+        assert_eq!(e.action, AuditAction::WorkflowTryRun);
+        assert_eq!(e.object_type, "artifact");
+        assert_eq!(e.object_id, id);
+        assert_eq!(e.decision, Decision::Allow);
+        assert_eq!(e.trace_id, Some("t"));
+        assert_eq!(e.metadata["relation"], "editor");
+        assert_eq!(e.metadata["chat_run_id"], "c");
+        let bare = try_run_audit_entry(&id, Decision::Deny, None, Value::Null);
+        assert_eq!(bare.metadata, serde_json::json!({ "relation": "editor" }));
+        // オブジェクトでない metadata は変えない（呼び出し側の誤りを隠さない）。
+        let odd = try_run_audit_entry(&id, Decision::Allow, None, serde_json::json!([1]));
+        assert_eq!(odd.metadata, serde_json::json!([1]));
+    }
+
+    #[test]
+    fn read_only_message_is_the_d197_wording() {
+        assert_eq!(
+            LauncherError::ReadOnly.to_string(),
+            "閲覧のみのワークフローは試運転できません。画面から実行してください"
+        );
     }
 }
