@@ -442,6 +442,8 @@ export async function getThreadMessages(
   activeRunAutonomous: boolean;
   /// 進行中 run の生成先 assistant メッセージ id。
   activeAssistantMessageId: string | null;
+  /// 進行中 run でこの時点までに追記済みの最新イベントの seq（再訪時に、これ以下を畳む・#1152）。
+  activeRunLastSeq: number | null;
   /// まだ生成が始まっていない発話（順番待ち・投入順）。
   queuedRuns: { userMessageId: string; runId: string }[];
   /// 最後の LLM リクエストのコンテキスト使用量（まだ生成していなければ null）。
@@ -454,6 +456,7 @@ export async function getThreadMessages(
     active_run_id?: string | null;
     active_run_autonomous?: boolean | null;
     active_assistant_message_id?: string | null;
+    active_run_last_seq?: number | null;
     queued_runs?: { user_message_id: string; run_id: string }[] | null;
     context_usage?: ContextUsage | null;
   }>(res);
@@ -472,6 +475,7 @@ export async function getThreadMessages(
     activeRunId: data.active_run_id ?? null,
     activeRunAutonomous: data.active_run_autonomous ?? false,
     activeAssistantMessageId: data.active_assistant_message_id ?? null,
+    activeRunLastSeq: data.active_run_last_seq ?? null,
     queuedRuns: (data.queued_runs ?? []).map((q) => ({
       userMessageId: q.user_message_id,
       runId: q.run_id,
@@ -556,6 +560,8 @@ export type StreamHandlers = {
   onNoteRef?: (note: unknown) => void;
   /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。下書き画面を開く/流し込む。
   onNoteDraft?: (draft: unknown) => void;
+  /// Web ページの訳文（web_translate）。会話に訳文のカードとして出す。
+  onTranslation?: (translation: unknown) => void;
   /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。下書き画面を開く/流し込む。
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
@@ -586,6 +592,8 @@ export type StreamHandlers = {
   /// （自然に終わった回答・取り消し・失敗では null・GAP-106）。
   onDone?: (stopReason: StopReason | null) => void;
   onError?: (message: string) => void;
+  /// 1 件のイベントを処理し終えた（`seq` は SSE の id）。再訪時の送り直しの終わりを知るのに使う（#1152）。
+  onApplied?: (seq: number) => void;
 };
 
 /// 生成イベント種別。**`crates/chat` の `StreamEventKind` から生成**した型を使う（同上）。
@@ -608,6 +616,14 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
     } catch {
       return;
     }
+    const seq = Number(ev.lastEventId);
+    try {
+      dispatch(kind);
+    } finally {
+      if (Number.isFinite(seq) && seq > 0) handlers.onApplied?.(seq);
+    }
+  };
+  const dispatch = (kind: StreamEventKind) => {
     switch (kind.type) {
       case "token":
         handlers.onToken?.(kind.text);
@@ -664,6 +680,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "note_draft":
         handlers.onNoteDraft?.(kind.draft);
+        break;
+      case "translation":
+        handlers.onTranslation?.(kind.translation);
         break;
       case "slide_draft":
         handlers.onSlideDraft?.(kind.draft);

@@ -17,7 +17,7 @@ use super::envelope;
 use super::sections;
 
 /// モデルへ渡す本文（抽出後）とその出所。
-pub(super) struct Page {
+pub(crate) struct Page {
     pub title: Option<String>,
     pub byline: Option<String>,
     pub site_name: Option<String>,

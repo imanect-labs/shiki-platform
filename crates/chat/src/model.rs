@@ -203,6 +203,11 @@ pub enum ContentBlock {
     /// `draft = {name, markdown}`（まだ StorageService 未作成）。フロントは下書きノート画面を
     /// 開いて詰めてから「ドライブに保存」で確定する。
     NoteDraft { draft: serde_json::Value },
+    /// ページの訳文（web_translate・docs/agent/web-translate.md §4.6）。
+    /// `translation = {source_url, title, translated_title, target_lang, markdown, failed_chunks,
+    /// chunks, source_images, source_truncated, fetched_at}`。訳文は**外部ページ由来**なので、
+    /// フロントは安全側の設定で描画する。モデルの履歴には 1 行の要約だけを残す。
+    Translation { translation: serde_json::Value },
     /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
     /// `draft = {name, content}`（content=正規化スライド JSON 文字列・StorageService 未作成）。
     /// フロントは下書きスライド画面を開いて詰めてから「ドライブに保存」で確定する。

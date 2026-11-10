@@ -25,6 +25,7 @@ import {
   FolderInput,
   FolderSearch,
   Globe,
+  Languages,
   LayoutTemplate,
   ListChecks,
   NotebookPen,
@@ -194,6 +195,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     category: "browse",
     lead: objectOf("ページ"),
     verb: "閲覧",
+    suru: true,
+    target: urlTarget,
+  },
+  web_translate: {
+    icon: Languages,
+    category: "browse",
+    lead: objectOf("ページ"),
+    verb: "翻訳",
     suru: true,
     target: urlTarget,
   },
@@ -661,7 +670,7 @@ export function summarizeTools(items: ToolDescribable[]): string[] {
   let edits = 0;
   for (const it of items) {
     const meta = displayFor(it.name);
-    if (it.name === "web_search" || it.name === "web_fetch") web += 1;
+    if (it.name === "web_search" || it.name === "web_fetch" || it.name === "web_translate") web += 1;
     else if (it.name === "doc_search" || it.name === "doc_read") internal += 1;
     else if (meta.category === "write" || meta.category === "exec") edits += 1;
   }

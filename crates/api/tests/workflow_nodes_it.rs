@@ -3286,7 +3286,7 @@ async fn decide_cache_reuses_answers_within_the_workflow_only() {
     assert_eq!(err["retryable"], false);
 
     // ワークフローを消すと（削除の API と同じ ArtifactStore::delete・論理削除）、その答えも同じ TX で消える
-    // （migration 0123 のトリガ）。ほかのワークフローの答えは残る。
+    // （migration 0125 のトリガ）。ほかのワークフローの答えは残る。
     let cached_rows = |wf: Uuid| {
         let pool = h.pool.clone();
         let tenant = h.tenant.clone();

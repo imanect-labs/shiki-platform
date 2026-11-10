@@ -65,8 +65,10 @@ e2e = [
     "ai-workflow.spec.ts",
     "artifacts-owned-paging.spec.ts",
     "chat-ai-edit-revert.spec.ts",
-    "chat-answer-export.spec.ts",
+    "chat-approval-banner.spec.ts",
     "chat-mobile.spec.ts",
+    "chat-answer-export.spec.ts",
+    "chat-thread-export.spec.ts",
     "chat-modes.spec.ts",
     "chat-scroll-follow.spec.ts",
     "chat-stop-reason.spec.ts",
@@ -165,6 +167,7 @@ e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
     "chat-answer-export.spec.ts",
+    "chat-thread-export.spec.ts",
     "composer-create.spec.ts",
     "drive-ai-save-move.spec.ts",
     "immersive-editor.spec.ts",
@@ -405,4 +408,4 @@ e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec
 [scenario.reference]
 pages = ["web/src/app/reference/**"]
 crates = []
-e2e = ["answer-images.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
+e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]

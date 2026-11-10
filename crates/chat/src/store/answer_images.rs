@@ -88,7 +88,7 @@ impl ChatStore {
         let rows: Vec<(Json<StreamEventKind>,)> = sqlx::query_as(
             "SELECT payload FROM generation_event \
              WHERE tenant_id = $1 AND run_id = ANY($2) \
-               AND type IN ('tool_call', 'tool_result', 'citation') \
+               AND type IN ('tool_call', 'tool_result', 'citation', 'translation') \
              ORDER BY seq LIMIT $3",
         )
         .bind(ctx.tenant_id())

@@ -77,6 +77,23 @@ export async function getRows(nodeId: string, offset: number): Promise<TableResp
 
 export type QueryTable = components["schemas"]["QueryTable"];
 
+let reservedWords: Promise<ReadonlySet<string>> | null = null;
+
+/// SQL の予約語（追加テーブルの名前に使えない語・#1061）。語彙は backend が DuckDB 自身から引く
+/// （手書きで持たない）。画面内で 1 回だけ取り、失敗したら次の呼び出しで取り直す。
+export function getReservedWords(): Promise<ReadonlySet<string>> {
+  reservedWords ??= (async () => {
+    const res = await apiFetch("/tabular/reserved-words");
+    if (!res.ok) throw new Error(`予約語の取得に失敗しました (${res.status})`);
+    const body = (await res.json()) as components["schemas"]["ReservedWordsResponse"];
+    return new Set(body.words);
+  })().catch((e: unknown) => {
+    reservedWords = null;
+    throw e;
+  });
+  return reservedWords;
+}
+
 /// 読み取り専用 SQL。`tables` を渡すと各 CSV が指定名のテーブルになり JOIN できる（#1037）。
 export async function runQuery(
   nodeId: string,

@@ -190,7 +190,7 @@ create table step_execution (
     lease_expires_at  timestamptz,
     -- claim ごとに +1。追記/確定は一致時のみ（ゾンビ書込拒否）。
     fencing_token     bigint      not null default 0,
-    -- リースが切れて拾い直した回数（sweeper が ready へ戻すたびに +1・上限で失敗にする・§9.5・migration 0146）。
+    -- リースが切れて拾い直した回数（sweeper が ready へ戻すたびに +1・上限で失敗にする・§9.5・migration 0148）。
     lease_reclaims    int         not null default 0,
     output            jsonb,                      -- ≤256KB・超過は blob spill（§12）
     -- terminal 遷移で確定した「取られたポート」。エッジ状態はここから導出する（§4.1）。
@@ -942,7 +942,7 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
 - `wait`: 待てば通る失敗（いまは PDF・Office の本文の取り込み待ち `index_pending` だけ・D-125・GAP-50）。**attempt を消費せず**、
   間隔を伸ばしながらやり直す（5 秒から始めて待った時間と同じだけ・1 回は最大 2 分）。待ち始めてから上限（30 分）を過ぎたら、
   その code で failed にする（attempts の残りは使わない）。待ち始めた時刻は `step_execution.wait_since`、いま待っている理由は
-  `wait_code` に持つ（migration 0129）。ほかの理由のやり直しを挟んでも上限は最初に待ち始めた時刻から数え、step が terminal に
+  `wait_code` に持つ（migration 0131）。ほかの理由のやり直しを挟んでも上限は最初に待ち始めた時刻から数え、step が terminal に
   なったとき・失敗 step から再開したとき（§11.4）に消す（再開は待ち直す）。手動の実行・自動実行のどちらにも効く。待つかどうかは
   code だけで決める（`retry::wait_policy` の 1 か所）ので、script の `Shiki.*` が同じ code を投げ返したときも同じに待つ。
   待っている step は、実行履歴の詳細で `waiting_for = index`（取り込みを待っている）になる（run は実行中のまま）。
@@ -1230,7 +1230,7 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 
 ワークフロー（artifact の kind=workflow）を論理削除したら止める（BUG-128・D-105）。消したものが動き続け、承認者の受信箱に依頼が残り、承認すると続きが動く、を作らない。
 
-1. 論理削除の UPDATE に掛けたトリガ（migration 0126）が、削除の経路を問わず同じ Tx の中で、`workflow_registration` を disabled にして `consented_scopes` を空にし、`workflow_trigger` を止め、動いている run（queued・running）に `cancel_requested` を付ける。印の付いた run は claim されず、その承認は受信箱に出ず判断も受け付けない。
+1. 論理削除の UPDATE に掛けたトリガ（migration 0128）が、削除の経路を問わず同じ Tx の中で、`workflow_registration` を disabled にして `consented_scopes` を空にし、`workflow_trigger` を止め、動いている run（queued・running）に `cancel_requested` を付ける。印の付いた run は claim されず、その承認は受信箱に出ず判断も受け付けない。
 2. 削除の API は commit の後に、§10.2 の「権限も取り消す」と同じ経路で委譲を取り消し、run をすべて（人が手で実行したものも）その場でドレインする（承認の依頼も取り下げる）。監査は `workflow.disable` と `workflow.delegation.revoke` に理由 `workflow_deleted` を残す。
 3. API で外せなかった委譲（OpenFGA に届かなかったなど）は、scheduler の掃除（1 分ごと・system の主体で同じ監査）が取り消す。ドレインの取りこぼしは §9.3 の tick が回収する。掃除は、消したワークフローの queued・running で取り消しの印の無い run も拾って取り消す（定義を読んだ後で削除が commit され、run の INSERT がトリガと削除の後の取り消しより後に commit された手動の実行・再開）。掃除の監査は、自動実行の登録があったか run を取り消したなら `workflow.disable`、委譲を取り消したなら `workflow.delegation.revoke` を残す（どちらも理由 `workflow_deleted`）。
 4. 定義が消えたワークフローへの発火（削除と重なった発火）は、一時障害として再試行せず見送る（`skipped`）。
@@ -1246,7 +1246,7 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
   （`delegation_invalid`・BUG-170）、有効化した版に実行の前に止める設定がある（`not_ready`・BUG-51）。多重度あふれ
   （`on_trigger_overflow = skip`）と、有効化されていない・定義が消えた見送りは記録しない（作成者が選んだ扱いか、自動実行が
   オフ）。
-- 起動口（`WorkflowRunLauncher`）が、ワークフローごとに 1 行（`workflow_launch_skip`・migration 0138）に、理由の code・
+- 起動口（`WorkflowRunLauncher`）が、ワークフローごとに 1 行（`workflow_launch_skip`・migration 0140）に、理由の code・
   作成者向けの文・見送った版・続けて見送った回数・最初と最後の時刻を書く。版か理由が変わったら数え直す。発火の行
   （`trigger_firing`・`schedule_occurrence`）には書かない（スケジューラが行ロックを持ったまま起動口を呼び、
   `RunLauncher::launch` の戻り値は理由を文でしか持たない）。記録できなくても見送りは変えない（一時障害にしない）。

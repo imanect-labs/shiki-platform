@@ -68,6 +68,8 @@ import {
 } from "@/components/prompt-kit/yui-actions";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
+import { ANCHOR_ATTR, useScrollMemory } from "@/hooks/use-scroll-memory";
+import { readThreadScroll } from "@/lib/thread-scroll";
 import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
 import { MessageExportMenu } from "./message-export-menu";
@@ -80,6 +82,7 @@ import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
 import { AttachmentThumb, isImageAttachment } from "./attachment-thumb";
 import { StreamWaitingLine, useStreamWaiting } from "./stream-waiting";
+import { PastWorkLoading } from "./past-work-toggle";
 import {
   appendStreamText,
   appendStreamThinking,
@@ -94,6 +97,7 @@ import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
+import { TranslationBlock } from "./translation-block";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
@@ -113,8 +117,10 @@ import {
 } from "@/lib/skills/skill-draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
+import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { StopReasonNote } from "./stop-reason-note";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
@@ -136,6 +142,8 @@ type StreamState = {
   noteRefs: unknown[];
   /// 未保存の下書きノート（issue #282・save_note の下書き確定型）。
   noteDrafts: unknown[];
+  /// Web ページの訳文（web_translate）。
+  translations: unknown[];
   /// 未保存の下書きスライド（Task 11.3・save_slide の下書き確定型）。
   slideDrafts: unknown[];
   /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
@@ -153,7 +161,19 @@ type StreamState = {
   /// ボタンはまだ押せない（確定後に読み直して有効になる）。
   assistantMessageId: string | null;
   approvalPending: boolean;
+  /// 実行中の会話へ戻った直後、送り直しがこの seq に届くまで待っている（届くまでは経過を出さず
+  /// 「これまでの経過を読み込んでいます」の 1 行だけ・#1152）。null は待っていない。
+  restoreUntil: number | null;
+  /// 離れていた間までの区切りの数（これより前の操作のまとまりは 1 行に畳む・#1152）。
+  pastSegments: number;
+  /// 届き終わったら畳むか。上で経過を読んでいて離れた会話は畳まず、読んでいた位置へ戻す（#1154）。
+  collapsePast: boolean;
 };
+
+/// 再訪時の送り直しが途切れてから、届き終わったとみなすまでの時間（#1152）。
+const RESTORE_IDLE_MS = 2_000;
+/// 再訪時に送り直しが始まらないまま待つ上限（これを過ぎたら届いた分だけで出す）。
+const RESTORE_GIVE_UP_MS = 15_000;
 
 /// 順番待ちの発話（サーバは受理済み・生成がまだ始まっていない）。
 ///
@@ -179,6 +199,7 @@ const EMPTY_STREAM: StreamState = {
   workflowRefs: [],
   noteRefs: [],
   noteDrafts: [],
+  translations: [],
   slideDrafts: [],
   csvDrafts: [],
   skillDrafts: [],
@@ -189,6 +210,9 @@ const EMPTY_STREAM: StreamState = {
   assistantMessageId: null,
   runId: null,
   approvalPending: false,
+  restoreUntil: null,
+  pastSegments: 0,
+  collapsePast: true,
 };
 
 export function Conversation({
@@ -282,6 +306,10 @@ export function Conversation({
   // コンテキストの使用量（⋯ メニューから開く）。
   const [contextOpen, setContextOpen] = React.useState(false);
   const openContext = React.useCallback(() => setContextOpen(true), []);
+  // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
+  const [exportOpen, setExportOpen] = React.useState(false);
+  const openExport = React.useCallback(() => setExportOpen(true), []);
+  const canExport = messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "text" && b.text.trim()));
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
@@ -304,8 +332,19 @@ export function Conversation({
     content,
     showJump,
     scrollToBottom,
+    followLatest,
+    holdAt,
     jumpToLatest,
   } = useStickToBottom();
+  // 会話ごとのスクロール位置（戻ったときにそこから表示する・#1154）。
+  const restoreScroll = useScrollMemory({ threadId, scroller, content, holdAt });
+  // 読み込みの effect（スレッドが変わったときだけ走る）から最新の関数を呼ぶための写し。
+  const followLatestRef = React.useRef(followLatest);
+  followLatestRef.current = followLatest;
+  const restoreScrollRef = React.useRef(restoreScroll);
+  // 最初の読み込みを済ませた会話（読み直しで「戻ってきた」扱いを繰り返さない）。
+  const firstLoadDone = React.useRef<string | null>(null);
+  restoreScrollRef.current = restoreScroll;
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
@@ -317,6 +356,15 @@ export function Conversation({
     ro.observe(composerBox);
     return () => ro.disconnect();
   }, [composerBox]);
+  // 承認待ち: 読んでいる位置は動かさず、承認カードが画面外にある間だけ入力欄の上に帯を出す。
+  // タブのタイトルにも印を付ける（別のタブで待っていても気付けるように）。
+  const [approvalCard, setApprovalCard] = React.useState<HTMLDivElement | null>(null);
+  const approval = stream?.approval ?? null;
+  const approvalOffscreen = useOffscreen(scroller, approval ? approvalCard : null, composerHeight);
+  useApprovalTitle(approval !== null);
+  const revealApproval = React.useCallback(() => {
+    if (scroller && approvalCard) revealApprovalCard(scroller, approvalCard, composerHeight);
+  }, [scroller, approvalCard, composerHeight]);
   // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
   const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
   // onDone は makeHandlers の中で閉じ込められるため、最新の件数を ref で見る。
@@ -341,9 +389,13 @@ export function Conversation({
   );
 
   // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
+  // 戻った直後の送り直しを待つ間にストリームが終わったら（完了・停止・エラー）、待ちを先に終える
+  // （畳みと位置の復元をタイマーまで遅らせない）。関数は下で定義するので写しで呼ぶ。
+  const finishRestoreRef = React.useRef<() => void>(() => {});
   // `stopReason` は done で届いた、回答が途中で止まった理由（回答の下に注記を出す・GAP-106）。
   const flushStream = React.useCallback(
     (provisional: "reloading" | "stopped", stopReason: StopReason | null = null) => {
+      finishRestoreRef.current();
       const s = streamRef.current;
       if (s) finalizeStream(s, setMessages, provisional, stopReason);
       streamRef.current = null;
@@ -351,6 +403,35 @@ export function Conversation({
     },
     [],
   );
+
+  // 実行中の会話へ戻った直後の送り直しが届き終わった: ここまでの操作を畳み、いまの手順から見せる。
+  const restoreTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // 送り直しを待つ間に保留した位置の復元（届き終わる前に生成が終わった・停止した場合も必ず行う。
+  // 行わないと、その訪問の間は位置を覚えない・#1154）。
+  const scrollRestorePending = React.useRef(false);
+  const finishRestore = React.useCallback(() => {
+    clearTimeout(restoreTimer.current);
+    if (scrollRestorePending.current) {
+      scrollRestorePending.current = false;
+      // 経過が出そろってから、覚えておいた位置へ戻す（届く前に戻すと、短い本文の下端に着いて
+      // 追従へ戻ってしまう）。描画後に決めるので、下の state 更新より先に呼んでよい。
+      restoreScrollRef.current({ resuming: true });
+    }
+    const was = streamRef.current;
+    if (!was || was.restoreUntil === null) return;
+    updateStream((s) =>
+      s && s.restoreUntil !== null
+        ? {
+            ...s,
+            restoreUntil: null,
+            // 最後のまとまりはいま進んでいるものなので畳まない。
+            pastSegments: s.collapsePast ? Math.max(0, s.segments.length - 1) : 0,
+          }
+        : s,
+    );
+  }, [updateStream]);
+  finishRestoreRef.current = finishRestore;
+  React.useEffect(() => () => clearTimeout(restoreTimer.current), []);
 
   // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
   const makeHandlers = React.useCallback((): StreamHandlers => {
@@ -448,6 +529,8 @@ export function Conversation({
         ),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
+      onTranslation: (raw) =>
+        updateStream((s) => (s ? { ...s, translations: [...s.translations, raw] } : s)),
       onNoteDraft: (raw) => {
         // 下書きをストリームに残しつつ、クライアント下書きストアへ upsert（source=ai＝流し込み）。
         // 主線は下書きノート画面へ遷移。下書き画面自身は onNoteDraftOpened を渡してアクティブ切替のみ。
@@ -511,6 +594,19 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
       onContextUsage: setContextUsage,
+      onApplied: (seq) => {
+        const until = streamRef.current?.restoreUntil;
+        if (until == null) return;
+        if (seq >= until) {
+          finishRestore();
+          return;
+        }
+        // 送り直しの最後のイベントが閲覧者向けに落とされると、その seq には届かない。
+        // 送り直しの分が途切れたら（しばらく次が来なければ）終わりとみなす。サーバは送り直しを
+        // まとめて見直してから流すので、まとまりの合間は空くことがある。閾値は長めに取る。
+        clearTimeout(restoreTimer.current);
+        restoreTimer.current = setTimeout(finishRestore, RESTORE_IDLE_MS);
+      },
       onApprovalRequested: (req) =>
         updateStream((s) => (s ? { ...s, approval: req, approvalPending: false } : s)),
       onApprovalResolved: (res) =>
@@ -556,6 +652,7 @@ export function Conversation({
         setError(msg);
         // 失敗した run の途中成果物へ勝手に飛ばさない（会話に留めてユーザーに判断させる）。
         pendingOpenRef.current = null;
+        finishRestore();
         streamRef.current = null;
         setStream(null);
         cancelRef.current = null;
@@ -563,6 +660,7 @@ export function Conversation({
     };
   }, [
     flushStream,
+    finishRestore,
     updateStream,
     threadId,
     onNoteDraftOpened,
@@ -750,6 +848,7 @@ export function Conversation({
           activeRunId,
           activeRunAutonomous,
           activeAssistantMessageId,
+          activeRunLastSeq,
           queuedRuns,
           contextUsage: usage,
         }) => {
@@ -793,6 +892,10 @@ export function Conversation({
           const latest = found ? parseSkillDraft(found.draft) : null;
           if (found && latest) onSkillDraftOpened(latest, found.key);
         }
+        // この会話を開いて最初の読み込みか（順番待ちの次の run への読み直しなど、同じ会話の読み直しでは
+        // 「戻ってきた」扱いをしない。読み返している人を最新へ引き戻さない）。
+        const firstLoad = firstLoadDone.current !== threadId;
+        firstLoadDone.current = threadId;
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
           // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
@@ -802,11 +905,29 @@ export function Conversation({
             ...EMPTY_STREAM,
             runId: activeRunId,
             assistantMessageId: activeAssistantMessageId,
+            // 離れていた間の経過があれば、届き終わるまで待ってから畳んで出す（#1152）。
+            restoreUntil:
+              firstLoad && activeRunLastSeq && activeRunLastSeq > 0 ? activeRunLastSeq : null,
+            // 上で経過を読んでいて離れたなら、畳まずに読んでいた位置へ戻す（#1154）。
+            collapsePast: readThreadScroll(threadId)?.atBottom !== false,
           };
           setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());
+          if (streamRef.current.restoreUntil !== null) {
+            // 何も届かないまま待ち続けない（送り直しが始まらない・すべて落とされた）。
+            clearTimeout(restoreTimer.current);
+            restoreTimer.current = setTimeout(finishRestore, RESTORE_GIVE_UP_MS);
+          }
+          // 実行中の会話へ戻った: 回答の先頭で止めず、最新の位置（いまの操作）を追う（#1152）。
+          // 上で読んでいたなら、覚えておいた位置へ戻す方が勝つ（#1154）。経過の送り直しを待つ
+          // 間は、届き終わってから戻す（finishRestore）。
+          if (!firstLoad) return;
+          followLatestRef.current();
+          if (streamRef.current.restoreUntil === null) restoreScrollRef.current({ resuming: true });
+          else scrollRestorePending.current = true;
           return;
         }
+        restoreScrollRef.current({ resuming: false });
         // 末尾が user で未応答なら（=新規スレッド直後）ホームからの pending を送る。
         if (!sentPending.current) {
           sentPending.current = true;
@@ -865,10 +986,18 @@ export function Conversation({
               onShare={openShare}
               contextUsage={contextUsage}
               onOpenContext={openContext}
+              onExport={canExport ? openExport : undefined}
             />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
           <ContextUsageDialog usage={contextUsage} open={contextOpen} onOpenChange={setContextOpen} />
+          <ThreadExportDialog
+            open={exportOpen}
+            onOpenChange={setExportOpen}
+            threadId={threadId}
+            title={threadTitle}
+            messages={messages}
+          />
           <SaveAsAppDialog
             open={saveTarget != null}
             onOpenChange={(open) => !open && setSaveTarget(null)}
@@ -897,10 +1026,12 @@ export function Conversation({
                 ) : null}
                 {messages.map((m) =>
                   m.role === "user" ? (
-                    <UserRow key={m.id} blocks={m.content} />
+                    <div key={m.id} className="min-w-0" {...{ [ANCHOR_ATTR]: m.id }}>
+                      <UserRow blocks={m.content} />
+                    </div>
                   ) : (
+                    <div key={m.id} className="min-w-0" {...{ [ANCHOR_ATTR]: savedMessageId(m) ?? m.id }}>
                     <AssistantRow
-                      key={m.id}
                       threadId={threadId}
                       messageId={m.id}
                       savedMessageId={savedMessageId(m)}
@@ -916,14 +1047,21 @@ export function Conversation({
                       compactDisclaimer={isPanel}
                       threadTitle={threadTitle}
                     />
+                    </div>
                   ),
                 )}
                 {stream ? (
                   // 生成中の回答の先頭（ここが画面の上端に来たら追従を終える）。
-                  <div ref={stopAtRef} className="min-w-0" data-testid="streaming-row">
+                  <div
+                    ref={stopAtRef}
+                    className="min-w-0"
+                    data-testid="streaming-row"
+                    {...(stream.assistantMessageId ? { [ANCHOR_ATTR]: stream.assistantMessageId } : {})}
+                  >
                     <StreamingRow
                       stream={stream}
                       onApproval={decideApproval}
+                      approvalRef={setApprovalCard}
                       threadId={threadId}
                     />
                   </div>
@@ -956,7 +1094,17 @@ export function Conversation({
             {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、PC ではその左右に「一つ前／一つ後の
                 自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。スマホは本文を隠すので
                 「最新へ」だけにする。 */}
-            {showJump ? (
+            <ApprovalAnnouncer request={approval} />
+            {/* 承認待ちの帯は「一つ前・最新へ・一つ後」より優先する（同じ位置に出す）。 */}
+            {approval && approvalOffscreen ? (
+              <div
+                style={{ bottom: composerHeight + 12 }}
+                // left-1/2 の絶対配置は幅が親の半分に縮むので、中身の幅で取る（狭幅で文言を切らない）。
+                className="absolute left-1/2 z-10 w-max max-w-[calc(100%-2rem)] -translate-x-1/2"
+              >
+                <ApprovalBanner request={approval} onReveal={revealApproval} />
+              </div>
+            ) : showJump ? (
               <div
                 style={{ bottom: composerHeight + 12 }}
                 className="absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-2"
@@ -1090,6 +1238,8 @@ function finalizeStream(
   for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
   // 未保存の下書きノートカード（issue #282）。履歴からも下書きへ辿れるよう残す。
   for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
+  // Web ページの訳文。
+  for (const translation of s.translations) blocks.push({ type: "translation", translation });
   // 未保存の下書きスライドカード（Task 11.3）。
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   // 未保存の下書き CSV カード（Task 11.11）。
@@ -1372,6 +1522,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const noteDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "note_draft" }> => b.type === "note_draft",
   );
+  const translations = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "translation" }> => b.type === "translation",
+  );
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
   );
@@ -1406,6 +1559,10 @@ const AssistantRow = React.memo(function AssistantRow({
               />
             </div>
           </YuiActionContext.Provider>
+          {/* 訳文は外部ページ由来なので、図のボタンの文脈（YuiActionContext）の外に置く。 */}
+          {translations.map((b, i) => (
+            <TranslationBlock key={i} raw={b.translation} imageProxy={imageProxy} />
+          ))}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
           ))}
@@ -1484,13 +1641,17 @@ function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }
 function StreamingRow({
   stream,
   onApproval,
+  approvalRef,
   threadId,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
+  approvalRef: (el: HTMLDivElement | null) => void;
   threadId: string;
 }) {
+  const restoring = stream.restoreUntil !== null;
   const showLoader =
+    !restoring &&
     !stream.text &&
     !stream.thinking &&
     stream.tools.length === 0 &&
@@ -1516,29 +1677,39 @@ function StreamingRow({
           {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
           {/* 本文と操作のまとまりを起きた順に並べ、生成中の表示は末尾に置く（往復する回答で
               「いま何をしているか」が先頭に取り残されない）。 */}
-          <MessageTimeline
-            segments={segments}
-            citations={stream.citations}
-            streaming
-            memoryKey={stream.assistantMessageId}
-            imageProxy={streamImageProxy}
-            phase={runningSubtask(stream.plan)}
-            waitingLabel={waiting.label}
-          />
+          {restoring ? (
+            // 戻った直後: 届き途中の経過を 1 件ずつ見せない（リプレイのように見える・#1152）。
+            <PastWorkLoading />
+          ) : (
+            <MessageTimeline
+              segments={segments}
+              citations={stream.citations}
+              streaming
+              memoryKey={stream.assistantMessageId}
+              imageProxy={streamImageProxy}
+              phase={runningSubtask(stream.plan)}
+              waitingLabel={waiting.label}
+              collapseBefore={stream.pastSegments}
+            />
+          )}
           {showLoader ? (
             <MessageContent className="py-1">
               <Loader variant="typing" />
             </MessageContent>
           ) : null}
-          {waiting.atBottom ? <StreamWaitingLine /> : null}
+          {waiting.atBottom && !restoring ? <StreamWaitingLine /> : null}
           {stream.budget ? <BudgetBanner {...stream.budget} /> : null}
           {stream.approval ? (
             <ApprovalCard
               request={stream.approval}
               pending={stream.approvalPending}
               onDecision={onApproval}
+              cardRef={approvalRef}
             />
           ) : null}
+          {stream.translations.map((translation, i) => (
+            <TranslationBlock key={i} raw={translation} imageProxy={streamImageProxy} />
+          ))}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
           ))}

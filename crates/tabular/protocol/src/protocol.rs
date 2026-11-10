@@ -150,6 +150,9 @@ pub enum RunnerOp {
     /// 区切り文字と改行を推定して返す（[`RunnerResponse::dialect`]）。集計の読み込み（`read_csv_auto`）と同じ推定器
     /// （DuckDB の `sniff_csv`）を同じ引数で使い、CSV の編集が集計と同じ区切りで読み書きする（BUG-144）。
     Dialect,
+    /// SQL の予約語の一覧（DuckDB 自身の `duckdb_keywords()` の `reserved`・#1061）。CSV は読まない
+    /// （`csv_path` は無視）。結果は 1 列（`keyword`）の行として返す。
+    ReservedWords,
 }
 
 /// CSV の区切りと改行（[`RunnerOp::Dialect`] の答え）。

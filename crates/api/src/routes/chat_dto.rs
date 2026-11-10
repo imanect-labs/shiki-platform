@@ -87,6 +87,10 @@ pub struct MessagesResponse {
     /// **run 完了後に**押せるようになる（回答の確定時に束縛を解決する・#604）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_assistant_message_id: Option<Uuid>,
+    /// 進行中 run で、この応答の時点までに追記済みの最新イベントの seq。再訪時の SSE は run の最初から
+    /// 送り直すので、画面はこれ以下を「離れていた間までの経過」として畳んで出す（#1152）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_last_seq: Option<i64>,
     /// **順番待ち**の発話（投入順）。生成中でも発話は受け付けてサーバ側で直列化するため、
     /// 再訪時に「送ったがまだ生成が始まっていない」を復元して取り消せるようにする。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

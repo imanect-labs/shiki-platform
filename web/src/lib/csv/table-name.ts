@@ -15,7 +15,13 @@ export function isValidTableName(name: string): boolean {
 
 /// ファイル名からテーブル名の候補を作る（`売上 2024.csv` → `t1` / `Customers-Master.csv` →
 /// `customers_master`）。既に使われている名前（`taken`）と `data` は避けて連番を付ける。
-export function deriveTableName(fileName: string, taken: Iterable<string>): string {
+/// SQL の予約語（`reserved`・backend の `GET /tabular/reserved-words`）に当たる名前は
+/// `_table` を付けて避ける（`order.csv` → `order_table`）。
+export function deriveTableName(
+  fileName: string,
+  taken: Iterable<string>,
+  reserved: ReadonlySet<string> = new Set(),
+): string {
   const used = new Set(taken);
   used.add(PRIMARY_TABLE);
   let base = fileName
@@ -34,6 +40,7 @@ export function deriveTableName(fileName: string, taken: Iterable<string>): stri
       if (!used.has(`t${i}`)) return `t${i}`;
     }
   }
+  if (reserved.has(base)) base = `${base}_table`;
   if (!used.has(base)) return base;
   for (let i = 2; ; i++) {
     const candidate = `${base}_${i}`;

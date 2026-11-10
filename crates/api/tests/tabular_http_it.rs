@@ -1970,3 +1970,85 @@ async fn revert_edit_route_restores_and_detects_conflicts() {
     let (st, _) = json_body(revert(base, json!({})).await.unwrap()).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
+
+/// 予約語の一覧（#1061）: DuckDB 自身の予約語を返し、追加テーブル名の判定と一致する。
+#[tokio::test]
+async fn reserved_words_route_matches_runner_check() {
+    let Some(env) = setup().await else { return };
+    let (st, body) = json_body(
+        env.app
+            .clone()
+            .oneshot(get(&env.app, "/tabular/reserved-words"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body:?}");
+    let words: Vec<String> = serde_json::from_value(body["words"].clone()).unwrap();
+    for w in ["order", "group", "select", "from"] {
+        assert!(
+            words.iter().any(|x| x == w),
+            "{w} は予約語のはず: {words:?}"
+        );
+    }
+    // 予約語でない語（テーブル名に使える）は含まない。
+    for w in ["data", "orders", "customers", "t1"] {
+        assert!(!words.iter().any(|x| x == w), "{w} は予約語ではない");
+    }
+    // 昇順・重複なし（画面側がそのまま集合にできる）。
+    let mut sorted = words.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(words, sorted);
+
+    // 一覧に載る語は、追加テーブル名として実際にランナーが拒否する（同じ語彙で判定している）。
+    let main = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("main-{}.csv", Uuid::new_v4()),
+            b"id\n1\n",
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let extra = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("extra-{}.csv", Uuid::new_v4()),
+            b"id\n1\n",
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let (st, body) = json_body(
+        env.app
+            .clone()
+            .oneshot(post(
+                &format!("/files/{}/tabular/query", main.id),
+                json!({"sql": "SELECT 1", "tables": [{"name": "order", "file_id": extra.id}]}),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body:?}");
+    assert!(body.to_string().contains("予約語"), "{body:?}");
+
+    // 2 回目は使い回し（同じ一覧）。
+    let (st, again) = json_body(
+        env.app
+            .clone()
+            .oneshot(get(&env.app, "/tabular/reserved-words"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(again["words"], json!(words));
+}

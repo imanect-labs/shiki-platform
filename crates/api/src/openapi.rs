@@ -122,6 +122,7 @@ use utoipa::{
         crate::routes::tabular::post_query,
         crate::routes::tabular::post_patch,
         crate::routes::tabular::post_save,
+        crate::routes::tabular::get_reserved_words,
         crate::routes::office::create_office_session,
         crate::routes::office::insert_office_chart,
         crate::routes::chat_approval::submit_approval,

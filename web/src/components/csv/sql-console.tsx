@@ -34,6 +34,7 @@ import {
   CsvFolderUnavailable,
   CsvNameTaken,
   csvFileName,
+  getReservedWords,
   runQuery,
   saveNewCsv,
   tableToCsv,
@@ -133,6 +134,19 @@ export function SqlConsole({
   const [dest, setDest] = useSaveDestination(nodeId, canEditFile);
   const [tables, setTables] = React.useState<ExtraTable[]>([]);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  // SQL の予約語（取れるまでは空＝補完・事前検証で避けないだけ。最終判定は backend）。
+  const [reserved, setReserved] = React.useState<ReadonlySet<string>>(() => new Set());
+  React.useEffect(() => {
+    let alive = true;
+    getReservedWords()
+      .then((words) => {
+        if (alive) setReserved(words);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // テーブル名の検証（形・data との衝突・重複）。最終判定は backend だが、送る前に気づけるようにする。
   const tableErrors = React.useMemo(() => {
@@ -142,11 +156,13 @@ export function SqlConsole({
       if (t.name === PRIMARY_TABLE) errors.set(t.key, "data はこの CSV の名前です");
       else if (!isValidTableName(t.name))
         errors.set(t.key, "英小文字・数字・_ で、先頭は数字以外にしてください");
+      else if (reserved.has(t.name))
+        errors.set(t.key, `${t.name} は SQL の予約語なので使えません（例: ${t.name}_table）`);
       else if (seen.has(t.name)) errors.set(t.key, "同じ名前が使われています");
       seen.add(t.name);
     }
     return errors;
-  }, [tables]);
+  }, [tables, reserved]);
   const firstTableError = tableErrors.values().next().value as string | undefined;
 
   const addTable = (node: NodeResponse) => {
@@ -157,6 +173,7 @@ export function SqlConsole({
         name: deriveTableName(
           node.name,
           cur.map((t) => t.name),
+          reserved,
         ),
         fileId: node.id,
         fileName: node.name,

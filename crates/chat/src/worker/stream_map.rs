@@ -69,6 +69,9 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::NoteDraft { draft } => StreamEventKind::NoteDraft {
             draft: draft.clone(),
         },
+        AgentEvent::Translation { translation } => StreamEventKind::Translation {
+            translation: translation.clone(),
+        },
         AgentEvent::SlideDraft { draft } => StreamEventKind::SlideDraft {
             draft: draft.clone(),
         },

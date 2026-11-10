@@ -234,6 +234,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::FsDelete
         | ToolName::Shell
         | ToolName::Subagent
+        // 訳文は会話に直接表示し、履歴には要約の 1 行しか残らない。
+        | ToolName::WebTranslate
         // 書き方の説明で、回答の根拠になる資料ではない。
         | ToolName::UiReference
         | ToolName::EmitUi

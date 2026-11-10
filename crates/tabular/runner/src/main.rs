@@ -97,6 +97,11 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         }
     }
     let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    if matches!(req.op, RunnerOp::ReservedWords) {
+        // ファイルは一切読まない（csv_path は無視）。それでも外部アクセスは封じてから引く。
+        lockdown(&conn)?;
+        return reserved_words(&conn);
+    }
     if matches!(req.op, RunnerOp::Dialect) {
         // 推定だけ（利用者の SQL は流さない）。読むのは渡された信頼パスだけ。
         set_quotas(&conn, req)?;
@@ -128,6 +133,7 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
         RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows, req.max_result_bytes),
         RunnerOp::Dialect => Err("unreachable: dialect".into()),
+        RunnerOp::ReservedWords => Err("unreachable: reserved_words".into()),
     }?;
     // Excel のシートの一覧と、data の見出しにした行（GAP-84・GAP-83）。
     if let Some(book) = book {
@@ -135,6 +141,23 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         response.header_row = book.header_row;
     }
     Ok(response)
+}
+
+/// SQL の予約語（引用符なしの識別子に使えない語）を DuckDB 自身から引く（#1061）。
+/// 追加テーブル名の予約語判定（[`lockdown_load`]）と同じ条件。
+fn reserved_words(conn: &Connection) -> Result<RunnerResponse, String> {
+    // 予約語は百語程度。上限に当たったら欠けた一覧を返さず失敗にする（欠けると補完が予約語を出す）。
+    let resp = query::read_rows(
+        conn,
+        "SELECT keyword_name AS keyword FROM duckdb_keywords() \
+         WHERE keyword_category = 'reserved' ORDER BY keyword_name",
+        10_000,
+        None,
+    )?;
+    if resp.truncated {
+        return Err("予約語の一覧が多すぎます".into());
+    }
+    Ok(resp)
 }
 
 /// メモリ/スレッド/一時領域のクォータ。

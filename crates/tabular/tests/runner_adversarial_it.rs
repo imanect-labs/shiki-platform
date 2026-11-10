@@ -710,3 +710,32 @@ async fn extra_tables_keep_external_access_locked() {
         assert!(!resp.ok, "拒否されるべき: {sql}");
     }
 }
+
+/// 予約語の一覧（#1061）: CSV を読まずに DuckDB の予約語を返す。
+#[tokio::test]
+async fn reserved_words_lists_duckdb_reserved_keywords() {
+    let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    let config = RunnerConfig::new(path.to_string_lossy().to_string(), Duration::from_secs(20));
+    // csv_path は無視される（存在しないパスでも読みに行かない）。
+    let req = RunnerRequest {
+        op: RunnerOp::ReservedWords,
+        csv_path: "/nonexistent/should-not-be-read.csv".into(),
+        format: InputFormat::Csv,
+        memory_limit_mb: 256,
+        max_rows: 0,
+        max_result_bytes: None,
+        extra_tables: Vec::new(),
+    };
+    let resp = tabular::runner::run_isolated(&config, &req).await.unwrap();
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.columns, vec!["keyword".to_string()]);
+    let words: Vec<String> = resp.rows.into_iter().filter_map(|r| r[0].clone()).collect();
+    for w in ["order", "group", "select"] {
+        assert!(words.contains(&w.to_string()), "{w}: {words:?}");
+    }
+    assert!(!words.contains(&"data".to_string()));
+    assert!(!resp.truncated);
+}

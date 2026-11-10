@@ -60,6 +60,8 @@ pub enum StreamEventKind {
     NoteRef { note: serde_json::Value },
     /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
     NoteDraft { draft: serde_json::Value },
+    /// ページの訳文（web_translate・docs/agent/web-translate.md §4.6）。
+    Translation { translation: serde_json::Value },
     /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
@@ -142,6 +144,7 @@ impl StreamEventKind {
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",
             StreamEventKind::NoteDraft { .. } => "note_draft",
+            StreamEventKind::Translation { .. } => "translation",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
             StreamEventKind::SkillDraft { .. } => "skill_draft",

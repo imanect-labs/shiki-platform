@@ -48,9 +48,9 @@ export function saveFailedMessage(e: unknown, parentId: string | null): string {
     : "保存に失敗しました。";
 }
 
-/// 出典に社内文書を持つ回答をドライブへ置くときの注意（チャットの書き出し・下書きノートの保存で共用）。
+/// 出典に社内文書を持つ回答・会話をドライブへ置くときの注意（チャットの書き出し・下書きノートの保存で共用）。
 export const SOURCES_NOTICE =
-  "この回答には出典の文書の内容が含まれます。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。";
+  "出典の文書の内容が含まれています。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。";
 
 export function SaveDraftDialog({
   open,

@@ -69,7 +69,8 @@ pub use tool_search::CatalogSearch;
 pub use tools::{
     run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, QuoteCheckTool,
-    ShellTool, SubagentLimits, SubagentTool, WebFetchTool, WebSearchTool,
+    ShellTool, SubagentLimits, SubagentTool, TranslateLimits, WebFetchTool, WebSearchTool,
+    WebTranslateTool,
 };
 pub use vocab::{MetaToolName, ToolLoading, ToolName, USER_SELECTABLE_TOOLS};
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};

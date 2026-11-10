@@ -61,14 +61,9 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS workflow_run_gc_idx
 CREATE INDEX CONCURRENTLY IF NOT EXISTS effect_journal_gc_idx
     ON effect_journal (tenant_id, created_at);
 
--- #829 / migration 0082: 監査ログを 1 回答・1 会話の記録で絞る（持つ行だけの部分索引）
-CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_message_idx
-    ON audit_log (tenant_id, org, (metadata ->> 'message_id'), created_at DESC, id DESC)
-    WHERE metadata ? 'message_id';
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_tenant_thread_idx
-    ON audit_log (tenant_id, org, (metadata ->> 'thread_id'), created_at DESC, id DESC)
-    WHERE metadata ? 'thread_id';
+-- #829 / migration 0082 の audit_log_tenant_message_idx / audit_log_tenant_thread_idx は
+-- migration 0115 が普通の列の索引に置き換えて落とす。0115 より前のバージョンへ入れるときだけ作る。
+-- 0115 の事前作業は §6。
 
 -- #879 / migration 0083: サイドバー履歴のピン留め一覧・スレッドの run を thread_id で引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS thread_owner_pinned_idx
@@ -87,17 +82,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
-**ドライブの `node` の索引（migration 0134 `node_shared_scan_idx`・0137 `node_name_scan_idx` と
+**ドライブの `node` の索引（migration 0136 `node_shared_scan_idx`・0139 `node_name_scan_idx` と
 `node_name_scan_desc_idx`・BUG-162・BUG-187）** も、上と同じ手順で事前に作れる（どれも `create index if not exists`）。
 構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が大きな
 環境では事前に作るか、停止時間を取って当てる（読むのは止まらない）。
 
 ```sql
--- BUG-162 / migration 0134: ドライブの「共有されたもの」を更新の順に引く
+-- BUG-162 / migration 0136: ドライブの「共有されたもの」を更新の順に引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
     ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
 
--- BUG-187 / migration 0137: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
+-- BUG-187 / migration 0139: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
     ON node (tenant_id, org, (kind <> 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_desc_idx
@@ -233,3 +228,119 @@ shiki-server は**実行時**と**migration** で別の接続を使う。superus
 - 実行時の ANALYZE（構造化データのパーティションの統計・#986）は、PG16 ではテーブル所有者にしかできないため、
   `data_*` に絞った SECURITY DEFINER 関数 `shiki_analyze(regclass, skip_locked)` を経由する。
 - 実行時ロールは `_sqlx_migrations`（migration の台帳）に触れない。
+
+## 5. テナント表の RLS（#1067・段階導入の第 2 段）
+
+migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（`ENABLE` と `FORCE`、ポリシー
+`shiki_tenant_isolation`）。対象外は次の明示リストだけ（`crates/storage/tests/rls_it.rs` の `EXCLUDED` と一致）:
+
+| 表 | 対象外の理由 |
+| --- | --- |
+| `data_*` | `tenant_int`・パーティション・プール分割の上にある。別の段で扱う |
+| `outbox_delivery_seq` | `tenant_id` が NULL を取り得る（consumer 単位の採番） |
+
+`audit_log`・`storage_event_outbox` は 0114 では対象外にし、migration 0115（#1074）で対象に入れた（§6）。
+
+- **今は移行モード。** トランザクションのテナント文脈（`app.tenant_id`）が未設定なら従来どおり通し、設定されて
+  いればその `tenant_id` の行だけを読み書きさせる。文脈は `storage::db_tenant::begin_tenant_tx`（または
+  `set_tenant`）がトランザクション限り（`SET LOCAL` 相当）で設定する。既存の SQL は第 3 段でクレートごとに
+  この実行器へ移し、全経路を移したら未設定を拒否する厳格モードへ切り替える。
+- **テナント横断の保守処理**は `storage::db_tenant::begin_cross_tenant_tx(pool, "<purpose>")` を使う。
+  トランザクションの中で `shiki_maintenance`（NOLOGIN・BYPASSRLS）に切り替え、`application_name` を
+  `shiki:cross-tenant:<purpose>` にする（`pg_stat_activity` で追える）。
+- **適用のタイミング。** 0114 は約 66 表の ACCESS EXCLUSIVE ロックを 1 トランザクションで取る。`lock_timeout`
+  （5 秒）で打ち切るので全表が止まり続けることはないが、長いクエリやバッチが走っていると起動時の migration が
+  失敗して再起動を繰り返す。負荷の低い時間帯にデプロイする。
+- **`shiki_maintenance` の用意。** migration 0114 が作り、`shiki_runtime` に INHERIT FALSE / SET TRUE で付与する。
+  BYPASSRLS のロールを作れるのは superuser（PG16 では CREATEROLE かつ自身が BYPASSRLS）だけで、付与にはこの
+  ロールの ADMIN が要る。migration の実行ロールにその権限が無い環境では、0114 は NOTICE を出して作成・付与を
+  飛ばす（migration は止まらない）。その場合は superuser（またはマネージド Postgres の管理ロール）で次を流す:
+  ```sql
+  CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
+  GRANT shiki_maintenance TO shiki_runtime WITH INHERIT FALSE, SET TRUE;
+  -- 以下は 0114 が飛ばした権限の付与（migration の所有者のロールで流す）
+  GRANT USAGE ON SCHEMA public TO shiki_maintenance;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shiki_maintenance;
+  GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_maintenance;
+  REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_maintenance;
+  GRANT EXECUTE ON FUNCTION shiki_analyze(regclass, boolean) TO shiki_maintenance;
+  -- 以後の migration で増える表と sequence にも付ける（既定権限は作ったロールごとに効く）
+  ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_maintenance;
+  ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_maintenance;
+  ```
+  移行モードのうちは、ロールが無くても既存の経路は壊れない（横断処理は文脈を設定しないだけで動く）。
+  `begin_cross_tenant_tx` を使う経路だけがロールの切り替えで失敗する。BYPASSRLS のロールを作れない環境では、
+  第 3 段の厳格化の前に横断処理の扱いを決め直す。
+- **migration の所有者ロールを替えたとき**は、§4 の既定権限に加えて `shiki_maintenance` にも同じ既定権限を付け直す。
+- **バックアップ（`pg_dump`）。** `pg_dump` は既定で `row_security = off` で読む。FORCE を付けたので、superuser でも
+  BYPASSRLS でもない所有者（マネージド Postgres のマスタユーザ等）でダンプすると
+  `query would be affected by row-level security policy` で失敗する。`--enable-row-security` を付ける
+  （移行モードでは文脈が未設定なので全行が出る）か、BYPASSRLS のロールでダンプする。
+- **新しいテナント表を足す migration** は、同じ `ENABLE` / `FORCE` / `CREATE POLICY shiki_tenant_isolation` を
+  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に式インデックスや
+  GIN（leakproof でない演算子でしか引けないインデックス）を足したときも同じテストが落ちる。
+- psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
+  `SELECT set_config('app.tenant_id', '<tenant>', false)` する。
+
+## 6. `audit_log`・`storage_event_outbox` の RLS（migration 0115・#1074）
+
+RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`・`@>`、配列の `@>` 等）を含む条件を
+インデックス条件に使えない。この 2 表は jsonb の式インデックスと GIN で引いていたので、0115 は引く値を
+普通の列に写し、btree で引くように置き換えてから RLS を付ける。
+
+| 表 | 追加する列・表 | 値の出どころ（挿入時のトリガで写す） |
+| --- | --- | --- |
+| `audit_log` | `meta_thread_id`・`meta_message_id` | `metadata ->> 'thread_id'` / `'message_id'` |
+| `audit_cited_chunk`（新表・1 行 = 1 引用） | `audit_id`・`chunk_id`・`tenant_id`・`org`・`created_at` | `action = 'rag.search'` の `metadata -> 'cited_chunk_ids'` の各要素。親の削除で消える（`ON DELETE CASCADE`） |
+| `storage_event_outbox` | `payload_event_type`・`payload_table_id` | `payload ->> 'event_type'` / `'table_id'` |
+
+- **行数の多い環境ではデプロイ前に手で済ませておく。** 0115 は既存行を `UPDATE` / `INSERT` で埋め、索引を通常の
+  `CREATE INDEX` で作る。列の追加で取る ACCESS EXCLUSIVE をコミットまで持つので、その間は 2 表の読み書きが
+  止まる（目安: 各 20 万行で合計 15 秒ほど。監査画面の閲覧も待つ）。ロックは `audit_log` → `storage_event_outbox`
+  の順に取り、`lock_timeout`（5 秒）を超えると migration が失敗して起動をやり直す。先に済ませておけば、
+  0115 の該当部分は条件付きの `UPDATE`・`IF NOT EXISTS` なのでほぼ何もしない。手順は次のとおり
+  （**単独セッションで 1 文ずつ**。列とトリガは 0115 と同じ定義を先に入れる）:
+  ```sql
+  -- 1) 列とトリガ（一瞬で終わる）。0115 の §1〜§3 の ALTER TABLE ... ADD COLUMN・CREATE FUNCTION・
+  --    CREATE TRIGGER・CREATE TABLE audit_cited_chunk をそのまま流す。以後の挿入はトリガが埋める。
+  -- 2) 既存行の埋め戻し。長いトランザクションを避けるため id の範囲で区切って繰り返す。
+  UPDATE audit_log
+     SET meta_thread_id = metadata ->> 'thread_id', meta_message_id = metadata ->> 'message_id'
+   WHERE id BETWEEN :lo AND :hi
+     AND ((metadata ? 'thread_id' AND meta_thread_id IS NULL)
+       OR (metadata ? 'message_id' AND meta_message_id IS NULL));
+  INSERT INTO audit_cited_chunk (audit_id, chunk_id, tenant_id, org, created_at)
+  SELECT a.id, c, a.tenant_id, a.org, a.created_at
+    FROM audit_log a, jsonb_array_elements_text(a.metadata -> 'cited_chunk_ids') AS c
+   WHERE a.id BETWEEN :lo AND :hi
+     AND a.action = 'rag.search' AND jsonb_typeof(a.metadata -> 'cited_chunk_ids') = 'array'
+     AND c IS NOT NULL
+  ON CONFLICT DO NOTHING;
+  UPDATE storage_event_outbox
+     SET payload_event_type = payload ->> 'event_type', payload_table_id = payload ->> 'table_id'
+   WHERE id BETWEEN :lo AND :hi
+     AND ((payload ? 'event_type' AND payload_event_type IS NULL)
+       OR (payload ? 'table_id' AND payload_table_id IS NULL));
+  -- 3) 索引（§1 と同じく CONCURRENTLY。失敗したら無効な索引を落としてやり直す）
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_meta_thread_idx
+      ON audit_log (tenant_id, org, meta_thread_id, created_at DESC, id DESC)
+      WHERE meta_thread_id IS NOT NULL;
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_meta_message_idx
+      ON audit_log (tenant_id, org, meta_message_id, created_at DESC, id DESC)
+      WHERE meta_message_id IS NOT NULL;
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_cited_chunk_lookup_idx
+      ON audit_cited_chunk (tenant_id, org, chunk_id, created_at DESC, audit_id DESC);
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS storage_event_outbox_table_change_idx
+      ON storage_event_outbox (tenant_id, payload_table_id, payload_event_type, id)
+      WHERE payload_table_id IS NOT NULL;
+  ```
+  旧索引（`audit_log_tenant_thread_idx`・`audit_log_tenant_message_idx`・`audit_log_cited_chunks_idx`・
+  `storage_event_outbox_data_change_idx`）は 0115 が落とす。落とす前に新しいコードが動いている必要があるので、
+  手で先に落とさない。
+- **書込のコスト。** `audit_log` の挿入はトリガの分だけ重くなる（引用 3 件の `rag.search` で 1 行あたり約 0.1 ms）。
+  `storage_event_outbox` は 1 行あたり数 µs。
+- **jsonb を直接書き換えるとき**（手作業の修正など）も、`UPDATE OF metadata` / `UPDATE OF payload` でトリガが列を
+  写し直す。`audit_cited_chunk` は挿入時にだけ作るので、`cited_chunk_ids` を書き換えたら手で直す
+  （監査ログは追記専用なので、通常は起きない）。

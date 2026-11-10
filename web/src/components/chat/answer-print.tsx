@@ -1,13 +1,14 @@
 "use client";
 
-/// 回答 1 件をその場で印刷する（#1048・PDF の書き出し）。ブラウザの「PDF に保存」で PDF 化する。
+/// 回答・会話をその場で印刷する（#1048・PDF の書き出し）。ブラウザの「PDF に保存」で PDF 化する。
 ///
 /// 会話画面は回答の本文・出典を既に持っているので、取り直さずに印刷用の層（body 直下のポータル）へ
 /// 描き、印刷の間だけアプリの画面を隠す（globals.css の `body.printing-answer`）。新しいタブで会話を
 /// 丸ごと読み直すと、長い会話ほど無関係な履歴の取得が増えるため。
 ///
 /// 描画はチャットと同じ Markdown（```ui の図は SVG のまま印刷・出典に現れた画像だけ読み込む・PIT-77）。
-/// 出典チップの名前は呼び出し側の MessageCitationsProvider の値を使う（React のツリーで引き継ぐ）。
+/// 回答ごとに出典の文脈（[`MessageCitationsProvider`]）を張り直し、引用番号と出典の一覧を回答ごとに解く
+/// （番号は回答ごとに 1 から振られる）。
 
 import * as React from "react";
 import { createPortal } from "react-dom";
@@ -15,35 +16,45 @@ import { createPortal } from "react-dom";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { sourcesMarkdown } from "@/lib/answer-export";
 import type { ImageSources } from "@/lib/answer-images";
+import type { LinkSources } from "@/lib/answer-links";
 import type { Citation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { formatDateTime } from "@/lib/format";
-import { useMessageCitations } from "./citations/citation-context";
+import { usePreferences } from "@/lib/preferences";
+import { MessageCitationsProvider, useMessageCitations } from "./citations/citation-context";
 
 /// 画像の読み込みを待つ上限（届かない画像があっても印刷は出す）。
 const IMAGE_WAIT_MS = 3000;
 const BODY_CLASS = "printing-answer";
 
-export function AnswerPrint({
-  text,
-  citations,
-  imageSources,
-  title,
-  onDone,
-}: {
+/// 印刷する 1 組（質問は会話全体の書き出しで「質問も含める」ときだけ）。
+export type PrintItem = {
+  key: string;
+  question: string | null;
   text: string;
   citations: readonly Citation[];
   imageSources: ImageSources;
+  /// 回答の出典のホスト（#1143）。出典に無い外部リンクはリンクにせず、行き先を添えた文字にする。
+  linkSources: LinkSources;
+};
+
+export function ExportPrint({
+  title,
+  subtitle,
+  items,
+  onDone,
+}: {
   title: string | null;
+  /// 題名の横の説明（「Shiki の回答」「Shiki との会話」）。
+  subtitle: string;
+  items: readonly PrintItem[];
   /// 印刷ダイアログを閉じた（または出せなかった）。呼び出し側はこの層を外す。
   onDone: () => void;
 }) {
-  const cited = useMessageCitations();
   const root = React.useRef<HTMLDivElement>(null);
   const done = React.useRef(onDone);
   done.current = onDone;
   const [printedAt] = React.useState(() => new Date().toISOString());
-  const sources = cited ? sourcesMarkdown(text, citations, cited.nameOf) : null;
 
   React.useEffect(() => {
     let cancelled = false;
@@ -84,15 +95,51 @@ export function AnswerPrint({
       <p className="mb-6 border-b pb-3 text-xs text-muted-foreground">
         {title ? <span className="font-medium text-foreground/80">{title}</span> : null}
         {title ? " ・ " : null}
-        Shiki の回答 ・ {formatDateTime(printedAt)} に書き出し
+        {subtitle} ・ {formatDateTime(printedAt)} に書き出し
       </p>
-      <Markdown imageSources={imageSources}>{linkifyCitations(text, citations)}</Markdown>
+      <div className="space-y-8">
+        {items.map((item) => (
+          <MessageCitationsProvider
+            key={item.key}
+            messageKey={`print:${item.key}`}
+            citations={item.citations}
+            text={item.text}
+          >
+            <PrintTurn item={item} />
+          </MessageCitationsProvider>
+        ))}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function PrintTurn({ item }: { item: PrintItem }) {
+  const cited = useMessageCitations();
+  const questionAsMarkdown = usePreferences().prefs.input_format === "markdown";
+  const sources = cited ? sourcesMarkdown(item.text, item.citations, cited.nameOf) : null;
+  return (
+    <section className="answer-print-turn" data-testid="answer-print-turn">
+      {item.question ? (
+        <div className="mb-4 rounded-md border-l-2 border-border pl-3" data-testid="answer-print-question">
+          <p className="mb-1 text-xs font-medium text-muted-foreground">質問</p>
+          {/* 利用者が書いた文。チャットの吹き出しと同じく、書き方の設定が Markdown なら信頼しない
+              Markdown として（図・画像にしない・リンクの行き先を見せる）、テキストなら打ったとおりに描く。 */}
+          {questionAsMarkdown ? (
+            <Markdown untrusted breaks>
+              {item.question}
+            </Markdown>
+          ) : (
+            <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{item.question}</p>
+          )}
+        </div>
+      ) : null}
+      <Markdown imageSources={item.imageSources} linkSources={item.linkSources}>{linkifyCitations(item.text, item.citations)}</Markdown>
       {sources ? (
-        <div className="mt-8 border-t pt-4 text-sm" data-testid="answer-print-sources">
+        <div className="mt-6 border-t pt-4 text-sm" data-testid="answer-print-sources">
           <Markdown className="text-sm">{sources}</Markdown>
         </div>
       ) : null}
-    </div>,
-    document.body,
+    </section>
   );
 }

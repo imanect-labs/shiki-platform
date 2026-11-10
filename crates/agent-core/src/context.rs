@@ -191,7 +191,10 @@ fn fold(content: &str, is_error: bool) -> String {
     } else {
         "出力"
     };
-    format!("{}{FOLD_MARK}: {tag} {omitted} バイト］", &content[..end])
+    // 切れ目が封筒（<document> / <web_page>）の内側なら閉じてから注記を付ける。閉じないと
+    // こちらの注記まで「文書のデータ」に見える（#1065）。
+    let head = crate::tools::document_envelope::close_dangling(&content[..end]);
+    format!("{head}{FOLD_MARK}: {tag} {omitted} バイト］")
 }
 
 /// 省略（畳み込み）を始める閾値の、有効窓に対する千分率。
@@ -437,6 +440,23 @@ mod tests {
         // パニックせず、頭は「あ」で始まる。
         if let Block::ToolResult { content, .. } = &msgs[0].content[0] {
             assert!(content.starts_with('あ'));
+        }
+    }
+
+    /// 切れ目が封筒の内側なら、省略の注記の前で封筒を閉じる（注記を文書のデータに見せない・#1065）。
+    #[test]
+    fn fold_closes_an_envelope_cut_in_the_middle() {
+        let big = format!(
+            "前置き\n<document>\n出典: a.pdf\n\n{}\n</document>\n",
+            "本文".repeat(600)
+        );
+        let mut msgs = vec![tool_result(&big, false)];
+        assert!(prune_history(&mut msgs, 1, 0));
+        if let Block::ToolResult { content, .. } = &msgs[0].content[0] {
+            let close = content.find("</document>").unwrap();
+            let mark = content.find(FOLD_MARK).unwrap();
+            assert!(close < mark, "{content}");
+            assert!(content.contains("出典: a.pdf"), "{content}");
         }
     }
 
