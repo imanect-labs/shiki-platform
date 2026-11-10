@@ -18,6 +18,7 @@ mod advance;
 mod approval;
 mod backoff;
 mod claim;
+mod digest;
 mod gc;
 mod history;
 mod limits;
@@ -32,6 +33,10 @@ pub use approval::{
     ApprovalWait, DueApprovalCursor, DueApprovalPage, PendingApproval, ResolvedApproval,
 };
 pub use claim::{LEASE_RECLAIMS_EXHAUSTED_MESSAGE, MAX_LEASE_RECLAIMS};
+pub use digest::{
+    DigestError, DigestMapCount, DigestRecord, DigestSkip, DigestStep, RecordChange, RunDigest,
+    DIGEST_OUTPUT_CHARS, MAX_DIGEST_RECORDS,
+};
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use limits::PromoteReport;

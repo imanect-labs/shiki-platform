@@ -86,8 +86,10 @@ pub(super) const WAITING_FOR: &str = "CASE WHEN r.status = 'running' AND NOT EXI
                         AND s.run_id = r.run_id AND s.status = 'waiting_timer') THEN 'timer' \
      END END";
 
-/// 本人が画面・会話から起動した run だけ（別名 `r`・$1 テナント・$3 本人・$4 org）。
-const OWN_RUN: &str = "r.tenant_id = $1 AND r.principal = $3 AND r.principal_kind = 'user' \
+/// 本人が画面・会話から起動した run だけ（別名 `r`・$1 テナント・$3 本人・$4 org）。試運転の要約（`digest`）も
+/// この 1 つの定義で絞る（述語を書き写さない）。
+pub(super) const OWN_RUN: &str =
+    "r.tenant_id = $1 AND r.principal = $3 AND r.principal_kind = 'user' \
      AND r.org = $4 AND r.trigger_kind = 'interactive'";
 
 type OwnRow = (

@@ -42,11 +42,13 @@ pub use outcome::{
 };
 pub use planned::{parse_trial_scheduled_at, ScheduledAtSource};
 pub use store::{
-    ApprovalWait, CancelOutcome, DataWaitCandidate, DueApprovalCursor, DueApprovalPage,
-    DueSweepLimits, EventWaitGate, EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState,
-    OwnOutcome, PendingApproval, PromoteReport, ResolvedApproval, ResumeOutcome, RunDetail,
+    ApprovalWait, CancelOutcome, DataWaitCandidate, DigestError, DigestMapCount, DigestRecord,
+    DigestSkip, DigestStep, DueApprovalCursor, DueApprovalPage, DueSweepLimits, EventWaitGate,
+    EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState, OwnOutcome, PendingApproval,
+    PromoteReport, RecordChange, ResolvedApproval, ResumeOutcome, RunDetail, RunDigest,
     RunEventRow, RunListFilter, RunListItem, RunOrigin, RunOutcomeReader, RunStatusReader,
-    RunStore, RunStoreError, StepDetail, StepOverview, WORKFLOW_GC_QUEUE,
+    RunStore, RunStoreError, StepDetail, StepOverview, DIGEST_OUTPUT_CHARS, MAX_DIGEST_RECORDS,
+    WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
 
