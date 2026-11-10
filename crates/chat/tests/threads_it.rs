@@ -1513,10 +1513,16 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
         }
     }
     assert!(parked, "承認待ちの間は枠を返す（他の run が生成できる）");
-    assert_eq!(
-        store.run_status(c.tenant_id(), run_id).await.unwrap(),
-        Some(RunStatus::WaitingApproval)
-    );
+    // 枠を返してから承認待ちへ遷移するので、状態は少し遅れて変わる（混んだマシンでは 1 回の読みでは間に合わない）。
+    let mut status = None;
+    for _ in 0..60 {
+        status = store.run_status(c.tenant_id(), run_id).await.unwrap();
+        if status == Some(RunStatus::WaitingApproval) {
+            break;
+        }
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+    }
+    assert_eq!(status, Some(RunStatus::WaitingApproval));
     // 承認待ちのツール呼び出しが run に残る（再読込後も引ける）。
     assert_eq!(
         store.pending_approval(run_id).await.unwrap(),
