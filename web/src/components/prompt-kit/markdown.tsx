@@ -14,6 +14,7 @@ import { EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
 import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
+import { decideAnswerLink, type LinkSources } from "@/lib/answer-links";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -22,6 +23,7 @@ import { CodeBlock } from "./code-block";
 import { MathTex, mathKind, mayHaveMath, useMathPlugins } from "./markdown-math";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
+import { UnverifiedLink, UnverifiedLinkDialog, useUnverifiedOpen } from "./unverified-link";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
 
 /// 画面の表（```data_grid）はミニアプリの画面でだけ使うので、グリッド本体は遅延読み込みする
@@ -184,6 +186,8 @@ function codeClassName(child: React.ReactNode): string | undefined {
 /// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
 /// `page` は外部ページ由来の本文（Web ページの訳文）。図・表・引用番号にせず、リンク先を見せる。
 /// 数式と、出所の判定を通った画像だけは描く（docs/agent/web-translate.md §4.6）。
+/// `linkSources` は回答の出典のホスト（lib/answer-links）。あれば、出典に無い外部リンクは確認してから開く（#1143）。
+/// null は確認しない（回答以外の本文: ノート・ヘルプなど）。
 const SourceContext = React.createContext<{
   text: string;
   streaming: boolean;
@@ -191,6 +195,7 @@ const SourceContext = React.createContext<{
   page: boolean;
   imageSources: ImageSources;
   imageProxy: ImageProxy | null;
+  linkSources: LinkSources | null;
 }>({
   text: "",
   streaming: false,
@@ -198,6 +203,7 @@ const SourceContext = React.createContext<{
   page: false,
   imageSources: NO_IMAGE_SOURCES,
   imageProxy: null,
+  linkSources: null,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -334,6 +340,11 @@ function BlockedImage({
     </>
   );
   const label = `${reason}（${host}）`;
+  // 回答の本文なら、出典に無い行き先は押したときに確認してから開く（#1143。画像の URL に会話の中身を
+  // 載せて送らせる経路は、押す操作でも開いてしまう）。
+  const { linkSources } = React.useContext(SourceContext);
+  const guard = useUnverifiedOpen();
+  const guarded = linkSources !== null && decideAnswerLink(href, linkSources).kind === "unverified";
   // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
   if (inLink) {
     return (
@@ -347,14 +358,16 @@ function BlockedImage({
     );
   }
   return (
+    <>
     <a
       href={href}
-      target="_blank"
+      target={guarded ? undefined : "_blank"}
       rel="noopener noreferrer nofollow"
       referrerPolicy="no-referrer"
-      title={`${label}。押すと新しいタブで開きます: ${href}`}
-      aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
+      title={`${label}。押すと${guarded ? "確認してから" : ""}新しいタブで開きます: ${href}`}
+      aria-label={`${alt || "画像"}: ${label}。押すと${guarded ? "確認してから" : ""}新しいタブで開きます`}
       data-testid="answer-image-blocked"
+      {...(guarded ? guard.handlers : {})}
       className={cn(
         // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
         "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
@@ -365,6 +378,10 @@ function BlockedImage({
     >
       {content}
     </a>
+    {guarded ? (
+      <UnverifiedLinkDialog open={guard.open} onOpenChange={guard.setOpen} href={href} label={host} />
+    ) : null}
+    </>
   );
 }
 
@@ -435,7 +452,7 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
 
 /// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
 function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
-  const { untrusted, page } = React.useContext(SourceContext);
+  const { untrusted, page, linkSources } = React.useContext(SourceContext);
   const url = href ?? "";
   // 外部ページの本文のリンクも、引用番号・アプリ内の遷移にしない（http(s) だけ・行き先のホストを見せる）。
   if (untrusted || page) return <UserLink href={url}>{children}</UserLink>;
@@ -457,16 +474,24 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
       </Link>
     );
   }
+  const linkClass = cn(
+    "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+    WRAP_ANYWHERE,
+  );
+  // 回答の本文なら、出典（Web の引用）に無い行き先は確認してから開く（#1143）。
+  if (linkSources) {
+    const decision = decideAnswerLink(url, linkSources);
+    if (decision.kind === "plain") return <>{children}</>;
+    if (decision.kind === "unverified") {
+      return (
+        <UnverifiedLink href={decision.href} label={decision.label} className={linkClass}>
+          {children}
+        </UnverifiedLink>
+      );
+    }
+  }
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={cn(
-        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-        WRAP_ANYWHERE,
-      )}
-    >
+    <a href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
       {children}
     </a>
   );
@@ -605,6 +630,7 @@ export function Markdown({
   page = false,
   imageSources = NO_IMAGE_SOURCES,
   imageProxy = null,
+  linkSources = null,
 }: {
   children: string;
   className?: string;
@@ -623,6 +649,9 @@ export function Markdown({
   imageSources?: ImageSources;
   /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。省略すると出典の画像も読み込まずリンクにする。
   imageProxy?: ImageProxy | null;
+  /// 回答の出典のホスト（lib/answer-links の answerLinkSources）。渡すと、出典に無い外部リンクと外部画像の
+  /// リンクは、押したときに確認してから開く（#1143）。省略（null）すると確認しない（回答以外の本文）。
+  linkSources?: LinkSources | null;
 }) {
   // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
   const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
@@ -636,7 +665,7 @@ export function Markdown({
         className,
       )}
     >
-      <SourceContext.Provider value={{ text, streaming, untrusted, page, imageSources, imageProxy }}>
+      <SourceContext.Provider value={{ text, streaming, untrusted, page, imageSources, imageProxy, linkSources }}>
         <ReactMarkdown
           remarkPlugins={[
             remarkGfm,

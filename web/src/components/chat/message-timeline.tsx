@@ -13,6 +13,7 @@ import * as React from "react";
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
+import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
 import type { ToolActivityItem } from "./tool-activity";
@@ -182,6 +183,9 @@ export function MessageTimeline({
     citations.map((c) => `${c.cite_id}:${c.web ? c.snippet.length : -1}`).join(",");
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 出典が変わったかは sourcesKey が表す
   const imageSources = React.useMemo(() => answerImageSources(segments, citations), [sourcesKey]);
+  // 出典（Web の引用）のホスト。出典に無い外部リンクは押したときに確認してから開く（#1143）。
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 引用が変わったかは sourcesKey が表す
+  const linkSources = React.useMemo(() => answerLinkSources(citations), [sourcesKey]);
   const leading =
     // 本文も操作もまだ無い（生成の開始直後）、または操作が無く引用だけある。
     (streaming && segments.length === 0) || (firstWork < 0 && citations.length > 0);
@@ -216,7 +220,12 @@ export function MessageTimeline({
         }
         return (
           <div key={s.key} className="text-[15px] leading-relaxed">
-            <Markdown streaming={streaming && i === lastText} imageSources={imageSources} imageProxy={imageProxy}>
+            <Markdown
+              streaming={streaming && i === lastText}
+              imageSources={imageSources}
+              imageProxy={imageProxy}
+              linkSources={linkSources}
+            >
               {linkifyCitations(s.text, citations)}
             </Markdown>
           </div>
