@@ -5,13 +5,19 @@ import * as React from "react";
 import type { Attachment } from "@/lib/chat-api";
 import { storageScopeGeneration } from "@/lib/user-storage";
 
-let pending: { files: Attachment[]; generation: number } | null = null;
+export const PdfAttachmentTarget = React.createContext<string | null>(null);
+let pending: {
+  files: Attachment[];
+  generation: number;
+  target: string;
+} | null = null;
 const listeners = new Set<() => void>();
-export function queuePdfAttachments(files: Attachment[]) {
-  pending = { files, generation: storageScopeGeneration() };
+export function queuePdfAttachments(files: Attachment[], target: string) {
+  pending = { files, target, generation: storageScopeGeneration() };
   listeners.forEach((l) => l());
 }
-export function usePdfAttachments() {
+export function usePdfAttachments(fallbackTarget = "home") {
+  const target = React.useContext(PdfAttachmentTarget) ?? fallbackTarget;
   return React.useSyncExternalStore(
     (listener) => {
       listeners.add(listener);
@@ -19,11 +25,16 @@ export function usePdfAttachments() {
         listeners.delete(listener);
       };
     },
-    () => pending,
+    () =>
+      pending?.target === target &&
+      pending.generation === storageScopeGeneration()
+        ? pending
+        : null,
     () => null,
   );
 }
-export function takePdfAttachments() {
+export function takePdfAttachments(target: string) {
+  if (pending?.target !== target) return [];
   const out = pending;
   pending = null;
   listeners.forEach((l) => l());

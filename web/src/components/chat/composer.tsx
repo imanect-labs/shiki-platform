@@ -180,10 +180,10 @@ export const Composer = React.memo(function Composer({
 }) {
   const [value, setValue] = React.useState("");
   const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
-  const pdfFiles = usePdfAttachments();
+  const pdfFiles = usePdfAttachments(scope ?? threadId ?? HOME_SCOPE);
   React.useEffect(() => {
     if (!pdfFiles) return;
-    const files = takePdfAttachments();
+    const files = takePdfAttachments(pdfFiles.target);
     setAttachments((prev) => [...prev, ...files.filter((f) => !prev.some((p) => p.node_id === f.node_id))]);
   }, [pdfFiles]);
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
@@ -471,7 +471,7 @@ export const Composer = React.memo(function Composer({
       {/* 選択コンテキストチップ（選択→AI 指示・Task 11.10） */}
       {selection ? (
         <div
-          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs"
+          className={cn("flex items-center gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-1.5 text-xs", selection.kind === "pdf_selection" && "flex-wrap")}
           data-testid="selection-chip"
         >
           <TextSelect className="size-3.5 shrink-0 text-primary" aria-hidden />
@@ -480,7 +480,7 @@ export const Composer = React.memo(function Composer({
             {/* 編集中のスキルは本文が JSON なので、名前だけを見せる（#919）。 */}
             {selection.kind === "skill_draft"
               ? selection.draft_name || "名前未設定"
-              : selection.excerpt.slice(0, 120)}
+              : selection.kind === "pdf_selection" ? "" : selection.excerpt.slice(0, 120)}
           </span>
           <button
             type="button"
@@ -493,6 +493,11 @@ export const Composer = React.memo(function Composer({
           >
             <X className="size-3.5" aria-hidden />
           </button>
+          {selection.kind === "pdf_selection" && (
+            <pre aria-label="添付する PDF の抜粋" tabIndex={0} className="max-h-28 w-full overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-2 font-sans text-xs leading-relaxed text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              {selection.excerpt}
+            </pre>
+          )}
         </div>
       ) : null}
       {/* 添付チップ */}

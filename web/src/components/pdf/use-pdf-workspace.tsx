@@ -202,7 +202,10 @@ export function usePdfWorkspace({
       if (at !== generation.current || scope !== storageScopeGeneration())
         return;
       setPendingSelection(context);
-      queuePdfAttachments(attachments);
+      queuePdfAttachments(
+        attachments,
+        destination === "new" ? "home" : `pdf:${id}`,
+      );
       if (destination === "new") router.push("/");
       else {
         setAssistantOpen(true);
@@ -370,9 +373,8 @@ export function usePdfWorkspace({
         )}
       </>
     ),
-    assistantPanel:
-      scopeReady && assistantOpen ? (
-        <PdfAssistant key={id} id={id} name={name} />
-      ) : null,
+    assistantPanel: scopeReady ? (
+      <PdfAssistant key={`${id}:${authGeneration}`} id={id} name={name} />
+    ) : null,
   };
 }

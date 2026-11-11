@@ -1,3 +1,7 @@
+import {
+  queuePdfAttachments,
+  takePdfAttachments,
+} from "../src/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "../src/lib/storage";
 import { clearUserStorage } from "../src/lib/user-storage";
 import type { DocBlock } from "../src/lib/storage";
@@ -5,6 +9,7 @@ import {
   withOcrContent,
   excerptContext,
   bindPdfSource,
+  extractRegion,
 } from "../src/lib/pdf-excerpts";
 import {
   setPendingSelection,
@@ -294,6 +299,16 @@ test("OCR 文字層無しの /Rotate ページを検索・選択でき、表はC
       );
       throw error;
     });
+  const ocrBox = page.locator('[data-page="2"] [data-ocr-search-box]');
+  await expect(ocrBox).toBeVisible();
+  await expect(ocrBox).toContainText("OCR・段落／表単位");
+  await expect(
+    page.locator('[data-page="2"] .pdf-text-layer'),
+  ).not.toContainText("日本語");
+  const bounds = (await ocrBox.boundingBox())!;
+  // /Rotate=90 のため段落の高さ50ptが画面上の幅、幅350ptが高さになる。
+  expect(bounds.height / bounds.width).toBeCloseTo(7, 0);
+  await page.screenshot({ path: "test-results/pdf-ocr-block-search.png" });
   await page.getByTestId("pdf-mode-select").click();
   await dragRegion(page, 2, [635 / 740, 45 / 550, 695 / 740, 405 / 550]);
   await expect(page.getByTestId("pdf-excerpt-card")).toContainText(
@@ -553,6 +568,9 @@ test("抜粋をアシスタントへ添付し、指示入力と送信まで待�
     "PDF の選択範囲",
     { timeout: 15000 },
   );
+  await expect(page.getByLabel("添付する PDF の抜粋")).toContainText(
+    "Quarterly results are ready for review.",
+  );
   await expect(page.getByLabel("メッセージを入力")).toBeEmpty();
   expect(created).toBe(0);
   await expect(page.getByTestId("panel-empty-hint")).toContainText(
@@ -560,6 +578,16 @@ test("抜粋をアシスタントへ添付し、指示入力と送信まで待�
   );
   await expect(page.getByTestId("panel-empty-hint")).not.toContainText("編集");
   await page.screenshot({ path: "test-results/pdf-assistant-light.png" });
+  await page.getByLabel("メッセージを入力").fill("この抜粋の要点を説明して");
+  await page.getByTestId("pdf-mode-select").click();
+  await expect(
+    page.getByRole("complementary", { name: "PDF のアシスタント" }),
+  ).toBeHidden();
+  await page.getByTestId("pdf-mode-read").click();
+  await page.getByRole("button", { name: "アシスタント", exact: true }).click();
+  await expect(page.getByLabel("メッセージを入力")).toHaveText(
+    "この抜粋の要点を説明して",
+  );
 });
 
 test("保存済み表はnativeと重複せず、跨ページのOCRは該当ページだけに載る", async () => {
@@ -688,7 +716,6 @@ test("和文のinline OCR断片をまたいでも本文に無い空白を挿入�
     ordinal: 0,
     type: "paragraph",
     text,
-    heading_path: [],
     page: 1,
     prov: [
       {
@@ -742,10 +769,123 @@ test("原本内で90度回転したnative文字もOCRと重複しない", () => 
     ordinal: 0,
     type: "paragraph",
     text: "Vertical",
-    heading_path: [],
     page: 1,
     prov: [{ page: 1, bbox: [88, 140, 100, 100], origin: "bottom_left" }],
   };
   const output = withOcrContent(native, [block], 1, viewport as never);
   expect(findInText(buildPageText(output).text, "vertical")).toHaveLength(1);
+});
+
+test("同じ選択範囲でOCRがない領域のnative本文も取りこぼさない", async () => {
+  const original = globalThis.fetch;
+  const makeNative = (str: string, y: number) => ({
+    str,
+    dir: "ltr",
+    transform: [12, 0, 0, 12, 10, y],
+    width: 80,
+    height: 12,
+    fontName: "f",
+    hasEOL: true,
+  });
+  const saved: DocBlock[] = [
+    {
+      ordinal: 0,
+      type: "paragraph",
+      text: "保存済み段落",
+      page: 1,
+      prov: [{ page: 1, bbox: [10, 112, 100, 90], origin: "bottom_left" }],
+    },
+    {
+      ordinal: 1,
+      type: "paragraph",
+      text: "旧形式の跨ページ本文",
+      page: 1,
+      prov: [
+        { page: 1, bbox: [10, 62, 100, 40], origin: "bottom_left" },
+        { page: 2, bbox: [10, 62, 100, 40], origin: "bottom_left" },
+      ],
+    },
+  ];
+  globalThis.fetch = async () =>
+    Response.json({ blocks: saved, next_from: null });
+  const doc = {
+    numPages: 2,
+    getPage: async () => ({
+      getViewport: () => ({
+        rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+      }),
+      getTextContent: async () => ({
+        items: [
+          makeNative("保存済み段落", 100),
+          makeNative("nativeに残る本文", 50),
+        ],
+        styles: {},
+        lang: "ja",
+      }),
+    }),
+  } as unknown as PDFDocumentProxy;
+  try {
+    bindPdfSource(doc, id, 1);
+    const excerpt = await extractRegion(doc, 1, [0, 0, 200, 200]);
+    expect(excerpt.text).toContain("保存済み段落");
+    expect(excerpt.text).toContain("nativeに残る本文");
+    expect(excerpt.text.match(/保存済み段落/g)).toHaveLength(1);
+    expect(excerpt.text).not.toContain("旧形式の跨ページ本文");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("非表示のPDF入力欄は新規チャット宛の画像を消費できない", () => {
+  const files = [{ node_id: id, name: "抜粋.png" }];
+  queuePdfAttachments(files, "home");
+  expect(takePdfAttachments(`pdf:${id}`)).toEqual([]);
+  expect(takePdfAttachments("home")).toEqual(files);
+  expect(takePdfAttachments("home")).toEqual([]);
+  queuePdfAttachments(files, `pdf:${id}`);
+  expect(takePdfAttachments("home")).toEqual([]);
+  expect(takePdfAttachments(`pdf:${id}`)).toEqual(files);
+});
+
+test("2段組の抜粋は座標の行順より保存済みordinalの読み順を優先する", async () => {
+  const original = globalThis.fetch;
+  const saved: DocBlock[] = ["左上", "左下", "右上", "右下"].map(
+    (text, ordinal) => ({
+      ordinal,
+      type: "paragraph",
+      text,
+      page: 1,
+      prov: [
+        {
+          page: 1,
+          bbox: [
+            ordinal < 2 ? 20 : 300,
+            ordinal % 2 ? 650 : 750,
+            ordinal < 2 ? 220 : 500,
+            ordinal % 2 ? 610 : 710,
+          ],
+          origin: "bottom_left",
+        },
+      ],
+    }),
+  );
+  globalThis.fetch = async () =>
+    Response.json({ blocks: saved, next_from: null });
+  const doc = {
+    numPages: 1,
+    getPage: async () => ({
+      getViewport: () => ({
+        rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+      }),
+      getTextContent: async () => ({ items: [], styles: {}, lang: "ja" }),
+    }),
+  } as unknown as PDFDocumentProxy;
+  try {
+    bindPdfSource(doc, id, 1);
+    expect((await extractRegion(doc, 1, [0, 0, 600, 800])).text).toBe(
+      "左上\n\n左下\n\n右上\n\n右下",
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
 });

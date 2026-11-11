@@ -63,7 +63,7 @@ export function PdfExcerptPanel({
   };
   return (
     <div className="flex h-full flex-col" data-testid="pdf-excerpt-panel">
-      <div className="border-b border-border/60 p-4">
+      <div className="shiki-dash-bottom rule-soft p-4">
         <div className="mb-2 flex items-center justify-between">
           <span className="text-[10px] font-semibold tracking-[0.18em] text-muted-foreground">
             EXCERPTS
@@ -103,7 +103,7 @@ export function PdfExcerptPanel({
             data-testid="pdf-excerpt-card"
             className="overflow-hidden rounded-xl border border-border/80 bg-background shadow-sm"
           >
-            <div className="flex items-center gap-2 border-b border-border/50 bg-muted/25 px-3 py-2">
+            <div className="flex items-center gap-2 shiki-dash-bottom rule-soft bg-muted/25 px-3 py-2">
               <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[10px] font-semibold text-primary-foreground">
                 {i + 1}
               </span>
@@ -196,7 +196,7 @@ export function PdfExcerptPanel({
           </div>
         )}
       </div>
-      <div className="space-y-2 border-t border-border/60 bg-background p-4">
+      <div className="space-y-2 shiki-dash-top rule-soft bg-background p-4">
         {selections.length > 0 && (
           <>
             <div className="flex items-center justify-between text-[11px] text-muted-foreground">

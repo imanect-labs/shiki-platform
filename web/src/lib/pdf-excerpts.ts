@@ -234,6 +234,12 @@ function nativeRect(item: TextItem, pageX: number, pageY: number): PdfRect {
   ];
 }
 
+// 合成OCR片は検索のオフセット専用。正確な文字位置を持たないのでTextLayerへ描かない。
+const ocrRects = new WeakMap<TextItem, PdfRect>();
+export function syntheticOcrRect(item: TextItem): PdfRect | undefined {
+  return ocrRects.get(item);
+}
+
 /// OCR を補い、同じ native 文字を二重に載せない。
 export function withOcrContent(
   native: TextContent,
@@ -278,7 +284,7 @@ export function withOcrContent(
       }
       const [l, b, r, t] = rect;
       const fontSize = Math.min(14, Math.max(4, t - b));
-      items.push({
+      const item: TextItem = {
         str: text,
         dir: "ltr",
         transform: [
@@ -293,7 +299,9 @@ export function withOcrContent(
         height: fontSize,
         fontName: "ocr",
         hasEOL: fragment.hasEOL,
-      });
+      };
+      ocrRects.set(item, rect);
+      items.push(item);
     }
   return {
     ...native,
@@ -331,35 +339,62 @@ export async function extractRegion(
   const located = matched.flatMap((block) =>
     blockFragments(block, pageNumber, viewportDimensions(viewport).pageHeight)
       .filter((fragment) => intersect(bbox, fragment.rect))
-      .map((fragment) => ({ block, text: fragment.text })),
+      .map((fragment) => ({ block, text: fragment.text, rect: fragment.rect })),
   );
-  const native = located.length
-    ? []
-    : (await nativePdfText(doc, pageNumber)).items
-        .filter((item): item is TextItem => "str" in item && !!item.str.trim())
-        .filter((item) => {
-          const dims = viewportDimensions(viewport);
-          return intersect(bbox, nativeRect(item, dims.pageX, dims.pageY));
-        });
+  const dims = viewportDimensions(viewport);
+  const native = (await nativePdfText(doc, pageNumber)).items
+    .filter((item): item is TextItem => "str" in item && !!item.str.trim())
+    .map((item) => ({ item, rect: nativeRect(item, dims.pageX, dims.pageY) }))
+    .filter(({ rect }) => intersect(bbox, rect))
+    // 保存済みの文字で覆われない領域は、同じ選択内でも原本の文字層から補う。
+    .filter(
+      ({ rect }) =>
+        !located.some(
+          (entry) =>
+            rect[0] >= entry.rect[0] - 1 &&
+            rect[1] >= entry.rect[1] - 1 &&
+            rect[2] <= entry.rect[2] + 1 &&
+            rect[3] <= entry.rect[3] + 1,
+        ),
+    );
+  // Doclingのordinalが正の読み順。座標でソートすると2段組の左右が混ざる。
+  const tailOrder =
+    matched.reduce((max, block) => Math.max(max, block.ordinal), -1) + 1;
+  const entries = [
+    ...located.map((entry) => ({
+      ...entry,
+      group: entry.block,
+      order: entry.block.ordinal,
+    })),
+    ...native.map(({ item, rect }) => ({
+      text: item.str,
+      rect,
+      group: item,
+      // 旧形式のブロックもprovenanceで位置付ける。対応が無い原本文字は末尾に保持する。
+      order:
+        matched.find((block) =>
+          block.prov.some(
+            (p) =>
+              p.page === pageNumber &&
+              intersect(rect, blockRect(p, dims.pageHeight)),
+          ),
+        )?.ordinal ?? tailOrder,
+    })),
+  ].sort((a, b) => a.order - b.order);
   if (!located.length && !native.length && failure) throw failure;
   // 段落・表の途中を切り落とさない。抽出粒度はプレビューに明示する。
   return {
     id: crypto.randomUUID(),
     page: pageNumber,
     bbox,
-    text: located.length
-      ? located
-          .map(
-            (entry, index) =>
-              (index && located[index - 1].block !== entry.block
-                ? "\n\n"
-                : "") + entry.text,
-          )
-          .join("")
-      : native
-          .map((t) => t.str + (t.hasEOL ? "\n" : " "))
-          .join("")
-          .trim(),
+    text: entries
+      .map(
+        (entry, index) =>
+          (index && entries[index - 1].group !== entry.group ? "\n\n" : "") +
+          entry.text,
+      )
+      .join("")
+      .trim(),
     tables: located
       .filter((entry) => entry.block.type === "table")
       .map((entry) => entry.text),

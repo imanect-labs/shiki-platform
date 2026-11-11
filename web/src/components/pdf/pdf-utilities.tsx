@@ -78,7 +78,7 @@ export function PdfUtilities({
   };
   return (
     <div className="flex h-full flex-col" data-testid="pdf-utilities">
-      <div className="border-b border-border/60 p-5">
+      <div className="shiki-dash-bottom rule-soft p-5">
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           PDF TOOLS
         </div>
@@ -116,7 +116,7 @@ export function PdfUtilities({
               className={cn(
                 "rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 tool === key
-                  ? "border-primary bg-primary/5"
+                  ? "border-transparent bg-primary/10"
                   : "border-border hover:bg-accent",
               )}
             >
@@ -198,7 +198,7 @@ export function PdfUtilities({
           </p>
         </div>
       </div>
-      <div className="border-t border-border/60 p-4">
+      <div className="shiki-dash-top rule-soft p-4">
         {error && (
           <p role="alert" className="mb-3 text-xs text-destructive">
             {error}

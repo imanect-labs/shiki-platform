@@ -625,6 +625,7 @@ function PdfViewer() {
         onClose={workspace.closeAssistant}
         label="PDF のアシスタント"
         panel={workspace.assistantPanel}
+        keepMounted
       >
         <div className="flex min-h-0 flex-1">
           {sidebarOpen && !isMobile ? (

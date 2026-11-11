@@ -1,5 +1,6 @@
 "use client";
 
+import { PdfAttachmentTarget } from "@/lib/pdf-attachment-handoff";
 import { PanelEmptyHint } from "@/components/chat/doc-chat-draft";
 import {
   DocChatPanel,
@@ -10,19 +11,21 @@ import {
 export function PdfAssistant({ id, name }: { id: string; name: string }) {
   const store = useLocalActiveThreadStore(id);
   return (
-    <DocChatPanel
-      store={store}
-      nodeId={id}
-      title={`PDF: ${name}`}
-      label="この PDF の会話"
-      editable
-      hint={
-        <PanelEmptyHint
-          title="この PDF について相談できます"
-          description="添付した抜粋について、質問や要約を依頼できます。入力欄に指示を書いて送信してください。"
-        />
-      }
-      testIdPrefix="pdf"
-    />
+    <PdfAttachmentTarget.Provider value={`pdf:${id}`}>
+      <DocChatPanel
+        store={store}
+        nodeId={id}
+        title={`PDF: ${name}`}
+        label="この PDF の会話"
+        editable
+        hint={
+          <PanelEmptyHint
+            title="この PDF について相談できます"
+            description="添付した抜粋について、質問や要約を依頼できます。入力欄に指示を書いて送信してください。"
+          />
+        }
+        testIdPrefix="pdf"
+      />
+    </PdfAttachmentTarget.Provider>
   );
 }
