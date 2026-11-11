@@ -98,11 +98,18 @@ create table workflow_trigger (
     -- catchup=none/skip で捨てた分もここを前進させて消化する（tick ごとの再発見を防ぐ）。
     last_planned_at timestamptz,
     enabled      boolean     not null default true,
+    -- データ変更トリガのテーブルの束縛（spec の scope.table）を写した生成列（migration 0116・D-194）。RLS の付いた
+    -- 表では jsonb の取り出し（`->`・`->>`）が leakproof でないので、式の索引は索引の条件に使えない
+    -- （docs/guides/db-maintenance.md §5・§6）。生成列なら普通の列の比較で引ける。
+    scope_table  text generated always as (spec->'scope'->>'table') stored,
     primary key (tenant_id, trigger_id)
 );
 -- マッチャの候補引き（イベント種→トリガ）。
 create index workflow_trigger_match_idx on workflow_trigger (tenant_id, kind, source)
     where enabled;
+-- データ変更トリガの候補（テーブルの束縛・§5.4 の 1.）。
+create index workflow_trigger_table_idx on workflow_trigger (tenant_id, source, scope_table)
+    where enabled and kind = 'event';
 
 -- スケジュール発火の冪等記録。占有（run 作成）と同一 TX で挿入する。
 create table schedule_occurrence (
@@ -246,6 +253,10 @@ create table wait_subscription (
     -- 受付の突合（§9.2）を済ませた時刻。データ変更の wait は停止のたびに空にし、ほか（ファイルの保存の wait・
     -- 承認・timer）は作る時点で埋める。
     reconciled_at timestamptz,
+    -- データ変更の wait の束縛（spec の scope の table・record）を写した生成列（workflow_trigger.scope_table と
+    -- 同じ理由・migration 0116・D-194）。
+    scope_table  text generated always as (spec->'scope'->>'table') stored,
+    scope_record text generated always as (spec->'scope'->>'record') stored,
     primary key (tenant_id, run_id, step_path)
 );
 create index wait_subscription_event_idx on wait_subscription (tenant_id, source)
@@ -253,9 +264,9 @@ create index wait_subscription_event_idx on wait_subscription (tenant_id, source
 -- 受付の突合の走査（まだ突き合わせていないものだけ）。
 create index wait_subscription_reconcile_idx on wait_subscription (created_at)
     where kind = 'event' and not fired and reconciled_at is null;
--- データ変更の wait の候補（テーブル・行の束縛）。
+-- データ変更の wait の候補（テーブル・行の束縛・生成列の btree）。
 create index wait_subscription_record_idx on wait_subscription
-    (tenant_id, source, (spec->'scope'->>'table'), (spec->'scope'->>'record'))
+    (tenant_id, source, scope_table, scope_record)
     where kind = 'event' and not fired;
 
 -- 承認待ち（human.approval・§9.6）の受信箱の台帳。run と一緒に消える（判断の証跡は監査と data の revision）。
@@ -657,8 +668,9 @@ run も同じ `trigger_event_id` を持つので二重にならない。
 （`data.record.changed` の create / update と `data.record.transitioned`）から写す。relay は tick（cron・timer・timeout）
 とは別のループで回し、データ変更の照合が重くても期限の回収を遅らせない。
 
-1. バッチの中のテーブルの集合で、候補のトリガ（`spec->'scope'->>'table'` の索引）と wait をテナントごとに 1 回ずつ
-   引く。候補の無いイベントは data を読まずに配送済みにする。
+1. バッチの中のテーブルの集合で、候補のトリガと wait をテナントごとに 1 回ずつ引く（生成列 `scope_table` の btree・
+   `workflow_trigger_table_idx`・`wait_subscription_record_idx`。2 表は RLS の対象なので、jsonb の式の索引では引かない・
+   D-194）。候補の無いイベントは data を読まずに配送済みにする。
 2. 一括取込（CSV の取込・`data.bulk_upsert` の作成行と更新行）の行ではトリガを発火させない（private payload の
    `bulk` の真偽だけを data の `bulk_flags` で読む）。wait は起こす。
 3. トリガは**委譲元**（テーブルの viewer をワークフローへ委譲した人）の見え方で変更を作る（§6.8 の主体と天井・
