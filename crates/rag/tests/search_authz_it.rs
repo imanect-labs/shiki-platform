@@ -703,6 +703,26 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
         .await
         .unwrap();
     assert!(absent.blocks.is_empty());
+    // 境界の生成列は更新に追従する。非連続の provenance の中間ページは返さない。
+    sqlx::query("update doc_block set prov = jsonb_set(prov, '{1,page}', '5') where tenant_id = $1 and node_id = $2 and version = $3")
+        .bind(env.alice.tenant_id()).bind(file).bind(hit.version)
+        .execute(&env.pool).await.unwrap();
+    let bounds: (Option<i32>, Option<i32>) = sqlx::query_as(
+        "select prov_page_min, prov_page_max from doc_block where tenant_id = $1 and node_id = $2 and version = $3",
+    ).bind(env.alice.tenant_id()).bind(file).bind(hit.version).fetch_one(&env.pool).await.unwrap();
+    assert_eq!(bounds, (Some(2), Some(5)));
+    let hole = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(4), None)
+        .await
+        .unwrap();
+    assert!(hole.blocks.is_empty());
+    let last = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(5), None)
+        .await
+        .unwrap();
+    assert_eq!(last.blocks.len(), 1);
 
     // 窓の外（存在しない ordinal 以降）は空。別テナントの文脈では何も読めない。
     let empty = env

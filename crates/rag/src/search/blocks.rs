@@ -70,7 +70,11 @@ impl SearchService {
         // ページ指定と未指定は別の prepared statement にする。nullable parameter の
         // OR で包むと generic plan がページ索引を使えなくなる。
         let page_filter = if page.is_some() {
-            "and (page between $7 and $8 or jsonb_path_query_array(prov, '$[*].page') @> any($9::jsonb[]))"
+            // RLS より前に評価できる列比較で候補を絞り、JSON の厳密照合は権限判定後に行う。
+            "and (page between $7 and $8 or \
+                  (prov_page_min is not null and (page is null or prov_page_min <> page or prov_page_max <> page) \
+                   and prov_page_min <= $8 and prov_page_max >= $7)) \
+             and (page between $7 and $8 or jsonb_path_query_array(prov, '$[*].page') @> any($9::jsonb[]))"
         } else {
             ""
         };
