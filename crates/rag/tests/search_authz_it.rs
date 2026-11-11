@@ -652,6 +652,26 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
     assert!(page.blocks[0].text.contains("位置文書"));
     assert!(page.next_from.is_none());
 
+    // ページ絞り込みは SQL で行い、跨ページの provenance でもヒットする。
+    sqlx::query("update doc_block set page = 2, prov = $4 where tenant_id = $1 and node_id = $2 and version = $3")
+        .bind(env.alice.tenant_id()).bind(file).bind(hit.version)
+        .bind(serde_json::json!([
+            {"page": 2, "bbox": [10, 50, 80, 20], "origin": "bottom_left"},
+            {"page": 3, "bbox": [10, 50, 80, 20], "origin": "bottom_left"}
+        ])).execute(&env.pool).await.unwrap();
+    let crossing = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(3), None)
+        .await
+        .unwrap();
+    assert_eq!(crossing.blocks.len(), 1);
+    let absent = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(4), None)
+        .await
+        .unwrap();
+    assert!(absent.blocks.is_empty());
+
     // 窓の外（存在しない ordinal 以降）は空。別テナントの文脈では何も読めない。
     let empty = env
         .search

@@ -9,6 +9,10 @@
 /// 読む操作: 文字の選択・コピー（テキスト層）／文書内検索（⌘F）／ページ番号での移動／
 /// サムネイル・目次のパネル／幅・ページ全体に合わせる／回転／拡大縮小（ボタン・⌘±・ピンチ）。
 import * as React from "react";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import { usePdfWorkspace } from "@/components/pdf/use-pdf-workspace";
+import { storageScopeGeneration } from "@/lib/user-storage";
+import { bindPdfSource } from "@/lib/pdf-excerpts";
 import { useParams, useSearchParams } from "next/navigation";
 import {
   Download,
@@ -38,7 +42,10 @@ import {
   EditorUnavailable,
   useEditorBack,
 } from "@/components/shell/editor-loading";
-import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
+import {
+  ChromeIconButton,
+  usePageChrome,
+} from "@/components/shell/page-header-context";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { parseCiteBoxes } from "@/lib/citation-locate";
@@ -47,11 +54,18 @@ import { getNode, versionDownloadUrl, type NodeResponse } from "@/lib/storage";
 
 type State =
   | { phase: "loading" }
-  | { phase: "ready"; node: NodeResponse; version: number; doc: PDFDocumentProxy }
+  | {
+      phase: "ready";
+      node: NodeResponse;
+      version: number;
+      doc: PDFDocumentProxy;
+    }
   | { phase: "error"; message: string };
 
 /// 拡大縮小の段階（「幅に合わせる」に対する倍率）。幅を超えた分は横スクロールで見る。
-const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
+const ZOOM_STEPS = [
+  0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4,
+];
 const ZOOM_MIN = ZOOM_STEPS[0];
 const ZOOM_MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
 /// 幅フィットの上限（広い画面で 1 ページが巨大にならないよう、読みやすい幅で止める）。
@@ -71,7 +85,9 @@ function isTypingTarget(t: EventTarget | null): boolean {
 
 export default function PdfPageRoute() {
   return (
-    <React.Suspense fallback={<EditorLoading kind="doc" message="PDF を開いています…" />}>
+    <React.Suspense
+      fallback={<EditorLoading kind="doc" message="PDF を開いています…" />}
+    >
       <PdfViewer />
     </React.Suspense>
   );
@@ -122,11 +138,17 @@ function PdfViewer() {
 
   React.useEffect(() => {
     let active = true;
+    const scope = storageScopeGeneration();
     setState({ phase: "loading" });
     getNode(id)
       .then(async (node) => {
         const version = askedVersion ?? node.version;
         const doc = await loadPdf(id, version);
+        if (scope !== storageScopeGeneration())
+          throw new Error(
+            "ログイン状態が変わりました。PDF を開き直してください。",
+          );
+        bindPdfSource(doc, id, version);
         const first = await doc.getPage(1);
         const vp = first.getViewport({ scale: 1 });
         if (!active) return;
@@ -134,7 +156,11 @@ function PdfViewer() {
         setState({ phase: "ready", node, version, doc });
       })
       .catch((e: unknown) => {
-        if (active) setState({ phase: "error", message: e instanceof Error ? e.message : "読み込みに失敗しました" });
+        if (active)
+          setState({
+            phase: "error",
+            message: e instanceof Error ? e.message : "読み込みに失敗しました",
+          });
       });
     return () => {
       active = false;
@@ -146,9 +172,14 @@ function PdfViewer() {
   const fitWidth = Math.max(240, Math.min(FIT_MAX, box.w - PAD * 2));
   const pageWidth = Math.round(fitWidth * zoom);
   // 「ページ全体」: 1 ページが縦横とも枠に収まる倍率。
-  const fitPageZoom = Math.min(1, Math.max(0.1, (box.h - PAD * 2) / aspect / fitWidth));
+  const fitPageZoom = Math.min(
+    1,
+    Math.max(0.1, (box.h - PAD * 2) / aspect / fitWidth),
+  );
   // 等倍（96dpi で PDF の実寸）に対する割合。
-  const percent = Math.round((pageWidth / ((sideways ? base.h : base.w) * (96 / 72))) * 100);
+  const percent = Math.round(
+    (pageWidth / ((sideways ? base.h : base.w) * (96 / 72))) * 100,
+  );
 
   // --- 見ている場所を保ったまま倍率・回転を変える --------------------------------
   const anchorRef = React.useRef<Anchor | null>(null);
@@ -161,9 +192,15 @@ function PdfViewer() {
       const fy = focal?.y ?? root.clientHeight / 3;
       const hit = document
         .elementsFromPoint(r.left + fx, r.top + fy)
-        .find((el): el is HTMLElement => el instanceof HTMLElement && el.dataset.page != null && root.contains(el));
+        .find(
+          (el): el is HTMLElement =>
+            el instanceof HTMLElement &&
+            el.dataset.page != null &&
+            root.contains(el),
+        );
       const page = hit ? Number(hit.dataset.page) : current;
-      const el = hit ?? root.querySelector<HTMLElement>(`[data-page="${page}"]`);
+      const el =
+        hit ?? root.querySelector<HTMLElement>(`[data-page="${page}"]`);
       if (!el) return null;
       const pr = el.getBoundingClientRect();
       return {
@@ -185,7 +222,8 @@ function PdfViewer() {
     if (!el) return;
     const measure = () =>
       setBox((prev) => {
-        if (prev.w === el.clientWidth && prev.h === el.clientHeight) return prev;
+        if (prev.w === el.clientWidth && prev.h === el.clientHeight)
+          return prev;
         if (prev.w !== el.clientWidth) anchorRef.current = captureRef.current();
         return { w: el.clientWidth, h: el.clientHeight };
       });
@@ -205,7 +243,9 @@ function PdfViewer() {
   const zoomStep = React.useCallback(
     (dir: 1 | -1) => {
       const next =
-        dir > 0 ? ZOOM_STEPS.find((s) => s > zoom * 1.01) : [...ZOOM_STEPS].reverse().find((s) => s < zoom * 0.99);
+        dir > 0
+          ? ZOOM_STEPS.find((s) => s > zoom * 1.01)
+          : [...ZOOM_STEPS].reverse().find((s) => s < zoom * 0.99);
       if (next != null) zoomTo(next);
     },
     [zoom, zoomTo],
@@ -233,35 +273,51 @@ function PdfViewer() {
     enabled: state.phase === "ready",
     rootRef: scrollRef,
     contentRef,
-    clamp: (ratio) => Math.min(ZOOM_MAX / zoom, Math.max(ZOOM_MIN / zoom, ratio)),
+    clamp: (ratio) =>
+      Math.min(ZOOM_MAX / zoom, Math.max(ZOOM_MIN / zoom, ratio)),
     onCommit: (ratio, focal) => zoomTo(zoom * ratio, focal),
   });
 
   // --- ページ移動 ----------------------------------------------------------------
   const numPages = state.phase === "ready" ? state.doc.numPages : 0;
-  const jumpTo = React.useCallback(
-    (page: number) => {
-      const root = scrollRef.current;
-      const el = root?.querySelector<HTMLElement>(`[data-page="${page}"]`);
-      if (!root || !el) return;
-      root.scrollTop += el.getBoundingClientRect().top - root.getBoundingClientRect().top - PAD;
-      setCurrent(page);
-    },
-    [],
-  );
+  const jumpTo = React.useCallback((page: number) => {
+    const root = scrollRef.current;
+    const el = root?.querySelector<HTMLElement>(`[data-page="${page}"]`);
+    if (!root || !el) return;
+    root.scrollTop +=
+      el.getBoundingClientRect().top - root.getBoundingClientRect().top - PAD;
+    setCurrent(page);
+  }, []);
+
+  const workspace = usePdfWorkspace({
+    id,
+    version: state.phase === "ready" ? state.version : null,
+    doc: state.phase === "ready" ? state.doc : null,
+    name: state.phase === "ready" ? state.node.name : "",
+    current,
+    jumpTo,
+  });
 
   // 引用のページへ移る（ページの寸法が決まってから 1 回だけ）。
   React.useEffect(() => {
-    if (state.phase !== "ready" || jumped.current || !targetPage || box.w === 0) return;
+    if (state.phase !== "ready" || jumped.current || !targetPage || box.w === 0)
+      return;
     const t = window.setTimeout(() => {
       const root = scrollRef.current;
-      const page = root?.querySelector<HTMLElement>(`[data-page="${targetPage}"]`);
+      const page = root?.querySelector<HTMLElement>(
+        `[data-page="${targetPage}"]`,
+      );
       if (!root || !page) return;
       jumped.current = true;
       const citeBox = page.querySelector<HTMLElement>("[data-cite-box]");
       const anchor = citeBox ?? page;
-      const top = anchor.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
-      root.scrollTo({ top: Math.max(0, top - (citeBox ? root.clientHeight / 3 : PAD)) });
+      const top =
+        anchor.getBoundingClientRect().top -
+        root.getBoundingClientRect().top +
+        root.scrollTop;
+      root.scrollTo({
+        top: Math.max(0, top - (citeBox ? root.clientHeight / 3 : PAD)),
+      });
     }, 120);
     return () => window.clearTimeout(t);
   }, [state, targetPage, box.w, pageWidth]);
@@ -278,13 +334,22 @@ function PdfViewer() {
       const r = root.getBoundingClientRect();
       const hit = document
         .elementsFromPoint(r.left + r.width / 2, r.top + root.clientHeight / 3)
-        .find((el): el is HTMLElement => el instanceof HTMLElement && el.dataset.page != null && root.contains(el));
+        .find(
+          (el): el is HTMLElement =>
+            el instanceof HTMLElement &&
+            el.dataset.page != null &&
+            root.contains(el),
+        );
       if (hit) setCurrent(Number(hit.dataset.page));
     });
   }, []);
 
   // --- 文書内検索 ----------------------------------------------------------------
-  const search = usePdfSearch(state.phase === "ready" ? state.doc : null, current);
+  const search = usePdfSearch(
+    state.phase === "ready" ? state.doc : null,
+    current,
+    workspace.textRevision,
+  );
   const searchInputRef = React.useRef<HTMLInputElement>(null);
   const openSearch = React.useCallback(() => {
     search.setOpen(true);
@@ -365,11 +430,22 @@ function PdfViewer() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [state.phase, search, openSearch, closeSearch, zoomStep, zoomTo, jumpTo, numPages, current]);
+  }, [
+    state.phase,
+    search,
+    openSearch,
+    closeSearch,
+    zoomStep,
+    zoomTo,
+    jumpTo,
+    numPages,
+    current,
+  ]);
 
   // 開いたら本体にフォーカスを置く（↑↓・PageUp/Down でそのままスクロールできるように）。
   React.useEffect(() => {
-    if (state.phase === "ready") scrollRef.current?.focus({ preventScroll: true });
+    if (state.phase === "ready")
+      scrollRef.current?.focus({ preventScroll: true });
   }, [state.phase]);
 
   const version = state.phase === "ready" ? state.version : null;
@@ -382,7 +458,8 @@ function PdfViewer() {
   // クローム（戻る → パネル・検索・縮小・拡大 → ⋯（表示・回転・ダウンロード・最新版））。
   // 読み込み中・エラーでも戻る。
   const back = useEditorBack();
-  const name = state.phase === "ready" ? state.node.name.replace(/\.pdf$/i, "") : "";
+  const name =
+    state.phase === "ready" ? state.node.name.replace(/\.pdf$/i, "") : "";
   const latest = state.phase === "ready" ? state.node.version : null;
   const stale = version != null && latest != null && version < latest;
   usePageChrome(() => {
@@ -393,7 +470,12 @@ function PdfViewer() {
       back,
       subtitle: (
         <span className="inline-flex items-center gap-2">
-          <PageJump current={current} total={numPages} onJump={jumpTo} suffix="ページ" />
+          <PageJump
+            current={current}
+            total={numPages}
+            onJump={jumpTo}
+            suffix="ページ"
+          />
           <span className="tabular-nums" data-testid="pdf-zoom-percent">
             {percent}%
           </span>
@@ -441,7 +523,13 @@ function PdfViewer() {
         </>
       ),
       menu: [
-        { key: "fit-width", label: "幅に合わせる", icon: MoveHorizontal, onSelect: () => zoomTo(1), testId: "pdf-fit-width" },
+        {
+          key: "fit-width",
+          label: "幅に合わせる",
+          icon: MoveHorizontal,
+          onSelect: () => zoomTo(1),
+          testId: "pdf-fit-width",
+        },
         {
           key: "fit-page",
           label: "ページ全体を表示",
@@ -449,7 +537,13 @@ function PdfViewer() {
           onSelect: () => zoomTo(fitPageZoom),
           testId: "pdf-fit-page",
         },
-        { key: "rotate", label: "右に回転", icon: RotateCw, onSelect: rotate, testId: "pdf-rotate" },
+        {
+          key: "rotate",
+          label: "右に回転",
+          icon: RotateCw,
+          onSelect: rotate,
+          testId: "pdf-rotate",
+        },
         {
           key: "download",
           label: "ダウンロード",
@@ -459,7 +553,14 @@ function PdfViewer() {
           separatorBefore: true,
         },
         ...(stale
-          ? [{ key: "latest", label: `最新版（v${latest}）を開く`, icon: FileClock, href: `/pdf/${id}` }]
+          ? [
+              {
+                key: "latest",
+                label: `最新版（v${latest}）を開く`,
+                icon: FileClock,
+                href: `/pdf/${id}`,
+              },
+            ]
           : []),
       ],
     };
@@ -487,7 +588,8 @@ function PdfViewer() {
     jumpTo,
   ]);
 
-  if (state.phase === "loading") return <EditorLoading kind="doc" message="PDF を開いています…" />;
+  if (state.phase === "loading")
+    return <EditorLoading kind="doc" message="PDF を開いています…" />;
   if (state.phase === "error") {
     return (
       <EditorUnavailable
@@ -517,83 +619,113 @@ function PdfViewer() {
           ) : null
         }
       />
-      <div className="flex min-h-0 flex-1">
-        {sidebarOpen && !isMobile ? (
-          <PdfSidebar
-            doc={doc}
-            current={current}
-            rotation={rotation}
-            onJump={onSidebarJump}
-            className="w-[168px] shrink-0 border-r border-border/60 bg-background"
-          />
-        ) : null}
-        <div className="relative min-h-0 min-w-0 flex-1">
-          <div
-            ref={scrollRef}
-            onScroll={onScroll}
-            tabIndex={0}
-            aria-label={`${name}（${numPages} ページ）`}
-            className="h-full touch-pan-x touch-pan-y overflow-auto overscroll-contain bg-muted/40 py-4 outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-            data-testid="pdf-viewer"
-          >
-            {/* w-max: 拡大して表示幅を超えたら横スクロール（中央寄せで左端が切れないように）。 */}
-            <div ref={contentRef} className="flex w-max min-w-full flex-col items-center gap-4 px-4">
-              {box.w > 0
-                ? Array.from({ length: doc.numPages }, (_, i) => i + 1).map((n) => (
-                    <PdfPage
-                      key={n}
-                      doc={doc}
-                      pageNumber={n}
-                      width={pageWidth}
-                      estimate={pageWidth * aspect}
-                      boxes={boxes}
-                      rotation={rotation}
-                      textLayer
-                      highlights={search.byPage.get(n)}
-                      eager={n === targetPage || n === activePage}
-                    />
-                  ))
-                : null}
+      {workspace.toolbar}
+      <AssistantLayout
+        open={workspace.assistantOpen}
+        onClose={workspace.closeAssistant}
+        label="PDF のアシスタント"
+        panel={workspace.assistantPanel}
+      >
+        <div className="flex min-h-0 flex-1">
+          {sidebarOpen && !isMobile ? (
+            <PdfSidebar
+              doc={doc}
+              current={current}
+              rotation={rotation}
+              onJump={onSidebarJump}
+              className="w-[168px] shrink-0 border-r border-border/60 bg-background"
+            />
+          ) : null}
+          <div className="relative min-h-0 min-w-0 flex-1">
+            <div
+              ref={scrollRef}
+              onScroll={onScroll}
+              tabIndex={0}
+              aria-label={`${name}（${numPages} ページ）`}
+              className="h-full touch-pan-x touch-pan-y overflow-auto overscroll-contain bg-muted/40 py-4 outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              data-testid="pdf-viewer"
+            >
+              {/* w-max: 拡大して表示幅を超えたら横スクロール（中央寄せで左端が切れないように）。 */}
+              <div
+                ref={contentRef}
+                className="flex w-max min-w-full flex-col items-center gap-4 px-4"
+              >
+                {box.w > 0
+                  ? Array.from({ length: doc.numPages }, (_, i) => i + 1).map(
+                      (n) => (
+                        <PdfPage
+                          key={n}
+                          doc={doc}
+                          pageNumber={n}
+                          width={pageWidth}
+                          estimate={pageWidth * aspect}
+                          boxes={boxes}
+                          rotation={rotation}
+                          textLayer
+                          highlights={search.byPage.get(n)}
+                          textRevision={workspace.textRevision}
+                          regionSelection={{
+                            enabled: workspace.mode === "select",
+                            selections: workspace.selections,
+                            onSelect: workspace.onSelect,
+                          }}
+                          eager={n === targetPage || n === activePage}
+                        />
+                      ),
+                    )
+                  : null}
+              </div>
             </div>
+            {search.open ? (
+              <div className="absolute inset-x-3 top-3 z-20 flex justify-end md:left-auto md:w-[380px]">
+                <PdfSearchBar
+                  inputRef={searchInputRef}
+                  query={search.query}
+                  onQueryChange={search.setQuery}
+                  total={search.matches.length}
+                  index={search.index}
+                  scanning={search.scanning}
+                  onNext={search.next}
+                  onPrev={search.prev}
+                  onClose={closeSearch}
+                  className="w-full"
+                />
+              </div>
+            ) : null}
+            {/* スマホ: 今のページ（PC はバーに出す）。番号を打って移動できる。 */}
+            {!search.open ? (
+              <div className="absolute right-3 top-3 z-10 rounded-full bg-background/90 px-2 py-1 text-[12px] font-medium text-muted-foreground shadow-sm ring-1 ring-border/60 md:hidden">
+                <PageJump current={current} total={numPages} onJump={jumpTo} />
+              </div>
+            ) : null}
+            {targetPage ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-20 flex justify-center px-4">
+                <CiteHint tone={boxes.length > 0 ? "found" : "approx"}>
+                  {boxes.length > 0
+                    ? `引用箇所（p.${targetPage}）を枠で示しています`
+                    : `引用のページ（p.${targetPage}）を開きました`}
+                </CiteHint>
+              </div>
+            ) : null}
           </div>
-          {search.open ? (
-            <div className="absolute inset-x-3 top-3 z-20 flex justify-end md:left-auto md:w-[380px]">
-              <PdfSearchBar
-                inputRef={searchInputRef}
-                query={search.query}
-                onQueryChange={search.setQuery}
-                total={search.matches.length}
-                index={search.index}
-                scanning={search.scanning}
-                onNext={search.next}
-                onPrev={search.prev}
-                onClose={closeSearch}
-                className="w-full"
-              />
-            </div>
-          ) : null}
-          {/* スマホ: 今のページ（PC はバーに出す）。番号を打って移動できる。 */}
-          {!search.open ? (
-            <div className="absolute right-3 top-3 z-10 rounded-full bg-background/90 px-2 py-1 text-[12px] font-medium text-muted-foreground shadow-sm ring-1 ring-border/60 md:hidden">
-              <PageJump current={current} total={numPages} onJump={jumpTo} />
-            </div>
-          ) : null}
-          {targetPage ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] z-20 flex justify-center px-4">
-              <CiteHint tone={boxes.length > 0 ? "found" : "approx"}>
-                {boxes.length > 0
-                  ? `引用箇所（p.${targetPage}）を枠で示しています`
-                  : `引用のページ（p.${targetPage}）を開きました`}
-              </CiteHint>
-            </div>
-          ) : null}
+          {workspace.sidePanel}
         </div>
-      </div>
+      </AssistantLayout>
       {isMobile ? (
         <Sheet open={sidebarMobile} onOpenChange={setSidebarMobile}>
-          <SheetContent side="left" className="max-w-[220px] pt-12" aria-describedby={undefined}>
+          <SheetContent
+            side="left"
+            className="max-w-[220px] pt-12"
+            aria-describedby={undefined}
+          >
             <SheetTitle className="sr-only">ページ一覧・目次</SheetTitle>
-            <PdfSidebar doc={doc} current={current} rotation={rotation} onJump={onSidebarJump} className="h-full" />
+            <PdfSidebar
+              doc={doc}
+              current={current}
+              rotation={rotation}
+              onJump={onSidebarJump}
+              className="h-full"
+            />
           </SheetContent>
         </Sheet>
       ) : null}

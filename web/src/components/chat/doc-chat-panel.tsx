@@ -49,6 +49,7 @@ export function DocChatPanel({
   editable,
   initialThreadId,
   testIdPrefix = "doc",
+  hint,
 }: {
   store: ActiveThreadStore;
   /// ドキュメントのストレージ node id（origin_note_id に使う）。
@@ -63,6 +64,8 @@ export function DocChatPanel({
   initialThreadId?: string | null;
   /// data-testid の接頭（既存 e2e 互換: ノート="note"・Office="office"）。
   testIdPrefix?: string;
+  /// 文書種別に合った空の会話の案内。
+  hint?: React.ReactNode;
 }) {
   const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(() =>
     store.read(),
@@ -331,6 +334,7 @@ export function DocChatPanel({
           </div>
         ) : editable ? (
           <DocChatDraft
+            hint={hint}
             scope={draftScope}
             onStart={startConversation}
             onDirtyChange={onDraftDirtyChange}

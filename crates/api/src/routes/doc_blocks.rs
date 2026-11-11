@@ -29,6 +29,8 @@ pub struct BlocksQuery {
     pub from: Option<i32>,
     /// 件数（既定 60・上限 200）。
     pub limit: Option<u32>,
+    /// PDF のページ（1 起点）。未指定なら全ページの窓。
+    pub page: Option<i32>,
 }
 
 /// 版のブロック列を ordinal 順に返す。
@@ -56,6 +58,11 @@ pub async fn list_blocks(
     Path((id, version)): Path<(Uuid, i64)>,
     Query(q): Query<BlocksQuery>,
 ) -> Result<Json<DocBlocksPage>, ApiError> {
+    if q.page.is_some_and(|page| page < 1) {
+        return Err(ApiError::BadRequest(
+            "page は1以上で指定してください".into(),
+        ));
+    }
     let Some(search) = state.search.as_ref() else {
         return Err(ApiError::ServiceUnavailable("rag.enabled=false".into()));
     };
@@ -71,12 +78,13 @@ pub async fn list_blocks(
         }));
     }
     let page = search
-        .blocks(
+        .blocks_on_page(
             &ctx,
             &node,
             version,
             q.from.unwrap_or(0),
             q.limit.unwrap_or(60),
+            q.page,
             trace.as_deref(),
         )
         .await?;

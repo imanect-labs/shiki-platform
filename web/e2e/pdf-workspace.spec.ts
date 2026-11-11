@@ -1,0 +1,551 @@
+import { uploadNewFile } from "../src/lib/storage";
+import { clearUserStorage } from "../src/lib/user-storage";
+import type { DocBlock } from "../src/lib/storage";
+import { withOcrContent, excerptContext } from "../src/lib/pdf-excerpts";
+import {
+  setPendingSelection,
+  takePendingSelection,
+} from "../src/lib/selection-context";
+import { test, expect, type Page } from "@playwright/test";
+import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import { rectFromViewport, blockRect, tableCsv } from "../src/lib/pdf-excerpts";
+import { boxToViewport, viewportDimensions } from "../src/lib/pdf-geometry";
+import { parsePageRange } from "../src/components/pdf/pdf-utilities";
+import { readFile } from "node:fs/promises";
+
+const id = "a0000000-0000-0000-0000-000000000001";
+const blocks: DocBlock[] = [
+  {
+    ordinal: 0,
+    type: "paragraph",
+    level: null,
+    list_marker: null,
+    page: 1,
+    text: "Quarterly results are ready for review.",
+    prov: [{ page: 1, bbox: [40, 690, 420, 650], origin: "bottom_left" }],
+  },
+  {
+    ordinal: 1,
+    type: "table",
+    level: null,
+    list_marker: null,
+    page: 1,
+    text: "| Item | Revenue |\n| --- | --- |\n| Product A | 1200 |\n| Product B | 1800 |",
+    prov: [{ page: 1, bbox: [40, 580, 420, 450], origin: "bottom_left" }],
+  },
+  {
+    ordinal: 2,
+    type: "paragraph",
+    level: null,
+    list_marker: null,
+    page: 2,
+    text: "スキャンされた日本語の決算資料",
+    prov: [{ page: 2, bbox: [50, 50, 400, 100], origin: "top_left" }],
+  },
+];
+async function fixture() {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([600, 800]);
+  page.setCropBox(20, 30, 550, 740);
+  page.drawText("QUARTERLY REPORT", {
+    x: 60,
+    y: 735,
+    size: 10,
+    font,
+    color: rgb(0.3, 0.5, 0.4),
+  });
+  page.drawText("Quarterly results are ready for review.", {
+    x: 60,
+    y: 700,
+    size: 17,
+    font,
+  });
+  page.drawText("Financial overview", { x: 60, y: 650, size: 13, font });
+  page.drawRectangle({
+    x: 60,
+    y: 480,
+    width: 380,
+    height: 130,
+    borderColor: rgb(0.8, 0.8, 0.8),
+    borderWidth: 1,
+  });
+  for (let i = 0; i < 3; i++)
+    page.drawText(
+      [
+        "Item                      Revenue",
+        "Product A               1200",
+        "Product B               1800",
+      ][i],
+      { x: 72, y: 582 - i * 40, size: 13, font },
+    );
+  // 第2ページは文字層無し・原本 /Rotate=90。OCR 応答は fixture の保存済みブロックで代用する。
+  const scan = doc.addPage([550, 740]);
+  scan.setRotation(degrees(90));
+  scan.drawRectangle({
+    x: 50,
+    y: 640,
+    width: 350,
+    height: 50,
+    color: rgb(0.9, 0.92, 0.9),
+  });
+  return Buffer.from(await doc.save());
+}
+async function setup(page: Page, failedBlocks = false) {
+  page.on("console", (message) => {
+    if (message.type() === "error")
+      console.log("PDF_CONSOLE_ERROR", message.text());
+  });
+  page.on("pageerror", (error) => console.log("PDF_PAGE_ERROR", error.message));
+  const pdf = await fixture();
+  const reads = new Map<number, number>();
+  let fail = failedBlocks;
+  await page.context().addCookies([
+    {
+      name: "shiki_session",
+      value: "pdf-ui-fixture",
+      domain: "localhost",
+      path: "/",
+    },
+  ]);
+  await page.route("**/fixture.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: pdf }),
+  );
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/me")
+      return route.fulfill({
+        json: {
+          id: "alice",
+          tenant_id: "pdf-test",
+          org: "test",
+          roles: [],
+          email: "alice@example.com",
+          is_admin: false,
+          can_view_audit: false,
+        },
+      });
+    if (url.pathname.endsWith("/download-url"))
+      return route.fulfill({
+        json: { url: "http://localhost:3000/fixture.pdf" },
+      });
+    if (url.pathname.endsWith("/blocks")) {
+      const pageNumber = Number(url.searchParams.get("page"));
+      reads.set(pageNumber, (reads.get(pageNumber) ?? 0) + 1);
+      if (fail)
+        return route.fulfill({
+          status: 503,
+          json: { error: "解析結果を取得できません" },
+        });
+      const p = Number(url.searchParams.get("page"));
+      return route.fulfill({
+        json: { blocks: blocks.filter((b) => b.page === p), next_from: null },
+      });
+    }
+    if (url.pathname === `/api/files/${id}`)
+      return route.fulfill({
+        json: {
+          id,
+          kind: "file",
+          name: "四半期レポート.pdf",
+          content_type: "application/pdf",
+          version: 1,
+        },
+      });
+    if (url.pathname === "/api/threads")
+      return route.fulfill({ json: { threads: [], next_cursor: null } });
+    if (url.pathname === "/api/models")
+      return route.fulfill({ json: { models: [] } });
+    return route.fulfill({
+      json: {
+        items: [],
+        nodes: [],
+        threads: [],
+        results: [],
+        models: [],
+        groups: [],
+        workspaces: [],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto(`/pdf/${id}`);
+  await expect(page.getByTestId("pdf-mode-select"))
+    .toBeVisible({ timeout: 20000 })
+    .catch(async (error) => {
+      console.log("PDF_SETUP_BODY", await page.locator("body").innerText());
+      await page.screenshot({ path: "/tmp/pdf-failure.png" });
+      throw error;
+    });
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-testid="pdf-viewer"] [data-page="1"] canvas')
+        .evaluate((el) => (el as HTMLCanvasElement).width),
+    )
+    .toBeGreaterThan(0);
+  return {
+    reads: () => reads.get(1) ?? 0,
+    debugReads: () => Array.from(reads),
+    recover: () => {
+      fail = false;
+    },
+  };
+}
+async function dragRegion(
+  page: Page,
+  n: number,
+  bounds: [number, number, number, number],
+) {
+  const layer = page.locator(
+    `[data-testid="pdf-viewer"] [data-page="${n}"] [data-testid="pdf-region-layer"]`,
+  );
+  await page
+    .locator(`[data-testid="pdf-viewer"] [data-page="${n}"]`)
+    .scrollIntoViewIfNeeded();
+  await expect(layer).toBeVisible();
+  await layer.evaluate((el, bounds) => {
+    const root = el.closest('[data-testid="pdf-viewer"]') as HTMLElement;
+    const r = el.getBoundingClientRect(),
+      v = root.getBoundingClientRect();
+    root.scrollTop +=
+      r.top +
+      (r.height * (bounds[1] + bounds[3])) / 2 -
+      v.top -
+      root.clientHeight / 2;
+    root.scrollLeft +=
+      r.left +
+      (r.width * (bounds[0] + bounds[2])) / 2 -
+      v.left -
+      root.clientWidth / 2;
+  }, bounds);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  const box = (await layer.boundingBox())!;
+  const [l, t, r, b] = bounds;
+  await page.mouse.move(box.x + box.width * l, box.y + box.height * t);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * r, box.y + box.height * b, {
+    steps: 8,
+  });
+  await page.mouse.up();
+}
+
+test.use({ deviceScaleFactor: 2 });
+
+test("CropBox の位置と選択範囲が一致し、回転・ズーム・スクロール後も同じ抜粋を指す", async ({
+  page,
+}) => {
+  const source = await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText(
+    blocks[0].text,
+  );
+  const before = source.reads();
+  // 回転後、同じ PDF 座標を再び選択（90度では x=y, y=x）。
+  await page.screenshot({ path: "test-results/pdf-selection-light.png" });
+  await page.getByTestId("chrome-menu").click();
+  await page.getByTestId("pdf-rotate").click();
+  await dragRegion(page, 1, [645 / 740, 35 / 550, 695 / 740, 425 / 550]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+  await expect(page.getByTestId("pdf-excerpt-card").nth(1)).toContainText(
+    blocks[0].text,
+  );
+  await page.getByRole("button", { name: "拡大（⌘＋）" }).click();
+  await dragRegion(page, 1, [645 / 740, 35 / 550, 695 / 740, 425 / 550]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(3);
+  expect(source.reads()).toBe(before);
+  await page.getByRole("button", { name: "抜粋2を削除" }).click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+  await page.screenshot({ path: "test-results/pdf-selection-transformed.png" });
+});
+
+test("OCR 文字層無しの /Rotate ページを検索・選択でき、表はCSVで保存できる", async ({
+  page,
+}) => {
+  const source = await setup(page);
+  await page.getByTestId("pdf-search-toggle").click();
+  await page.getByTestId("pdf-search-input").fill("日本語");
+  await expect(page.getByTestId("pdf-search-status"))
+    .toContainText("1", { timeout: 15000 })
+    .catch(async (error) => {
+      console.log(
+        "OCR_DEBUG",
+        source.debugReads(),
+        await page.locator(".pdf-text-layer").allTextContents(),
+      );
+      throw error;
+    });
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 2, [635 / 740, 45 / 550, 695 / 740, 405 / 550]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText(
+    blocks[2].text,
+  );
+  await page.getByTestId("pdf-search-toggle").click();
+  await dragRegion(page, 1, [35 / 550, 155 / 740, 425 / 550, 295 / 740]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV", exact: true }).click();
+  const saved = await download;
+  const csv = await readFile((await saved.path())!, "utf8");
+  expect(csv).toContain('"Product A","1200"');
+  await page.getByRole("button", { name: "新規チャットに添付" }).click();
+  await expect(page).toHaveURL(/\/$/, { timeout: 30000 });
+  await expect(page.getByTestId("selection-chip")).toContainText(
+    "PDF の選択範囲",
+    { timeout: 15000 },
+  );
+});
+
+test("選択途中の中止・キーボード選択・クリア", async ({ page }) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  const layer = page.getByTestId("pdf-region-layer").first();
+  await layer.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "すべて解除" }).click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(0);
+  const b = (await layer.boundingBox())!;
+  await page.mouse.move(b.x + 50, b.y + 60);
+  await page.mouse.down();
+  await page.mouse.move(b.x + 200, b.y + 100);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(0);
+});
+
+test("ユーティリティは抽出と回転PDFを生成し、入力エラーを表示する", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-tools").click();
+  await page.getByLabel("対象のページ").fill("3");
+  await page.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  await expect(
+    page.getByTestId("pdf-utilities").getByRole("alert"),
+  ).toContainText("1〜2");
+  await page.getByLabel("対象のページ").fill("2");
+  const event = page.waitForEvent("download");
+  await page.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  const file = await event;
+  const out = await PDFDocument.load(await readFile((await file.path())!));
+  expect(out.getPageCount()).toBe(1);
+  expect(out.getPage(0).getRotation().angle).toBe(90);
+  await page.getByRole("button", { name: /ページを回転/ }).click();
+  const rotationEvent = page.waitForEvent("download");
+  await page.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  const rotated = await rotationEvent;
+  const result = await PDFDocument.load(
+    await readFile((await rotated.path())!),
+  );
+  expect(result.getPageCount()).toBe(2);
+  expect(result.getPage(0).getRotation().angle).toBe(0);
+  expect(result.getPage(1).getRotation().angle).toBe(180);
+  await page.screenshot({ path: "test-results/pdf-utilities-light.png" });
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await page.screenshot({ path: "test-results/pdf-utilities-dark.png" });
+});
+
+test("OCR取得失敗から再試行できる", async ({ page }) => {
+  const source = await setup(page, true);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 2, [635 / 740, 45 / 550, 695 / 740, 405 / 550]);
+  await expect(
+    page.getByTestId("pdf-excerpt-panel").getByRole("alert"),
+  ).toBeVisible();
+  source.recover();
+  await page.getByRole("button", { name: "解析結果を再取得" }).click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText(
+    blocks[2].text,
+  );
+});
+
+for (const theme of ["light", "dark"] as const) {
+  test(`狭幅・${theme}で抜粋レビューとツールを操作できる`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(
+      (value) => localStorage.setItem("theme", value),
+      theme,
+    );
+    await setup(page);
+    await page.getByTestId("pdf-mode-select").click();
+    await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+    await page.getByRole("button", { name: /抜粋 1 件/ }).click();
+    await expect(
+      page.locator('[data-testid="pdf-excerpt-card"]:visible'),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page
+          .locator('img[alt="p.1 の選択範囲"]:visible')
+          .evaluate(
+            (image) =>
+              (image as HTMLImageElement).complete &&
+              (image as HTMLImageElement).naturalWidth > 0,
+          ),
+      )
+      .toBe(true);
+    await expect
+      .poll(async () => {
+        const bounds = (await page.getByRole("dialog").boundingBox())!;
+        return Math.abs(bounds.x + bounds.width - 390);
+      })
+      .toBeLessThan(1);
+    await page.screenshot({ path: `test-results/pdf-mobile-${theme}.png` });
+  });
+}
+
+test("PDF座標の往復変換は全回転・倍率・CropBox・元のページ回転で一致する", async () => {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const doc = await getDocument({
+    data: new Uint8Array(await fixture()),
+    useSystemFonts: true,
+  }).promise;
+  const expected: [number, number, number, number] = [40, 650, 420, 690];
+  for (const n of [1, 2]) {
+    const page = await doc.getPage(n);
+    for (const rotation of [0, 90, 180, 270])
+      for (const scale of [0.33, 1, 2.25]) {
+        const vp = page.getViewport({
+          scale,
+          rotation: (page.rotate + rotation) % 360,
+        });
+        const css = boxToViewport(expected, false, vp);
+        const result = rectFromViewport(
+          vp,
+          [css.left, css.top],
+          [css.left + css.width, css.top + css.height],
+        );
+        result.forEach((v, i) => expect(v).toBeCloseTo(expected[i], 6));
+        const top = {
+          page: n,
+          bbox: [
+            40,
+            viewportDimensions(vp).pageHeight - 690,
+            420,
+            viewportDimensions(vp).pageHeight - 650,
+          ],
+          origin: "top_left" as const,
+        };
+        expect(blockRect(top, viewportDimensions(vp).pageHeight)).toEqual(
+          expected,
+        );
+      }
+  }
+  await doc.destroy();
+});
+
+test("CSVは引用符・改行・区切りを保持し、ページ指定は不正範囲を拒否する", async () => {
+  expect(
+    tableCsv('| A | B |\n| :--- | ---: |\n| He said "yes" | x\\|y<br>z |'),
+  ).toBe('\uFEFF"A","B"\r\n"He said ""yes""","x|y\nz"');
+  expect(parsePageRange("2, 1-3, 2", 3)).toEqual([1, 0, 2]);
+  for (const invalid of ["", "0", "4", "3-1", "1,,2", "1-999999999"])
+    expect(() => parsePageRange(invalid, 3)).toThrow();
+});
+
+test("文字層の部分重複でもOCR本文を失わず、補助平面文字の添付を切らない", async () => {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const doc = await getDocument({
+    data: new Uint8Array(await fixture()),
+    useSystemFonts: true,
+  }).promise;
+  const page = await doc.getPage(1);
+  const native = await page.getTextContent();
+  const output = withOcrContent(
+    native,
+    [{ ...blocks[0], text: blocks[0].text + " OCRからのみ取得できる本文" }],
+    1,
+    page.getViewport({ scale: 1 }),
+  );
+  expect(
+    output.items.some(
+      (item) => "str" in item && item.str.includes("OCRからのみ取得できる本文"),
+    ),
+  ).toBe(true);
+  const text = "😀".repeat(5000) + "最後の行";
+  const context = excerptContext(id, "test.pdf", 1, [
+    {
+      id: "x",
+      page: 1,
+      bbox: [0, 0, 100, 100],
+      text,
+      tables: [],
+      blockOrdinals: [],
+    },
+  ]);
+  setPendingSelection(context);
+  expect(takePendingSelection()?.excerpt).toContain("最後の行");
+  expect(tableCsv("| A | B |\n| --- | --- |\n| --- option | 1 |")).toContain(
+    "--- option",
+  );
+  await doc.destroy();
+});
+
+test("CSVのデータ行がハイフンのみでも保持する", () => {
+  expect(
+    tableCsv("| left | right |\n| --- | --- |\n| --- | --- |\n| x | y |"),
+  ).toContain('"---","---"');
+});
+
+test("画像アップロードの同名検索中にログアウトしたらdeclareを送らない", async () => {
+  const original = globalThis.fetch;
+  const requests: { url: string; method: string }[] = [];
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  globalThis.fetch = async (input, init) => {
+    requests.push({ url: String(input), method: init?.method ?? "GET" });
+    if (String(input).startsWith("/api/nodes")) return pending;
+    throw new Error("旧画像のアップロード要求を出してはいけない");
+  };
+  try {
+    const uploading = uploadNewFile({
+      file: new File(["old-user-image"], "抜粋.png", { type: "image/png" }),
+    });
+    await expect.poll(() => requests.length).toBe(1);
+    clearUserStorage();
+    release(Response.json({ items: [], next_cursor: null }));
+    await expect(uploading).rejects.toThrow("ログイン状態が変わった");
+    expect(requests.filter((r) => r.method === "POST")).toHaveLength(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("抜粋をアシスタントへ添付し、指示入力と送信まで待つ", async ({ page }) => {
+  await setup(page);
+  let created = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/threads"
+    )
+      created++;
+  });
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  await page.getByRole("button", { name: "アシスタントに添付" }).click();
+  await expect(
+    page.getByRole("complementary", { name: "PDF のアシスタント" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("selection-chip")).toContainText(
+    "PDF の選択範囲",
+    { timeout: 15000 },
+  );
+  await expect(page.getByLabel("メッセージを入力")).toBeEmpty();
+  expect(created).toBe(0);
+  await expect(page.getByTestId("panel-empty-hint")).toContainText(
+    "添付した抜粋",
+  );
+  await expect(page.getByTestId("panel-empty-hint")).not.toContainText("編集");
+  await page.screenshot({ path: "test-results/pdf-assistant-light.png" });
+});

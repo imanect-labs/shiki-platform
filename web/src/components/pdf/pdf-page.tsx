@@ -11,6 +11,8 @@
 /// テキスト層は pdf.js の `TextLayer`（透明な文字を canvas に重ね、選択・コピー・検索の塗りに使う）。
 /// 文字は `pageTextContent` のキャッシュを検索と共有する（span の並びと検索の文字位置を一致させる）。
 import * as React from "react";
+import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
+import type { PdfExcerpt, PdfRect } from "@/lib/pdf-excerpts";
 import type { PDFDocumentProxy, PageViewport } from "pdfjs-dist";
 
 import { cn } from "@/lib/utils";
@@ -19,7 +21,7 @@ import { setPageHighlights } from "@/lib/pdf-highlight";
 import { buildPageText, matchPieces, pageTextContent, type PageText } from "@/lib/pdf-text";
 import type { CiteBox } from "@/lib/citation-locate";
 
-type Size = { w: number; h: number; viewport: PageViewport };
+type Size = { w: number; h: number; viewport: PageViewport; rotation: number };
 
 /// 1 ページの canvas の画素数の上限。
 const MAX_CANVAS_PIXELS = 16_000_000;
@@ -38,6 +40,8 @@ export function PdfPage({
   rotation = 0,
   textLayer = false,
   highlights,
+  regionSelection,
+  textRevision = 0,
 }: {
   doc: PDFDocumentProxy;
   pageNumber: number;
@@ -54,6 +58,8 @@ export function PdfPage({
   /// 文字を選択・コピーできるようにする（ビューア本体のみ。サムネイルや出典の縮小表示では出さない）。
   textLayer?: boolean;
   highlights?: PageHighlights;
+  textRevision?: number;
+  regionSelection?: { enabled: boolean; selections: PdfExcerpt[]; onSelect: (page: number, bbox: PdfRect) => void };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -90,7 +96,7 @@ export function PdfPage({
         const total = (page.rotate + rotation) % 360;
         const base = page.getViewport({ scale: 1, rotation: total });
         const viewport = page.getViewport({ scale: width / base.width, rotation: total });
-        setSize({ w: width, h: viewport.height, viewport });
+        setSize({ w: width, h: viewport.height, viewport, rotation });
         setRatio({ rotation, value: base.height / base.width });
       })
       .catch(() => undefined);
@@ -154,7 +160,7 @@ export function PdfPage({
       container.replaceChildren();
       setText(null);
     };
-  }, [doc, pageNumber, size, near, textLayer]);
+  }, [doc, pageNumber, size, near, textLayer, textRevision]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
@@ -201,6 +207,7 @@ export function PdfPage({
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" aria-hidden />
       {textLayer ? <div ref={textRef} className="pdf-text-layer" /> : null}
+      {size && regionSelection ? <PdfRegionLayer viewport={size.viewport} page={pageNumber} enabled={regionSelection.enabled && size.w === width && size.rotation === rotation} selections={regionSelection.selections} onSelect={regionSelection.onSelect} /> : null}
       {size
         ? mine.map((b, i) => {
             const css = boxToViewport(b.bbox, b.topLeft, size.viewport);

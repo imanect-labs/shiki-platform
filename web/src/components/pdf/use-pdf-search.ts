@@ -11,7 +11,7 @@ import { searchDocument, type PdfMatch } from "@/lib/pdf-text";
 /// 打鍵が止まってから探し始めるまでの時間。
 const DEBOUNCE_MS = 250;
 
-export function usePdfSearch(doc: PDFDocumentProxy | null, currentPage: number) {
+export function usePdfSearch(doc: PDFDocumentProxy | null, currentPage: number, revision = 0) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [matches, setMatches] = React.useState<PdfMatch[]>([]);
@@ -59,7 +59,7 @@ export function usePdfSearch(doc: PDFDocumentProxy | null, currentPage: number) 
       window.clearTimeout(timer);
       ctrl.abort();
     };
-  }, [doc, query, open]);
+  }, [doc, query, open, revision]);
 
   const step = React.useCallback(
     (delta: number) => {

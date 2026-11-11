@@ -4,6 +4,7 @@ import * as React from "react";
 import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { usePdfAttachments, takePdfAttachments } from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
@@ -179,6 +180,12 @@ export const Composer = React.memo(function Composer({
 }) {
   const [value, setValue] = React.useState("");
   const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
+  const pdfFiles = usePdfAttachments();
+  React.useEffect(() => {
+    if (!pdfFiles) return;
+    const files = takePdfAttachments();
+    setAttachments((prev) => [...prev, ...files.filter((f) => !prev.some((p) => p.node_id === f.node_id))]);
+  }, [pdfFiles]);
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
   const attachmentsRef = React.useRef(attachments);
   attachmentsRef.current = attachments;

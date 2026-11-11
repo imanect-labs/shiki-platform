@@ -20,6 +20,8 @@ pub enum SelectionKind {
     /// Office 文書（Collabora・docx/xlsx/pptx）の選択。excerpt は Action_Copy で取得した
     /// 選択テキスト。locator は無し（Collabora 側の位置は WOPI ホストからは参照しない）。
     OfficeSelection,
+    /// PDF の抜粋。locator は版と PDF 座標の複数範囲。本文は保存済み解析から取得。
+    PdfSelection,
     /// スキルエディタで編集中のスキル全体（#919）。excerpt は SkillBody 相当の JSON
     /// （name・description・instructions ほか）。draft_name はスキル名。locator は無し。
     /// 部分選択ではなく全体を渡すため、抜粋の上限は [`SKILL_DRAFT_EXCERPT_MAX_CHARS`]。
@@ -88,9 +90,11 @@ impl SelectionKind {
     pub const fn excerpt_max_chars(self) -> usize {
         match self {
             Self::SkillDraft => SKILL_DRAFT_EXCERPT_MAX_CHARS,
-            Self::NoteSelection | Self::CsvRange | Self::SlideSelection | Self::OfficeSelection => {
-                SELECTION_EXCERPT_MAX_CHARS
-            }
+            Self::NoteSelection
+            | Self::CsvRange
+            | Self::SlideSelection
+            | Self::OfficeSelection
+            | Self::PdfSelection => SELECTION_EXCERPT_MAX_CHARS,
         }
     }
 }

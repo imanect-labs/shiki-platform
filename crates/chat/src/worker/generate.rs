@@ -146,6 +146,13 @@ impl ChatWorker {
             .take()
             .unwrap_or_else(|| self.config.system_prompt.clone());
         opts.system = Some(match self.origin_document(run).await {
+            Some((node_id, name))
+                if name
+                    .as_deref()
+                    .is_some_and(|n| n.to_ascii_lowercase().ends_with(".pdf")) =>
+            {
+                format!("{base}\n\nユーザーは PDF（node_id={node_id}）を参照しています。選択範囲の出典・版・ページを区別して回答してください。PDF は閲覧対象です。")
+            }
             Some((node_id, name)) => {
                 opts.tool_search.always_load.extend(
                     super::history::origin_document_tools(name.as_deref())

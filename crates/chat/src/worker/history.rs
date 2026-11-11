@@ -196,6 +196,7 @@ pub(super) fn message_text_with(
                     crate::model::SelectionKind::CsvRange => "csv_range",
                     crate::model::SelectionKind::SlideSelection => "slide_selection",
                     crate::model::SelectionKind::OfficeSelection => "office_selection",
+                    crate::model::SelectionKind::PdfSelection => "pdf_selection",
                     crate::model::SelectionKind::SkillDraft => "skill_draft",
                 };
                 let target = context
@@ -362,6 +363,7 @@ fn selection_tools(kind: crate::model::SelectionKind) -> &'static [agent_core::T
         K::CsvRange => &[T::CsvQuery, T::CsvPatch],
         K::SlideSelection => &[T::SlideRead, T::SlideEdit],
         K::SkillDraft => &[T::SaveSkill],
+        K::PdfSelection => &[],
         K::OfficeSelection => &[
             T::OfficeLiveEdit,
             T::OfficeEdit,
@@ -389,6 +391,7 @@ pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core:
         Some("docx" | "odt") => &[T::OfficeRead, T::OfficeWordEdit],
         // エンジンが扱わない旧形式（.xls / .doc）と pptx は従来の道具。
         Some("pptx" | "doc" | "xls" | "ppt" | "odp") => &[T::OfficeLiveEdit, T::OfficeEdit],
+        Some("pdf") => selection_tools(K::PdfSelection),
         Some("csv") => selection_tools(K::CsvRange),
         Some("slide") => selection_tools(K::SlideSelection),
         _ => selection_tools(K::NoteSelection),
