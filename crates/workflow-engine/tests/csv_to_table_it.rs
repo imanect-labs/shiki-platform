@@ -522,7 +522,6 @@ fn the_guided_ways_save_without_errors_or_warnings() {
             groups_by_key_and_values(),
         ),
         ("集計の行の先頭を value で読む", groups_first_value()),
-        ("集計の行を直下の名前で読む", groups_by_flat_names()),
         (
             "結合先の列でまとめた行を m.<参照名> で読む",
             groups_by_joined_key("/item/key/m.area"),
@@ -536,6 +535,27 @@ fn the_guided_ways_save_without_errors_or_warnings() {
         );
         assert!(run_blockers(&parsed).is_empty(), "{name}");
     }
+}
+
+/// 集計の行を直下の名前（`/item/region` など）で読むと、行の形（key・value・values）に無い所を指すので、保存で
+/// 止まる（GAP-137）。E1 で AI が書いた形で、前は保存を通って実行で expr_resolve_error になっていた（GAP-132）。
+#[test]
+fn reading_group_rows_by_flat_names_is_refused_on_save() {
+    let errors = validate(&groups_by_flat_names(), &catalog()).unwrap_err();
+    assert!(
+        errors.iter().all(|e| e.code == "ir.unknown_output_path"),
+        "{errors:?}"
+    );
+    let mut paths: Vec<_> = errors.iter().filter_map(|e| e.path.clone()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        vec![
+            "/params/data/deals".to_string(),
+            "/params/data/region".to_string(),
+            "/params/data/total".to_string(),
+        ]
+    );
 }
 
 fn node_ctx(scopes: &[&str]) -> NodeContext {
