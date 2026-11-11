@@ -69,6 +69,8 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 | Python | `cd ingestion-worker && uv sync --frozen && uv run ruff check . && uv run pytest -m "not slow" -q` |
 | 統合 | `cd deploy/compose && cp .env.example .env && docker compose up -d --build shiki-server && bash smoke-bff.sh` |
 
+**ローカル・CI の S3 互換ストレージは RustFS（Compose の `rustfs`）で、MinIO から移行済み。** `minioadmin` や旧設定の `minio` alias は互換用で、MinIO の起動は不要。S3 接続失敗を「MinIO が無い」「環境に S3 が無い」で片付けず、接続先・RustFS の起動/ready・認証を確認して再実行する。起動・確認手順は `.claude/skills/pr/references/gates.md` の結合テスト節。
+
 結合テストは環境変数が無いと**黙ってスキップ**される（`OPENFGA_TEST_URL`・`STORAGE_TEST_DATABASE_URL`・`RAG_TEST_QDRANT_URL` 等）。ローカルでも `SHIKI_REQUIRE_IT=1` を付けて未設定を失敗にし、意図したテストが実際に走ったかを確認する。接続先は `shiki_testenv::var` で読む。
 `crates/data` の読取経路を変えたら `policy_threat_it` を ci.yml の `data-strategies` ジョブと同じ環境変数（`SHIKI_DATA_READ_PATH` / `SHIKI_DATA_FORCE_STRATEGY` ほか）で全経路回す。性能ベンチは `DATA_BENCH=1`（Web は `DATA_PERF=1`）のときだけ走る（手順は `docs/data/benchmarks.md`）。
 
