@@ -402,9 +402,17 @@ async fn haiku_budget_plan_live() {
     let pool = setup().await.expect("テストDBが必要です");
     let api_key = shiki_testenv::var("ANTHROPIC_TEST_API_KEY").expect("秘密変数が必要です");
     let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "claude-haiku-5-5".into());
+    // TLS を中継する検証環境向け。証明書検証は維持し、本番クライアントは変更しない。
+    let mut http = reqwest::Client::builder();
+    if let Ok(path) = std::env::var("ANTHROPIC_TEST_CA") {
+        let pem = std::fs::read(path).expect("検証用 CA を読み込めること");
+        for cert in reqwest::Certificate::from_pem_bundle(&pem).unwrap() {
+            http = http.add_root_certificate(cert);
+        }
+    }
     let gateway = LlmGateway::build(
         pool,
-        reqwest::Client::new(),
+        http.build().unwrap(),
         GatewayConfig {
             provider: ProviderConfig {
                 kind: ProviderKind::Anthropic,

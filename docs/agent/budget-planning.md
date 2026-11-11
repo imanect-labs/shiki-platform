@@ -1,6 +1,6 @@
 # ステップ予算を踏まえた計画と完了までの実行
 
-> 状態: 初期実装済み・実 LLM 検証待ち（2026-11-11）。Issue [#1175](https://github.com/imanect-labs/shiki-platform/issues/1175)。
+> 状態: 初期実装済み・Haiku 実 LLM 少数ケース検証通過（2026-11-11）。Issue [#1175](https://github.com/imanect-labs/shiki-platform/issues/1175)。
 > 実装コミット: `e898e127`。関連: [Phase 5 / Task 5.7](../roadmap/phase-5.md)、#407、#426。
 
 ## 1. 解決する問題と確認した事例
@@ -136,6 +136,8 @@ Network secret の場合は、その環境が供給するプレースホルダ�
 
 `resume_it::haiku_budget_plan_live` を明示実行する。接続先は `https://api.anthropic.com` 固定。
 既定モデルは `claude-haiku-5-5`。必要なら `ANTHROPIC_TEST_MODEL` で Haiku の利用可能なモデルを指定する。
+TLS を中継する環境では `ANTHROPIC_TEST_CA` に環境が供給する PEM CA ファイルを指定する。
+例: `ANTHROPIC_TEST_CA="$CODEX_PROXY_CERT"`。テスト用クライアントの信頼先へ追加し、証明書検証は無効化しない。
 
 DB の接続先と秘密変数を環境へ設定してから、リポジトリ直下で実行する。
 
@@ -163,3 +165,50 @@ SHIKI_REQUIRE_IT=1 cargo test -p shiki-agent-core --test resume_it \
 
 最終報告には計画の実例、両プロファイルのステップ数・停止理由・編集と確認の成否を載せる。
 認証やモデル利用権限で止まった場合は、実行成功とせず具体的な阻害要因を報告する。
+
+## 7. Claude Haiku 実 LLM 検証結果（2026-11-11）
+
+新しいクラウド環境で `ANTHROPIC_TEST_API_KEY` の ready 状態を確認し、Rust 1.96.0 と
+PostgreSQL 17 の専用テスト DB を用意して §6 のテストを明示実行した。キー値・認証ヘッダーは表示していない。
+
+初回は API リクエストの送信エラーで失敗した。認証なしの curl 疎通では HTTP 401 を受信できたため、
+テストクライアントに追加 CA の指定 `ANTHROPIC_TEST_CA` を実装し、環境が供給する CA を指定したところ解消した。
+本番コードと予算・計画の指示は変更していない。
+
+実行コマンド（`STORAGE_TEST_DATABASE_URL` は専用 DB に設定済み）:
+
+```sh
+SHIKI_REQUIRE_IT=1 ANTHROPIC_TEST_CA="$CODEX_PROXY_CERT" \
+  cargo test -p shiki-agent-core --test resume_it \
+  haiku_budget_plan_live -- --ignored --nocapture
+```
+
+結果: `1 passed; 0 failed; 0 ignored`。1 テスト内で次の 2 プロファイルが両方通過した。
+
+| モデル | プロファイル | ステップ数 / 上限 | 停止理由 | 累積トークン | 編集回数 | 編集後の再取得 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `claude-haiku-5-5` | Chat | 4 / 6 | `Completed` | 5304 | 1 | 成功 |
+| `claude-haiku-5-5` | Autonomous | 4 / 6 | `Completed` | 5450 | 1 | 成功 |
+
+通常チャットの計画本文:
+
+> まず文書を読み、現在の締切の記載を確認します。その後、提出締切を金曜日に変更し、変更後の本文を再読込して確認します。
+
+自律モードの計画本文:
+
+> まず文書の現在の内容を確認し、提出締切の記載を特定します。その後、締切を金曜日に変更し、再読み込みで変更後の本文を確認します。
+
+両方とも空でないだけでなく、読む・変更する・再取得して確認する順序を具体的に示している。
+テストの assertion で、最初のツール実行前に本文があり、最初のツール呼び出しが step 0
+（計画本文と最初の操作が同じ生成）であることも確認した。締切は金曜日に変更され、
+編集は重複せず、変更後の本文が再取得された。
+
+CA 設定追加後の関連チェックも通過した。
+
+- `SHIKI_REQUIRE_IT=1 cargo test -p shiki-agent-core --test resume_it`: 回帰 6 件通過。
+  実 LLM の 1 件はこのコマンドでは ignore（上記の別実行で通過済み）。
+- `cargo clippy -p shiki-agent-core --all-targets --all-features -- -D warnings`。
+- `cargo fmt --all --check`、`git diff --check`、`bash scripts/check-file-size.sh`。
+
+各プロファイル 1 run の少数ケースであり、比較対照はない。一般的な完了保証や改善率を示すものではない。
+今回はイベント列で本文を確認しており、ブラウザでの実画面確認は引き続き未実施。
