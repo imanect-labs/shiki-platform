@@ -23,6 +23,8 @@ mod stream;
 mod thread_manage;
 mod thread_pins;
 mod threads;
+/// 会話の AI の試運転の台帳（`workflow_trial_run`・T04）。
+mod trial_runs;
 mod ui_actions;
 mod ui_runs;
 mod yui_actions;
@@ -32,6 +34,7 @@ pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
 pub use threads::ThreadOrigin;
+pub(crate) use trial_runs::{TrialKey, TrialRow, STALE_RESERVATION_SECS};
 pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 
 use std::sync::Arc;
