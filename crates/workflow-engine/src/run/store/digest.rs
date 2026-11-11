@@ -199,6 +199,7 @@ impl RunStore {
         ir: &WorkflowIr,
     ) -> Result<Option<RunDigest>, RunStoreError> {
         let tenant_id = ctx.tenant_id();
+        // tenant-sql: allow(OWN_RUN 定数（format! で差し込み）が tenant_id を付ける)
         let row: Option<RunRow> = sqlx::query_as(&format!(
             "SELECT r.workflow_id, r.status, {WAITING_FOR}, r.version, r.fail_reason, \
                     {FAILURE_CODE_COLUMNS} \
