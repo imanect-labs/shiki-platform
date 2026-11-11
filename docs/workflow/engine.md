@@ -880,7 +880,7 @@ GAP-34）。試運転は interactive の run の 1 つで、主体は話した�
   - 全体は 8,000 字まで（切るのは封筒の中身だけで、閉じタグは必ず付ける）。
   - 返す値の節の全体と副作用の一覧は観測に入れない。観測は会話の tool_result として残り、共有した会話では共有の相手も
     読むため（返す値は `workflow.reply` の step の出力の先頭に出て、副作用は承認カードが見せる）。共有した会話で出力の
-    先頭を見せてよいかは、human の判断を待つ（design-caveats の PIT 候補）。
+    先頭を見せてよいかは、human の判断を待つ（[design-caveats.md](../design-caveats.md) PIT-84 の候補）。
 - **費用**: run の trace（`run_id` の 32-hex・§11.1）の `llm_usage` を集計し、台帳に報告済みの分との差分だけを会話の予算に
   積む（合流・前回の結果で同じ費用を二重に積まない）。`workflow.start` の子の run（別の trace）と、待つのをやめた後の分は
   入らない。
@@ -1291,8 +1291,8 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 この手順の前に、有効化できない版を止める。動かせない設定（必須の欄の空など・[ir.md](./ir.md) §9）と、**有効化する人の
 アカウントでは使えないモデル**で自動実行されるもの（利用者ごとのプロバイダの制限・D-196）があれば、委譲のタプルに触る前に
 409 `not_ready`（全件の `errors`）で止める。同意し直し（`consent: true`）と軽量切替（§10.3）も同じで、同意計画
-（`GET /workflows/{id}/versions/{version}/consent-plan`）の `blockers` も同じ理由を返す。モデルの照合は保存のときと同じもの
-（ir.md §8 の V3 の保存する人の制限）を、有効化する人の材料でかけ、schedule / event のきっかけを持つ版だけを照らす
+（`GET /workflows/{id}/versions/{version}/consent-plan`）の `blockers` も同じ理由を返す。モデルの照合は保存のときと同じものを、
+有効化する人の材料でかけ（ir.md §8 の V3 の有効化する人の制限）、schedule / event のきっかけを持つ版だけを照らす
 （`workflow_engine::user_model_blockers`・API は `enable_model_blockers`）。本番の入口は `POST /workflows/{id}/enable` の
 1 つで、`DelegationStore::enable` を直接呼ぶのはテストだけ（この照合を通らない）。
 
