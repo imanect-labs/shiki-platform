@@ -392,7 +392,11 @@ impl ArtifactStore {
 
     /// アーティファクトへの relation があるか（監査に残さない・判定だけ）。下書きを読める人（editor）かを
     /// 決めるのに使う（D-16）。
-    pub(crate) async fn allows(
+    ///
+    /// [`Self::require_relation`] と同じ問い方（同じ relation・`HigherConsistency`）で、拒否の監査を残さない。画面の
+    /// 出し分けのための判定（試運転の下見の「試運転できるか」・D-197）はこれを呼び、実際に止める判定
+    /// （`require_relation`）と問いを 2 か所に分けない（`require` もこの関数で判定する）。
+    pub async fn allows(
         &self,
         ctx: &AuthContext,
         id: Uuid,
@@ -420,17 +424,7 @@ impl ArtifactStore {
         trace_id: Option<&str>,
     ) -> Result<authz::FgaObject, ArtifactError> {
         let obj = ctx.ns().artifact(&id.to_string());
-        let ok = self
-            .authz
-            .check(
-                &ctx.subject(),
-                relation,
-                &obj,
-                Consistency::HigherConsistency,
-            )
-            .await
-            .map_err(|e| ArtifactError::Internal(e.to_string()))?;
-        if !ok {
+        if !self.allows(ctx, id, relation).await? {
             let _ = self
                 .audit
                 .record(
