@@ -839,7 +839,9 @@ GAP-34）。試運転は interactive の run の 1 つで、主体は話した�
      試す値（きっかけの内容 `trigger`・予定の日時 `scheduled_at`・ir.md §3.1）も同じ形で渡せる。
 - **承認カード**: 道具は承認が要る（`requires_confirmation`）。承認は呼び出し 1 つに 1 つで、会話の自律モードの Auto でも
   承認を残す（書込・送信・レコードの作成が本当に起きるため）。全自動（Bypass）だけが、既存の意味のままカードを省く。
-  カードは下見の口 `GET /workflows/try-preview?workflow=<UUID>&version=<n>`（Session・GET）の応答だけで描く。
+  カードの中身は下見の口 `GET /workflows/try-preview?workflow=<UUID>&version=<n>`（Session・GET）の応答から描く（副作用の
+  分け方は TS に持たない）。書く先のフォルダ・ファイルの場所と人の表示名は、カードが承認する人の権限で別に引く（場所が読め
+  なければ「読めないフォルダ」と出して名前を出さない・表示名が引けなければ id）。
   - 引き方は道具と同じ（`WorkflowStore::resolve_ref`・viewer・kind=workflow）。無い・見えない・別のテナント・ワークフローで
     ない・版が無いは、どれも同じ 404。
   - 返すのは、持ち主・この版を保存した人と時刻（持ち主と違えばカードは別に出す）・最新の版・試運転できるか（`can_try`・
