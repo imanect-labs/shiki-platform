@@ -19,7 +19,7 @@ use llm_gateway::{
 };
 
 use crate::agent_observation::{
-    append_budget_observation, demand_final_answer, nudge_empty_response,
+    append_budget_observation, budget_system_prompt, demand_final_answer, nudge_empty_response,
 };
 use crate::approval::Approver;
 use crate::budget::BudgetCheck;
@@ -96,6 +96,11 @@ pub async fn run_agent(
     approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
+    // 上限は初回から知らせる。run 内で同じ system を使い、残量は観測に載せる。
+    // 呼び出し元の opts を変えず、resume でも指示を重複させない。
+    let mut run_opts = opts.clone();
+    run_opts.system = Some(budget_system_prompt(opts.system.as_deref(), &opts.budget));
+    let opts = &run_opts;
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
     // 出番の限られるツールは定義を遅延にし、`tool_search` で読み込ませる（候補は提示済みの
     // ツールだけ＝検索で認可は広がらない・tool_search.rs）。
@@ -583,9 +588,7 @@ async fn run_step(
     }
     // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
     // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
-    if opts.profile.is_autonomous() {
-        append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
-    }
+    append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
         content: result_blocks,
