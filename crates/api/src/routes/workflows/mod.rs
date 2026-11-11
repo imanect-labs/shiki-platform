@@ -4,6 +4,7 @@
 //! - [`runs`] — run 起動・状態取得（Task 10.2/10.14）
 //! - [`registration`] — 有効化・同意・トリガ実体化（Task 10.4a・engine.md §10）
 //! - [`schedule`] — スケジュールの次の実行の見通し（発火と同じ読み方・BUG-95）
+//! - [`try_preview`] — 試運転の下見（会話の AI の試運転の承認カード・D-10・D-197）
 
 pub mod agent_settings;
 pub mod list;
@@ -12,6 +13,7 @@ pub mod run_ops;
 pub mod runs;
 pub mod save;
 pub mod schedule;
+pub mod try_preview;
 
 pub use agent_settings::{get_agent_settings, AgentSettingsResponse};
 pub use list::{
@@ -38,3 +40,4 @@ pub use save::{
     ValidationErrorResponse, WorkflowVersionResponse,
 };
 pub use schedule::{preview_schedule, SchedulePreviewRequest, SchedulePreviewResponse};
+pub use try_preview::{try_preview, TryPreviewResponse, TryPreviewStart};

@@ -373,6 +373,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/agent-settings", &["GET"], Session, || {
             get(routes::workflows::get_agent_settings)
         }),
+        // 試運転の下見（会話の AI の試運転の承認カード・id だけを受ける・D-197）。
+        r("/workflows/try-preview", &["GET"], Session, || {
+            get(routes::workflows::try_preview)
+        }),
         r("/workflows/{id}", &["GET", "PUT"], Session, || {
             get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
         }),
