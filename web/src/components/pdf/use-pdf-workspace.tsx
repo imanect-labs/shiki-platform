@@ -18,14 +18,17 @@ import { PdfExcerptPanel } from "./pdf-excerpt-panel";
 import { PdfUtilities } from "./pdf-utilities";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { queuePdfAttachments } from "@/lib/pdf-attachment-handoff";
+import { queuePdfAttachments, clearPdfAttachmentsForTarget } from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "@/lib/storage";
 import type { Attachment } from "@/lib/chat-api";
 import {
   storageScopeGeneration,
   subscribeStorageScope,
 } from "@/lib/user-storage";
-import { setPendingSelection } from "@/lib/selection-context";
+import {
+  setPendingSelection,
+  clearPendingSelectionForTarget,
+} from "@/lib/selection-context";
 import {
   excerptContext,
   extractRegion,
@@ -80,6 +83,7 @@ export function usePdfWorkspace({
   const [textRevision, setTextRevision] = React.useState(0);
   const generation = React.useRef(0);
   const pendingCount = React.useRef(0);
+  const replacements = React.useRef(new Map<string, symbol>());
   const invalidate = React.useCallback(() => {
     generation.current++;
   }, []);
@@ -99,6 +103,7 @@ export function usePdfWorkspace({
     invalidate();
     pendingCount.current = 0;
     lastRegion.current = null;
+    replacements.current.clear();
     setSelections([]);
     setBusy(false);
     setAttaching(false);
@@ -107,6 +112,8 @@ export function usePdfWorkspace({
     setAssistantOpen(false);
     return () => {
       invalidate();
+      clearPendingSelectionForTarget(`pdf:${id}`);
+      clearPdfAttachmentsForTarget(`pdf:${id}`);
     };
   }, [id, version, authGeneration, invalidate]);
   const onSelect = React.useCallback(
@@ -119,6 +126,9 @@ export function usePdfWorkspace({
         setError("一度に選べる範囲は20件までです。");
         return;
       }
+      if (replaceId && replacements.current.has(replaceId)) return;
+      const replacementToken = Symbol();
+      if (replaceId) replacements.current.set(replaceId, replacementToken);
       const request = { page, bbox, id: replaceId };
       lastRegion.current = request;
       const at = generation.current;
@@ -128,13 +138,22 @@ export function usePdfWorkspace({
       setError("");
       try {
         const result = await extractRegion(doc, page, bbox);
-        if (at !== generation.current || scope !== storageScopeGeneration())
+        if (
+          at !== generation.current ||
+          scope !== storageScopeGeneration() ||
+          (replaceId &&
+            replacements.current.get(replaceId) !== replacementToken)
+        )
           return;
         setSelections((prev) =>
-          [...prev.filter((s) => s.id !== replaceId), result].sort(
-            (a, b) =>
-              a.page - b.page || b.bbox[3] - a.bbox[3] || a.bbox[0] - b.bbox[0],
-          ),
+          replaceId && !prev.some((s) => s.id === replaceId)
+            ? prev
+            : [...prev.filter((s) => s.id !== replaceId), result].sort(
+                (a, b) =>
+                  a.page - b.page ||
+                  b.bbox[3] - a.bbox[3] ||
+                  a.bbox[0] - b.bbox[0],
+              ),
         );
         if (lastRegion.current === request)
           lastRegion.current = { page, bbox, id: result.id };
@@ -145,13 +164,23 @@ export function usePdfWorkspace({
           );
         }
       } catch (e) {
-        if (at === generation.current) {
+        if (
+          at === generation.current &&
+          scope === storageScopeGeneration() &&
+          (!replaceId ||
+            replacements.current.get(replaceId) === replacementToken)
+        ) {
           lastRegion.current = request;
           setError(
             e instanceof Error ? e.message : "解析結果を取得できませんでした",
           );
         }
       } finally {
+        if (
+          replaceId &&
+          replacements.current.get(replaceId) === replacementToken
+        )
+          replacements.current.delete(replaceId);
         if (at === generation.current) {
           pendingCount.current--;
           setBusy(pendingCount.current > 0);
@@ -201,7 +230,10 @@ export function usePdfWorkspace({
       }
       if (at !== generation.current || scope !== storageScopeGeneration())
         return;
-      setPendingSelection(context);
+      setPendingSelection(
+        context,
+        destination === "new" ? "home" : `pdf:${id}`,
+      );
       queuePdfAttachments(
         attachments,
         destination === "new" ? "home" : `pdf:${id}`,
@@ -240,11 +272,18 @@ export function usePdfWorkspace({
         error={error}
         includeImages={includeImages}
         onIncludeImages={setIncludeImages}
-        onRemove={(key) =>
-          setSelections((prev) => prev.filter((s) => s.id !== key))
-        }
+        onRemove={(key) => {
+          replacements.current.delete(key);
+          if (lastRegion.current?.id === key) {
+            lastRegion.current = null;
+            setError("");
+          }
+          setSelections((prev) => prev.filter((s) => s.id !== key));
+        }}
         onClear={() => {
           generation.current++;
+          replacements.current.clear();
+          lastRegion.current = null;
           pendingCount.current = 0;
           setBusy(false);
           setAttaching(false);
@@ -332,6 +371,7 @@ export function usePdfWorkspace({
             type="button"
             onClick={() => setAssistantOpen((o) => !o)}
             aria-pressed={assistantOpen}
+            aria-label="アシスタント"
             className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           >
             <MessageSquare className="size-3.5" />

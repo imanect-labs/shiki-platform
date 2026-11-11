@@ -297,9 +297,11 @@ export async function uploadFile(opts: {
 
   assertUploadScope(startedAt);
   // 3. finalize（server-side で再ハッシュ照合し node を確定）。
-  return apiFetch(`/files/${ticket.upload_id}/finalize`, { method: "POST" }).then((r) =>
+  const node = await apiFetch(`/files/${ticket.upload_id}/finalize`, { method: "POST" }).then((r) =>
     okJson<NodeResponse>(r),
   );
+  assertUploadScope(startedAt);
+  return node;
 }
 
 /// presigned PUT を進捗付きで送る（XHR で upload.onprogress を取る）。

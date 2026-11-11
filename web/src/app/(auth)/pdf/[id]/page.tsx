@@ -11,7 +11,12 @@
 import * as React from "react";
 import { AssistantLayout } from "@/components/shell/assistant-sheet";
 import { usePdfWorkspace } from "@/components/pdf/use-pdf-workspace";
-import { storageScopeGeneration } from "@/lib/user-storage";
+import {
+  storageScopeGeneration,
+  storageScopeReady,
+  subscribeStorageScope,
+  useStorageScopeReady,
+} from "@/lib/user-storage";
 import { bindPdfSource } from "@/lib/pdf-excerpts";
 import { useParams, useSearchParams } from "next/navigation";
 import {
@@ -99,7 +104,23 @@ function PdfViewer() {
   const askedVersion = Number(sp.get("v")) || null;
   const targetPage = Number(sp.get("page")) || null;
   const boxes = React.useMemo(() => parseCiteBoxes(sp.getAll("box")), [sp]);
-  const [state, setState] = React.useState<State>({ phase: "loading" });
+  const authGeneration = React.useSyncExternalStore(
+    subscribeStorageScope,
+    storageScopeGeneration,
+    () => 0,
+  );
+  const scopeReady = useStorageScopeReady();
+  const [loaded, setLoaded] = React.useState<{
+    generation: number;
+    value: State;
+  }>(() => ({ generation: authGeneration, value: { phase: "loading" } }));
+  const state = React.useMemo<State>(
+    () =>
+      scopeReady && loaded.generation === authGeneration
+        ? loaded.value
+        : { phase: "loading" },
+    [loaded, authGeneration, scopeReady],
+  );
   const [zoom, setZoom] = React.useState(1);
   const [rotation, setRotation] = React.useState(0);
   const [box, setBox] = React.useState({ w: 0, h: 0 });
@@ -139,9 +160,12 @@ function PdfViewer() {
   React.useEffect(() => {
     let active = true;
     const scope = storageScopeGeneration();
+    const setState = (value: State) => setLoaded({ generation: scope, value });
     setState({ phase: "loading" });
+    if (!scopeReady) return;
     getNode(id)
       .then(async (node) => {
+        if (!active || scope !== storageScopeGeneration() || !storageScopeReady()) return;
         const version = askedVersion ?? node.version;
         const doc = await loadPdf(id, version);
         if (scope !== storageScopeGeneration())
@@ -151,7 +175,7 @@ function PdfViewer() {
         bindPdfSource(doc, id, version);
         const first = await doc.getPage(1);
         const vp = first.getViewport({ scale: 1 });
-        if (!active) return;
+        if (!active || scope !== storageScopeGeneration() || !storageScopeReady()) return;
         setBase({ w: vp.width, h: vp.height });
         setState({ phase: "ready", node, version, doc });
       })
@@ -165,7 +189,7 @@ function PdfViewer() {
     return () => {
       active = false;
     };
-  }, [id, askedVersion]);
+  }, [id, askedVersion, authGeneration, scopeReady]);
 
   const sideways = rotation % 180 !== 0;
   const aspect = sideways ? base.w / base.h : base.h / base.w;
@@ -378,6 +402,7 @@ function PdfViewer() {
   React.useEffect(() => {
     if (state.phase !== "ready") return;
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "f") {
         e.preventDefault();

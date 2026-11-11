@@ -93,7 +93,7 @@ export function PdfExcerptPanel({
               枠を追加してから内容を確認できます。
             </p>
             <span className="mt-5 rounded-md border px-2 py-1 text-[10px] text-muted-foreground">
-              ページにフォーカス → Enter で全体を選択
+              矢印で位置 · Shift＋矢印でサイズ · Enterで追加
             </span>
           </div>
         )}

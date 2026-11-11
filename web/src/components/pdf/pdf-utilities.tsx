@@ -49,18 +49,14 @@ export function PdfUtilities({
       const pages = parsePageRange(range, doc.numPages);
       const { PDFDocument, degrees: angle } = await import("pdf-lib");
       const source = await PDFDocument.load(await doc.getData());
-      const output = await PDFDocument.create();
+      const output = tool === "extract" ? await PDFDocument.create() : source;
       if (tool === "extract") {
         for (const p of await output.copyPages(source, pages))
           output.addPage(p);
       } else {
-        const all = await output.copyPages(source, source.getPageIndices());
-        for (let i = 0; i < all.length; i++) {
-          if (pages.includes(i))
-            all[i].setRotation(
-              angle((all[i].getRotation().angle + degrees) % 360),
-            );
-          output.addPage(all[i]);
+        for (const index of pages) {
+          const page = source.getPages()[index];
+          page.setRotation(angle((page.getRotation().angle + degrees) % 360));
         }
       }
       const bytes = await output.save();

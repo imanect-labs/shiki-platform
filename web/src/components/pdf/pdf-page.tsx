@@ -15,6 +15,7 @@ import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
 import {
   syntheticOcrRect,
   nativePdfText,
+  nativeTextOrigin,
   type PdfExcerpt,
   type PdfRect,
 } from "@/lib/pdf-excerpts";
@@ -209,7 +210,7 @@ export function PdfPage({
                 ocr.set(index, rect);
                 return null;
               }
-              return divByItem.get(item) ?? null;
+              return divByItem.get(nativeTextOrigin(item)) ?? null;
             });
           setText({ divs, page: buildPageText(content), ocr });
         }
@@ -232,28 +233,24 @@ export function PdfPage({
       !highlights ||
       (highlights.ranges.length === 0 && !highlights.active)
     ) {
-      setPageHighlights(highlightKey, [], null);
+      setPageHighlights(highlightKey, [], []);
       return;
     }
-    const toRange = ([s, e]: readonly [number, number]): Range | null => {
-      const pieces = matchPieces(text.page.segments, s, e).filter(
-        ([index]) => text.divs[index],
-      );
-      if (pieces.length === 0) return null;
-      const [fi, fa] = pieces[0];
-      const [li, , lb] = pieces[pieces.length - 1];
-      const first = text.divs[fi]?.firstChild;
-      const last = text.divs[li]?.firstChild;
-      if (!first || !last) return null;
-      const r = document.createRange();
-      r.setStart(first, Math.min(fa, first.textContent?.length ?? 0));
-      r.setEnd(last, Math.min(lb, last.textContent?.length ?? 0));
-      return r;
+    const toRanges = ([s, e]: readonly [number, number]): Range[] => {
+      const ranges: Range[] = [];
+      for (const [index, start, end] of matchPieces(text.page.segments, s, e)) {
+        const node = text.divs[index]?.firstChild;
+        if (!node) continue;
+        const range = document.createRange();
+        range.setStart(node, Math.min(start, node.textContent?.length ?? 0));
+        range.setEnd(node, Math.min(end, node.textContent?.length ?? 0));
+        ranges.push(range);
+      }
+      return ranges;
     };
-    const all = highlights.ranges
-      .map(toRange)
-      .filter((r): r is Range => r != null);
-    const active = highlights.active ? toRange(highlights.active) : null;
+    const all = highlights.ranges.flatMap(toRanges);
+    const activeRanges = highlights.active ? toRanges(highlights.active) : [];
+    const active = activeRanges[0] ?? null;
     const ocrIndex = highlights.active
       ? matchPieces(text.page.segments, ...highlights.active).find(([index]) =>
           text.ocr.has(index),
@@ -263,7 +260,7 @@ export function PdfPage({
       ocrIndex != null
         ? wrapRef.current?.querySelector(`[data-ocr-segment="${ocrIndex}"]`)
         : null;
-    setPageHighlights(highlightKey, all, active);
+    setPageHighlights(highlightKey, all, activeRanges);
     if ((active || activeBlock) && scrolledTo.current !== activeKey) {
       scrolledTo.current = activeKey;
       (activeBlock ?? active?.startContainer.parentElement)?.scrollIntoView({
@@ -274,7 +271,7 @@ export function PdfPage({
     if (!active && !activeBlock) scrolledTo.current = "";
   }, [text, highlights, highlightKey, activeKey]);
   React.useEffect(
-    () => () => setPageHighlights(highlightKey, [], null),
+    () => () => setPageHighlights(highlightKey, [], []),
     [highlightKey],
   );
 

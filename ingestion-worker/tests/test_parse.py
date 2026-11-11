@@ -492,3 +492,45 @@ def test_prov_adjusts_offsets_after_trimming() -> None:
     )
     result = parse_mod._prov_of(item)
     assert [p.charspan for p in result] == [(0, 5), (5, 11)]
+
+
+def test_prov_rejects_all_offsets_when_docling_dehyphenation_shifts_a_page() -> None:
+    from types import SimpleNamespace as Obj
+
+    item = Obj(
+        text="foobar",
+        orig="foobar",
+        prov=[
+            Obj(
+                page_no=1,
+                charspan=(0, 4),
+                bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+            ),
+            Obj(
+                page_no=2,
+                charspan=(5, 8),
+                bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+            ),
+        ],
+    )
+    result = parse_mod._prov_of(item)
+    assert [p.charspan for p in result] == [None, None]
+    assert [p.page for p in result] == [1, 2]
+
+
+def test_prov_rejects_in_bounds_overlaps_after_upstream_normalization() -> None:
+    from types import SimpleNamespace as Obj
+
+    for text, spans in [("foobar bazzz", [(0, 4), (5, 8), (7, 12)]), ("foo bar", [(0, 5), (4, 7)])]:
+        item = Obj(
+            text=text,
+            prov=[
+                Obj(
+                    page_no=i + 1,
+                    charspan=span,
+                    bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+                )
+                for i, span in enumerate(spans)
+            ],
+        )
+        assert all(p.charspan is None for p in parse_mod._prov_of(item))

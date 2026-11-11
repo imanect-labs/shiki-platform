@@ -1,9 +1,10 @@
 import {
   queuePdfAttachments,
   takePdfAttachments,
+  clearPdfAttachmentsForTarget,
 } from "../src/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "../src/lib/storage";
-import { clearUserStorage } from "../src/lib/user-storage";
+import { clearUserStorage, storageScopeGeneration } from "../src/lib/user-storage";
 import type { DocBlock } from "../src/lib/storage";
 import {
   withOcrContent,
@@ -14,10 +15,19 @@ import {
 import {
   setPendingSelection,
   takePendingSelection,
+  restorePendingSelection,
+  clearPendingSelectionForTarget,
 } from "../src/lib/selection-context";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { test, expect, type Page } from "@playwright/test";
-import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import {
+  PDFDocument,
+  PDFName,
+  PDFString,
+  StandardFonts,
+  degrees,
+  rgb,
+} from "pdf-lib";
 import { searchDocument, buildPageText, findInText } from "../src/lib/pdf-text";
 import { rectFromViewport, blockRect, tableCsv } from "../src/lib/pdf-excerpts";
 import { boxToViewport, viewportDimensions } from "../src/lib/pdf-geometry";
@@ -100,9 +110,24 @@ async function fixture() {
     height: 50,
     color: rgb(0.9, 0.92, 0.9),
   });
+  const field = doc.getForm().createTextField("stable-field");
+  field.setText("keep-me");
+  field.addToPage(page, { x: 60, y: 40, width: 140, height: 20 });
+  const outlines = doc.context.obj({ Type: PDFName.of("Outlines"), Count: 1 });
+  const outlinesRef = doc.context.register(outlines);
+  const entry = doc.context.register(
+    doc.context.obj({
+      Title: PDFString.of("Overview"),
+      Parent: outlinesRef,
+      Dest: [page.ref, PDFName.of("Fit")],
+    }),
+  );
+  outlines.set(PDFName.of("First"), entry);
+  outlines.set(PDFName.of("Last"), entry);
+  doc.catalog.set(PDFName.of("Outlines"), outlinesRef);
   return Buffer.from(await doc.save());
 }
-async function setup(page: Page, failedBlocks = false) {
+async function setup(page: Page, failedBlocks = false, emptyBlocks = false) {
   page.on("console", (message) => {
     if (message.type() === "error")
       console.log("PDF_CONSOLE_ERROR", message.text());
@@ -152,9 +177,11 @@ async function setup(page: Page, failedBlocks = false) {
       const end = Number(url.searchParams.get("page_end")) || p;
       return route.fulfill({
         json: {
-          blocks: blocks.filter(
-            (b) => b.page != null && b.page >= p && b.page <= end,
-          ),
+          blocks: emptyBlocks
+            ? []
+            : blocks.filter(
+                (b) => b.page != null && b.page >= p && b.page <= end,
+              ),
           next_from: null,
         },
       });
@@ -375,6 +402,10 @@ test("ユーティリティは抽出と回転PDFを生成し、入力エラー�
   expect(result.getPageCount()).toBe(2);
   expect(result.getPage(0).getRotation().angle).toBe(0);
   expect(result.getPage(1).getRotation().angle).toBe(180);
+  expect(result.getForm().getTextField("stable-field").getText()).toBe(
+    "keep-me",
+  );
+  expect(result.catalog.has(PDFName.of("Outlines"))).toBe(true);
   await page.screenshot({ path: "test-results/pdf-utilities-light.png" });
   await page.evaluate(() => document.documentElement.classList.add("dark"));
   await page.screenshot({ path: "test-results/pdf-utilities-dark.png" });
@@ -402,6 +433,9 @@ for (const theme of ["light", "dark"] as const) {
       theme,
     );
     await setup(page);
+    await expect(
+      page.getByRole("button", { name: "アシスタント", exact: true }),
+    ).toBeVisible();
     await page.getByTestId("pdf-mode-select").click();
     await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
     await page.getByRole("button", { name: /抜粋 1 件/ }).click();
@@ -588,6 +622,12 @@ test("抜粋をアシスタントへ添付し、指示入力と送信まで待�
   await expect(page.getByLabel("メッセージを入力")).toHaveText(
     "この抜粋の要点を説明して",
   );
+  await page.getByLabel("メッセージを入力").fill("");
+  await page
+    .getByRole("button", { name: "新しいチャット", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId("selection-chip")).toHaveCount(0);
 });
 
 test("保存済み表はnativeと重複せず、跨ページのOCRは該当ページだけに載る", async () => {
@@ -960,4 +1000,343 @@ test("native文字片は単語内で連結し、明示空白と改行を保持�
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("native縦書きの下方向の列を取得し、OCRと二重に載せない", async () => {
+  const native = {
+    items: [
+      {
+        str: "日本語",
+        dir: "ttb",
+        transform: [12, 0, 0, 12, 100, 700],
+        width: 12,
+        height: 36,
+        fontName: "f",
+        hasEOL: true,
+      },
+    ],
+    styles: {
+      f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: true },
+    },
+    lang: "ja",
+  };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const doc = {
+    numPages: 1,
+    getPage: async () => ({
+      getViewport: () => viewport,
+      getTextContent: async () => native,
+    }),
+  } as unknown as PDFDocumentProxy;
+  expect((await extractRegion(doc, 1, [80, 660, 120, 695])).text).toBe(
+    "日本語",
+  );
+  const block: DocBlock = {
+    ordinal: 0,
+    type: "paragraph",
+    text: "日本語",
+    page: 1,
+    prov: [{ page: 1, bbox: [90, 700, 112, 660], origin: "bottom_left" }],
+  };
+  expect(
+    findInText(
+      buildPageText(withOcrContent(native, [block], 1, viewport as never)).text,
+      "日本語",
+    ),
+  ).toHaveLength(1);
+});
+
+test("OCR後半を同じ段落のnative前半と次段落の間へ統合する", () => {
+  const native = {
+    items: [
+      {
+        str: "申出書は",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 10, 700],
+        width: 48,
+        height: 12,
+        fontName: "f",
+        hasEOL: false,
+      },
+      {
+        str: "次の段落",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 10, 600],
+        width: 48,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
+    ],
+    styles: {},
+    lang: "ja",
+  };
+  const blocks: DocBlock[] = [
+    {
+      ordinal: 0,
+      type: "paragraph",
+      text: "申出書は1か月前まで",
+      page: 1,
+      prov: [
+        {
+          page: 1,
+          bbox: [10, 712, 58, 695],
+          origin: "bottom_left",
+          charspan: [0, 4],
+        },
+        {
+          page: 1,
+          bbox: [58, 712, 130, 695],
+          origin: "bottom_left",
+          charspan: [4, 10],
+        },
+      ],
+    },
+    {
+      ordinal: 1,
+      type: "paragraph",
+      text: "次の段落",
+      page: 1,
+      prov: [{ page: 1, bbox: [10, 612, 80, 595], origin: "bottom_left" }],
+    },
+  ];
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const output = withOcrContent(native, blocks, 1, viewport as never);
+  expect(
+    output.items
+      .filter((item) => "str" in item)
+      .map((item) => ("str" in item ? item.str : "")),
+  ).toEqual(["申出書は", "1か月前まで", "次の段落"]);
+  expect(
+    findInText(buildPageText(output).text, "申出書は1か月前"),
+  ).toHaveLength(1);
+});
+
+test("PDF本文も指定した添付先だけが消費できる", () => {
+  const context = excerptContext(id, "test.pdf", 1, [
+    {
+      id: "x",
+      page: 1,
+      bbox: [0, 0, 100, 100],
+      text: "宛先を限定した本文",
+      tables: [],
+      blockOrdinals: [],
+    },
+  ]);
+  setPendingSelection(context, `pdf:${id}`);
+  expect(takePendingSelection("home")).toBeNull();
+  expect(takePendingSelection(`pdf:${id}`)?.excerpt).toContain(
+    "宛先を限定した本文",
+  );
+  setPendingSelection(context, "home");
+  expect(takePendingSelection(`pdf:${id}`)).toBeNull();
+  expect(takePendingSelection("home")?.excerpt).toContain("宛先を限定した本文");
+});
+
+test("キーボードだけで部分範囲を移動・縮小して追加できる", async ({ page }) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  const layer = page.locator(
+    '[data-page="1"] [data-testid="pdf-region-layer"]',
+  );
+  await layer.focus();
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByTestId("pdf-page-input").first()).toHaveValue("1");
+  const before = (await page.getByTestId("pdf-region-preview").boundingBox())!;
+  await page.keyboard.press("Shift+ArrowLeft");
+  const after = (await page.getByTestId("pdf-region-preview").boundingBox())!;
+  expect(after.width).toBeLessThan(before.width);
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  const selected = (await page.getByTestId("pdf-region-box").boundingBox())!;
+  const whole = (await layer.boundingBox())!;
+  expect(selected.width * selected.height).toBeLessThan(
+    (whole.width * whole.height) / 2,
+  );
+  await page.screenshot({ path: "test-results/pdf-keyboard-partial.png" });
+});
+
+test("別タブのログアウトで表示済みPDFを破棄する", async ({ page }) => {
+  await setup(page);
+  await expect(page.getByTestId("pdf-viewer")).toBeVisible();
+  // サーバのlogout完了前は旧Cookieが有効でも、PDFを取り直さない。
+  let reloads = 0;
+  await page.route(`**/api/files/${id}`, async (route) => {
+    reloads++;
+    await route.fallback();
+  });
+  const other = await page.context().newPage();
+  await other.goto(new URL("/icon.svg", page.url()).toString());
+  await other.evaluate(() =>
+    localStorage.setItem("shiki:logout-signal", String(Date.now())),
+  );
+  await expect(page.getByTestId("pdf-viewer")).toBeHidden();
+  await page.waitForTimeout(500);
+  expect(reloads).toBe(0);
+  await other.close();
+});
+
+test("finalize待機中のログアウト後に旧ファイルを返さない", async () => {
+  const originalFetch = globalThis.fetch;
+  const xhrDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "XMLHttpRequest",
+  );
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  let finalizing = false;
+  class FakeXHR {
+    status = 200;
+    upload = { onprogress: null };
+    onload: (() => void) | null = null;
+    open() {}
+    setRequestHeader() {}
+    send() {
+      queueMicrotask(() => this.onload?.());
+    }
+  }
+  Object.defineProperty(globalThis, "XMLHttpRequest", {
+    configurable: true,
+    value: FakeXHR,
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith("/api/nodes"))
+      return Response.json({ items: [], next_cursor: null });
+    if (url.endsWith("/finalize")) {
+      finalizing = true;
+      return pending;
+    }
+    return Response.json({
+      upload_id: "upload-fixture",
+      node_id: id,
+      upload_url: "/fixture-upload",
+    });
+  };
+  try {
+    const uploading = uploadNewFile({
+      file: new File(["old"], "old-user.png", { type: "image/png" }),
+    });
+    await expect.poll(() => finalizing).toBe(true);
+    clearUserStorage();
+    release(
+      Response.json({ id, name: "old-user.png", kind: "file", version: 1 }),
+    );
+    await expect(uploading).rejects.toThrow("ログイン状態が変わった");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (xhrDescriptor)
+      Object.defineProperty(globalThis, "XMLHttpRequest", xhrDescriptor);
+    else Reflect.deleteProperty(globalThis, "XMLHttpRequest");
+  }
+});
+
+test("別タブログアウトで取得済み画像の名前とプレビューを消す", async ({
+  page,
+}) => {
+  await setup(page);
+  await page
+    .getByRole("button", { name: "新しいチャット", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.route("**/fixture-upload", (route) =>
+    route.fulfill({ status: 200, body: "" }),
+  );
+  await page.route("**/api/files", (route) =>
+    route.fulfill({
+      json: {
+        upload_id: "upload-fixture",
+        node_id: id,
+        upload_url: new URL("/fixture-upload", page.url()).toString(),
+      },
+    }),
+  );
+  await page.route("**/api/files/upload-fixture/finalize", (route) =>
+    route.fulfill({
+      json: {
+        id,
+        name: "private-image.png",
+        kind: "file",
+        version: 1,
+        content_type: "image/png",
+      },
+    }),
+  );
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "private-image.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aHWoAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  });
+  await expect(
+    page.getByRole("img", { name: "private-image.png", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("メッセージを入力").fill("private draft");
+  const other = await page.context().newPage();
+  await other.goto(new URL("/icon.svg", page.url()).toString());
+  await other.evaluate(() =>
+    localStorage.setItem("shiki:logout-signal", String(Date.now())),
+  );
+  await expect(
+    page.getByRole("img", { name: "private-image.png", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/private-image\.png/)).toHaveCount(0);
+  await expect(page.getByLabel("メッセージを入力")).toBeEmpty();
+  await other.close();
+});
+
+test("カードの再取得中に削除した範囲を遅延応答で復活させない", async ({
+  page,
+}) => {
+  await setup(page, false, true);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 2, [635 / 740, 45 / 550, 695 / 740, 405 / 550]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  let release!: () => void;
+  let requested = false;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(`**/api/files/${id}/versions/1/blocks*`, async (route) => {
+    requested = true;
+    await pending;
+    await route.fulfill({ json: { blocks, next_from: null } });
+  });
+  await page.getByRole("button", { name: "解析結果を再取得" }).click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByRole("button", { name: "抜粋1を削除" }).click();
+  release();
+  await expect(
+    page.getByTestId("pdf-excerpt-panel").locator("[aria-busy]"),
+  ).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(0);
+});
+
+
+test("古い画面の失敗復元とcleanupは新しい宛先の本文・画像を壊さない", () => {
+  const context = excerptContext(id, "test.pdf", 1, [{ id: "x", page: 1, bbox: [0,0,100,100], text: "old", tables: [], blockOrdinals: [] }]);
+  const generation = storageScopeGeneration();
+  const target = `pdf:${id}`;
+  setPendingSelection({ ...context, excerpt: "new home" }, "home");
+  queuePdfAttachments([{ node_id: id, name: "new.png" }], "home");
+  restorePendingSelection(context, target, generation);
+  clearPendingSelectionForTarget(target);
+  clearPdfAttachmentsForTarget(target);
+  expect(takePendingSelection("home")?.excerpt).toBe("new home");
+  expect(takePdfAttachments("home")[0]?.name).toBe("new.png");
+  setPendingSelection(context, target);
+  queuePdfAttachments([{ node_id: id, name: "old.png" }], target);
+  clearPendingSelectionForTarget(target);
+  clearPdfAttachmentsForTarget(target);
+  expect(takePendingSelection(target)).toBeNull();
+  expect(takePdfAttachments(target)).toEqual([]);
 });

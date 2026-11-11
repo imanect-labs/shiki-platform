@@ -319,6 +319,22 @@ def _prov_of(item: Any) -> list[Prov]:
     text = raw.strip() if isinstance(raw, str) else None
     leading = len(raw) - len(raw.lstrip()) if isinstance(raw, str) else 0
     positions = getattr(item, "prov", None) or []
+    # Doclingのdehyphenationは結合後のtext/orig両方を変え、元の位置対応を失うことがある。
+    # 一部だけ丸めると別ページの文字を盗むため、範囲外が1つでもあれば全spanを不明にする。
+    spans_valid = True
+    if text is not None:
+        cursor = 0
+        for p in positions:
+            span = getattr(p, "charspan", None)
+            if not span:
+                continue
+            start, end = span
+            if not (cursor <= start <= end <= len(raw)) or raw[cursor:start].strip():
+                spans_valid = False
+                break
+            cursor = end
+        if all(getattr(p, "charspan", None) for p in positions) and raw[cursor:].strip():
+            spans_valid = False
     out: list[Prov] = []
     for p in positions:
         bbox = getattr(p, "bbox", None)
@@ -326,7 +342,9 @@ def _prov_of(item: Any) -> list[Prov]:
             continue
         origin = str(getattr(bbox, "coord_origin", "BOTTOMLEFT")).upper()
         span = getattr(p, "charspan", None)
-        if text is not None:
+        if not spans_valid:
+            span = None
+        elif text is not None:
             if span:
                 start, end = max(0, int(span[0]) - leading), min(len(text), int(span[1]) - leading)
                 span = (start, end) if end > start else None

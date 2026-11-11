@@ -4,7 +4,7 @@ import * as React from "react";
 import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { usePdfAttachments, takePdfAttachments } from "@/lib/pdf-attachment-handoff";
+import { usePdfAttachments, usePdfAttachmentTarget, takePdfAttachments } from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
@@ -109,7 +109,12 @@ function saveDraft(key: string, value: string, generation: number): void {
 /// - モデルは送信の左に常に出す（既定は「Auto」）。
 ///
 /// 会話のトークンごとに親が再描画されても描き直さないよう memo する（入力中の状態は自前で持つ）。
-export const Composer = React.memo(function Composer({
+export const Composer = React.memo(function Composer(props: React.ComponentProps<typeof ScopedComposer>) {
+  const generation = React.useSyncExternalStore(subscribeStorageScope, storageScopeGeneration, () => 0);
+  return <ScopedComposer key={generation} {...props} />;
+});
+
+const ScopedComposer = React.memo(function ScopedComposer({
   onSubmit,
   onStop,
   placeholder,
@@ -180,7 +185,8 @@ export const Composer = React.memo(function Composer({
 }) {
   const [value, setValue] = React.useState("");
   const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
-  const pdfFiles = usePdfAttachments(scope ?? threadId ?? HOME_SCOPE);
+  const attachmentTarget = usePdfAttachmentTarget(scope ?? threadId ?? HOME_SCOPE);
+  const pdfFiles = usePdfAttachments(attachmentTarget);
   React.useEffect(() => {
     if (!pdfFiles) return;
     const files = takePdfAttachments(pdfFiles.target);
@@ -307,7 +313,7 @@ export const Composer = React.memo(function Composer({
   const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
 
   // エディタの選択コンテキスト（選択→AI 指示・Task 11.10）。チップ表示し送信時に消費する。
-  const selection = usePendingSelection();
+  const selection = usePendingSelection(attachmentTarget);
 
   // コマンド確定後は本文が空でも送れる（コマンド自体が指示になる）。
   // 生成中でも送信できる（サーバが 1 スレッド 1 本ずつ直列化し、順番待ちとして受け付ける）。
@@ -332,7 +338,7 @@ export const Composer = React.memo(function Composer({
     if (!text) return;
     // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
     const sentAttachments = attachments.map(({ node_id, name }) => ({ node_id, name }));
-    const result = onSubmit(text, sentAttachments, takePendingSelection() ?? undefined, active ?? undefined);
+    const result = onSubmit(text, sentAttachments, takePendingSelection(attachmentTarget) ?? undefined, active ?? undefined);
     setValue("");
     attachments.forEach((a) => revokePreview(a.preview));
     setAttachments([]);
@@ -398,6 +404,7 @@ export const Composer = React.memo(function Composer({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+    const startedAt = storageScopeGeneration();
     // スマホの「+」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
     setMenuOpen(false);
     // 画像はアップロードを待たずに、端末のファイルからサムネイルを出す。
@@ -413,11 +420,12 @@ export const Composer = React.memo(function Composer({
         file,
         onProgress: (fraction) => setUploading({ name: file.name, fraction, preview }),
       });
+      if (startedAt !== storageScopeGeneration()) { revokePreview(preview); return; }
       addAttachment(node, preview);
       toast({ description: `${node.name} をアップロードしました（自動でベクトル化されます）` });
     } catch {
       revokePreview(preview);
-      toast({ description: `${file.name} のアップロードに失敗しました` });
+      if (startedAt === storageScopeGeneration()) toast({ description: `${file.name} のアップロードに失敗しました` });
     } finally {
       setUploading(null);
     }

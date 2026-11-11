@@ -9,9 +9,11 @@ import { Sparkles } from "lucide-react";
 import * as React from "react";
 
 import { Composer } from "@/components/chat/composer";
+import { storageScopeGeneration } from "@/lib/user-storage";
+import { usePdfAttachmentTarget } from "@/lib/pdf-attachment-handoff";
 import type { Attachment } from "@/lib/chat-api";
 import {
-  setPendingSelection,
+  restorePendingSelection,
   type SelectionContext,
 } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
@@ -63,6 +65,9 @@ export function DocChatDraft({
   /// 空の会話の案内（既定はドキュメント向けの [`PanelEmptyHint`]）。
   hint?: React.ReactNode;
 }) {
+  const attachmentTarget = usePdfAttachmentTarget(scope);
+  const mounted = React.useRef(true);
+  React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   // エージェントモード（会話内の入力欄と同じく、この発話から切り替えられる）。
   const [autonomous, setAutonomous] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
@@ -79,6 +84,7 @@ export function DocChatDraft({
       if (starting) return;
       setStarting(true);
       setError(null);
+      const startedAt = storageScopeGeneration();
       // スラッシュコマンドはこの発話にだけ skill を適用し、長ホライズンで実行する（会話内と同じ）。
       // 失敗したら入力欄が本文・添付・コマンドを戻す（restoreOnError）。選択箇所はここで戻す。
       return onStart({
@@ -92,7 +98,7 @@ export function DocChatDraft({
       }).then(
         () => setStarting(false),
         (e: unknown) => {
-          if (context) setPendingSelection(context);
+          if (context && mounted.current) restorePendingSelection(context, context.kind === "pdf_selection" ? attachmentTarget : undefined, startedAt);
           // 理由（許可されていないモデル等）を伝える。分からなければ一般的な案内にする。
           const reason =
             e instanceof Error && e.message ? `（${e.message}）` : "";
@@ -102,7 +108,7 @@ export function DocChatDraft({
         },
       );
     },
-    [starting, autonomous, onStart],
+    [starting, autonomous, onStart, attachmentTarget],
   );
 
   return (

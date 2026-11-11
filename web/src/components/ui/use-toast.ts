@@ -3,6 +3,7 @@
 // 軽量トーストストア（外部状態 + useSyncExternalStore）。
 // どこからでも `toast({ title, description })` で呼べるシングルトン。
 import * as React from "react";
+import { storageScopeGeneration, subscribeStorageScope } from "@/lib/user-storage";
 
 type ToastVariant = "default" | "destructive";
 
@@ -88,3 +89,15 @@ function subscribe(listener: () => void) {
 export function useToast(): ToastItem[] {
   return React.useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
+
+
+let toastGeneration = storageScopeGeneration();
+subscribeStorageScope(() => {
+  const current = storageScopeGeneration();
+  if (current === toastGeneration) return;
+  toastGeneration = current;
+  for (const timer of removeTimers.values()) clearTimeout(timer);
+  removeTimers.clear();
+  memoryState = [];
+  emit();
+});

@@ -210,19 +210,37 @@ function blockFragments(
 }
 
 /// TextItem の局所軸から矩形を求め、原本内の縦書き・回転文字にも適用する。
-function nativeRect(item: TextItem, pageX: number, pageY: number): PdfRect {
+function nativeRect(
+  item: TextItem,
+  pageX: number,
+  pageY: number,
+  style?: TextContent["styles"][string],
+): PdfRect {
   const tx = item.transform;
-  const length = Math.hypot(tx[0], tx[1]) || 1;
-  const ux = tx[0] / length,
-    uy = tx[1] / length;
+  const fontHeight = Math.hypot(tx[2], tx[3]) || Math.hypot(tx[0], tx[1]) || 1;
+  const horizontalLength = Math.hypot(tx[0], tx[1]) || 1;
+  const hx = tx[0] / horizontalLength,
+    hy = tx[1] / horizontalLength;
+  const vx = tx[2] / fontHeight,
+    vy = tx[3] / fontHeight;
+  const vertical = item.dir === "ttb" || style?.vertical;
+  const ux = vertical ? -vx : hx,
+    uy = vertical ? -vy : hy;
+  const crossX = vertical ? hx : vx,
+    crossY = vertical ? hy : vy;
+  const advance = vertical ? item.height : item.width;
+  const thickness = (vertical ? item.width : item.height) || fontHeight;
+  const ascent =
+    style?.ascent ?? (style?.descent != null ? 1 + style.descent : 0.8);
+  const low = (ascent - 1) * thickness,
+    high = ascent * thickness;
   const x = tx[4] - pageX,
     y = tx[5] - pageY;
-  const height = item.height || Math.hypot(tx[2], tx[3]);
   const points = [
-    [x, y],
-    [x + ux * item.width, y + uy * item.width],
-    [x - uy * height, y + ux * height],
-    [x + ux * item.width - uy * height, y + uy * item.width + ux * height],
+    [x + crossX * low, y + crossY * low],
+    [x + crossX * high, y + crossY * high],
+    [x + ux * advance + crossX * low, y + uy * advance + crossY * low],
+    [x + ux * advance + crossX * high, y + uy * advance + crossY * high],
   ];
   return [
     Math.min(...points.map((p) => p[0])),
@@ -238,7 +256,12 @@ export function syntheticOcrRect(item: TextItem): PdfRect | undefined {
   return ocrRects.get(item);
 }
 
-/// OCR を補い、同じ native 文字を二重に載せない。
+const nativeOrigins = new WeakMap<TextItem, TextItem>();
+export function nativeTextOrigin(item: TextItem): TextItem {
+  return nativeOrigins.get(item) ?? item;
+}
+
+/// 保存本文と完全一致するnativeは正確な文字位置を使い、差のあるブロックは保存本文と枠を使う。
 export function withOcrContent(
   native: TextContent,
   blocks: DocBlock[],
@@ -246,66 +269,114 @@ export function withOcrContent(
   viewport: PageViewport,
 ): TextContent {
   const dims = viewportDimensions(viewport);
-  const nativeItems = native.items.filter(
-    (t): t is TextItem => "str" in t && !!t.str.trim(),
-  );
-  const rects = nativeItems.map((item) =>
-    nativeRect(item, dims.pageX, dims.pageY),
-  );
+  const nativeItems = native.items.filter((item): item is TextItem => "str" in item);
+  const rects = new Map(nativeItems.map((item) => [item, nativeRect(item, dims.pageX, dims.pageY, native.styles[item.fontName])]));
   const compact = (text: string) => text.replace(/\s+/g, "");
   const removed = new Set<TextItem>();
+  const owners = new Map<TextItem, { block: number; part: number }>();
+  const eol = new Map<TextItem, boolean>();
+  const syntheticBlocks = new Set<number>();
   const items: TextItem[] = [];
-  for (const block of blocks)
-    for (const fragment of blockFragments(block, page, dims.pageHeight)) {
-      const text =
-        block.type === "table"
-          ? tableRows(fragment.text)
-              .map((row) => row.join(" "))
-              .join("\n")
-          : fragment.text;
-      if (!text.trim()) continue;
-      const rect = fragment.rect;
-      const overlaps = nativeItems
-        .map((item, index) => ({ item, rect: rects[index] }))
-        .filter((entry) => intersect(entry.rect, rect));
-      const known = overlaps.map((entry) => entry.item.str).join("");
-      if (known && compact(known).includes(compact(text))) continue;
-      for (const entry of overlaps) {
-        if (
-          entry.rect[0] >= rect[0] - 1 &&
-          entry.rect[1] >= rect[1] - 1 &&
-          entry.rect[2] <= rect[2] + 1 &&
-          entry.rect[3] <= rect[3] + 1 &&
-          compact(text).includes(compact(entry.item.str))
-        )
-          removed.add(entry.item);
-      }
-      const [l, b, r, t] = rect;
-      const fontSize = Math.min(14, Math.max(4, t - b));
-      const item: TextItem = {
-        str: text,
-        dir: "ltr",
-        transform: [
-          fontSize,
-          0,
-          0,
-          fontSize,
-          l + dims.pageX,
-          t - fontSize + dims.pageY,
-        ],
-        width: r - l,
-        height: fontSize,
-        fontName: "ocr",
-        hasEOL: fragment.hasEOL,
-      };
-      ocrRects.set(item, rect);
-      items.push(item);
+  for (const block of blocks) {
+    const fragments = blockFragments(block, page, dims.pageHeight).map((fragment) => ({
+      ...fragment,
+      text: block.type === "table" ? tableRows(fragment.text).map((row) => row.join(" ")).join("\n") : fragment.text,
+    })).filter((fragment) => fragment.text.trim());
+    if (!fragments.length) continue;
+    const candidates = nativeItems.filter((item) => item.str.length > 0 && fragments.some((fragment) => intersect(rects.get(item)!, fragment.rect)));
+    const canonical = fragments.map((fragment) => fragment.text).join("");
+    if (candidates.map((item) => item.str).join("") === canonical) {
+      candidates.forEach((item, index) => {
+        if (!owners.has(item)) owners.set(item, { block: block.ordinal, part: 0 });
+        eol.set(item, index === candidates.length - 1);
+      });
+      continue;
     }
+    syntheticBlocks.add(block.ordinal);
+    // 部分的なnativeとOCRを一行へ推測連結しない。保存本文を使い、nativeの描画は原本のまま維持する。
+    for (const item of candidates) {
+      if (!compact(canonical).includes(compact(item.str))) continue;
+      removed.add(item);
+      if (!owners.has(item)) owners.set(item, { block: block.ordinal, part: Math.max(0, fragments.findIndex((fragment) => intersect(rects.get(item)!, fragment.rect))) });
+    }
+    fragments.forEach((fragment, part) => {
+      const [l, b, r, t] = fragment.rect;
+      const fontSize = Math.min(14, Math.max(4, t - b));
+      const item: TextItem = { str: fragment.text, dir: "ltr", transform: [fontSize, 0, 0, fontSize, l + dims.pageX, t - fontSize + dims.pageY], width: r - l, height: fontSize, fontName: "ocr", hasEOL: fragment.hasEOL };
+      ocrRects.set(item, fragment.rect);
+      owners.set(item, { block: block.ordinal, part });
+      items.push(item);
+    });
+  }
+  // 保存本文の段落境界で区切るので、同じ段落の途中に原本の空EOLを挟まない。
+  let previousOwner: { block: number; part: number } | undefined;
+  for (const item of nativeItems) {
+    if (item.str.trim()) previousOwner = owners.get(item);
+    else if (previousOwner && (!item.str || syntheticBlocks.has(previousOwner.block))) {
+      removed.add(item);
+      if (!owners.has(item)) owners.set(item, previousOwner);
+    }
+  }
+  const original = native.items.filter(
+    (item): item is TextItem => "str" in item,
+  );
+  const anchors = original.map((item) => owners.get(item));
+  const tail =
+    blocks.reduce((max, block) => Math.max(max, block.ordinal), -1) + 1;
+  const beforeOwners: typeof anchors = [],
+    afterOwners: typeof anchors = [];
+  let nearest: (typeof anchors)[number];
+  for (let i = 0; i < anchors.length; i++) {
+    beforeOwners[i] = nearest;
+    if (anchors[i]) nearest = anchors[i];
+  }
+  nearest = undefined;
+  for (let i = anchors.length - 1; i >= 0; i--) {
+    afterOwners[i] = nearest;
+    if (anchors[i]) nearest = anchors[i];
+  }
+  const ordered = original.flatMap((item, index) => {
+    if (removed.has(item)) return [];
+    let rank = owners.get(item);
+    if (!rank) {
+      const before = beforeOwners[index];
+      const after = afterOwners[index];
+      if (
+        before &&
+        after &&
+        before.block === after.block &&
+        before.part === after.part
+      )
+        rank = before;
+      else if (before) rank = { block: before.block, part: before.part + 0.5 };
+      else if (after) rank = { block: after.block, part: after.part - 0.5 };
+      else rank = { block: tail, part: 0 };
+    }
+    return [{ item, rank, index }];
+  });
+  for (const item of items)
+    ordered.push({
+      item,
+      rank: owners.get(item)!,
+      index: original.length + ordered.length,
+    });
+  ordered.sort(
+    (a, b) =>
+      a.rank.block - b.rank.block ||
+      a.rank.part - b.rank.part ||
+      a.index - b.index,
+  );
   return {
     ...native,
     items: [
-      ...native.items.filter((item) => !("str" in item) || !removed.has(item)),
-      ...items,
+      ...native.items.filter((item) => !("str" in item)),
+      ...ordered.map(({ item }) => {
+        const hasEOL = eol.get(item);
+        if (hasEOL === undefined || hasEOL === item.hasEOL) return item;
+        const adjusted = { ...item, hasEOL };
+        nativeOrigins.set(adjusted, item);
+        return adjusted;
+      }),
     ],
     styles: {
       ...native.styles,
@@ -341,14 +412,26 @@ export async function extractRegion(
   );
   const dims = viewportDimensions(viewport);
   let nativeLine = 0;
-  const native = (await nativePdfText(doc, pageNumber)).items
+  const nativeContent = await nativePdfText(doc, pageNumber);
+  const native = nativeContent.items
     .flatMap((item) => {
       if (!("str" in item)) return [];
       const line = nativeLine;
       // pdf.js は str が空で幅・高さ0のEOLマーカーも返す。矩形で落とす前に行番号へ反映する。
       if (item.hasEOL) nativeLine++;
       return item.str.length
-        ? [{ item, rect: nativeRect(item, dims.pageX, dims.pageY), line }]
+        ? [
+            {
+              item,
+              rect: nativeRect(
+                item,
+                dims.pageX,
+                dims.pageY,
+                nativeContent.styles[item.fontName],
+              ),
+              line,
+            },
+          ]
         : [];
     })
     .filter(({ rect }) => intersect(bbox, rect))

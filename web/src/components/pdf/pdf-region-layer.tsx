@@ -28,10 +28,12 @@ export function PdfRegionLayer({
     start: [number, number];
     rect: PdfRect | null;
   } | null>(null);
+  const keyboard = React.useRef<[number, number, number, number] | null>(null);
   const [preview, setPreview] = React.useState<PdfRect | null>(null);
   // 表示変換が替わった瞬間、途中のドラッグは無効化する。確定済み範囲は PDF 座標のまま残す。
   React.useEffect(() => {
     drag.current = null;
+    keyboard.current = null;
     setPreview(null);
   }, [viewport, enabled]);
   const point = (e: React.PointerEvent): [number, number] => {
@@ -65,7 +67,9 @@ export function PdfRegionLayer({
     return (
       <div
         key={key}
-        data-testid="pdf-region-box"
+        data-testid={
+          key === "preview" ? "pdf-region-preview" : "pdf-region-box"
+        }
         className="pointer-events-none absolute rounded-[3px] border-2 border-primary bg-primary/10 shadow-[0_0_0_1px_white]"
         style={{
           left: `${(r.left / viewport.width) * 100}%`,
@@ -95,12 +99,14 @@ export function PdfRegionLayer({
           ref={ref}
           role="button"
           tabIndex={0}
-          aria-label={`p.${page} の範囲を選択。ドラッグで指定、Enterでページ全体、Escapeで中止`}
+          aria-label={`p.${page} の範囲を選択。ドラッグまたは矢印で位置、Shiftと矢印でサイズ、Enterで追加、Escapeで中止`}
           data-testid="pdf-region-layer"
           className="absolute inset-0 z-[4] cursor-crosshair touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
           onPointerDown={(e) => {
             if (e.button !== 0 || !e.isPrimary) return;
             e.preventDefault();
+            keyboard.current = null;
+            setPreview(null);
             e.currentTarget.focus({ preventScroll: true });
             e.currentTarget.setPointerCapture(e.pointerId);
             drag.current = {
@@ -123,19 +129,88 @@ export function PdfRegionLayer({
           }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
+              e.preventDefault();
               drag.current = null;
+              keyboard.current = null;
               setPreview(null);
+            }
+            if (
+              ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+                e.key,
+              ) &&
+              !e.metaKey &&
+              !e.ctrlKey
+            ) {
+              e.preventDefault();
+              const current = keyboard.current ?? [
+                viewport.width * 0.2,
+                viewport.height * 0.3,
+                viewport.width * 0.7,
+                viewport.height * 0.6,
+              ];
+              const step = Math.max(
+                2,
+                Math.min(viewport.width, viewport.height) * 0.02,
+              );
+              const dx =
+                e.key === "ArrowLeft"
+                  ? -step
+                  : e.key === "ArrowRight"
+                    ? step
+                    : 0;
+              const dy =
+                e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+              const next = [...current] as [number, number, number, number];
+              if (e.shiftKey) {
+                next[2] = Math.max(
+                  next[0] + 8,
+                  Math.min(viewport.width, next[2] + dx),
+                );
+                next[3] = Math.max(
+                  next[1] + 8,
+                  Math.min(viewport.height, next[3] + dy),
+                );
+              } else {
+                const mx = Math.max(
+                  -next[0],
+                  Math.min(viewport.width - next[2], dx),
+                );
+                const my = Math.max(
+                  -next[1],
+                  Math.min(viewport.height - next[3], dy),
+                );
+                next[0] += mx;
+                next[2] += mx;
+                next[1] += my;
+                next[3] += my;
+              }
+              keyboard.current = next;
+              setPreview(
+                rectFromViewport(
+                  viewport,
+                  [next[0], next[1]],
+                  [next[2], next[3]],
+                ),
+              );
             }
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
+              const bounds = keyboard.current ?? [
+                0,
+                0,
+                viewport.width,
+                viewport.height,
+              ];
               onSelect(
                 page,
                 rectFromViewport(
                   viewport,
-                  [0, 0],
-                  [viewport.width, viewport.height],
+                  [bounds[0], bounds[1]],
+                  [bounds[2], bounds[3]],
                 ),
               );
+              keyboard.current = null;
+              setPreview(null);
             }
           }}
         />

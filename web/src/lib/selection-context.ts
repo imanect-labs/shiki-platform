@@ -21,6 +21,7 @@ export type SelectionKind = components["schemas"]["SelectionKind"];
 export type SelectionContext = components["schemas"]["SelectionContext"];
 
 let pending: SelectionContext | null = null;
+let pendingTarget: string | null = null;
 let pendingGeneration = storageScopeGeneration();
 const listeners = new Set<() => void>();
 
@@ -35,7 +36,8 @@ function excerptMax(kind: SelectionKind): number {
 }
 
 /// 選択を積む（既存があれば置き換え・excerpt はクライアント側でも軽く切り詰める）。
-export function setPendingSelection(ctx: SelectionContext) {
+export function setPendingSelection(ctx: SelectionContext, target?: string) {
+  pendingTarget = target ?? null;
   pendingGeneration = storageScopeGeneration();
   pending = {
     ...ctx,
@@ -46,24 +48,41 @@ export function setPendingSelection(ctx: SelectionContext) {
 
 export function clearPendingSelection() {
   pending = null;
+  pendingTarget = null;
   emit();
 }
 
+export function restorePendingSelection(ctx: SelectionContext, target: string | undefined, generation: number) {
+  if (generation !== storageScopeGeneration()) return;
+  if (pending && pendingGeneration === generation) return;
+  setPendingSelection(ctx, target);
+}
+
+export function clearPendingSelectionForTarget(target: string) {
+  if (pendingTarget === target) clearPendingSelection();
+}
+
 /// 送信時に取り出して消費する（チップの二重送信を防ぐ）。
-export function takePendingSelection(): SelectionContext | null {
+export function takePendingSelection(target?: string): SelectionContext | null {
+  if (pendingTarget !== null && pendingTarget !== target) return null;
   const out = pendingGeneration === storageScopeGeneration() ? pending : null;
   pending = null;
+  pendingTarget = null;
   emit();
   return out;
 }
 
-export function usePendingSelection(): SelectionContext | null {
+export function usePendingSelection(target?: string): SelectionContext | null {
   return React.useSyncExternalStore(
     (onChange) => {
       listeners.add(onChange);
       return () => listeners.delete(onChange);
     },
-    () => (pendingGeneration === storageScopeGeneration() ? pending : null),
+    () =>
+      pendingGeneration === storageScopeGeneration() &&
+      (pendingTarget === null || pendingTarget === target)
+        ? pending
+        : null,
     () => null,
   );
 }

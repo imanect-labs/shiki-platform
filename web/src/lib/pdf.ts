@@ -5,7 +5,7 @@
 /// 同じ版を出典パネルとビューアで続けて開くことが多いので、直近の数件は覚えておく。
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
-import { storageScopeGeneration } from "@/lib/user-storage";
+import { storageScopeGeneration, subscribeStorageScope } from "@/lib/user-storage";
 import { versionDownloadUrl } from "@/lib/storage";
 
 type PdfJs = typeof import("pdfjs-dist");
@@ -53,3 +53,17 @@ export function loadPdf(fileId: string, version: number): Promise<PDFDocumentPro
 }
 
 export { boxToViewport } from "@/lib/pdf-geometry";
+
+
+let cacheGeneration = storageScopeGeneration();
+subscribeStorageScope(() => {
+  const current = storageScopeGeneration();
+  if (current === cacheGeneration) return;
+  cacheGeneration = current;
+  const previous = [...docs.values()];
+  docs.clear();
+  for (const pending of previous) {
+    // 解放中の読み込み失敗は表示状態の無効化と独立したcleanupとして扱う。
+    void pending.then((doc) => doc.destroy()).catch(() => undefined);
+  }
+});
