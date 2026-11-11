@@ -77,8 +77,17 @@ Issue に記録する。自分の変更に関係するテストの flaky Issue �
 `minioadmin` は開発用の既定資格情報、設定の `minio` は後方互換 alias、テストの
 `http://minio:9000` はモック URL。これらを実サービスの指定と解釈しない。
 
+Compose は 9000/9001 を全インターフェースに公開するため、既定の資格情報のまま起動しない。
+既存環境では `.env` に設定した強固な `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` を
+同名の環境変数に設定してから実行する（既定値 `minioadmin` は使わない）。
+以下は未設定なら新規テスト環境用の資格情報を生成する。生成値は表示せず、このシェルでテストを実行する。
+
 ```bash
 # リポジトリルートで実行。既存の .env は上書きしない。
+export RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-$(openssl rand -hex 16)}"
+export RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-$(openssl rand -hex 32)}"
+export STORAGE_TEST_S3_ACCESS_KEY="$RUSTFS_ACCESS_KEY"
+export STORAGE_TEST_S3_SECRET_KEY="$RUSTFS_SECRET_KEY"
 docker compose -f deploy/compose/docker-compose.yml up -d --wait rustfs
 docker compose -f deploy/compose/docker-compose.yml ps rustfs
 curl --fail --show-error http://localhost:9000/health/ready
