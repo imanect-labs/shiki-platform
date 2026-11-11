@@ -82,10 +82,12 @@ export function usePdfWorkspace({
   const [attaching, setAttaching] = React.useState(false);
   const [textRevision, setTextRevision] = React.useState(0);
   const generation = React.useRef(0);
+  const attachmentGeneration = React.useRef(0);
   const pendingCount = React.useRef(0);
   const replacements = React.useRef(new Map<string, symbol>());
   const invalidate = React.useCallback(() => {
     generation.current++;
+    attachmentGeneration.current++;
   }, []);
   const lastRegion = React.useRef<{
     page: number;
@@ -208,6 +210,8 @@ export function usePdfWorkspace({
     }
     const at = generation.current;
     const scope = storageScopeGeneration();
+    const attachmentAt = ++attachmentGeneration.current;
+    const isCurrent = () => at === generation.current && scope === storageScopeGeneration() && attachmentAt === attachmentGeneration.current;
     setAttaching(true);
     setError("");
     try {
@@ -217,8 +221,7 @@ export function usePdfWorkspace({
         const selection = selections[i];
         if (!doc || (!includeImages && selection.text.trim())) continue;
         const blob = await regionPng(doc, selection);
-        if (at !== generation.current || scope !== storageScopeGeneration())
-          return;
+        if (!isCurrent()) return;
         const node = await uploadNewFile({
           file: new File(
             [blob],
@@ -226,10 +229,10 @@ export function usePdfWorkspace({
             { type: "image/png" },
           ),
         });
+        if (!isCurrent()) return;
         attachments.push({ node_id: node.id, name: node.name });
       }
-      if (at !== generation.current || scope !== storageScopeGeneration())
-        return;
+      if (!isCurrent()) return;
       setPendingSelection(
         context,
         destination === "new" ? "home" : `pdf:${id}`,
@@ -245,10 +248,10 @@ export function usePdfWorkspace({
         setMobilePanel(false);
       }
     } catch (e) {
-      if (at === generation.current)
+      if (isCurrent())
         setError(e instanceof Error ? e.message : "添付を準備できませんでした");
     } finally {
-      if (at === generation.current) setAttaching(false);
+      if (isCurrent()) setAttaching(false);
     }
   };
   const retry = () => {
@@ -273,6 +276,8 @@ export function usePdfWorkspace({
         includeImages={includeImages}
         onIncludeImages={setIncludeImages}
         onRemove={(key) => {
+          attachmentGeneration.current++;
+          setAttaching(false);
           replacements.current.delete(key);
           if (lastRegion.current?.id === key) {
             lastRegion.current = null;
@@ -281,7 +286,7 @@ export function usePdfWorkspace({
           setSelections((prev) => prev.filter((s) => s.id !== key));
         }}
         onClear={() => {
-          generation.current++;
+          invalidate();
           replacements.current.clear();
           lastRegion.current = null;
           pendingCount.current = 0;

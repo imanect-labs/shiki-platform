@@ -1340,3 +1340,73 @@ test("古い画面の失敗復元とcleanupは新しい宛先の本文・画像�
   expect(takePendingSelection(target)).toBeNull();
   expect(takePdfAttachments(target)).toEqual([]);
 });
+
+test("OCR矩形内の表記が異なるnative文字を検索で二重に数えない", () => {
+  const native = {
+    items: [
+      { str: "Total 1000", dir: "ltr", transform: [12,0,0,12,50,700], width: 100, height: 12, fontName: "f", hasEOL: true },
+      { str: "Unparsed extra", dir: "ltr", transform: [12,0,0,12,170,700], width: 100, height: 12, fontName: "f", hasEOL: true },
+    ],
+    styles: { f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false } }, lang: "en",
+  };
+  const block: DocBlock = { ordinal: 0, type: "paragraph", text: "Total 1,000", page: 1, prov: [{ page: 1, bbox: [40,720,180,680], origin: "bottom_left" }] };
+  const viewport = { rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 } };
+  const text = buildPageText(withOcrContent(native, [block], 1, viewport as never)).text;
+  expect(findInText(text, "Total")).toHaveLength(1);
+  expect(findInText(text, "Total 1,000")).toHaveLength(1);
+  expect(findInText(text, "Unparsed extra")).toHaveLength(1);
+  expect(native.items[0].str).toBe("Total 1000");
+});
+
+test("画像添付中の削除は旧添付を中止し、残る範囲を添付できる", async ({ page }) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  await dragRegion(page, 1, [35 / 550, 185 / 740, 425 / 550, 325 / 740]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+  await page.getByRole("checkbox", { name: /画像も添付/ }).check();
+  await page.route("**/fixture-upload", (route) => route.fulfill({ body: "" }));
+  let uploads = 0;
+  await page.route("**/api/files", (route) => route.fulfill({ json: { upload_id: `pdf-image-${++uploads}`, node_id: id, upload_url: new URL("/fixture-upload", page.url()).toString() } }));
+  let release!: () => void;
+  let requested = false;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/files/pdf-image-*/finalize", async (route) => {
+    const first = route.request().url().includes("pdf-image-1/");
+    if (first) { requested = true; await pending; }
+    await route.fulfill({ json: { id, name: first ? "deleted.png" : "remaining.png", kind: "file", version: 1, content_type: "image/png" } });
+  });
+  await page.getByRole("button", { name: "アシスタントに添付" }).click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByRole("button", { name: "抜粋1を削除" }).click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "アシスタントに添付" })).toBeEnabled();
+  await page.getByRole("button", { name: "アシスタントに添付" }).click();
+  await expect(page.getByLabel("添付する PDF の抜粋")).toContainText("Product A");
+  release();
+  await page.waitForTimeout(300);
+  await expect(page.getByLabel("添付する PDF の抜粋")).not.toContainText("Quarterly results");
+  await expect(page.getByText("deleted.png", { exact: true })).toHaveCount(0);
+  expect(uploads).toBe(2);
+});
+
+test("重なるOCR枠でも別段落と一致するnative本文を検索から消さない", () => {
+  const native = {
+    items: [
+      { str: "Alpha", dir: "ltr", transform: [12,0,0,12,10,700], width: 60, height: 12, fontName: "f", hasEOL: true },
+      { str: "Beta", dir: "ltr", transform: [12,0,0,12,10,650], width: 60, height: 12, fontName: "f", hasEOL: true },
+    ],
+    styles: { f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false } }, lang: "en",
+  };
+  const saved: DocBlock[] = [
+    { ordinal: 0, type: "paragraph", text: "Alpha normalized", page: 1, prov: [{ page: 1, bbox: [0,730,100,620], origin: "bottom_left" }] },
+    { ordinal: 1, type: "paragraph", text: "Beta", page: 1, prov: [{ page: 1, bbox: [0,670,100,630], origin: "bottom_left" }] },
+  ];
+  const viewport = { rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 } };
+  for (const ordered of [saved, [...saved].reverse()]) {
+    const text = buildPageText(withOcrContent(native, ordered, 1, viewport as never)).text;
+    expect(findInText(text, "Alpha normalized")).toHaveLength(1);
+    expect(findInText(text, "Beta")).toHaveLength(1);
+    expect(text.indexOf("alpha")).toBeLessThan(text.indexOf("beta"));
+  }
+});

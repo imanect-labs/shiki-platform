@@ -277,15 +277,29 @@ export function withOcrContent(
   const eol = new Map<TextItem, boolean>();
   const syntheticBlocks = new Set<number>();
   const items: TextItem[] = [];
-  for (const block of blocks) {
+  const prepared = blocks.map((block) => {
     const fragments = blockFragments(block, page, dims.pageHeight).map((fragment) => ({
       ...fragment,
       text: block.type === "table" ? tableRows(fragment.text).map((row) => row.join(" ")).join("\n") : fragment.text,
     })).filter((fragment) => fragment.text.trim());
-    if (!fragments.length) continue;
-    const candidates = nativeItems.filter((item) => item.str.length > 0 && fragments.some((fragment) => intersect(rects.get(item)!, fragment.rect)));
     const canonical = fragments.map((fragment) => fragment.text).join("");
-    if (candidates.map((item) => item.str).join("") === canonical) {
+    return { block, fragments, canonical };
+  });
+  const candidatesFor = (fragments: (typeof prepared)[number]["fragments"]) => nativeItems.filter((item) => item.str.length > 0 && fragments.some((fragment) => intersect(rects.get(item)!, fragment.rect)));
+  // 広いOCR枠が別段落と重なっても、その段落に完全一致するnativeを削除しない。
+  // 候補配列はブロックごとに手放す（重なる枠で文字片数×ブロック数のメモリを保持しない）。
+  const exactOwners = new Map<TextItem, number>();
+  const exactBlocks = new Set<number>();
+  for (const { block, fragments, canonical } of prepared) {
+    const candidates = candidatesFor(fragments);
+    if (candidates.map((item) => item.str).join("") !== canonical) continue;
+    exactBlocks.add(block.ordinal);
+    for (const item of candidates) if (!exactOwners.has(item)) exactOwners.set(item, block.ordinal);
+  }
+  for (const { block, fragments, canonical } of prepared) {
+    if (!fragments.length) continue;
+    const candidates = candidatesFor(fragments);
+    if (exactBlocks.has(block.ordinal)) {
       candidates.forEach((item, index) => {
         if (!owners.has(item)) owners.set(item, { block: block.ordinal, part: 0 });
         eol.set(item, index === candidates.length - 1);
@@ -295,7 +309,10 @@ export function withOcrContent(
     syntheticBlocks.add(block.ordinal);
     // 部分的なnativeとOCRを一行へ推測連結しない。保存本文を使い、nativeの描画は原本のまま維持する。
     for (const item of candidates) {
-      if (!compact(canonical).includes(compact(item.str))) continue;
+      if (exactOwners.has(item) && exactOwners.get(item) !== block.ordinal) continue;
+      const [l, b, r, t] = rects.get(item)!;
+      const contained = fragments.some(({ rect }) => l >= rect[0] - 1 && b >= rect[1] - 1 && r <= rect[2] + 1 && t <= rect[3] + 1);
+      if (!contained && !compact(canonical).includes(compact(item.str))) continue;
       removed.add(item);
       if (!owners.has(item)) owners.set(item, { block: block.ordinal, part: Math.max(0, fragments.findIndex((fragment) => intersect(rects.get(item)!, fragment.rect))) });
     }
