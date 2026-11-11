@@ -4,14 +4,10 @@ use std::time::Duration;
 
 use serde_json::json;
 use uuid::Uuid;
-use workflow_engine::registration::RunEffects;
 use workflow_engine::run::{
     DigestError, DigestMapCount, DigestRecord, DigestSkip, DigestStep, RecordChange, RunDigest,
 };
-use workflow_engine::{
-    FailureCategory, RegistrationService, ReplyBody, ReplySection, ReplyTone, RunFailure, RunReply,
-    RunStatus, StepStatus, WaitingFor, WorkflowIr,
-};
+use workflow_engine::{FailureCategory, RunFailure, RunStatus, StepStatus, WaitingFor, WorkflowIr};
 
 use super::*;
 
@@ -98,8 +94,6 @@ fn digest(run_id: Uuid, status: RunStatus, waiting_for: Option<WaitingFor>) -> R
 fn observed<'a>(
     ir: &'a WorkflowIr,
     d: Option<&'a RunDigest>,
-    reply: Option<&'a RunReply>,
-    effects: &'a RunEffects,
     origin: Origin,
     end: Option<WaitEnd>,
 ) -> Observed<'a> {
@@ -112,8 +106,6 @@ fn observed<'a>(
         run_id: d.map_or(Uuid::from_u128(2), |d| d.run_id),
         ir,
         digest: d,
-        reply,
-        effects,
         cost: RunCost {
             tokens: 1234,
             cost_usd_micros: 5600,
@@ -142,23 +134,9 @@ fn author_text_stays_inside_the_envelope() {
     let run_id = Uuid::from_u128(99);
     let ir = ir(&format!("ラベルZ{ESCAPES}"));
     let d = digest(run_id, RunStatus::Failed, None);
-    let reply = RunReply {
-        sections: vec![ReplySection {
-            label: Some(format!("結果{ESCAPES}")),
-            tone: ReplyTone::default(),
-            truncated: false,
-            body: ReplyBody::Text {
-                text: format!("返す本文Q\n{ESCAPES}"),
-            },
-        }],
-        omitted: 0,
-    };
-    let effects = RegistrationService::run_effects(&ir);
     let out = render(&observed(
         &ir,
         Some(&d),
-        Some(&reply),
-        &effects,
         Origin::Started,
         Some(WaitEnd::Settled),
     ));
@@ -245,12 +223,9 @@ fn huge_values_are_capped_and_the_envelope_is_closed() {
         .collect();
     d.records = (0..50).map(|_| d.records[0].clone()).collect();
     d.records_omitted = 7;
-    let effects = RunEffects::default();
     let out = render(&observed(
         &ir,
         Some(&d),
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::Settled),
     ));
@@ -276,12 +251,9 @@ fn folded_observation_is_closed_by_close_dangling() {
         RunStatus::Running,
         Some(WaitingFor::Approval),
     );
-    let effects = RunEffects::default();
     let out = render(&observed(
         &ir,
         Some(&d),
-        None,
-        &effects,
         Origin::Joined,
         Some(WaitEnd::Settled),
     ));
@@ -301,16 +273,8 @@ fn folded_observation_is_closed_by_close_dangling() {
 #[test]
 fn guidance_follows_the_state() {
     let ir = ir("確認");
-    let effects = RunEffects::default();
     let done = digest(Uuid::from_u128(5), RunStatus::Succeeded, None);
-    let out = render(&observed(
-        &ir,
-        Some(&done),
-        None,
-        &effects,
-        Origin::Previous,
-        None,
-    ));
+    let out = render(&observed(&ir, Some(&done), Origin::Previous, None));
     assert!(out.starts_with("試運転（前回の結果）: 成功"), "{out}");
     assert!(out.contains("同じ版・同じ入力の前回の結果です"), "{out}");
 
@@ -318,8 +282,6 @@ fn guidance_follows_the_state() {
     let out = render(&observed(
         &ir,
         Some(&queued),
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::TimedOut),
     ));
@@ -330,8 +292,6 @@ fn guidance_follows_the_state() {
     let out = render(&observed(
         &ir,
         Some(&running),
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::TimedOut),
     ));
@@ -342,8 +302,6 @@ fn guidance_follows_the_state() {
     let out = render(&observed(
         &ir,
         Some(&running),
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::ParkRefused),
     ));
@@ -354,8 +312,6 @@ fn guidance_follows_the_state() {
     let out = render(&observed(
         &ir,
         Some(&running),
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::Cancelled),
     ));
@@ -363,8 +319,6 @@ fn guidance_follows_the_state() {
     let out = render(&observed(
         &ir,
         None,
-        None,
-        &effects,
         Origin::Started,
         Some(WaitEnd::Unknown),
     ));
@@ -396,59 +350,4 @@ fn launch_refused_wraps_reasons() {
     );
     assert_eq!(out.matches(CLOSE).count(), 1, "{out}");
     assert!(out.ends_with("input を直して呼び直してください。"), "{out}");
-}
-
-/// 返す値の表とファイルも封筒の中に入れる。
-#[test]
-fn reply_tables_and_files() {
-    let ir = ir("確認");
-    let effects = RunEffects::default();
-    let d = digest(Uuid::from_u128(5), RunStatus::Succeeded, None);
-    let reply = RunReply {
-        sections: vec![
-            ReplySection {
-                label: None,
-                tone: ReplyTone::default(),
-                truncated: true,
-                body: ReplyBody::Table {
-                    columns: vec!["件名".into(), "金額".into()],
-                    rows: vec![vec!["交通費".into(), "1200".into()]],
-                    total_rows: 1,
-                },
-            },
-            ReplySection {
-                label: Some("添付".into()),
-                tone: ReplyTone::default(),
-                truncated: false,
-                body: ReplyBody::FileLink {
-                    files: vec![workflow_engine::ReplyFile {
-                        id: Uuid::from_u128(3),
-                        name: "報告.pdf".into(),
-                    }],
-                },
-            },
-        ],
-        omitted: 2,
-    };
-    let out = render(&observed(
-        &ir,
-        Some(&d),
-        Some(&reply),
-        &effects,
-        Origin::Started,
-        Some(WaitEnd::Settled),
-    ));
-    let inside = out
-        .split_once(&envelope_open())
-        .unwrap()
-        .1
-        .split_once(CLOSE)
-        .unwrap()
-        .0;
-    assert!(
-        inside.contains("表（1 行）: 件名 | 金額 ／ 交通費 | 1200…（切り詰め）"),
-        "{inside}"
-    );
-    assert!(inside.contains("添付: ファイル: 報告.pdf"), "{inside}");
-    assert!(inside.contains("ほか 2 節を省きました"), "{inside}");
 }

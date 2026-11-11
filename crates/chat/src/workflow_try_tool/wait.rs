@@ -157,10 +157,7 @@ mod tests {
         for w in [WaitingFor::Approval, WaitingFor::Event, WaitingFor::Timer] {
             assert!(settled(state(RunStatus::Running, Some(w))), "{w:?}");
         }
-        assert!(!settled(state(
-            RunStatus::Running,
-            Some(WaitingFor::Index)
-        )));
+        assert!(!settled(state(RunStatus::Running, Some(WaitingFor::Index))));
         assert!(!settled(state(RunStatus::Running, None)));
         assert!(!settled(state(RunStatus::Queued, None)));
     }

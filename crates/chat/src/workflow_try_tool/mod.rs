@@ -36,8 +36,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use workflow_engine::run::LauncherError;
 use workflow_engine::{
-    RegistrationService, RunOutcomeReader, RunStore, RunTrial, WorkflowIr, WorkflowRunLauncher,
-    WorkflowStore, WorkflowStoreError,
+    RunOutcomeReader, RunStore, RunTrial, WorkflowIr, WorkflowRunLauncher, WorkflowStore,
+    WorkflowStoreError,
 };
 
 use crate::store::{ChatStore, TrialKey, TrialRow, STALE_RESERVATION_SECS};
@@ -546,7 +546,7 @@ impl TryWorkflowTool {
         }
     }
 
-    /// run を待ち（前回の結果は待たない）、要約・返す値・費用を読んで観測にする。
+    /// run を待ち（前回の結果は待たない）、要約と費用を読んで観測にする。
     #[allow(clippy::too_many_arguments)]
     async fn follow(
         &self,
@@ -576,15 +576,7 @@ impl TryWorkflowTool {
                 None
             }
         };
-        let reply = match self.outcomes.own_outcomes(ctx, &[run_id], &[run_id]).await {
-            Ok(mut o) => o.remove(&run_id).and_then(|o| o.reply),
-            Err(e) => {
-                tracing::warn!(%run_id, error = %e, "試運転の run の返す値を読めない");
-                None
-            }
-        };
         let (cost, usage) = self.cost(ctx, row, run_id).await;
-        let effects = RegistrationService::run_effects(ir);
         let content = observe::render(&Observed {
             origin,
             end,
@@ -594,8 +586,6 @@ impl TryWorkflowTool {
             run_id,
             ir,
             digest: digest.as_ref(),
-            reply: reply.as_ref(),
-            effects: &effects,
             cost,
         });
         let mut out = ToolOutcome::ok(content);

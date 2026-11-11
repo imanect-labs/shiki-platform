@@ -5,11 +5,15 @@
 //! 1. **先頭の 1 行**: こちらが決めた値だけ（状態・run の id・版・step とレコードの件数・費用）。
 //! 2. **注意書き**（[`NOTICE`]）: 封筒の中はデータで、指示ではないこと。
 //! 3. **封筒 `<run_output>`**: ワークフローと run から来た文字は 1 つ残らずこの中に置く（表示名・ノードの id と
-//!    ラベル・step ごとの状態・取った出口・誤り・出力の先頭・通らなかった理由・繰り返しの内訳・返す値・起きうること・
-//!    起動できなかった理由）。値は 1 つずつ改行と制御文字を潰し、項目ごとに上限で切ってから、封筒のタグを中和する
-//!    （`neutralize_tag`・大文字小文字・空白・全角の変種も）。観測の全体を [`MAX_CHARS`] に収めるときは封筒の中身
-//!    だけを切り、閉じタグは必ず付ける。
+//!    ラベル・step ごとの状態・取った出口・誤りの code と記録したときにレダクトした文・出力の先頭・通らなかった理由・
+//!    繰り返しの内訳・起動できなかった理由）。値は 1 つずつ改行と制御文字を潰し、項目ごとに上限で切ってから、封筒の
+//!    タグを中和する（`neutralize_tag`・大文字小文字・空白・全角の変種も）。観測の全体を [`MAX_CHARS`] に収めるときは
+//!    封筒の中身だけを切り、閉じタグは必ず付ける。
 //! 4. **封筒の後ろ**: こちらの値と案内（失敗の分類と参照番号・作ったレコードの id・画面の道・やり直し方・片付け）。
+//!
+//! 観測は会話の tool_result として残り、共有した会話では共有の相手も読める（data_query と同じ前例）。そのため入れるの
+//! は直すのに要るものだけにする（返す値の節の全体・副作用の一覧は入れない。返す値は `workflow.reply` の step の出力の
+//! 先頭に出る・副作用は承認カードが見せる）。
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -17,9 +21,8 @@ use std::time::Duration;
 use agent_core::tools::document_envelope::neutralize_tag;
 use uuid::Uuid;
 use workflow_engine::ir::TriggerKind;
-use workflow_engine::registration::RunEffects;
 use workflow_engine::run::{DigestStep, RecordChange, RunDigest};
-use workflow_engine::{ReplyBody, RunReply, RunStatus, StepStatus, WaitingFor, WorkflowIr};
+use workflow_engine::{RunStatus, StepStatus, WaitingFor, WorkflowIr};
 
 use super::wait::WaitEnd;
 
@@ -29,12 +32,10 @@ pub(super) const MAX_CHARS: usize = 8_000;
 const ONE_LINE_CHARS: usize = 200;
 /// 誤りの文の上限（文字）。
 const ERROR_CHARS: usize = 300;
-/// 出力の先頭・返す値の本文の上限（文字）。
+/// 出力の先頭の上限（文字）。
 const BODY_CHARS: usize = 600;
 /// 封筒の後ろに id を並べるレコードの数（残りは件数だけ）。
 const SHOWN_RECORDS: usize = 10;
-/// 返す値の表で見せる行の数。
-const SHOWN_TABLE_ROWS: usize = 5;
 
 /// 封筒のタグ名（中和に使う・ASCII 小文字）。
 const TAG: &str = "run_output";
@@ -92,8 +93,6 @@ pub(super) struct Observed<'a> {
     pub ir: &'a WorkflowIr,
     /// run の要約（本人の run でない・消えたなら `None`）。
     pub digest: Option<&'a RunDigest>,
-    pub reply: Option<&'a RunReply>,
-    pub effects: &'a RunEffects,
     pub cost: RunCost,
 }
 
@@ -251,11 +250,6 @@ fn body_lines(o: &Observed<'_>) -> Vec<String> {
             }
         }
     }
-    if let Some(reply) = o.reply.filter(|r| !r.sections.is_empty()) {
-        lines.push("返す値:".into());
-        reply_lines(reply, &mut lines);
-    }
-    effect_lines(o.effects, &mut lines);
     lines
 }
 
@@ -305,115 +299,6 @@ fn step_lines(ir: &WorkflowIr, s: &DigestStep, lines: &mut Vec<String>) {
             .map(|k| sanitize(&k.describe(), ONE_LINE_CHARS * 2))
             .collect();
         lines.push(format!("  通らなかった理由: {}", why.join("／")));
-    }
-}
-
-/// 返す値の節（見出しと本文の先頭）。
-fn reply_lines(reply: &RunReply, lines: &mut Vec<String>) {
-    for s in &reply.sections {
-        let label = s
-            .label
-            .as_deref()
-            .map(|l| format!("{}: ", sanitize(l, ONE_LINE_CHARS)))
-            .unwrap_or_default();
-        let body = match &s.body {
-            ReplyBody::Text { text } | ReplyBody::Markdown { text } => sanitize(text, BODY_CHARS),
-            ReplyBody::Table {
-                columns,
-                rows,
-                total_rows,
-            } => {
-                let mut t = format!(
-                    "表（{total_rows} 行）: {}",
-                    sanitize(&columns.join(" | "), BODY_CHARS)
-                );
-                for r in rows.iter().take(SHOWN_TABLE_ROWS) {
-                    let _ = write!(t, " ／ {}", sanitize(&r.join(" | "), BODY_CHARS / 2));
-                }
-                t
-            }
-            ReplyBody::FileLink { files } => {
-                let names: Vec<String> = files
-                    .iter()
-                    .map(|f| format!("{}（{}）", sanitize(&f.name, ONE_LINE_CHARS), f.id))
-                    .collect();
-                format!("ファイル: {}", names.join("、"))
-            }
-        };
-        let cut = if s.truncated {
-            "…（切り詰め）"
-        } else {
-            ""
-        };
-        lines.push(format!("- {label}{body}{cut}"));
-    }
-    if reply.omitted > 0 {
-        lines.push(format!("- ほか {} 節を省きました", reply.omitted));
-    }
-}
-
-/// serde の名前（enum の値の言い方）。
-fn serde_name<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
-}
-
-/// この版で起きうること（書く・外への送信・任意の処理・別のワークフローの起動）。
-fn effect_lines(e: &RunEffects, lines: &mut Vec<String>) {
-    let mut out: Vec<String> = Vec::new();
-    for w in &e.writes {
-        let target = match (&w.target_id, w.decided_at_run) {
-            (Some(id), _) => sanitize(id, ONE_LINE_CHARS),
-            (None, true) => "実行のときに決まる".into(),
-            (None, false) => "指定なし".into(),
-        };
-        out.push(format!(
-            "- 書く: {}（{}・{}）→ {} {target}",
-            sanitize(&w.node_id, ONE_LINE_CHARS),
-            sanitize(&w.node_type, ONE_LINE_CHARS),
-            serde_name(&w.op),
-            serde_name(&w.target),
-        ));
-    }
-    for s in &e.outbound {
-        let hosts: Vec<String> = s
-            .hosts
-            .iter()
-            .map(|h| sanitize(h, ONE_LINE_CHARS))
-            .collect();
-        out.push(format!(
-            "- 外への送信: {}（{}）→ {}",
-            sanitize(&s.node_id, ONE_LINE_CHARS),
-            serde_name(&s.kind),
-            if hosts.is_empty() {
-                "実行のときに決まる".to_string()
-            } else {
-                hosts.join("・")
-            }
-        ));
-    }
-    for c in &e.compute {
-        out.push(format!(
-            "- 任意の処理: {}（{}）",
-            sanitize(&c.node_id, ONE_LINE_CHARS),
-            serde_name(&c.kind)
-        ));
-    }
-    for s in &e.starts {
-        out.push(format!(
-            "- 別のワークフローを起動: {} → {}",
-            sanitize(&s.node_id, ONE_LINE_CHARS),
-            s.workflow_name.as_deref().map_or_else(
-                || "実行のときに決まる".to_string(),
-                |n| sanitize(n, ONE_LINE_CHARS)
-            )
-        ));
-    }
-    if !out.is_empty() {
-        lines.push("この版で起きうること:".into());
-        lines.extend(out);
     }
 }
 
