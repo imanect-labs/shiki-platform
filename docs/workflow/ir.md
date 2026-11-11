@@ -130,7 +130,7 @@ IR のトップレベルは以下の形を取る。
 - **`path`**: RFC 6901 JSON Pointer。省略時は source 全体を指す。
 - **`default`**: 解決失敗（skipped ノードの出力・パス不在・null）時のフォールバック。**`default` がなく解決に失敗した場合、step は `expr_resolve_error` で失敗する**（黙って null を流さない）。実行時の解決アルゴリズムは [engine.md](./engine.md) §4。
   - **例外: 値式全体の null は値として通す。** パラメータの値（またはリテラルの object / array の要素）そのものが `$from` で、指した値が null のとき、`default` が無ければ null をそのまま渡す（項目を空にする書込などのため・D-35）。パスが無い・skipped ノードの出力は従来どおり失敗する。`$template` の差し込み（§3.2）の null は、空文字や `null` の文字を黙って埋め込まないよう `expr_resolve_error` で失敗する。
-- **静的検証（§8 V5）**: `nodes.<id>` は**当該ノードの祖先**（DAG 上、いずれかのパスで先行するノード。map 領域の中のノードは、囲む map ノードの祖先も祖先に数える・§5.3・D-123）でなければ保存拒否。**すべてのパスで先行するとは限らない**祖先（分岐の片側にしかいない等）を参照する場合は `default` 必須（そのパスが取られないと skipped になり解決失敗するため）。
+- **静的検証（§8 V5）**: `nodes.<id>` は**当該ノードの祖先**（DAG 上、いずれかのパスで先行するノード。map 領域の中のノードは、囲む map ノードの祖先も祖先に数える・§5.3・D-123）でなければ保存拒否。**すべてのパスで先行するとは限らない**祖先（分岐の片側にしかいない等）を参照する場合は `default` 必須（そのパスが取られないと skipped になり解決失敗するため）。`path` も、出力の形が決まっている種類（`data.query`・`data.record.*`・`data.transition` の結果と `each`）では、出力に無い所を指せば保存拒否（`ir.unknown_output_path`・§8 V5・GAP-137）。
 - **`secrets.*` という source は存在しない**。シークレットは参照名でノード設定に書き、エンジンが実行直前に解決・注入する（§7 `http.request` / [script.md](./script.md) §6）。値がデータフローに乗る経路を構造的に作らない。
 - **エディタでの組み立て**（BUG-118）: 項目のまとまり（object）やリスト（array）を受ける欄では、エディタは値を「項目を並べる」（キーと値の行）と「リストを並べる」（1 件ずつの行）に分け、行ごとに値の入れ方（リテラル・`$from`・`$template`・さらに 1 段の組み立て）を選ばせる。行から作り直した値は開いた値と同じで、1 行を直してもほかの項目と参照は変わらない。組み立てるのは入れ子の 2 段（欄そのものとその中の 1 段）までで、それより深い位置の `$from` / `$template`、エンジンが値式として読めないオブジェクト（`$from` のキーがあるのに形が違うもの）、空のキーを持つ値は、組み立てずに JSON の欄で出して理由を言う（IR が置ける位置は §3.1 のとおり任意で、制限はエディタの表示だけ）。保存した IR のオブジェクトのキーの並びは残らない（IR は jsonb の列に保存され、jsonb はキーを長さと文字の順に並べ直し、読み出した値はキーの名前の順になる・BUG-156）ので、テーブルの列に書く値（`data.record.create` の `data`・`data.record.update` の `patch`）の行は列の並びで出す。ほかにも自然な順がある欄だけは、開いたときにその順で並べる（`workflow.start` で渡す入力 `input` は相手の `input_schema` の `x-order` の順・`workflow.reply` で直接書いた表の行は `columns` の順・D-128）。並べるのは画面だけで、保存する IR は変えない（並びのためだけに IR に順を持たせない）。
 
@@ -444,7 +444,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   指標は数。件数が少なくて伏せた行（PIT-17）は `value` と `values` の値が null。結合先の列でまとめたときの `key` の名前は
   `別名.参照名`。`control.map` で回すときは、領域の中で、まとめた列を `{"$from": "each", "path": "/item/key/<参照名>"}`、指標を
   `/item/values/<aggregate の位置（0 から）>`（先頭は `/item/value`）で読む（`/item/<参照名>`・`/item/count` は解決できず
-  `expr_resolve_error`）。AI の `emit_workflow` の説明文はこの指し方を教える。
+  `expr_resolve_error` になるので、保存で `ir.unknown_output_path` として止める・§8 V5・GAP-137）。AI の `emit_workflow` の説明文はこの指し方を教える。
 
 **出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。設定で決まる項目は、その設定の場所（params の JSON Pointer・`present_if`）を持つ（`llm.invoke` の `data` は `/output_schema`、`data.query` の `count` は `/query/with_count`、`groups` は `/query/aggregate`）。エディタは、その場所に値があるときだけ参照の候補に出す（値の入らない候補を選ばせない・BUG-108）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
 
@@ -896,7 +896,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
 | V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。モデルの種類（文章を生成する chat・判定用の decision）。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5）。agent.invoke の道具と web.fetch の宛先（§7.4） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.model_modality_mismatch`・`ir.model_unavailable_for_user`・`ir.unknown_event_source`・`ir.bad_event_scope`・`ir.unknown_tool`・`ir.missing_egress`・`ir.bad_host`・`ir.host_outside_ceiling` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ/ファイル id | `ir.unknown_skill`・`ir.unknown_table`・`ir.unknown_folder`・`ir.unknown_file`・`ir.field_not_indexed`・`ir.field_not_usable`・`ir.status_not_writable` |
-| V5 | データフロー | `$from` の祖先性（map 領域の中は囲む map ノードの祖先も）・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル | `ir.bad_ref` |
+| V5 | データフロー | `$from` の祖先性（map 領域の中は囲む map ノードの祖先も）・default 要否・条件木の型整合（静的に分かる範囲）・regex コンパイル・出力の形から決まる範囲の `$from` の path（GAP-137） | `ir.bad_ref`・`ir.unknown_output_path` |
 | V6 | script コンパイル | inline script の swc パース・禁止構文（[script.md](./script.md) §3。artifact 参照は version 固定なので存在のみ） | `ir.script_syntax` |
 | V7 | 上限 | ノード ≤ 200・エッジ ≤ 500・IR ≤ 1MB・条件木深さ ≤ 5・テンプレ var 数 ≤ 50・承認の期限 < `run_timeout_sec`・`workflow.reply` ≤ 10・agent.invoke の手順・時間・トークン・依頼の大きさ（§7.4）・ノードの `timeout_sec`（1〜ノード種の上限・agent.invoke は `max_duration_sec` 以上・§4） | `ir.limit_exceeded` |
 
@@ -912,6 +912,12 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V3 の AI エージェント**: `allowed_tools` の未知の名前は V1（選択肢にない値）、予約の道具は `ir.unknown_tool`、要求スコープの宣言漏れは `ir.missing_scope`（path は `/params/allowed_tools/<i>`・保存時の scope 補完が足す）。`model` は `llm.invoke` と同じ照合（path は `/params/model`）。web.fetch を選んだときだけ、`egress_allowlist` を照合する（空は `ir.missing_egress`、形は `ir.bad_host`、管理者の天井の外は `ir.host_outside_ceiling`・path は `/params/egress_allowlist/<i>`）。
 - **V5 の AI エージェント**: 依頼（`instruction`）をリテラルで書くなら文字（`ir.expr_type_error`・参照と差し込みは実行時に文字かを確かめる）。
 - **V5 データフロー**: `$from` の `nodes.<id>` が祖先か（map 領域の中のノードは、囲む map ノード〔ネストなら外側の map ノードも〕の祖先も祖先に数える。map ノード自身は数えない・§5.3・D-123）、全パスで先行しない場合に `default` があるか、条件木の左右の型が静的に整合するか、`matches` の regex がコンパイルできるかを検証する（§3）。`control.wait` の `filter` では、届いたイベントを指す `event`（別名 `trigger` / `payload`）も書ける（§7.5）。
+- **V5 の出力の path**（GAP-137）: `$from: nodes.<id>.output` と `$from: each` の `path` を、出力の形から決まる範囲で照らし、出力に無い所を指す参照を `ir.unknown_output_path` で止める（node_id は参照を書いたブロック、path はその `$from` の IR の中の位置〔例 `/params/condition/cmp/left`〕）。照らすのは、どの実行でも形の変わらない出力（`NodeType::closed_output_keys`。表は data の型〔`QueryResult`・`DataRecord`・`AggregateGroup`〕の直列化と試験で突き合わせる）だけ。
+  - `data.query` の結果の最上位（`items`・`groups`・`next_cursor`・`count`・`sort_precision`・`sort_degraded`・`shares_truncated`・`suppressed`・`snapshot_seq`）。リテラルの `aggregate` を書いたのに `/items`、書いていないのに `/groups`、`with_count` を求めていないのに `/count` を指すものも止める（設定で決まる項目の判定は `OutputField::present_in` の 1 か所。設定が `$from`・`$template` で実行の値で決まるときは照らさない）。`/items`・`/groups` の次の段は 0 から数えた番号（JSON Pointer の配列の番号の読み方）で、その次は、`items` ならレコードの項目（`id`・`table_id`・`data`・`rev`・`owner`・`created_at`・`updated_at`・`suppressed_fields`・`link_labels`）、`groups` なら `key`・`value`・`values` と照らす。行の列の値は `/items/<n>/data/<列>` で、`/items/0/status` のように直下に列の名前を書いた参照は止まる。
+  - `data.record.create`・`data.record.update`・`data.transition` の結果の最上位はレコードの項目、`data.record.upsert` はそれに `created` を足したもの、`data.record.delete` は `id`・`deleted`。
+  - `each` の最上位は `item`・`index`。囲む `control.map` の `items` が `data.query` の `/items` か `/groups` のときだけ、`/item/<項目>` を行の形と照らす（`/item/data/<列>`・`/item/key/<列>`）。
+  - `on_error: continue` のブロックの失敗の出力 `error` は、どの種類でも通す。ほかの種類（項目の決まらない `script.run`・出力の項目の表に漏れのある `llm.invoke` など）と、`$template` の差し込みの中の参照は照らさない。
+  - 解決しない path は、分岐の条件の比較の値そのものでは値が無いものとして比べられて黙って偽（「等しくない」は真）になり、ほかの値の位置では実行して初めてブロックが `expr_resolve_error` で失敗するので、どちらも保存の誤りにする（警告にしない）。文は、無い項目と出力の項目・正しい指し方（行の列は `data` の下）を言い、解決しないときの振る舞いを置き場所で言い分ける（条件の比較の値・値の位置・`default` つき〔いつも既定値が使われる〕）。保存 API・検証 API・AI の `emit_workflow` は同じ検証を通る。採点の `ir_lint`（評価ハーネス）は、この種類の参照を製品の誤りとして数え、ほかの種類の先頭の項目だけを自分で見る。
 - **保存を止めない警告**（V3・イベント）: 同じテーブルの `data.record.updated` と `data.transition`（`ir.overlapping_data_triggers`）、wait(event) の filter の別名（`ir.wait_filter_alias`）、続けて待つ承認の期限の合計が実行の期限以上（`ir.approval_timeouts_exceed_run`・§7.9）。
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。ブロック・線の数と IR の大きさは、読める IR でも読めない IR でもほかの段より先に確かめ、超えたら `ir.limit_exceeded` だけを返す（大きな IR のブロックの設定や入力項目の `pattern` を読み切らない・D-147・BUG-222）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
