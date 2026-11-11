@@ -320,6 +320,21 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     target: quoted("query"),
   },
 
+  // 保存したワークフローの版を固定して、承認を経て試しに実行する（T04・D-197）。入力の `workflow_id` は id（UUID）
+  // なので対象に出さず、版を出す（「ワークフローの v2 を試運転中」）。名前・作成者・起きることは承認カードが出す。
+  try_workflow: {
+    icon: Workflow,
+    category: "write",
+    lead: (t) => (t ? `ワークフローの ${t} を` : "ワークフローを"),
+    verb: "試運転",
+    suru: true,
+    target: (input) => {
+      const v = input.version;
+      const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.trim().replace(/^[vV]+/, "")) : NaN;
+      return Number.isInteger(n) && n >= 1 ? `v${n}` : null;
+    },
+  },
+
   // 本人に見えるワークフローを探す（図のボタンに実在する名前を書くため・読み取りのみ）。
   search_workflows: {
     icon: Workflow,

@@ -227,6 +227,27 @@ export async function previewSchedule(cron: string, tz: string): Promise<Schedul
   return ok<SchedulePreview>(res);
 }
 
+// ── 試運転の下見（会話の AI の試運転〔try_workflow〕の承認カード・D-197）──────────
+
+/// 固定した版を試運転すると何が起きるか（`GET /workflows/try-preview` の応答・OpenAPI の `TryPreviewResponse`）。
+/// 副作用の分け方（`effects`）はサーバーが IR から導く。web に対応表を持たない。
+export type TryPreview = Schemas["TryPreviewResponse"];
+
+/// 試運転の下見を、承認する本人の権限で読む（保存も実行もしない）。
+///
+/// `workflow` は id（UUID）だけで、名前は受けない。id の読み方は試運転の道具と同じなので、道具が起動を断る入力
+/// （名前・読めない版）は状態コード 400 と欄（`field`: `"workflow"` か `"version"`）を添えた Error になる。無い・
+/// 見えない・ワークフローでない・版が無いは、どれも状態コード 404 を添えた Error になる。
+export async function fetchTryPreview(workflow: string, version: number): Promise<TryPreview> {
+  const q = new URLSearchParams({ workflow, version: String(version) });
+  const res = await apiFetch(`/workflows/try-preview?${q.toString()}`);
+  if (res.status === 400) {
+    const body = (await res.json().catch(() => null)) as Schemas["BadRequestBody"] | null;
+    throw Object.assign(new Error(body?.message ?? "API 400"), { status: 400, field: body?.field ?? null });
+  }
+  return ok<TryPreview>(res);
+}
+
 // ── エディタレイアウト（ノード座標・IR 外・非バージョン）──────────────
 
 export type EditorLayout = {
