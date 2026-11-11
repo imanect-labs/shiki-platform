@@ -70,7 +70,36 @@ Issue に記録する。自分の変更に関係するテストの flaky Issue �
 
 ## 結合テスト（IT）をローカルで回す
 
-テスト専用コンテナを使う（compose 本体の `:5432` / `:8082` とは別物）:
+### S3 は RustFS を使う
+
+ローカル・CI とも MinIO から **RustFS** に移行済み。`autonomous_it` と
+`workspace_containment_it` も汎用の `S3ObjectStore` を使うため、MinIO 固有の依存はない。
+`minioadmin` は開発用の既定資格情報、設定の `minio` は後方互換 alias、テストの
+`http://minio:9000` はモック URL。これらを実サービスの指定と解釈しない。
+
+```bash
+# リポジトリルートで実行。既存の .env は上書きしない。
+docker compose -f deploy/compose/docker-compose.yml up -d --wait rustfs
+docker compose -f deploy/compose/docker-compose.yml ps rustfs
+curl --fail --show-error http://localhost:9000/health/ready
+```
+
+`STORAGE_TEST_S3_ENDPOINT` は RustFS の S3 API（既定 `http://localhost:9000`）を指す。
+9001 はコンソール用。ポートを変更した場合は `docker compose ... port rustfs 9000`
+でホスト側ポートを確認する。資格情報を変更している場合は
+`STORAGE_TEST_S3_ACCESS_KEY` / `STORAGE_TEST_S3_SECRET_KEY` も RustFS と揃える。
+秘密値をログや報告に出さない。`/health/ready` は準備状態の確認で、認証の成功までは保証しない。
+
+失敗時は接続先、Compose の状態・ログ、ready、S3 の認証/バケット操作の順に調べる。
+DB の env だけを設定すると、上記2テストは S3 の既定値 `localhost:9000` に接続するため、
+RustFS 未起動でもテストは始まり、バケット準備で失敗する。
+「MinIO が無い」「環境に S3 互換ストレージが無い」と推測で終了せず、起動して再実行する。
+Docker が使えない等で起動できない場合は、実行したコマンド・具体的なエラーと未検証のテストを報告する。
+変更前の main でも同じ失敗であることは、依存サービスの確認を省く根拠にはしない。
+
+### 接続先を設定して実行する
+
+DB / OpenFGA はテスト専用コンテナを使う（compose 本体の `:5432` / `:8082` とは別物）:
 
 ```bash
 export STORAGE_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:55432/shiki   # pg-test

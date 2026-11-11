@@ -1612,7 +1612,7 @@ v1 スコープでは**設計スパイクまで**（実装はポストアルフ�
 
 - `shiki-server` はステートレス → レプリカを増やすだけ
 - ワーカーは `FOR UPDATE SKIP LOCKED` の claim 型 → 台数追加で線形
-- Tantivy は index-per-tenant、Qdrant は payload フィルタ＋クラスタ、MinIO/GCS は水平
+- Tantivy は index-per-tenant、Qdrant は payload フィルタ＋クラスタ、RustFS/GCS は水平
 
 **ボトルネックは Postgres の書き込みノードただ 1 点。** 以降はそこを開ける話。
 

@@ -14,7 +14,7 @@
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
 | 1.1 | ストレージのデータモデル（メタ/ツリー） | storage | 0.5 |
-| 1.2 | `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング | storage | 0.2 |
+| 1.2 | `ObjectStore` トレイト＋S3 互換実装（RustFS）＋コンテンツアドレッシング | storage | 0.2 |
 | 1.3 | StorageService 権限チェック層（OpenFGA） | storage | 1.1, 1.2, 0.5 |
 | 1.4 | ファイルCRUD API（アップロード/DL/移動/リネーム/削除） | storage | 1.3 |
 | 1.5 | フォルダ操作＋階層（closure table） | storage | 1.1, 1.4 |
@@ -42,7 +42,7 @@
   - [ ] 同一フォルダ内の名前一意制約
   - [ ] org スコープが全クエリに効く
 
-### Task 1.2: `ObjectStore` トレイト＋MinIO実装＋コンテンツアドレッシング
+### Task 1.2: `ObjectStore` トレイト＋S3 互換実装（RustFS）＋コンテンツアドレッシング
 - **area**: storage
 - **依存**: 0.2
 - **path**: `crates/storage`
