@@ -84,8 +84,10 @@ Compose は 9000/9001 を全インターフェースに公開するため、既�
 
 ```bash
 # リポジトリルートで実行。既存の .env は上書きしない。
-export RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-$(openssl rand -hex 16)}"
-export RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-$(openssl rand -hex 32)}"
+RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY:-$(openssl rand -hex 16)}" || exit 1
+RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY:-$(openssl rand -hex 32)}" || exit 1
+: "${RUSTFS_ACCESS_KEY:?資格情報を生成できません}" "${RUSTFS_SECRET_KEY:?資格情報を生成できません}"
+export RUSTFS_ACCESS_KEY RUSTFS_SECRET_KEY
 export STORAGE_TEST_S3_ACCESS_KEY="$RUSTFS_ACCESS_KEY"
 export STORAGE_TEST_S3_SECRET_KEY="$RUSTFS_SECRET_KEY"
 docker compose -f deploy/compose/docker-compose.yml up -d --wait rustfs
