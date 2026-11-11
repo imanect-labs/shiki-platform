@@ -821,6 +821,84 @@ workflow プリンシパルで評価すると本人系の述語が成り立た�
 （`DataStore::change_event_view`）。委譲元に見えない行・読めない列の変更は、発火・ペイロード・記録のどこにも出ない。
 wait(event) のデータ版は run の実行主体の見え方で起こす。
 
+### 6.9 会話の AI の試運転（`try_workflow`・D-10・D-197）
+
+会話の AI は、保存したワークフローの**版を固定して**試しに実行し、結果を見て直せる（作って・試して・直す閉ループ・
+GAP-34）。試運転は interactive の run の 1 つで、主体は話した本人（§6.1）、`trigger_kind` は interactive のまま。
+実行の仕組みは新しく作らず、手動の実行と同じ run の作り方を通す。道具は chat の `try_workflow`
+（`crates/chat/src/workflow_try_tool/`）。
+
+- **起動の入口は 1 つ**: `WorkflowRunLauncher::start_version_as_editor`（版は呼び出し側が必ず渡し、最新を引かない）。
+  1. 本人の viewer 権限で版の IR を読む（`WorkflowStore::get_version`）。無い・見えない・ワークフローでない・版が無いは、
+     どれも同じ「見つからない」で返す。
+  2. ワークフローの **editor 以上**かを ArtifactStore の `require_relation`（Editor・HigherConsistency）で確かめる。閲覧だけ
+     共有されたものは、監査 `workflow.try_run` の deny を残し、「閲覧のみのワークフローは試運転できません。画面から実行して
+     ください」で断る（viewer で読めた後なので、存在は漏れない）。判定は既存の Editor の relation だけで行い、OpenFGA の
+     schema は変えない（D-197）。
+  3. 実行の前に止める設定（ir.md §9）→ 入力の契約 → run の作成。手動の実行（`POST /workflows/{id}/runs`）と同じ順で、
+     試す値（きっかけの内容 `trigger`・予定の日時 `scheduled_at`・ir.md §3.1）も同じ形で渡せる。
+- **承認カード**: 道具は承認が要る（`requires_confirmation`）。承認は呼び出し 1 つに 1 つで、会話の自律モードの Auto でも
+  承認を残す（書込・送信・レコードの作成が本当に起きるため）。全自動（Bypass）だけが、既存の意味のままカードを省く。
+  カードは下見の口 `GET /workflows/try-preview?workflow=<UUID>&version=<n>`（Session・GET）の応答だけで描く。
+  - 引き方は道具と同じ（`WorkflowStore::resolve_ref`・viewer・kind=workflow）。無い・見えない・別のテナント・ワークフローで
+    ない・版が無いは、どれも同じ 404。
+  - 返すのは、持ち主・この版を保存した人と時刻（持ち主と違えばカードは別に出す）・最新の版・試運転できるか（`can_try`・
+    入口と同じ `ArtifactStore::allows`〔Editor・HigherConsistency〕で決め、表示のためなので監査は残さない）・副作用の要約
+    `effects`・`workflow.start` の起動先。
+  - 副作用の要約は `RegistrationService::run_effects`（IR から決まる純関数）が 1 か所で計算する。書くもの（テーブル・
+    フォルダ・ファイル）・外への送信（`http.request` のホスト・agent.invoke の web の道具）・任意の処理（`script.run`・
+    `code.run`・`skill.invoke`）・起動する別のワークフロー・モデルを呼ぶブロック・人へのお知らせ・宣言スコープ。テーブルの
+    名前は本人が見られるものだけ入れる（見られないものは id だけ）。画面は OpenAPI から生成した型（`TryPreviewResponse`・
+    `RunEffects`）で読み、TS に対応表を手書きしない。
+- **id だけで起動する**: 道具の `workflow_id` と下見の口の `workflow` は UUID だけを受ける。道具に名前が来たら起動せず、
+  解決した id と最新の版を示して呼び直させ、下見の口は名前を 400（`invalid_input`・`field = workflow`）で断る。承認を待つ
+  間に名前が付け替わると、カードで見たものと別のワークフローが走るため（TOCTOU）。`version` も必須にする（R5）。
+- **台帳**（chat の `workflow_trial_run`・migration 0151・RLS つき）: 試運転 1 回に 1 行。前の行を引く鍵は（会話・話した人・
+  ワークフロー・版・入力の hash）で、hash はキーを並べ直した `{input, trigger, scheduled_at}` の sha256。
+  - 同じ鍵の前の run が実行中・順番待ちなら、新しい run を作らずに合流する。終わっていれば前回の結果を返し、
+    `rerun: true` のときだけ新しく起動する（テーブルや設定を直した後に試し直す）。実行履歴の GC で run が消えた行は、
+    無いものとして扱う。共有した会話で別の人が起動した run には合流しない。
+  - 行は起動の前に入れ（`run_id` は空）、起動に失敗した行と起動されなかった行（`on_trigger_overflow: skip`）は消す。
+    `run_id` が空のまま 2 分を過ぎた行は、起動の途中で落ちた古い予約として次の試運転で消し、それより新しいものは
+    「起動中」として合流する。
+  - 新しい run は、会話の 1 回の生成（`chat_run_id`）あたり 5 本まで（行の数で数え、起動中も数える）。
+  - 二重起動の主な歯止めは**承認カード**で、台帳は再試行・呼び直しで合流と前回の結果を返すための補助。全自動（Bypass）
+    ではカードが無いので、台帳だけが歯止めになる（入力が違えば別の試運転になる・best-effort）。
+- **待ち方**: 待つ間は生成の枠を返す（`RunSlot::park`。保留の上限〔ユーザーあたり 5・プロセス 64〕は承認待ちと共有し、
+  上限で断られたら待たずに返す）。30 秒まで、0.5 秒から 2 秒へ伸ばしながら状態を読み、終端になるか、承認・できごと・
+  時間の待ちになったら返す（社内文書の取り込み待ちは実行中として待ち続ける）。上限を過ぎたらその時点の状態（実行中・
+  順番待ち）で返し、run も台帳の行も残す。会話の停止で待つのをやめるが、run は取り消さない（作ったものは画面で止める）。
+  待ち方の数はデプロイの設定に出さない。
+- **観測**: `RunStore::run_digest` から組む（本人が画面・会話から起動した run だけを SQL で絞る。他人の run と
+  schedule / event の run は返さない。実行履歴の詳細〔入力・きっかけの内容・生の失敗の文〕は元にしない）。
+  - 先頭の 1 行はこちらが決めた値だけ（状態・run の id・版・step とレコードの件数・費用）。
+  - 続けて注意書きと封筒 `<run_output>`: step ごとの状態・取った出口・誤りの code と文の先頭・出力の先頭（600 字・SQL の
+    `left(output::text, n)`）・通らなかった理由・繰り返しの内訳。作成者や外の相手が書いた文字はこの中にだけ置き、値ごとに
+    改行と制御文字を潰して上限で切ってから、閉じタグを中和する（大文字小文字・空白・全角の変種も・PIT-56）。
+  - 封筒の後ろに、失敗の分類と参照番号・作った・書き換えたレコードの id（10 件まで）・画面の道（`/workflows/{id}/runs/{run}`）・
+    やり直し方と片付けの案内。
+  - 全体は 8,000 字まで（切るのは封筒の中身だけで、閉じタグは必ず付ける）。
+  - 返す値の節の全体と副作用の一覧は観測に入れない。観測は会話の tool_result として残り、共有した会話では共有の相手も
+    読むため（返す値は `workflow.reply` の step の出力の先頭に出て、副作用は承認カードが見せる）。共有した会話で出力の
+    先頭を見せてよいかは、human の判断を待つ（design-caveats の PIT 候補）。
+- **費用**: run の trace（`run_id` の 32-hex・§11.1）の `llm_usage` を集計し、台帳に報告済みの分との差分だけを会話の予算に
+  積む（合流・前回の結果で同じ費用を二重に積まない）。`workflow.start` の子の run（別の trace）と、待つのをやめた後の分は
+  入らない。
+- **相関**: `workflow_run.trace_id` を run_id から導く規約は変えない。会話の生成と試運転の run の対応は、台帳
+  （`chat_run_id`・`chat_trace_id`・`run_id`）と、監査 `workflow.try_run` の allow の行に残す。allow の行は起動した後に道具が
+  書き、対象は deny の行と同じ（`artifact`・ワークフローの id）で、metadata に `chat_run_id`・`thread_id`・`version`・`run_id`・
+  `input_hash`・`relation: "editor"` を持つ。
+- **dry-run は採らない**: 試運転は実データに書く（書込・送信・レコードの作成は本当に起きる）。書込の出力を下流が使う・
+  副作用はノードの種別だけでは塞げない（`script.run`・`http.request`・`workflow.start`）・data が書込の瞬間に出す失敗を
+  見つけたい・step ごとに別のトランザクションでまとめて戻せない、の 4 点のため。補う手当は、editor 以上・承認カードの
+  副作用の要約・文字の入力に付ける【試運転】の印・観測の片付けの案内。
+- **委譲の run との違い**: 試運転は本人の権限（本人の ReBAC ∩ declared_scopes ∩ ノード設定・§6.5。利用者ごとのプロバイダの
+  制限も生成の入口で掛かる）で動き、§6.2 の run 開始時チェック（有効化・委譲）を通らない。schedule / event をきっかけにする
+  ワークフローの本番の run は、ワークフロー主体と有効化のときの委譲（§6.8）で動くので、見える行・書ける先・使えるモデルが
+  試運転と違い得る。観測にもそう書く。
+- 道具は実行の段階（計画の承認の後）でだけ提示し、委譲の子のエージェントには渡さない。起動の入口・run の要約・
+  ワークフローのストアのどれかが無い構成（`workflow.enabled = false` など）では提示しない。
+
 ---
 
 ## 7. リトライ・冪等・at-least-once
@@ -1209,6 +1287,14 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 1. IR の `declared_scopes` ＋ ノード由来の要求（skill 宣言スコープ・secret の `can_use`・イベント購読 scope）を **同意画面に列挙**する。
 2. 有効化者が **自分の権限範囲内から**委譲する。範囲外のスコープが 1 つでも混じれば **全体を拒否**（fail-closed・部分委譲しない）。
 3. FGA タプル書込 ＋ `workflow_delegation` 記録 ＋ `workflow_trigger` 実体化 ＋ `workflow_registration`（enabled_version・consented_scopes）更新。
+
+この手順の前に、有効化できない版を止める。動かせない設定（必須の欄の空など・[ir.md](./ir.md) §9）と、**有効化する人の
+アカウントでは使えないモデル**で自動実行されるもの（利用者ごとのプロバイダの制限・D-196）があれば、委譲のタプルに触る前に
+409 `not_ready`（全件の `errors`）で止める。同意し直し（`consent: true`）と軽量切替（§10.3）も同じで、同意計画
+（`GET /workflows/{id}/versions/{version}/consent-plan`）の `blockers` も同じ理由を返す。モデルの照合は保存のときと同じもの
+（ir.md §8 の V3 の保存する人の制限）を、有効化する人の材料でかけ、schedule / event のきっかけを持つ版だけを照らす
+（`workflow_engine::user_model_blockers`・API は `enable_model_blockers`）。本番の入口は `POST /workflows/{id}/enable` の
+1 つで、`DelegationStore::enable` を直接呼ぶのはテストだけ（この照合を通らない）。
 
 同意の画面からの有効化（`POST /workflows/{id}/enable` の `consent: true`）は、委譲（grants）が空でも全面の同意し直しとして扱う。対象（テーブル・フォルダー）の無いワークフローは grants が空なので、§10.3 の軽量切替に落とすと、使ってよい操作が増えた版へいつまでも切り替えられなかった（BUG-102・D-90）。`consent` を付けない grants の空の enable は、これまでどおり §10.3 の軽量切替である。
 
