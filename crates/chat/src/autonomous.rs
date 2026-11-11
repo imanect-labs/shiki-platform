@@ -281,9 +281,19 @@ mod tests {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }
         // drive.move は移動で可視範囲・継承権限が変わり取り消せないことがあるため承認維持（#942）。
-        for tool in ["fs_delete", "shell", "office.live_edit", "drive.move"] {
+        // 試運転（try_workflow・T04）は本人の権限で書込・送信・レコードの作成を本当に起こすので、オートでも承認を残す。
+        for tool in [
+            "fs_delete",
+            "shell",
+            "office.live_edit",
+            "drive.move",
+            "try_workflow",
+        ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は不可逆のため承認維持");
         }
+        assert!(!AutonomousMode::RequireApproval
+            .approval_policy()
+            .is_pre_authorized("try_workflow"));
     }
 
     #[test]
@@ -291,6 +301,8 @@ mod tests {
         let p = AutonomousMode::Bypass.approval_policy();
         assert!(p.is_pre_authorized("shell"));
         assert!(p.is_pre_authorized("fs_delete"));
+        // 全自動は試運転も承認カードなしで動かす（明示オプトインの既存の意味のまま・T04）。
+        assert!(p.is_pre_authorized("try_workflow"));
     }
 
     #[test]

@@ -306,6 +306,8 @@ impl ChatWorker {
             .await?;
         // ページ翻訳は訳に使うモデルが決まった**後**に積む（会話で選んだモデルで訳す）。
         self.push_translate_tool(&mut tools, run, &cancel, opts.model.clone(), gate_stage);
+        // 試運転（try_workflow・T04）も実行の段階でだけ積む（待つ間は生成の枠を返す）。
+        self.push_try_tool(&mut tools, run, slot, &cancel, gate_stage);
         // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
         // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
         // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。門が承認まで

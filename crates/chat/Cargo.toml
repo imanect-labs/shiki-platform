@@ -48,6 +48,8 @@ chrono-tz = "0.10"
 uuid = { workspace = true, features = ["v4"] }
 # 回答の画像の出所判定（URL の正規化・#1044）。
 url.workspace = true
+# 試運転の入力の hash（台帳の鍵・try_workflow・T04）。
+sha2.workspace = true
 # チャットの DTO / SSE イベント型を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
 
@@ -64,6 +66,8 @@ async-trait.workspace = true
 serde_json.workspace = true
 futures.workspace = true
 reqwest.workspace = true
+# 取得の名前の引き方を差し替える（web_fetch・web_translate が中継を通るかのテスト・BUG-274）。
+shiki-sandbox-client.workspace = true
 
 # lib 名 authz/storage/jobq/rag/llm_gateway/agent_core で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
@@ -84,6 +88,7 @@ ignored = [
     "shiki-data",
     "shiki-artifact",
     "shiki-durable",
+    "shiki-sandbox-client",
 ]
 
 [lints]

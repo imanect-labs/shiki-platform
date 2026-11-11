@@ -4,9 +4,32 @@
 //! run のライフサイクルだけを持つ。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use llm_gateway::LlmGateway;
 use rag::SearchService;
+
+/// 試運転（`try_workflow`・T04）の待ち方。待つ間は生成の枠を返す（[`super::slot::RunSlot::park`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TryWaitLimits {
+    /// 終わるまで待つ上限。過ぎたら、その時点の状態（実行中・順番待ち）を返す。
+    pub max_wait: Duration,
+    /// 状態を読む最初の間隔（読むたびに倍にする）。
+    pub first_poll: Duration,
+    /// 状態を読む間隔の上限。
+    pub max_poll: Duration,
+}
+
+impl Default for TryWaitLimits {
+    /// 既定: 30 秒まで、0.5 秒から 2 秒へ伸ばしながら読む（デプロイの設定には出さない）。
+    fn default() -> Self {
+        TryWaitLimits {
+            max_wait: Duration::from_secs(30),
+            first_poll: Duration::from_millis(500),
+            max_poll: Duration::from_secs(2),
+        }
+    }
+}
 
 /// ワーカーの設定。
 #[derive(Debug, Clone)]
@@ -67,6 +90,8 @@ pub struct WorkerConfig {
     pub timezone: chrono_tz::Tz,
     /// web_fetch が通す外への送信の中継（運用者が `egress.proxy_url` に書いたもの・既定は使わない・GAP-72）。
     pub egress_proxy: Option<agent_core::EgressProxy>,
+    /// 試運転（`try_workflow`）の待ち方（既定は 30 秒まで・0.5 秒から 2 秒の間隔で読む・テストは短くする）。
+    pub try_wait: TryWaitLimits,
 }
 
 impl Default for WorkerConfig {
@@ -133,6 +158,7 @@ impl Default for WorkerConfig {
             sandbox_backend: agent_core::SandboxBackend::default(),
             timezone: chrono_tz::Asia::Tokyo,
             egress_proxy: None,
+            try_wait: TryWaitLimits::default(),
         }
     }
 }

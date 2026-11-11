@@ -99,11 +99,7 @@ impl ChatWorker {
             // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
             // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
             // 外へ出るのに中継が要る環境では、運用者が設定した中継だけを通す（GAP-72）。
-            let mut fetch = WebFetchTool::new().with_proxy(self.config.egress_proxy.clone());
-            if let Some(parser) = &self.parser {
-                fetch = fetch.with_parser(parser.clone());
-            }
-            tools.push(Arc::new(fetch));
+            tools.push(Arc::new(web_fetch_tool(&self.config, self.parser.as_ref())));
         }
         // ```ui の種類ごとの書き方（早見は system にある・ui_reference で書く前に読む）。
         // 外部への入出力も認可も無い読み取りなので、図を書かせる構成なら常に提示する。
@@ -152,10 +148,14 @@ impl ChatWorker {
                 store.clone(),
             )));
             // 既存のワークフローを名前で探す（新しい会話から直す・本人に見えるものだけ・GAP-31）。
-            tools.push(Arc::new(crate::workflow_tool::ListWorkflowsTool::new(
-                store.clone(),
-                workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
-            )));
+            // 持ち主のものでも、最新の版をほかの人が保存していれば表示名・説明を封筒に入れる（PIT-56・T01 の残り）。
+            tools.push(Arc::new(
+                crate::workflow_tool::ListWorkflowsTool::new(
+                    store.clone(),
+                    workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
+                )
+                .with_version_authors(self.db.clone()),
+            ));
         }
         // 本人に見えるワークフローを探す（search_workflows・読み取りのみ）。図のボタンに実在する
         // 名前を書かせる。認可は注入した実装が一覧 API と同じ所有∪共有の経路で行う。
@@ -182,13 +182,10 @@ impl ChatWorker {
         if self.web_search.is_none() || gate_stage != super::gate::GateStage::Execute {
             return;
         }
-        let mut fetch = WebFetchTool::new();
-        if let Some(parser) = &self.parser {
-            fetch = fetch.with_parser(parser.clone());
-        }
+        // 取得は web_fetch と同じ組み立て（中継・文書パーサ・BUG-274）。
         tools.push(Arc::new(
             agent_core::WebTranslateTool::new(
-                fetch,
+                web_fetch_tool(&self.config, self.parser.as_ref()),
                 self.gateway.clone(),
                 format!("{}:{}", run.run_id, run.fencing_token),
                 Arc::clone(cancel),
@@ -196,6 +193,46 @@ impl ChatWorker {
             .with_model(model)
             .with_session_id(Some(run.thread_id.to_string())),
         ));
+    }
+
+    /// 試運転（`try_workflow`・T04・D-197）を提示ツールに加える。
+    ///
+    /// ページ翻訳と同じく実行の段階（[`super::gate::GateStage::Execute`]）でだけ提示する（計画の承認の前の門は
+    /// 研究系以外を通すため・`base_tools` には入れない）。起動の入口・run の要約・ワークフローのストアのどれかが
+    /// 無ければ（`workflow.enabled=false` など）提示しない。委譲の子には渡らない（`CHILD_TOOLS` は閉じた一覧）。
+    pub(super) fn push_try_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        slot: &Arc<super::slot::RunSlot>,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
+        gate_stage: super::gate::GateStage,
+    ) {
+        if gate_stage != super::gate::GateStage::Execute {
+            return;
+        }
+        let (Some(launcher), Some(runs), Some(workflows)) =
+            (&self.try_launcher, &self.try_runs, &self.workflow_store)
+        else {
+            return;
+        };
+        tools.push(Arc::new(crate::workflow_try_tool::TryWorkflowTool::new(
+            crate::workflow_try_tool::TryWorkflowDeps {
+                workflows: Arc::clone(workflows),
+                launcher: Arc::clone(launcher),
+                runs: Arc::clone(runs),
+                chat: self.store.clone(),
+                db: self.db.clone(),
+            },
+            crate::workflow_try_tool::TryScope {
+                chat_run_id: run.run_id,
+                thread_id: run.thread_id,
+                chat_trace_id: run.trace_id.clone(),
+                slot: Arc::clone(slot),
+                cancel: Arc::clone(cancel),
+                wait: self.config.try_wait,
+            },
+        )));
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
@@ -489,3 +526,31 @@ impl ChatWorker {
         }
     }
 }
+
+/// `web_fetch` と `web_translate` が共有する取得の道具（運用者が設定した外への送信の中継・文書パーサ）。
+///
+/// 両方の道具が同じ組み立てを通る（片方だけ中継を付け忘れると、中継でしか外へ出られない環境では取得に失敗し、
+/// 直接出られる環境では監査の中継を迂回する・GAP-72・BUG-274）。
+pub(super) fn web_fetch_tool(
+    config: &super::WorkerConfig,
+    parser: Option<&Arc<dyn rag::DocumentParser>>,
+) -> WebFetchTool {
+    configure_fetch(WebFetchTool::new(), config, parser)
+}
+
+/// 取得の道具に、中継と文書パーサを付ける（[`web_fetch_tool`] の中身・テストは名前の引き方を差し替えて通す）。
+fn configure_fetch(
+    fetch: WebFetchTool,
+    config: &super::WorkerConfig,
+    parser: Option<&Arc<dyn rag::DocumentParser>>,
+) -> WebFetchTool {
+    let mut fetch = fetch.with_proxy(config.egress_proxy.clone());
+    if let Some(parser) = parser {
+        fetch = fetch.with_parser(parser.clone());
+    }
+    fetch
+}
+
+#[cfg(test)]
+#[path = "toolset_tests.rs"]
+mod tests;

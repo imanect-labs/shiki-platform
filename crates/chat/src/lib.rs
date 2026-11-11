@@ -63,6 +63,8 @@ pub(crate) mod tool_args;
 pub mod worker;
 pub mod workflow_search_tool;
 pub mod workflow_tool;
+/// 会話の AI の試運転 `try_workflow`（T04・D-197）。
+pub mod workflow_try_tool;
 pub mod workspace;
 /// 回答の本文の ```ui（Yui）のボタン（#604）。
 pub mod yui_actions;
@@ -91,9 +93,12 @@ pub use store::{
     ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext, ThreadOrigin,
     YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
-pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
+pub use worker::{
+    parse_timezone, with_yui_guide, ChatWorker, TryWaitLimits, WorkerConfig, WorkerDeps,
+};
 pub use workflow_search_tool::{SearchWorkflowsTool, WorkflowDirectory};
 pub use workflow_tool::{
     DecisionModel, EmitWorkflowTool, ListWorkflowsTool, ReadWorkflowTool, WorkflowCatalogSource,
 };
+pub use workflow_try_tool::{TryScope, TryWorkflowDeps, TryWorkflowTool, MAX_TRIALS_PER_ANSWER};
 pub use workspace::StorageWorkspaceStore;

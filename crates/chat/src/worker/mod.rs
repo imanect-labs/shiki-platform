@@ -52,7 +52,7 @@ use uuid::Uuid;
 use crate::model::{ContentBlock, RunStatus, StreamEventKind};
 use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
-pub use config::{WorkerConfig, WorkerDeps};
+pub use config::{TryWaitLimits, WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
 pub use yui::with_yui_guide;
 
@@ -103,6 +103,10 @@ pub struct ChatWorker {
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
     /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
     data: Option<data::DataStore>,
+    /// 試運転（try_workflow・T04）の起動の入口。`workflow_store` と `try_runs` が揃ったときだけ提示する。
+    try_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
+    /// 試運転の run の要約（try_workflow・T04）。
+    try_runs: Option<Arc<workflow_engine::RunStore>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -151,6 +155,8 @@ impl ChatWorker {
             office_creator,
             office_engine,
             data: None,
+            try_launcher: None,
+            try_runs: None,
             config: Arc::new(config),
         }
     }
@@ -174,6 +180,21 @@ impl ChatWorker {
         directory: Arc<dyn crate::workflow_search_tool::WorkflowDirectory>,
     ) -> Self {
         self.workflow_directory = Some(directory);
+        self
+    }
+
+    /// 試運転（try_workflow・T04）の起動の入口と run の要約を配線する。
+    ///
+    /// ワークフローの実行時（`workflow.enabled`）が組んだものを渡す。未配線なら try_workflow を提示しない
+    /// （`WorkerDeps` は変えない・[`Self::with_data`] と同じ理由）。
+    #[must_use]
+    pub fn with_workflow_tries(
+        mut self,
+        launcher: Arc<workflow_engine::WorkflowRunLauncher>,
+        runs: Arc<workflow_engine::RunStore>,
+    ) -> Self {
+        self.try_launcher = Some(launcher);
+        self.try_runs = Some(runs);
         self
     }
 
