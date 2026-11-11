@@ -889,3 +889,75 @@ test("2段組の抜粋は座標の行順より保存済みordinalの読み順を
     globalThis.fetch = original;
   }
 });
+
+test("native文字片は単語内で連結し、明示空白と改行を保持する", async () => {
+  const original = globalThis.fetch;
+  const item = (
+    str: string,
+    x: number,
+    y: number,
+    width: number,
+    hasEOL: boolean,
+    fontName: string,
+    height = 12,
+  ) => ({
+    str,
+    dir: "ltr",
+    transform: [12, 0, 0, 12, x, y],
+    width,
+    height,
+    fontName,
+    hasEOL,
+  });
+  const inline = [
+    item("inter", 10, 100, 30, false, "regular"),
+    item("national", 40, 100, 48, false, "bold"),
+    item(" ", 88, 100, 4, false, "bold", 0),
+    item("relations", 92, 100, 54, true, "bold"),
+    item("次の", 10, 50, 24, false, "regular"),
+    item("行", 34, 50, 12, true, "bold"),
+  ];
+  const legacy: DocBlock = {
+    ordinal: 1,
+    type: "paragraph",
+    text: "ページをまたぐ旧本文",
+    page: 1,
+    prov: [
+      { page: 1, bbox: [0, 200, 200, 0], origin: "bottom_left" },
+      { page: 2, bbox: [0, 200, 200, 0], origin: "bottom_left" },
+    ],
+  };
+  try {
+    for (const blocks of [[], [legacy]]) {
+      for (const { items, expected } of [
+        { items: inline, expected: "international relations\n次の行" },
+        {
+          items: [
+            item("first", 10, 100, 30, false, "regular"),
+            item("", 40, 100, 0, true, "regular", 0),
+            item("next", 10, 50, 30, false, "regular"),
+          ],
+          expected: "first\nnext",
+        },
+      ]) {
+        globalThis.fetch = async () =>
+          Response.json({ blocks, next_from: null });
+        const doc = {
+          numPages: 2,
+          getPage: async () => ({
+            getViewport: () => ({
+              rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+            }),
+            getTextContent: async () => ({ items, styles: {}, lang: "ja" }),
+          }),
+        } as unknown as PDFDocumentProxy;
+        bindPdfSource(doc, id, 1);
+        expect((await extractRegion(doc, 1, [0, 0, 200, 200])).text).toBe(
+          expected,
+        );
+      }
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});

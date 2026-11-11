@@ -217,14 +217,12 @@ function nativeRect(item: TextItem, pageX: number, pageY: number): PdfRect {
     uy = tx[1] / length;
   const x = tx[4] - pageX,
     y = tx[5] - pageY;
+  const height = item.height || Math.hypot(tx[2], tx[3]);
   const points = [
     [x, y],
     [x + ux * item.width, y + uy * item.width],
-    [x - uy * item.height, y + ux * item.height],
-    [
-      x + ux * item.width - uy * item.height,
-      y + uy * item.width + ux * item.height,
-    ],
+    [x - uy * height, y + ux * height],
+    [x + ux * item.width - uy * height, y + uy * item.width + ux * height],
   ];
   return [
     Math.min(...points.map((p) => p[0])),
@@ -342,9 +340,17 @@ export async function extractRegion(
       .map((fragment) => ({ block, text: fragment.text, rect: fragment.rect })),
   );
   const dims = viewportDimensions(viewport);
+  let nativeLine = 0;
   const native = (await nativePdfText(doc, pageNumber)).items
-    .filter((item): item is TextItem => "str" in item && !!item.str.trim())
-    .map((item) => ({ item, rect: nativeRect(item, dims.pageX, dims.pageY) }))
+    .flatMap((item) => {
+      if (!("str" in item)) return [];
+      const line = nativeLine;
+      // pdf.js は str が空で幅・高さ0のEOLマーカーも返す。矩形で落とす前に行番号へ反映する。
+      if (item.hasEOL) nativeLine++;
+      return item.str.length
+        ? [{ item, rect: nativeRect(item, dims.pageX, dims.pageY), line }]
+        : [];
+    })
     .filter(({ rect }) => intersect(bbox, rect))
     // 保存済みの文字で覆われない領域は、同じ選択内でも原本の文字層から補う。
     .filter(
@@ -365,21 +371,27 @@ export async function extractRegion(
       ...entry,
       group: entry.block,
       order: entry.block.ordinal,
+      native: false,
+      line: 0,
     })),
-    ...native.map(({ item, rect }) => ({
-      text: item.str,
-      rect,
-      group: item,
-      // 旧形式のブロックもprovenanceで位置付ける。対応が無い原本文字は末尾に保持する。
-      order:
-        matched.find((block) =>
-          block.prov.some(
-            (p) =>
-              p.page === pageNumber &&
-              intersect(rect, blockRect(p, dims.pageHeight)),
-          ),
-        )?.ordinal ?? tailOrder,
-    })),
+    ...native.map(({ item, rect, line }) => {
+      // 旧形式のブロックもprovenanceで位置付ける。未対応の原本文字も同じ本文ストリームとして扱う。
+      const owner = matched.find((block) =>
+        block.prov.some(
+          (p) =>
+            p.page === pageNumber &&
+            intersect(rect, blockRect(p, dims.pageHeight)),
+        ),
+      );
+      return {
+        text: item.str,
+        rect,
+        group: owner,
+        order: owner?.ordinal ?? tailOrder,
+        native: true,
+        line,
+      };
+    }),
   ].sort((a, b) => a.order - b.order);
   if (!located.length && !native.length && failure) throw failure;
   // 段落・表の途中を切り落とさない。抽出粒度はプレビューに明示する。
@@ -388,11 +400,22 @@ export async function extractRegion(
     page: pageNumber,
     bbox,
     text: entries
-      .map(
-        (entry, index) =>
-          (index && entries[index - 1].group !== entry.group ? "\n\n" : "") +
-          entry.text,
-      )
+      .map((entry, index) => {
+        const previous = entries[index - 1];
+        let separator = "";
+        if (previous) {
+          if (previous.group !== entry.group) separator = "\n\n";
+          else if (previous.native && entry.native)
+            separator =
+              entry.line === previous.line
+                ? ""
+                : "\n".repeat(
+                    Math.min(2, Math.max(1, entry.line - previous.line)),
+                  );
+          else if (previous.native !== entry.native) separator = "\n";
+        }
+        return separator + entry.text;
+      })
       .join("")
       .trim(),
     tables: located
