@@ -9,26 +9,20 @@
 /// 載せるまでの間だけ [`stashPending`](@/lib/pending-message) が sessionStorage に置く。
 
 import * as React from "react";
+import {
+  storageScopeGeneration,
+  subscribeStorageScope,
+} from "@/lib/user-storage";
 
 /// 選択種別（サーバの chat::SelectionKind と対・閉集合）。
-export type SelectionKind =
-  | "note_selection"
-  | "csv_range"
-  | "slide_selection"
-  | "office_selection"
-  /// スキルエディタで編集中のスキル全体（#919・excerpt は save_skill の入力と同じ JSON）。
-  | "skill_draft";
-
-/// 選択コンテキスト（サーバの chat::SelectionContext と対）。
-export interface SelectionContext {
-  kind: SelectionKind;
-  node_id?: string | null;
-  draft_name?: string | null;
-  excerpt: string;
-  locator?: unknown;
-}
+// Rust → OpenAPI の契約を使い、選択種別とフィールドを二重定義しない。
+import type { components } from "@/generated/api";
+export type SelectionKind = components["schemas"]["SelectionKind"];
+export type SelectionContext = components["schemas"]["SelectionContext"];
 
 let pending: SelectionContext | null = null;
+let pendingTarget: string | null = null;
+let pendingGeneration = storageScopeGeneration();
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -42,31 +36,53 @@ function excerptMax(kind: SelectionKind): number {
 }
 
 /// 選択を積む（既存があれば置き換え・excerpt はクライアント側でも軽く切り詰める）。
-export function setPendingSelection(ctx: SelectionContext) {
-  pending = { ...ctx, excerpt: ctx.excerpt.slice(0, excerptMax(ctx.kind)) };
+export function setPendingSelection(ctx: SelectionContext, target?: string) {
+  pendingTarget = target ?? null;
+  pendingGeneration = storageScopeGeneration();
+  pending = {
+    ...ctx,
+    excerpt: Array.from(ctx.excerpt).slice(0, excerptMax(ctx.kind)).join(""),
+  };
   emit();
 }
 
 export function clearPendingSelection() {
   pending = null;
+  pendingTarget = null;
   emit();
 }
 
+export function restorePendingSelection(ctx: SelectionContext, target: string | undefined, generation: number) {
+  if (generation !== storageScopeGeneration()) return;
+  if (pending && pendingGeneration === generation) return;
+  setPendingSelection(ctx, target);
+}
+
+export function clearPendingSelectionForTarget(target: string) {
+  if (pendingTarget === target) clearPendingSelection();
+}
+
 /// 送信時に取り出して消費する（チップの二重送信を防ぐ）。
-export function takePendingSelection(): SelectionContext | null {
-  const out = pending;
+export function takePendingSelection(target?: string): SelectionContext | null {
+  if (pendingTarget !== null && pendingTarget !== target) return null;
+  const out = pendingGeneration === storageScopeGeneration() ? pending : null;
   pending = null;
+  pendingTarget = null;
   emit();
   return out;
 }
 
-export function usePendingSelection(): SelectionContext | null {
+export function usePendingSelection(target?: string): SelectionContext | null {
   return React.useSyncExternalStore(
     (onChange) => {
       listeners.add(onChange);
       return () => listeners.delete(onChange);
     },
-    () => pending,
+    () =>
+      pendingGeneration === storageScopeGeneration() &&
+      (pendingTarget === null || pendingTarget === target)
+        ? pending
+        : null,
     () => null,
   );
 }
@@ -80,6 +96,8 @@ export function selectionKindLabel(kind: SelectionKind): string {
       return "CSV の選択範囲";
     case "slide_selection":
       return "スライドの選択要素";
+    case "pdf_selection":
+      return "PDF の選択範囲";
     case "office_selection":
       return "文書の選択範囲";
     case "skill_draft":
@@ -88,3 +106,7 @@ export function selectionKindLabel(kind: SelectionKind): string {
       return "選択範囲";
   }
 }
+
+subscribeStorageScope(() => {
+  if (pendingGeneration !== storageScopeGeneration()) clearPendingSelection();
+});

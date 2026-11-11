@@ -17,7 +17,7 @@ import {
 } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
-import { setPendingSelection, type SelectionContext } from "@/lib/selection-context";
+import { restorePendingSelection, type SelectionContext } from "@/lib/selection-context";
 import { storageScopeGeneration } from "@/lib/user-storage";
 import { HOME_SCOPE, moveModelChoice, readModelChoice, writeModelChoice } from "@/lib/model-choice";
 import { usePreferences } from "@/lib/preferences";
@@ -119,7 +119,7 @@ export default function HomePage() {
   ) => {
     // 入力欄は送信時に選択チップを消費する。送らなかったときは戻す（黙って捨てない）。
     if (starting || !text.trim()) {
-      if (context) setPendingSelection(context);
+      if (context) restorePendingSelection(context, context.kind === "pdf_selection" ? HOME_SCOPE : undefined, storageScopeGeneration());
       return;
     }
     setStarting(true);
@@ -196,7 +196,7 @@ export default function HomePage() {
       }
       if (mounted.current) router.push(`/c/${thread.id}`);
     } catch {
-      if (context) setPendingSelection(context);
+      if (context && mounted.current) restorePendingSelection(context, context.kind === "pdf_selection" ? HOME_SCOPE : undefined, startedAt);
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });
       setStarting(false);
     }

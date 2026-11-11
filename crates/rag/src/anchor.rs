@@ -53,6 +53,10 @@ pub struct PageBox {
     pub bbox: [f32; 4],
     #[serde(default = "default_origin")]
     pub origin: BoxOrigin,
+    /// ブロック本文内の文字範囲（Python/Docling と同じ Unicode code point 単位）。
+    /// 古い解析結果は None。ページごとの OCR 本文を推測せずに取り出すために保存する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charspan: Option<[i32; 2]>,
 }
 
 /// bbox の座標原点。

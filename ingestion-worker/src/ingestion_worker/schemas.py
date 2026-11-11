@@ -31,6 +31,7 @@ class Prov(BaseModel):
     page: int
     bbox: tuple[float, float, float, float]
     origin: Literal["bottom_left", "top_left"] = "bottom_left"
+    # 正規化ブロック本文内の Unicode code point 範囲（UTF-16 ではない）。
     charspan: tuple[int, int] | None = None
 
 

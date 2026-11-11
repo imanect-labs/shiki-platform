@@ -53,6 +53,7 @@ export function AssistantLayout({
   label,
   title = "アシスタント",
   panel,
+  keepMounted = false,
   overlay,
   className,
   children,
@@ -63,8 +64,10 @@ export function AssistantLayout({
   label: string;
   /// パネル見出し。
   title?: string;
-  /// パネルの中身（会話）。open のときだけ描く。
+  /// パネルの中身（会話）。既定では open のときだけ描く。
   panel: React.ReactNode;
+  /// 初回表示後は非表示でも保持し、未送信の本文・添付を失わない。
+  keepMounted?: boolean;
   /// 本文の下端に重ねる案内（引用ハイライトのヒント等）。シートが開いていればその上に出す。
   overlay?: React.ReactNode;
   className?: string;
@@ -72,6 +75,8 @@ export function AssistantLayout({
   children: React.ReactNode;
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const [opened, setOpened] = React.useState(open);
+  React.useEffect(() => { if (open) setOpened(true); }, [open]);
   const [stored, setStored] = useLocalStorage<number>(WIDTH_KEY, DEFAULT_WIDTH);
   const saved = typeof stored === "number" && Number.isFinite(stored) ? stored : DEFAULT_WIDTH;
   // 画面に入る幅（本文に MIN_BODY を残す）へ丸めた、実際に表示する幅。
@@ -108,8 +113,9 @@ export function AssistantLayout({
           {overlay}
         </div>
       ) : null}
-      {open ? (
+      {open || (keepMounted && opened) ? (
         <AssistantSheet
+          open={open}
           onClose={onClose}
           label={label}
           title={title}
@@ -126,6 +132,7 @@ export function AssistantLayout({
 }
 
 function AssistantSheet({
+  open,
   onClose,
   label,
   title,
@@ -135,6 +142,7 @@ function AssistantSheet({
   onWidthChange,
   children,
 }: {
+  open: boolean;
   onClose: () => void;
   label: string;
   title: string;
@@ -212,7 +220,8 @@ function AssistantSheet({
       aria-label={label}
       id={paneId}
       data-sheet-mode={mode}
-      style={{ "--assistant-sheet-base": height } as React.CSSProperties}
+      style={{ "--assistant-sheet-base": height, display: open ? undefined : "none" } as React.CSSProperties}
+      hidden={!open}
       className={cn(
         "z-20 flex flex-col overflow-hidden bg-card",
         "animate-in fade-in-0 duration-[var(--duration-normal)] ease-[var(--ease-standard)]",

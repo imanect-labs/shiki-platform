@@ -72,7 +72,7 @@ export function isActivePath(href: string, pathname: string): boolean {
 /// 全画面に近い集中モードにする（下書き /notes/draft 等も含む）。ドライブ一覧や
 /// チャットは対象外（ナビゲーションが主役）。
 export function isEditorRoute(pathname: string): boolean {
-  return /^\/(notes|slides|csv|office)\//.test(pathname);
+  return /^\/(notes|slides|csv|office|pdf)\//.test(pathname);
 }
 
 /// パスからヘッダのページタイトルを解決する（現在地表示）。
