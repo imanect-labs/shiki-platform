@@ -13,13 +13,10 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { PanelEmptyHint } from "@/components/chat/doc-chat-draft";
+import dynamic from "next/dynamic";
 import { PdfExcerptPanel } from "./pdf-excerpt-panel";
 import { PdfUtilities } from "./pdf-utilities";
-import {
-  DocChatPanel,
-  useLocalActiveThreadStore,
-} from "@/components/chat/doc-chat-panel";
+
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { queuePdfAttachments } from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "@/lib/storage";
@@ -43,6 +40,17 @@ import { resetPageText, resetDocumentText } from "@/lib/pdf-text";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStorageScopeReady } from "@/lib/user-storage";
 import { cn } from "@/lib/utils";
+
+const PdfAssistant = dynamic(
+  () => import("./pdf-assistant").then((m) => m.PdfAssistant),
+  {
+    loading: () => (
+      <div role="status" className="p-5 text-xs text-muted-foreground">
+        チャットを準備しています…
+      </div>
+    ),
+  },
+);
 
 type Mode = "read" | "select" | "tools";
 export function usePdfWorkspace({
@@ -80,7 +88,6 @@ export function usePdfWorkspace({
     bbox: PdfRect;
     id?: string;
   } | null>(null);
-  const store = useLocalActiveThreadStore(id);
   const scopeReady = useStorageScopeReady();
   const authGeneration = React.useSyncExternalStore(
     subscribeStorageScope,
@@ -112,7 +119,8 @@ export function usePdfWorkspace({
         setError("一度に選べる範囲は20件までです。");
         return;
       }
-      lastRegion.current = { page, bbox };
+      const request = { page, bbox, id: replaceId };
+      lastRegion.current = request;
       const at = generation.current;
       const scope = storageScopeGeneration();
       pendingCount.current++;
@@ -128,16 +136,21 @@ export function usePdfWorkspace({
               a.page - b.page || b.bbox[3] - a.bbox[3] || a.bbox[0] - b.bbox[0],
           ),
         );
-        lastRegion.current = { page, bbox, id: result.id };
-        if (!result.text)
+        if (lastRegion.current === request)
+          lastRegion.current = { page, bbox, id: result.id };
+        if (!result.text) {
+          lastRegion.current = { page, bbox, id: result.id };
           setError(
             "この範囲の文字がまだ取得できません。解析完了後に再取得するか、画像として保存してください。",
           );
+        }
       } catch (e) {
-        if (at === generation.current)
+        if (at === generation.current) {
+          lastRegion.current = request;
           setError(
             e instanceof Error ? e.message : "解析結果を取得できませんでした",
           );
+        }
       } finally {
         if (at === generation.current) {
           pendingCount.current--;
@@ -357,26 +370,9 @@ export function usePdfWorkspace({
         )}
       </>
     ),
-    assistantPanel: scopeReady ? (
-      <DocChatPanel
-        key={id}
-        store={store}
-        nodeId={id}
-        title={`PDF: ${name}`}
-        label="この PDF の会話"
-        editable
-        hint={
-          <PanelEmptyHint
-            title="この PDF について相談できます"
-            description="添付した抜粋について、質問や要約を依頼できます。入力欄に指示を書いて送信してください。"
-          />
-        }
-        testIdPrefix="pdf"
-      />
-    ) : (
-      <div role="status" className="p-5 text-xs text-muted-foreground">
-        チャットを準備しています…
-      </div>
-    ),
+    assistantPanel:
+      scopeReady && assistantOpen ? (
+        <PdfAssistant key={id} id={id} name={name} />
+      ) : null,
   };
 }

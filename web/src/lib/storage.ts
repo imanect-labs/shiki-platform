@@ -349,9 +349,9 @@ export function versionDownloadUrl(fileId: string, version: number): Promise<Dow
 export function getVersionBlocks(
   fileId: string,
   version: number,
-  opts: { from: number; limit: number; page?: number },
+  opts: { from: number; limit: number; page?: number; page_end?: number },
 ): Promise<DocBlocksPage> {
-  return apiFetch(`/files/${fileId}/versions/${version}/blocks${qs({ from: opts.from, limit: opts.limit, page: opts.page })}`).then(
+  return apiFetch(`/files/${fileId}/versions/${version}/blocks${qs({ from: opts.from, limit: opts.limit, page: opts.page, page_end: opts.page_end })}`).then(
     (r) => okJson<DocBlocksPage>(r),
   );
 }

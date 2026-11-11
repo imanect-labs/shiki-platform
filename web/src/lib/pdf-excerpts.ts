@@ -75,24 +75,58 @@ export function pdfBlocks(
   if (!source) return Promise.resolve([]);
   const cached = source.pages.get(page);
   if (cached) return cached;
-  const result = (async () => {
+  const first = Math.floor((page - 1) / 16) * 16 + 1;
+  const last = Math.min(doc.numPages, first + 15);
+  const batch = (async () => {
     const blocks: DocBlock[] = [];
     let from: number | null = 0;
     while (from !== null) {
+      assertPdfSource(doc);
       const data = await getVersionBlocks(source.id, source.version, {
-        page,
+        page: first,
+        page_end: last,
         from,
         limit: 200,
       });
       blocks.push(...data.blocks);
-      from = data.next_from ?? null;
+      const next = data.next_from ?? null;
+      if (next !== null && next <= from)
+        throw new Error("解析結果のページングが進みませんでした");
+      from = next;
     }
+    assertPdfSource(doc);
     return blocks;
   })();
-  source.pages.set(page, result);
-  result.catch(() => source.pages.delete(page));
-  return result;
+  for (let number = first; number <= last; number++) {
+    if (source.pages.has(number)) continue;
+    const result = batch.then((blocks) =>
+      blocks.filter(
+        (block) =>
+          block.page === number || block.prov.some((p) => p.page === number),
+      ),
+    );
+    source.pages.set(number, result);
+    result.catch(() => {
+      if (source.pages.get(number) === result) source.pages.delete(number);
+    });
+  }
+  return source.pages.get(page)!;
 }
+
+/// 一度に最大4窓（64ページ）。キー入力で中断した後は新しい窓を要求しない。
+export async function prefetchPdfBlocks(
+  doc: PDFDocumentProxy,
+  first: number,
+  last: number,
+  signal: AbortSignal,
+) {
+  const requests: Promise<unknown>[] = [];
+  for (let page = first; page <= last && !signal.aborted; page += 16) {
+    requests.push(pdfBlocks(doc, page).catch(() => []));
+  }
+  await Promise.all(requests);
+}
+
 export function resetPdfBlocks(doc: PDFDocumentProxy, page: number) {
   sources.get(doc)?.pages.delete(page);
 }
@@ -127,59 +161,146 @@ export function blockRect(
   return [Math.min(l, r), Math.min(...ys), Math.max(l, r), Math.max(...ys)];
 }
 
-/// OCR は既存の文字層が覆っていない領域だけ補う。通常の PDF 文字は重複させない。
+/// ページ内の本文と位置。charspan は Docling/Python と同じ code point 単位。
+/// 古い跨ページブロックは本文をページへ推測配分せず、native 文字層または画像を利用する。
+function blockFragments(
+  block: DocBlock,
+  page: number,
+  height: number,
+): { text: string; rect: PdfRect; hasEOL: boolean }[] {
+  const mine = block.prov.filter((p) => p.page === page);
+  const chars = Array.from(block.text);
+  const spans = mine.filter(
+    (p) =>
+      p.charspan &&
+      p.charspan.length === 2 &&
+      p.charspan[0] >= 0 &&
+      p.charspan[1] > p.charspan[0] &&
+      p.charspan[1] <= chars.length,
+  );
+  if (block.type !== "table" && spans.length) {
+    spans.sort((a, b) => a.charspan![0] - b.charspan![0]);
+    return spans.map((p, index) => {
+      const end = p.charspan![1];
+      const next = spans[index + 1]?.charspan?.[0];
+      const gap = next != null ? chars.slice(end, next).join("") : "";
+      return {
+        text:
+          chars.slice(p.charspan![0], end).join("") +
+          (/^\s*$/.test(gap) ? gap : ""),
+        rect: blockRect(p, height),
+        hasEOL: next == null || !/^\s*$/.test(gap),
+      };
+    });
+  }
+  if (!mine.length || block.prov.some((p) => p.page !== page)) return [];
+  const boxes = mine.map((p) => blockRect(p, height));
+  return [
+    {
+      text: block.text,
+      hasEOL: true,
+      rect: [
+        Math.min(...boxes.map((r) => r[0])),
+        Math.min(...boxes.map((r) => r[1])),
+        Math.max(...boxes.map((r) => r[2])),
+        Math.max(...boxes.map((r) => r[3])),
+      ],
+    },
+  ];
+}
+
+/// TextItem の局所軸から矩形を求め、原本内の縦書き・回転文字にも適用する。
+function nativeRect(item: TextItem, pageX: number, pageY: number): PdfRect {
+  const tx = item.transform;
+  const length = Math.hypot(tx[0], tx[1]) || 1;
+  const ux = tx[0] / length,
+    uy = tx[1] / length;
+  const x = tx[4] - pageX,
+    y = tx[5] - pageY;
+  const points = [
+    [x, y],
+    [x + ux * item.width, y + uy * item.width],
+    [x - uy * item.height, y + ux * item.height],
+    [
+      x + ux * item.width - uy * item.height,
+      y + uy * item.width + ux * item.height,
+    ],
+  ];
+  return [
+    Math.min(...points.map((p) => p[0])),
+    Math.min(...points.map((p) => p[1])),
+    Math.max(...points.map((p) => p[0])),
+    Math.max(...points.map((p) => p[1])),
+  ];
+}
+
+/// OCR を補い、同じ native 文字を二重に載せない。
 export function withOcrContent(
   native: TextContent,
   blocks: DocBlock[],
   page: number,
   viewport: PageViewport,
 ): TextContent {
+  const dims = viewportDimensions(viewport);
   const nativeItems = native.items.filter(
     (t): t is TextItem => "str" in t && !!t.str.trim(),
   );
-  const nativeRects = nativeItems
-    .filter((t): t is TextItem => "str" in t && !!t.str.trim())
-    .map((t) => {
-      const [x, y] = [
-        t.transform[4] - viewportDimensions(viewport).pageX,
-        t.transform[5] - viewportDimensions(viewport).pageY,
-      ];
-      return [x, y, x + t.width, y + t.height] as PdfRect;
-    });
+  const rects = nativeItems.map((item) =>
+    nativeRect(item, dims.pageX, dims.pageY),
+  );
+  const compact = (text: string) => text.replace(/\s+/g, "");
+  const removed = new Set<TextItem>();
   const items: TextItem[] = [];
-  for (const block of blocks) {
-    const prov = block.prov.find((p) => p.page === page);
-    if (!prov || !block.text.trim()) continue;
-    const rect = blockRect(prov, viewportDimensions(viewport).pageHeight);
-    const compact = (text: string) => text.replace(/\s+/g, "");
-    const known = nativeItems
-      .filter((_, i) => intersect(nativeRects[i], rect))
-      .map((item) => item.str)
-      .join("");
-    // 矩形が少し重なるだけでは全文を捨てない（見出しだけ文字層があるスキャン等）。
-    if (known && compact(known).includes(compact(block.text))) continue;
-    const [l, b, r, t] = rect;
-    const fontSize = Math.min(14, Math.max(4, t - b));
-    items.push({
-      str: block.text,
-      dir: "ltr",
-      transform: [
-        fontSize,
-        0,
-        0,
-        fontSize,
-        l + viewportDimensions(viewport).pageX,
-        t - fontSize + viewportDimensions(viewport).pageY,
-      ],
-      width: r - l,
-      height: fontSize,
-      fontName: "ocr",
-      hasEOL: true,
-    });
-  }
+  for (const block of blocks)
+    for (const fragment of blockFragments(block, page, dims.pageHeight)) {
+      const text =
+        block.type === "table"
+          ? tableRows(fragment.text)
+              .map((row) => row.join(" "))
+              .join("\n")
+          : fragment.text;
+      if (!text.trim()) continue;
+      const rect = fragment.rect;
+      const overlaps = nativeItems
+        .map((item, index) => ({ item, rect: rects[index] }))
+        .filter((entry) => intersect(entry.rect, rect));
+      const known = overlaps.map((entry) => entry.item.str).join("");
+      if (known && compact(known).includes(compact(text))) continue;
+      for (const entry of overlaps) {
+        if (
+          entry.rect[0] >= rect[0] - 1 &&
+          entry.rect[1] >= rect[1] - 1 &&
+          entry.rect[2] <= rect[2] + 1 &&
+          entry.rect[3] <= rect[3] + 1 &&
+          compact(text).includes(compact(entry.item.str))
+        )
+          removed.add(entry.item);
+      }
+      const [l, b, r, t] = rect;
+      const fontSize = Math.min(14, Math.max(4, t - b));
+      items.push({
+        str: text,
+        dir: "ltr",
+        transform: [
+          fontSize,
+          0,
+          0,
+          fontSize,
+          l + dims.pageX,
+          t - fontSize + dims.pageY,
+        ],
+        width: r - l,
+        height: fontSize,
+        fontName: "ocr",
+        hasEOL: fragment.hasEOL,
+      });
+    }
   return {
     ...native,
-    items: [...native.items, ...items],
+    items: [
+      ...native.items.filter((item) => !("str" in item) || !removed.has(item)),
+      ...items,
+    ],
     styles: {
       ...native.styles,
       ocr: { fontFamily: "sans-serif", ascent: 1, descent: 0, vertical: false },
@@ -207,46 +328,41 @@ export async function extractRegion(
         intersect(bbox, blockRect(p, viewportDimensions(viewport).pageHeight)),
     ),
   );
-  const native = matched.length
+  const located = matched.flatMap((block) =>
+    blockFragments(block, pageNumber, viewportDimensions(viewport).pageHeight)
+      .filter((fragment) => intersect(bbox, fragment.rect))
+      .map((fragment) => ({ block, text: fragment.text })),
+  );
+  const native = located.length
     ? []
     : (await nativePdfText(doc, pageNumber)).items
         .filter((item): item is TextItem => "str" in item && !!item.str.trim())
         .filter((item) => {
-          const tx = item.transform;
-          const length = Math.hypot(tx[0], tx[1]) || 1;
-          const ux = tx[0] / length,
-            uy = tx[1] / length;
-          const x = tx[4] - viewportDimensions(viewport).pageX,
-            y = tx[5] - viewportDimensions(viewport).pageY;
-          const points = [
-            [x, y],
-            [x + ux * item.width, y + uy * item.width],
-            [x - uy * item.height, y + ux * item.height],
-            [
-              x + ux * item.width - uy * item.height,
-              y + uy * item.width + ux * item.height,
-            ],
-          ];
-          return intersect(bbox, [
-            Math.min(...points.map((p) => p[0])),
-            Math.min(...points.map((p) => p[1])),
-            Math.max(...points.map((p) => p[0])),
-            Math.max(...points.map((p) => p[1])),
-          ]);
+          const dims = viewportDimensions(viewport);
+          return intersect(bbox, nativeRect(item, dims.pageX, dims.pageY));
         });
-  if (!matched.length && !native.length && failure) throw failure;
+  if (!located.length && !native.length && failure) throw failure;
   // 段落・表の途中を切り落とさない。抽出粒度はプレビューに明示する。
   return {
     id: crypto.randomUUID(),
     page: pageNumber,
     bbox,
-    text: matched.length
-      ? matched.map((b) => b.text).join("\n\n")
+    text: located.length
+      ? located
+          .map(
+            (entry, index) =>
+              (index && located[index - 1].block !== entry.block
+                ? "\n\n"
+                : "") + entry.text,
+          )
+          .join("")
       : native
           .map((t) => t.str + (t.hasEOL ? "\n" : " "))
           .join("")
           .trim(),
-    tables: matched.filter((b) => b.type === "table").map((b) => b.text),
+    tables: located
+      .filter((entry) => entry.block.type === "table")
+      .map((entry) => entry.text),
     blockOrdinals: matched.map((b) => b.ordinal),
   };
 }
@@ -281,43 +397,52 @@ export function excerptContext(
   };
 }
 
-/// GFM のエスケープされた | とセル内改行を保って CSV へ変換。
-export function tableCsv(markdown: string): string {
-  const rows = markdown
+/// GFM の表構造だけを取り出す。ヘッダ直後以外の --- はデータとして残す。
+function tableRows(markdown: string): string[][] {
+  return markdown
     .trim()
     .split("\n")
-    .filter((l) => l.includes("|"));
+    .filter((line) => line.includes("|"))
+    .map((line, index) => {
+      const cells = line
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split(/(?<!\\)\|/);
+      if (index === 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim())))
+        return null;
+      return cells.map((cell) =>
+        cell
+          .trim()
+          .replace(/\\\|/g, "|")
+          .replace(/<br\s*\/?\s*>/gi, "\n"),
+      );
+    })
+    .filter((row): row is string[] => row !== null);
+}
+
+/// PDF の文字は数式として実行しない。符号付きの数値は数値のまま保存する。
+function csvText(cell: string): string {
+  const probe = cell.replace(/^[\s\x00-\x1f]+/, "");
+  const number = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(probe);
+  return (/^[=+@-]/.test(probe) && !number) || /^[\t\r\n]/.test(cell)
+    ? "'" + cell
+    : cell;
+}
+
+export function tableCsv(markdown: string): string {
   return (
     "\uFEFF" +
-    rows
-      .map((line, index) => {
-        const cells = line
-          .trim()
-          .replace(/^\|/, "")
-          .replace(/\|$/, "")
-          .split(/(?<!\\)\|/);
-        if (
-          index === 1 &&
-          cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
-        )
-          return null;
-        return cells
-          .map(
-            (c) =>
-              '"' +
-              c
-                .trim()
-                .replace(/\\\|/g, "|")
-                .replace(/<br\s*\/?\s*>/gi, "\n")
-                .replace(/"/g, '""') +
-              '"',
-          )
-          .join(",");
-      })
-      .filter((row) => row !== null)
+    tableRows(markdown)
+      .map((row) =>
+        row
+          .map((cell) => '"' + csvText(cell).replace(/"/g, '""') + '"')
+          .join(","),
+      )
       .join("\r\n")
   );
 }
+
 export function saveBlob(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

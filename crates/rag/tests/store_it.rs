@@ -214,6 +214,7 @@ fn block(block_type: BlockType, text: &str) -> ParsedBlock {
             page: 1,
             bbox: [72.0, 700.0, 540.0, 680.0],
             origin: BoxOrigin::BottomLeft,
+            charspan: None,
         }],
         list_marker: (block_type == BlockType::ListItem).then(|| "1.".to_string()),
     }

@@ -315,13 +315,23 @@ def _page_of(item: Any) -> int | None:
 
 def _prov_of(item: Any) -> list[Prov]:
     """Docling の prov（ページ・bbox・charspan）をすべて写す（引用箇所を原本の上に描く・#508）。"""
+    raw = getattr(item, "text", None)
+    text = raw.strip() if isinstance(raw, str) else None
+    leading = len(raw) - len(raw.lstrip()) if isinstance(raw, str) else 0
+    positions = getattr(item, "prov", None) or []
     out: list[Prov] = []
-    for p in getattr(item, "prov", None) or []:
+    for p in positions:
         bbox = getattr(p, "bbox", None)
         if bbox is None:
             continue
         origin = str(getattr(bbox, "coord_origin", "BOTTOMLEFT")).upper()
         span = getattr(p, "charspan", None)
+        if text is not None:
+            if span:
+                start, end = max(0, int(span[0]) - leading), min(len(text), int(span[1]) - leading)
+                span = (start, end) if end > start else None
+            elif len(positions) == 1 and text:
+                span = (0, len(text))
         out.append(
             Prov(
                 page=int(p.page_no),
@@ -330,6 +340,22 @@ def _prov_of(item: Any) -> list[Prov]:
                 charspan=(int(span[0]), int(span[1])) if span else None,
             )
         )
+    return out
+
+
+def _inline_prov(text: str, parts: list[Any]) -> list[Prov]:
+    """各断片の span を、空白を補った結合後の本文へ写す（code point 単位）。"""
+    out: list[Prov] = []
+    cursor = 0
+    for part in parts:
+        value = (getattr(part, "text", "") or "").strip()
+        start = text.find(value, cursor) if value else -1
+        for prov in _prov_of(part):
+            span = prov.charspan
+            shifted = (start + span[0], start + span[1]) if start >= 0 and span else None
+            out.append(prov.model_copy(update={"charspan": shifted}))
+        if start >= 0:
+            cursor = start + len(value)
     return out
 
 
@@ -406,7 +432,7 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
             if not text:
                 continue
             parent = item.parent.resolve(document) if item.parent is not None else None
-            prov = [p for part in parts for p in _prov_of(part)]
+            prov = _inline_prov(text, parts)
             page = next((_page_of(part) for part in parts if _page_of(part) is not None), None)
             if getattr(parent, "label", None) == DocItemLabel.LIST_ITEM:
                 blocks.append(

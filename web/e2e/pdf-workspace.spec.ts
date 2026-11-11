@@ -1,13 +1,19 @@
 import { uploadNewFile } from "../src/lib/storage";
 import { clearUserStorage } from "../src/lib/user-storage";
 import type { DocBlock } from "../src/lib/storage";
-import { withOcrContent, excerptContext } from "../src/lib/pdf-excerpts";
+import {
+  withOcrContent,
+  excerptContext,
+  bindPdfSource,
+} from "../src/lib/pdf-excerpts";
 import {
   setPendingSelection,
   takePendingSelection,
 } from "../src/lib/selection-context";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { test, expect, type Page } from "@playwright/test";
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import { searchDocument, buildPageText, findInText } from "../src/lib/pdf-text";
 import { rectFromViewport, blockRect, tableCsv } from "../src/lib/pdf-excerpts";
 import { boxToViewport, viewportDimensions } from "../src/lib/pdf-geometry";
 import { parsePageRange } from "../src/components/pdf/pdf-utilities";
@@ -138,8 +144,14 @@ async function setup(page: Page, failedBlocks = false) {
           json: { error: "解析結果を取得できません" },
         });
       const p = Number(url.searchParams.get("page"));
+      const end = Number(url.searchParams.get("page_end")) || p;
       return route.fulfill({
-        json: { blocks: blocks.filter((b) => b.page === p), next_from: null },
+        json: {
+          blocks: blocks.filter(
+            (b) => b.page != null && b.page >= p && b.page <= end,
+          ),
+          next_from: null,
+        },
       });
     }
     if (url.pathname === `/api/files/${id}`)
@@ -492,7 +504,7 @@ test("文字層の部分重複でもOCR本文を失わず、補助平面文字�
 test("CSVのデータ行がハイフンのみでも保持する", () => {
   expect(
     tableCsv("| left | right |\n| --- | --- |\n| --- | --- |\n| x | y |"),
-  ).toContain('"---","---"');
+  ).toContain('"\'---","\'---"');
 });
 
 test("画像アップロードの同名検索中にログアウトしたらdeclareを送らない", async () => {
@@ -548,4 +560,192 @@ test("抜粋をアシスタントへ添付し、指示入力と送信まで待�
   );
   await expect(page.getByTestId("panel-empty-hint")).not.toContainText("編集");
   await page.screenshot({ path: "test-results/pdf-assistant-light.png" });
+});
+
+test("保存済み表はnativeと重複せず、跨ページのOCRは該当ページだけに載る", async () => {
+  const native = {
+    items: [
+      {
+        str: "Product A",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 10, 10],
+        width: 80,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
+    ],
+    styles: {},
+    lang: "en",
+  };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const table: DocBlock = {
+    ordinal: 1,
+    type: "table",
+    text: "| Product |\n| --- |\n| Product A |",
+    prov: [{ page: 1, bbox: [0, 50, 200, 0], origin: "bottom_left" }],
+  };
+  const result = withOcrContent(native, [table], 1, viewport as never);
+  expect(findInText(buildPageText(result).text, "Product A")).toHaveLength(1);
+  const split: DocBlock = {
+    ordinal: 2,
+    type: "paragraph",
+    text: "😀first second",
+    prov: [
+      { page: 1, bbox: [0, 50, 200, 0], charspan: [0, 6] },
+      { page: 2, bbox: [0, 50, 200, 0], charspan: [7, 13] },
+    ],
+  };
+  const empty = { items: [], styles: {}, lang: "" };
+  expect(
+    buildPageText(withOcrContent(empty, [split], 1, viewport as never)).text,
+  ).not.toContain("second");
+  expect(
+    buildPageText(withOcrContent(empty, [split], 2, viewport as never)).text,
+  ).toContain("second");
+  const legacy = {
+    ...split,
+    prov: split.prov.map(({ charspan: _span, ...p }) => p),
+  };
+  expect(
+    buildPageText(withOcrContent(empty, [legacy], 1, viewport as never)).text,
+  ).not.toContain("second");
+});
+
+test("CSVは文書由来の式を文字列化し、符号付き数値は保持する", () => {
+  const csv = tableCsv(
+    "| value |\n| --- |\n| =1+1 |\n| +SUM(A1:A2) |\n| @SUM(A1:A2) |\n| -12.5 |\n| +20 |",
+  );
+  expect(csv).toContain('"\'=1+1"');
+  expect(csv).toContain('"\'+SUM(A1:A2)"');
+  expect(csv).toContain('"\'@SUM(A1:A2)"');
+  expect(csv).toContain('"-12.5"');
+  expect(csv).toContain('"+20"');
+});
+
+test("全ページ検索は16ページ窓・最大4並列で取得し、ページ順を保つ", async () => {
+  const original = globalThis.fetch;
+  let calls = 0,
+    active = 0,
+    peak = 0;
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    const from = Number(url.searchParams.get("page")),
+      to = Number(url.searchParams.get("page_end"));
+    expect(to - from).toBeLessThan(16);
+    calls++;
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    active--;
+    return Response.json({ blocks: [], next_from: null });
+  };
+  const doc = {
+    numPages: 65,
+    getPage: async (number: number) => ({
+      getTextContent: async () => ({
+        items: [
+          {
+            str: `page ${number}`,
+            dir: "ltr",
+            transform: [12, 0, 0, 12, 0, 0],
+            width: 80,
+            height: 12,
+            fontName: "f",
+            hasEOL: true,
+          },
+        ],
+        styles: {},
+        lang: "en",
+      }),
+      getViewport: () => ({
+        rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+      }),
+    }),
+  } as unknown as PDFDocumentProxy;
+  try {
+    bindPdfSource(doc, id, 1);
+    const matches = await searchDocument(doc, "page", {
+      signal: new AbortController().signal,
+      onProgress: () => {},
+    });
+    expect(matches.map((m) => m.page)).toEqual(
+      Array.from({ length: 65 }, (_, i) => i + 1),
+    );
+    expect(calls).toBe(5);
+    expect(peak).toBeLessThanOrEqual(4);
+    expect(peak).toBeGreaterThan(1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("和文のinline OCR断片をまたいでも本文に無い空白を挿入しない", () => {
+  const text = "申出書は1か月前まで";
+  const block: DocBlock = {
+    ordinal: 0,
+    type: "paragraph",
+    text,
+    heading_path: [],
+    page: 1,
+    prov: [
+      {
+        page: 1,
+        bbox: [10, 40, 80, 20],
+        origin: "bottom_left",
+        charspan: [0, 4],
+      },
+      {
+        page: 1,
+        bbox: [80, 40, 200, 20],
+        origin: "bottom_left",
+        charspan: [4, 10],
+      },
+    ],
+  };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const output = withOcrContent(
+    { items: [], styles: {}, lang: "ja" },
+    [block],
+    1,
+    viewport as never,
+  );
+  expect(
+    findInText(buildPageText(output).text, "申出書は1か月前"),
+  ).toHaveLength(1);
+});
+
+test("原本内で90度回転したnative文字もOCRと重複しない", () => {
+  const native = {
+    items: [
+      {
+        str: "Vertical",
+        dir: "ltr",
+        transform: [0, 12, -12, 0, 100, 100],
+        width: 40,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
+    ],
+    styles: {},
+    lang: "en",
+  };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const block: DocBlock = {
+    ordinal: 0,
+    type: "paragraph",
+    text: "Vertical",
+    heading_path: [],
+    page: 1,
+    prov: [{ page: 1, bbox: [88, 140, 100, 100], origin: "bottom_left" }],
+  };
+  const output = withOcrContent(native, [block], 1, viewport as never);
+  expect(findInText(buildPageText(output).text, "vertical")).toHaveLength(1);
 });

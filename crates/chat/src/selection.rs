@@ -20,7 +20,7 @@ pub enum SelectionKind {
     /// Office 文書（Collabora・docx/xlsx/pptx）の選択。excerpt は Action_Copy で取得した
     /// 選択テキスト。locator は無し（Collabora 側の位置は WOPI ホストからは参照しない）。
     OfficeSelection,
-    /// PDF の抜粋。locator は版と PDF 座標の複数範囲。本文は保存済み解析から取得。
+    /// PDF の抜粋。locator は版と PDF 座標の複数範囲。本文は保存済み解析を優先し、未取得時はネイティブ文字層を使う。
     PdfSelection,
     /// スキルエディタで編集中のスキル全体（#919）。excerpt は SkillBody 相当の JSON
     /// （name・description・instructions ほか）。draft_name はスキル名。locator は無し。

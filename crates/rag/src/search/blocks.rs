@@ -43,12 +43,34 @@ impl SearchService {
         page: Option<i32>,
         trace_id: Option<&str>,
     ) -> Result<DocBlocksPage, RagError> {
+        self.blocks_in_page_range(ctx, node, version, from, limit, page, page, trace_id)
+            .await
+    }
+
+    /// ページ範囲は最大16ページ。検索の一括取得でも認可済み Node と本文監査を維持する。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn blocks_in_page_range(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+        version: i64,
+        from: i32,
+        limit: u32,
+        page: Option<i32>,
+        page_end: Option<i32>,
+        trace_id: Option<&str>,
+    ) -> Result<DocBlocksPage, RagError> {
+        let page_end = page.map(|start| {
+            page_end
+                .unwrap_or(start)
+                .clamp(start, start.saturating_add(15))
+        });
         let limit = limit.clamp(1, MAX_BLOCKS_PER_PAGE);
         // 1 件多く取り、続きがあるかを判定する。
         // ページ指定と未指定は別の prepared statement にする。nullable parameter の
         // OR で包むと generic plan がページ索引を使えなくなる。
         let page_filter = if page.is_some() {
-            "and (page = $7 or jsonb_path_query_array(prov, '$[*].page') @> jsonb_build_array($7::integer))"
+            "and (page between $7 and $8 or jsonb_path_query_array(prov, '$[*].page') @> any($9::jsonb[]))"
         } else {
             ""
         };
@@ -65,7 +87,11 @@ impl SearchService {
             .bind(from.max(0))
             .bind(i64::from(limit) + 1);
         let query = if let Some(page) = page {
-            query.bind(page)
+            let end = page_end.unwrap_or(page);
+            let pages: Vec<serde_json::Value> = (page..=end)
+                .map(|value| serde_json::json!([value]))
+                .collect();
+            query.bind(page).bind(end).bind(pages)
         } else {
             query
         };
@@ -91,6 +117,7 @@ impl SearchService {
                     metadata: serde_json::json!({
                         "version": version,
                         "page": page,
+                        "page_end": page_end,
                         "ordinals": [first, last],
                     }),
                 },

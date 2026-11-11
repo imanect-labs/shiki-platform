@@ -31,6 +31,8 @@ pub struct BlocksQuery {
     pub limit: Option<u32>,
     /// PDF のページ（1 起点）。未指定なら全ページの窓。
     pub page: Option<i32>,
+    /// 最終ページ（両端を含む・page と併用・最大16ページ）。
+    pub page_end: Option<i32>,
 }
 
 /// 版のブロック列を ordinal 順に返す。
@@ -63,6 +65,16 @@ pub async fn list_blocks(
             "page は1以上で指定してください".into(),
         ));
     }
+    if let Some(end) = q.page_end {
+        if !q
+            .page
+            .is_some_and(|start| end >= start && end <= start.saturating_add(15))
+        {
+            return Err(ApiError::BadRequest(
+                "page_end は page から最大16ページの範囲で指定してください".into(),
+            ));
+        }
+    }
     let Some(search) = state.search.as_ref() else {
         return Err(ApiError::ServiceUnavailable("rag.enabled=false".into()));
     };
@@ -78,13 +90,14 @@ pub async fn list_blocks(
         }));
     }
     let page = search
-        .blocks_on_page(
+        .blocks_in_page_range(
             &ctx,
             &node,
             version,
             q.from.unwrap_or(0),
             q.limit.unwrap_or(60),
             q.page,
+            q.page_end,
             trace.as_deref(),
         )
         .await?;

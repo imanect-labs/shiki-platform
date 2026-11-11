@@ -447,3 +447,48 @@ def test_parse_rejects_oversized_inline_bytes(
     )
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "source_too_large"
+
+
+def test_inline_prov_offsets_across_pages_and_surrogate_pairs() -> None:
+    from types import SimpleNamespace as Obj
+
+    def item(text: str, page: int) -> Obj:
+        return Obj(
+            text=text,
+            prov=[
+                Obj(
+                    page_no=page,
+                    charspan=None,
+                    bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+                )
+            ],
+        )
+
+    parts = [item("😀a", 1), item(" b ", 2)]
+    text = parse_mod._join_inline([p.text.strip() for p in parts])
+    assert text == "😀a b"
+    result = parse_mod._inline_prov(text, parts)
+    assert [(p.page, p.charspan) for p in result] == [(1, (0, 2)), (2, (3, 4))]
+    assert text[result[1].charspan[0] : result[1].charspan[1]] == "b"
+
+
+def test_prov_adjusts_offsets_after_trimming() -> None:
+    from types import SimpleNamespace as Obj
+
+    item = Obj(
+        text="  firstsecond  ",
+        prov=[
+            Obj(
+                page_no=1,
+                charspan=(0, 7),
+                bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+            ),
+            Obj(
+                page_no=2,
+                charspan=(7, 13),
+                bbox=Obj(l=0, t=50, r=100, b=20, coord_origin="BOTTOMLEFT"),
+            ),
+        ],
+    )
+    result = parse_mod._prov_of(item)
+    assert [p.charspan for p in result] == [(0, 5), (5, 11)]
