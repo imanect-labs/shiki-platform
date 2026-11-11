@@ -99,7 +99,12 @@ pub async fn run_agent(
     // 上限は初回から知らせる。run 内で同じ system を使い、残量は観測に載せる。
     // 呼び出し元の opts を変えず、resume でも指示を重複させない。
     let mut run_opts = opts.clone();
-    run_opts.system = Some(budget_system_prompt(opts.system.as_deref(), &opts.budget));
+    let has_tools = !tools.is_empty() || (opts.profile.is_autonomous() && opts.offer_plan_tool);
+    run_opts.system = Some(budget_system_prompt(
+        opts.system.as_deref(),
+        &opts.budget,
+        has_tools,
+    ));
     let opts = &run_opts;
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
     // 出番の限られるツールは定義を遅延にし、`tool_search` で読み込ませる（候補は提示済みの

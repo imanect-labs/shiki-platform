@@ -211,6 +211,7 @@ async fn budget_plan_reaches_first_generation_in_both_profiles() {
     let Some(pool) = setup().await else { return };
     let gateway = stub_gateway(pool);
     let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockOkTool)];
     for mut opts in [
         AgentOptions::chat(6),
         AgentOptions::autonomous(6, None, 1_000_000, 1_000_000),
@@ -219,7 +220,7 @@ async fn budget_plan_reaches_first_generation_in_both_profiles() {
         let mut sink = RecordingSink::new();
         let result = run_agent(
             &gateway,
-            &[],
+            &tools,
             user_msg("echosystem:"),
             &run_context(&c, "budget plan"),
             &opts,
@@ -245,6 +246,75 @@ async fn budget_plan_reaches_first_generation_in_both_profiles() {
         assert_eq!(result.checkpoint.spent.steps, 1);
         assert_eq!(result.stop, AgentStop::Completed);
         assert_eq!(opts.system.as_deref(), Some("元の指示"));
+        let mut resumed_sink = RecordingSink::new();
+        let resumed = run_agent(
+            &gateway,
+            &tools,
+            Vec::new(),
+            &run_context(&c, "budget system resume"),
+            &opts,
+            Some(result.checkpoint),
+            None,
+            &mut resumed_sink,
+        )
+        .await
+        .unwrap();
+        let text: String = resumed_sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text.matches("[実行予算と計画]").count(), 1, "{text}");
+        assert_eq!(resumed.checkpoint.spent.steps, 2);
+        assert_eq!(opts.system.as_deref(), Some("元の指示"));
+    }
+}
+
+/// ツールを持たない計画子には、本文の前置きやツール呼び出しを要求しない。
+#[tokio::test]
+async fn budget_without_tools_preserves_output_format() {
+    let Some(pool) = setup().await else { return };
+    let gateway = stub_gateway(pool);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    for mut opts in [
+        AgentOptions::chat(6),
+        AgentOptions::autonomous(6, None, 1_000_000, 1_000_000),
+    ] {
+        opts.offer_plan_tool = false;
+        opts.system = Some("計画 JSON だけを返す。前後に説明を書かない。".into());
+        let mut sink = RecordingSink::new();
+        let result = run_agent(
+            &gateway,
+            &[],
+            user_msg("echosystem:"),
+            &run_context(&c, "budget without tools"),
+            &opts,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        let text: String = sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("計画 JSON だけを返す。前後に説明を書かない。"),
+            "{text}"
+        );
+        assert!(text.contains("上限は 6 ステップ"), "{text}");
+        assert!(text.contains("指定された出力形式を守り"), "{text}");
+        assert!(!text.contains("利用者に見える本文"), "{text}");
+        assert!(!text.contains("最初のツール呼び出し"), "{text}");
+        assert_eq!(result.stop, AgentStop::Completed);
     }
 }
 
