@@ -380,6 +380,11 @@ pub(crate) async fn wire_chat(
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
     egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
+    // 会話の AI の試運転（try_workflow・T04）の起動の入口と run の要約（`workflow.enabled=false` なら両方 None）。
+    tries: (
+        Option<&Arc<workflow_engine::WorkflowRunLauncher>>,
+        Option<&Arc<workflow_engine::RunStore>>,
+    ),
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -540,6 +545,14 @@ pub(crate) async fn wire_chat(
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
     // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
     .with_workflow_directory(workflow_directory(skill_artifacts, db));
+    // 会話の AI の試運転（try_workflow・T04）。ワークフローの実行時が組んだ launcher/runs があるときだけ提示する
+    // （`workflow.enabled=false` なら run を進めるワーカーが無いので提示しない）。
+    let worker = match tries {
+        (Some(launcher), Some(runs)) => {
+            worker.with_workflow_tries(Arc::clone(launcher), Arc::clone(runs))
+        }
+        _ => worker,
+    };
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
     worker.spawn(config.chat.worker_concurrency);
     tracing::info!(
