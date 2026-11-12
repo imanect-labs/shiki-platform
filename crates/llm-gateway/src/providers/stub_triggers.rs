@@ -181,7 +181,11 @@ pub(super) fn fix_workflow_call(
             None => Some(text_stream(content, prompt_tokens)),
         },
         "read_workflow" => {
-            let read: serde_json::Value = serde_json::from_str(content).ok()?;
+            // 結果の末尾には予算の残量（`\n\n[予算] …`・#1176）が付くので、先頭の JSON だけを読む。
+            let read: serde_json::Value = serde_json::Deserializer::from_str(content)
+                .into_iter()
+                .next()?
+                .ok()?;
             let mut ir = read.get("ir")?.clone();
             ir["description"] = serde_json::json!(format!("AI が直しました（{query}）"));
             call(
