@@ -112,10 +112,14 @@ const MAX_TRUNCATED_RETRIES: usize = 3;
 /// （実測: エージェントモードで大きな表の編集・委譲の指示文が切れ、そのまま終わっていた）。
 /// 「切れた・小さく分けて呼び直せ」をツール結果として返し、次の生成で書き直させる。
 /// tool_use と対の tool_result にするのは、両プロバイダが確実に受け付ける形だから（冒頭の注記）。
+///
+/// `widened_to` は、この切れた呼び出しで次の応答の出力上限が広がったとき（作成系の道具・D-204）の新しい上限。
+/// そのときは分けて呼ばせず、同じ呼び出しを書き直させる（分けると版や編集が余分に増える）。
 pub(crate) fn truncated_call_results(
     messages: &[LlmMessage],
     call_ids: &[(String, String)],
     max_tokens: Option<u32>,
+    widened_to: Option<u32>,
 ) -> Option<Vec<Block>> {
     // 回数は**切れた応答（ステップ）単位**で数える（1 応答に複数の呼び出しがあっても 1 回）。
     let retried = messages
@@ -130,17 +134,25 @@ pub(crate) fn truncated_call_results(
         return None;
     }
     let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    let widened = widened_to.filter(|n| max_tokens.is_some_and(|m| *n > m));
     Some(
         call_ids
             .iter()
             .map(|(id, name)| {
+                let retry = match widened {
+                    Some(n) => format!(
+                        "次の応答からは出力上限を {n} トークンに広げたので、思考を短くして同じ呼び出しを\
+                         書き直してください。"
+                    ),
+                    None => "1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
+                             数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+                        .to_string(),
+                };
                 Block::tool_result(
                     id.clone(),
                     format!(
                         "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
-                         実行していません（{name} は何も変更していません）。\
-                         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
-                         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+                         実行していません（{name} は何も変更していません）。{retry}"
                     ),
                     true,
                 )
@@ -242,7 +254,7 @@ mod tests {
         ];
         let mut messages = vec![LlmMessage::text(LlmRole::User, "埋めて")];
         for _ in 0..MAX_TRUNCATED_RETRIES {
-            let blocks = truncated_call_results(&messages, &ids, Some(8192)).unwrap();
+            let blocks = truncated_call_results(&messages, &ids, Some(8192), None).unwrap();
             let Block::ToolResult {
                 tool_use_id,
                 content,
@@ -256,15 +268,37 @@ mod tests {
             assert!(*is_error);
             assert!(content.contains("8192 トークン"), "{content}");
             assert!(content.contains("実行していません"), "{content}");
+            assert!(content.contains("小さく分けて"), "{content}");
             messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: blocks,
             });
         }
         assert!(
-            truncated_call_results(&messages, &ids, Some(8192)).is_none(),
+            truncated_call_results(&messages, &ids, Some(8192), None).is_none(),
             "上限回数を超えたら書き直させない"
         );
+    }
+
+    /// 切れた呼び出しで次の応答の上限が広がったとき（D-204）は、分けさせず同じ呼び出しを書き直させる。
+    #[test]
+    fn truncated_call_with_a_widened_limit_asks_to_rewrite_the_same_call() {
+        let ids = vec![("c1".to_string(), "emit_workflow".to_string())];
+        let messages = vec![LlmMessage::text(LlmRole::User, "作って")];
+        let blocks = truncated_call_results(&messages, &ids, Some(8192), Some(32768)).unwrap();
+        let Block::ToolResult { content, .. } = &blocks[0] else {
+            panic!("形が違う");
+        };
+        assert!(content.contains("8192 トークン"), "{content}");
+        assert!(content.contains("32768 トークンに広げた"), "{content}");
+        assert!(content.contains("同じ呼び出しを"), "{content}");
+        assert!(!content.contains("小さく分けて"), "{content}");
+        // 広がっていない（同じ値）なら従来の文。
+        let same = truncated_call_results(&messages, &ids, Some(8192), Some(8192)).unwrap();
+        let Block::ToolResult { content, .. } = &same[0] else {
+            panic!("形が違う");
+        };
+        assert!(content.contains("小さく分けて"), "{content}");
     }
 
     /// 上限が途中で広がりうる run（D-204）だけ、system の上限より [予算] の残量を正とさせる。

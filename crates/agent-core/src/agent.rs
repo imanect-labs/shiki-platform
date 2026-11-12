@@ -581,10 +581,13 @@ async fn run_step(
     // ツール呼び出しの途中で出力上限に達した: 引数が切れているので実行せず、書き直させる。
     if final_stop == StopReason::MaxTokens && !calls.is_empty() {
         let ids: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
+        // 切れた呼び出しも履歴に入れたので、残量と次の応答の上限は入れた後の予算で数える（D-204・下の通常の道と同じ）。
+        let observed = opts.step_budget(&state.messages);
         if let Some(mut blocks) = crate::agent_observation::truncated_call_results(
             &state.messages,
             &ids,
             budget.max_tokens,
+            observed.max_tokens,
         ) {
             for b in &blocks {
                 if let Block::ToolResult {
@@ -601,8 +604,6 @@ async fn run_step(
                     .await?;
                 }
             }
-            // 切れた呼び出しも履歴に入れたので、残量は入れた後の予算で数える（D-204・下の通常の道と同じ）。
-            let observed = opts.step_budget(&state.messages);
             append_budget_observation(&mut blocks, &observed.budget, &state.spent);
             state.messages.push(LlmMessage {
                 role: LlmRole::Tool,
