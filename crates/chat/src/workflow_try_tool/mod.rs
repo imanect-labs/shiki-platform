@@ -146,7 +146,12 @@ impl TryRequest {
             })?
             .to_string();
         let version = match raw.get("version") {
-            Some(Value::Number(n)) => n.as_i64(),
+            // 2.0 のような整数の小数も受ける（JSON の 2.0 は承認カードの JS では 2 と区別できない）。
+            Some(Value::Number(n)) => n.as_i64().or_else(|| {
+                n.as_f64()
+                    .filter(|f| f.fract() == 0.0 && (1.0..=9.0e15).contains(f))
+                    .map(|f| f as i64)
+            }),
             Some(Value::String(s)) => s.trim().trim_start_matches(['v', 'V']).parse().ok(),
             _ => None,
         }
@@ -755,12 +760,19 @@ mod tests {
         assert_eq!(ok.version, 2);
         assert_eq!(ok.input, json!({ "title": "【試運転】x" }));
         assert!(ok.trigger.is_some() && ok.scheduled_at.is_some() && ok.rerun);
+        // 整数の小数（2.0）は整数として受ける（承認カードの JS は 2 と読む）。
+        let float = TryRequest::parse(json!({ "workflow_id": "x", "version": 2.0 })).unwrap();
+        assert_eq!(float.version, 2);
         let bare = TryRequest::parse(json!({ "workflow_id": "x", "version": 1 })).unwrap();
         assert_eq!(bare.input, json!({}));
         assert!(bare.trigger.is_none() && bare.scheduled_at.is_none() && !bare.rerun);
         for bad in [
             json!({ "workflow_id": "x" }),
             json!({ "workflow_id": "x", "version": 0 }),
+            json!({ "workflow_id": "x", "version": 0.0 }),
+            json!({ "workflow_id": "x", "version": 2.5 }),
+            json!({ "workflow_id": "x", "version": -1.0 }),
+            json!({ "workflow_id": "x", "version": 1.0e300 }),
             json!({ "workflow_id": "x", "version": "最新" }),
             json!({ "version": 1 }),
             json!({ "workflow_id": "x", "version": 1, "input": [1] }),
