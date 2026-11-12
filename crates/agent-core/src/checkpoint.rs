@@ -31,6 +31,8 @@ pub struct Checkpoint {
     /// 引用番号の台帳（再開しても `[n]` の通し番号が続く・#508。旧チェックポイントは空から）。
     #[serde(default)]
     pub citations: crate::cite::CitationLedger,
+    #[serde(default)]
+    pub help_citations: crate::help_cite::HelpCitationLedger,
     /// 剪定の見積りに足す、実測 prompt との差（system/ツール定義ぶん・#529）。再開直後の
     /// ステップでも窓判定から落とさないために載せる。`None` は未測定（旧チェックポイント・
     /// 1 ステップも生成していない）で、実測の結果 0 になった `Some(0)` とは区別する。
@@ -49,6 +51,7 @@ impl Checkpoint {
             step: 0,
             loop_detector: LoopDetector::default(),
             citations: crate::cite::CitationLedger::default(),
+            help_citations: crate::help_cite::HelpCitationLedger::default(),
             context_overhead_tokens: None,
         }
     }

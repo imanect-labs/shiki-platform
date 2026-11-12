@@ -85,6 +85,7 @@ pub(crate) async fn run_tool_calls(
     calls: Vec<PendingCall>,
     plan_state: &mut Plan,
     ledger: &mut CitationLedger,
+    help_ledger: &mut crate::help_cite::HelpCitationLedger,
     sink: &mut dyn EventSink,
     detector: &mut LoopDetector,
 ) -> Result<ToolPhaseOutcome, AgentError> {
@@ -121,6 +122,7 @@ pub(crate) async fn run_tool_calls(
         let Some(mut p) = slot else { continue };
         // 引用番号は呼び出し順に振る（並列 read の完了順に依らず決定的・#508）。
         ledger.number(&mut p.outcome.citations, &mut p.outcome.content);
+        help_ledger.number(&mut p.outcome.help_citations, &mut p.outcome.content);
         if let Some(u) = p.outcome.usage {
             external.tokens = external.tokens.saturating_add(u.tokens);
             // **上限判定に使う軸**（#404）。ここを積み忘れると、親のトークン上限が委譲を

@@ -58,6 +58,7 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
             content: content.clone(),
         },
         AgentEvent::Citation(c) => StreamEventKind::Citation(to_citation(c)),
+        AgentEvent::HelpCitation(c) => StreamEventKind::HelpCitation(c.clone()),
         AgentEvent::Artifact { artifact, .. } => StreamEventKind::FileRef {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),

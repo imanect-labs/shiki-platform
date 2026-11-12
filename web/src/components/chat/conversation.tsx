@@ -1,4 +1,6 @@
 "use client";
+import { HelpSources } from "./help-sources";
+import type { HelpCitation } from "@/lib/chat-api";
 
 import * as React from "react";
 
@@ -134,6 +136,7 @@ type StreamState = {
   thinking: string;
   tools: ToolActivityItem[];
   citations: Citation[];
+  helpCitations: HelpCitation[];
   /// ツール成果物（code_interpreter が保存したファイル参照）。
   files: Attachment[];
   /// 保存済みワークフロー参照（Task 10.13・emit_workflow）。
@@ -195,6 +198,7 @@ const EMPTY_STREAM: StreamState = {
   thinking: "",
   tools: [],
   citations: [],
+  helpCitations: [],
   files: [],
   workflowRefs: [],
   noteRefs: [],
@@ -523,6 +527,7 @@ export function Conversation({
           };
           return { ...s, tools };
         }),
+      onHelpCitation: (c) => updateStream((s) => (s ? { ...s, helpCitations: [...s.helpCitations, c] } : s)),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
       onWorkflowRef: (workflow) =>
@@ -1342,6 +1347,7 @@ function finalizeStream(
     }
   }
   for (const c of s.citations) blocks.push(c);
+  for (const c of s.helpCitations) blocks.push(c);
   // ツール成果物（保存済みファイル）も確定メッセージへ残す。
   for (const f of s.files) blocks.push({ type: "file_ref", node_id: f.node_id, name: f.name });
   // 保存済みワークフロー参照カード（Task 10.13）。
@@ -1721,6 +1727,7 @@ const AssistantRow = React.memo(function AssistantRow({
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
       <Message className="group justify-start">
         <div className="w-full min-w-0">
+          <HelpSources citations={blocks.filter((b): b is HelpCitation => b.type === "help_citation")} />
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
               <MessageTimeline
@@ -1849,6 +1856,7 @@ function StreamingRow({
     <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
+          <HelpSources citations={stream.helpCitations} />
           {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
           {/* 本文と操作のまとまりを起きた順に並べ、生成中の表示は末尾に置く（往復する回答で
               「いま何をしているか」が先頭に取り残されない）。 */}

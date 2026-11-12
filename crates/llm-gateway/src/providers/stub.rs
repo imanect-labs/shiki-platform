@@ -423,6 +423,20 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
             return s;
         }
     }
+    // helpsearch: はヘルプ UI の決定的検証専用（選択品質の評価ではない）。
+    if let Some(query) = user_text.strip_prefix("helpsearch:") {
+        if has_tool_result(req) {
+            return text_stream("ヘルプの手順を確認してください。[H1]", prompt_tokens);
+        }
+        if let Some(t) = req.tools.iter().find(|t| t.name == "help_search") {
+            return tool_call_stream(
+                t.name.clone(),
+                serde_json::json!({"query":query.trim(),"top_k":1}),
+                prompt_tokens,
+            );
+        }
+    }
+
     // --- 汎用駆動 `calltool:<ツール名> <入力 JSON>`（Task 15.7）。 ---
     if !has_tool_result(req) && user_text.starts_with("calltool:") {
         if let Some(s) = generic_tool_call(req, &user_text, prompt_tokens) {

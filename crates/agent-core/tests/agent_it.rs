@@ -109,6 +109,7 @@ impl Tool for MockSearchTool {
             .to_string();
         Ok(ToolOutcome {
             content: format!("検索結果: {query}"),
+            help_citations: vec![],
             citations: vec![Citation {
                 cite_id: 0,
                 version: None,
