@@ -29,7 +29,7 @@ use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
-    tool_call_stream, tool_calls_stream,
+    tool_call_stream, tool_calls_stream, truncated_tool_call_stream,
 };
 use super::stub_triggers::{
     conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
@@ -70,7 +70,10 @@ fn last_user_text(req: &GenerateRequest) -> String {
             m.content
                 .iter()
                 .filter_map(|b| match b {
-                    Block::Text { text } => Some(text.as_str()),
+                    // 前のターンの作業記録（chat の履歴が足す）は利用者の発話ではない。
+                    Block::Text { text } if !text.starts_with(crate::WORK_LOG_MARK) => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -358,6 +361,11 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
             serde_json::json!({}),
             prompt_tokens,
         );
+    }
+    // --- 出力上限で切れたツール呼び出し `truncate:`: 1 ターン目だけ tools[0] の引数が `{}` で
+    //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動）。 ---
+    if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("truncate:") {
+        return truncated_tool_call_stream(req.tools[0].name.clone(), prompt_tokens);
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {

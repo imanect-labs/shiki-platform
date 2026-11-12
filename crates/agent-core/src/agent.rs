@@ -538,6 +538,37 @@ async fn run_step(
         content: ordered,
     });
 
+    // ツール呼び出しの途中で出力上限に達した: 引数が切れているので実行せず、書き直させる。
+    if final_stop == StopReason::MaxTokens && !calls.is_empty() {
+        let ids: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
+        if let Some(mut blocks) =
+            crate::agent_observation::truncated_call_results(&state.messages, &ids, opts.max_tokens)
+        {
+            for b in &blocks {
+                if let Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } = b
+                {
+                    sink.emit(AgentEvent::ToolResult {
+                        tool_call_id: tool_use_id.clone(),
+                        ok: false,
+                        content: content.clone(),
+                    })
+                    .await?;
+                }
+            }
+            append_budget_observation(&mut blocks, &opts.budget, &state.spent);
+            state.messages.push(LlmMessage {
+                role: LlmRole::Tool,
+                content: blocks,
+            });
+            return Ok(StepOutcome::Continue);
+        }
+        return Ok(StepOutcome::Stop(AgentStop::Truncated));
+    }
+
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
         return Ok(StepOutcome::Stop(if final_stop == StopReason::MaxTokens {
