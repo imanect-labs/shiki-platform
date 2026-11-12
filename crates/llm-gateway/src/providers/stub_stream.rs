@@ -46,6 +46,36 @@ pub(super) fn tool_calls_stream(
     stream::iter(events).boxed()
 }
 
+/// **出力上限で切れたツール呼び出し**のストリーム（`MaxTokens`）。
+///
+/// 実プロバイダは引数 JSON の途中で切れると、解釈できない引数を `{}` にして `ToolUseStop` を出し、
+/// 停止理由を `max_tokens`（OpenAI 互換は `length`）で返す。大きな表の編集などで実際に起きる形。
+pub(super) fn truncated_tool_call_stream(name: String, prompt_tokens: u64) -> DeltaStream {
+    let id = "stubtool_cut".to_string();
+    let events = vec![
+        Ok(StreamDelta::TextDelta {
+            text: "表に書き込みます。".to_string(),
+        }),
+        Ok(StreamDelta::ToolUseStart {
+            id: id.clone(),
+            name,
+        }),
+        Ok(StreamDelta::ToolUseStop {
+            id,
+            input: serde_json::json!({}),
+        }),
+        Ok(StreamDelta::Done {
+            stop_reason: StopReason::MaxTokens,
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens: 0,
+                ..Default::default()
+            },
+        }),
+    ];
+    stream::iter(events).boxed()
+}
+
 /// 本文だけを流して自然終了するストリーム（`EndTurn`）。
 ///
 /// 語単位で TextDelta に割る（実プロバイダのストリーミングと同じ形で UI の逐次描画を通す）。

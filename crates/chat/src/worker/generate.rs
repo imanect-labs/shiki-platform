@@ -21,6 +21,7 @@ use super::ChatWorker;
 use crate::model::Role;
 use crate::store::ClaimedRun;
 use crate::ChatError;
+use agent_core::EventSink as _;
 
 /// 履歴 1 回の読み出しから取れるもの（LLM メッセージ＋会話の添付）。
 ///
@@ -33,6 +34,10 @@ pub(super) struct ThreadHistory {
     /// この会話で使われている（使う前提の）ツール名（tool search で常時ロードに回す）。
     pub tools_in_use: Vec<String>,
 }
+
+/// 出力上限で切れたまま run が終わったときに本文の末尾へ足す注記。
+const TRUNCATED_NOTICE: &str = "\n\n（応答が 1 回の出力上限に達して途中で止まりました。\
+     「続けて」と送ると、ここまでの内容から続けます。）";
 
 impl ChatWorker {
     /// 生成対象までの枝のメッセージを LLM 履歴へ写す（有界の画像添付を含む・短ホライズン）。
@@ -79,6 +84,17 @@ impl ChatWorker {
         .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
+        // 直近の assistant ターンだけ、ツールの作業記録を次の user 発話の前に添える
+        // （前のターンで見つけた id・値を次のターンで使えるように・history_work_log.rs）。
+        let logged_from = msgs
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::Assistant && m.id != assistant_message_id)
+            .map(|(i, _)| i)
+            .rev()
+            .nth(super::history_work_log::WORK_LOG_TURNS - 1)
+            .unwrap_or(0);
+        let mut pending_log: Option<String> = None;
         for (i, m) in msgs.into_iter().enumerate() {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
@@ -102,6 +118,9 @@ impl ChatWorker {
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
+            if role == LlmRole::Assistant && i >= logged_from {
+                pending_log = super::history_work_log::work_log(&m.content);
+            }
             let mut text = message_text_with(
                 &m.content,
                 &|name| latest_skill.get(name) == Some(&i),
@@ -116,6 +135,14 @@ impl ChatWorker {
                 continue;
             }
             let mut message = LlmMessage::text(role, text);
+            // 作業記録は発話とは別のブロックとして前に置く（発話の本文そのものは変えない）。
+            if role == LlmRole::User {
+                if let Some(log) = pending_log.take() {
+                    message
+                        .content
+                        .insert(0, llm_gateway::Block::Text { text: log });
+                }
+            }
             if let Some(blocks) = images.remove(&m.id) {
                 message.content.extend(blocks);
             }
@@ -308,6 +335,10 @@ impl ChatWorker {
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts.tool_search.enabled = self.config.tool_search;
                 opts.tool_search.embedder = self.tool_search_embedder();
+                // 1 応答の出力上限は通常チャットと同じ設定値にする。プロファイル既定（4096）の
+                // ままだと、思考と大きなツール引数（表の編集・委譲の指示文）で枠が尽き、
+                // 引数の途中で切れて run が止まっていた（プレビューの実測）。
+                opts.max_tokens = Some(self.config.max_tokens);
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -381,7 +412,14 @@ impl ChatWorker {
             agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
-        let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
+        // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理する。
+        // 出力上限で切れたまま終わった run だけは、黙って「完了」に見せない（途中で止まったのか
+        // 終わったのか利用者に分からず、次の依頼で何を頼めばよいかも分からない）。
+        if outcome.stop == agent_core::AgentStop::Truncated {
+            sink.emit(agent_core::AgentEvent::Text(TRUNCATED_NOTICE.to_string()))
+                .await
+                .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
+        }
         Ok(())
     }
 
