@@ -1,7 +1,8 @@
 //! 会話の AI の試運転の下回り（D-10・D-197・実 Postgres＋live OpenFGA）。
 //!
 //! - 起動の入口（`WorkflowRunLauncher::start_version_as_editor`）: owner と editor は版を固定して起動でき、viewer は
-//!   閲覧のみで断られて `workflow.try_run` の deny が監査に 1 行残る。見えない・無いものは Ir。試す値が run に載る。
+//!   閲覧のみで断られて `workflow.try_run` の deny が監査に 1 行残る。見えない・無いもの・ワークフローでないものは Ir。
+//!   試す値と、呼び出し側が決めた run の id が run に載る。
 //!   入口の検証の順（実行の前に止める設定 → 入力）は手動の実行と同じで、入力の誤りは run を作らない。
 //! - 許可の監査（`record_try_run_allowed`）は拒否と同じ対象で書く。
 //! - run の要約（`RunStore::run_digest`）: 本人が起動した run だけ・map の要素は件数に畳む・出力は先頭だけ・
@@ -248,6 +249,7 @@ async fn editors_body(env: Arc<Env>) {
                     version,
                     &json!({}),
                     RunTrial::default(),
+                    Uuid::new_v4(),
                     Some(&trace),
                 )
                 .await
@@ -362,6 +364,7 @@ async fn trial_body(env: Arc<Env>) {
     let at = chrono::DateTime::parse_from_rfc3339("2026-11-02T09:00:00Z")
         .unwrap()
         .with_timezone(&chrono::Utc);
+    let planned = Uuid::new_v4();
     let run_id = env
         .launcher
         .start_version_as_editor(
@@ -374,11 +377,29 @@ async fn trial_body(env: Arc<Env>) {
                 scheduled_at: Some(at),
                 rerun_of: None,
             },
+            planned,
             None,
         )
         .await
         .unwrap()
         .unwrap();
+    // run は呼び出し側が決めた id で作る（台帳に書く前に落ちても、この id で引き直せる）。同じ id では 2 本目を作らない。
+    assert_eq!(run_id, planned);
+    let again = env
+        .launcher
+        .start_version_as_editor(
+            &env.bob,
+            wf,
+            1,
+            &json!({ "a": 1 }),
+            RunTrial::default(),
+            planned,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(again, LauncherError::Run(_)), "{again:?}");
+    assert_eq!(env.runs_of(wf).await, 1);
     let (payload, scheduled, input, principal): (
         Option<Value>,
         Option<chrono::DateTime<chrono::Utc>>,
@@ -402,7 +423,15 @@ async fn trial_body(env: Arc<Env>) {
     let blocked = env.create_shared(&ask_ir("", Some("amount"))).await;
     let err = env
         .launcher
-        .start_version_as_editor(&env.bob, blocked, 1, &json!({}), RunTrial::default(), None)
+        .start_version_as_editor(
+            &env.bob,
+            blocked,
+            1,
+            &json!({}),
+            RunTrial::default(),
+            Uuid::new_v4(),
+            None,
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, LauncherError::NotReady(_)), "{err:?}");
@@ -410,7 +439,15 @@ async fn trial_body(env: Arc<Env>) {
     let typed = env.create_shared(&ask_ir("まとめて", Some("amount"))).await;
     let err = env
         .launcher
-        .start_version_as_editor(&env.bob, typed, 1, &json!({}), RunTrial::default(), None)
+        .start_version_as_editor(
+            &env.bob,
+            typed,
+            1,
+            &json!({}),
+            RunTrial::default(),
+            Uuid::new_v4(),
+            None,
+        )
         .await
         .unwrap_err();
     let LauncherError::Input(issues) = err else {

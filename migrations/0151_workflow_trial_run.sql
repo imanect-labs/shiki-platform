@@ -8,14 +8,19 @@
 -- - 新しい run は、会話の 1 回の生成（chat_run_id）あたり 5 本まで（行の数で数える）。
 -- - 試運転の LLM の費用は、観測を返すたびに、まだ会話の予算に積んでいない差分だけを積む（reported_*）。
 --
--- 行は起動の前に入れる（run_id = null は起動の途中）。起動に失敗した行・起動されなかった行（on_trigger_overflow =
--- skip）は消す。null のまま 2 分を過ぎた行は古い予約として、次の試運転のときに消す。
+-- 行は起動の前に入れる（run_id = null は起動の途中）。起動する run の id は予約のときに決めて planned_run_id に置き、
+-- run はその id で作る。run を作った後に run_id を書けなかった行（書く前に落ちた・書く文が失敗した）も、planned_run_id
+-- の run があれば起動したものとして run_id を付け直す（同じ入力で 2 本目を起動しない）。起動に失敗した行・起動されなかった
+-- 行（on_trigger_overflow = skip）は消す。null のまま 2 分を過ぎて planned_run_id の run も無い行は、古い予約として次の
+-- 試運転のときに消す。
 --
 --   seq           = 会話の 1 回の生成の中の通し番号（1 から）。
 --   invoked_by    = 話した人（principal.id）。共有した会話で別の人が起動した run には合流しない。
 --   input_hash    = sha256（キーを並べ直した {input, trigger, scheduled_at}）の 16 進。
---   run_id        = 起動した workflow_run（null = 起動の途中）。実行履歴の GC で run が消えても行は残る
---                   （消えた run は行が無いものとして扱う）ので、外部キーは張らない。
+--   planned_run_id = 起動する workflow_run の id（予約のときに決める）。run は作られないこともあり、GC で消えることも
+--                   あるので、外部キーは張らない。
+--   run_id        = 起動した workflow_run（null = 起動の途中・入れば planned_run_id と同じ）。実行履歴の GC で run が
+--                   消えても行は残る（消えた run は行が無いものとして扱う）ので、外部キーは張らない。
 --   chat_trace_id = 会話の生成の trace_id（監査・観測と相関する）。
 
 create table workflow_trial_run (
@@ -28,7 +33,8 @@ create table workflow_trial_run (
     workflow_id          uuid        not null,
     version              bigint      not null check (version >= 1),
     input_hash           text        not null,
-    run_id               uuid,
+    planned_run_id       uuid        not null,
+    run_id               uuid        check (run_id is null or run_id = planned_run_id),
     chat_trace_id        text,
     reported_tokens      bigint      not null default 0 check (reported_tokens >= 0),
     reported_cost_micros bigint      not null default 0 check (reported_cost_micros >= 0),

@@ -264,6 +264,10 @@ impl WorkflowRunLauncher {
     ///
     /// 許可の監査はここでは書かない（承認を通した呼び出し側が [`record_try_run_allowed`] で、拒否と同じ対象に書く）。
     /// 名前に trial を使わないのは、[`RunTrial`]（手動の実行で試す値）と紛れるため。
+    ///
+    /// `run_id` は作る run の id（呼び出し側が先に決めて台帳に書いておく・[`RunOrigin::run_id`]）。run を作った後に
+    /// 呼び出し側が台帳へ書けなくても、この id で run を引き直せる（同じ入力で 2 本目を立てない）。
+    #[allow(clippy::too_many_arguments)] // 主体・ワークフロー・版・入力・試す値・run の id・trace は全て別物。
     pub async fn start_version_as_editor(
         &self,
         ctx: &AuthContext,
@@ -271,6 +275,7 @@ impl WorkflowRunLauncher {
         version: i64,
         input: &Value,
         trial: RunTrial<'_>,
+        run_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Option<Uuid>, LauncherError> {
         // 種類を確かめる（無い・見えないは get が NotFound・Forbidden で返す。どれも Ir）。
@@ -302,7 +307,10 @@ impl WorkflowRunLauncher {
                 artifact::ArtifactError::Forbidden => LauncherError::ReadOnly,
                 other => LauncherError::Ir(format!("{other:?}")),
             })?;
-        let origin = trial.origin();
+        let origin = RunOrigin {
+            run_id: Some(run_id),
+            ..trial.origin()
+        };
         let blockers = crate::run_blockers(&ir);
         self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await

@@ -9,8 +9,12 @@
 //! - **行は起動の前に入れ**（[`ChatStore::reserve_trial_run`]）、起動に失敗したら消す（[`ChatStore::release_trial_run`]・
 //!   `ui_action_run`・0070 と同じ形・PIT-57 ②）。予約は話した本人の会話の run の中だけに効くので、閲覧者が正規の
 //!   編集者の枠を取ることはない（PIT-57 ⑥）。
-//! - **起動の途中の行**（run_id が null）は、作ってから [`STALE_RESERVATION`] を過ぎたら古い予約として消す
-//!   （[`ChatStore::purge_stale_trial_runs`]）。それより新しいものは「起動中」として合流する。
+//! - **起動する run の id は予約のときに決める**（`planned_run_id`）。run はその id で作るので、run を作った後に
+//!   run_id を書けなかった行（書く前に落ちた・書く文が失敗した）も、道具が planned_run_id の run を引いて
+//!   [`ChatStore::attach_trial_run`] で付け直せる（同じ入力で 2 本目を起動しない）。
+//! - **起動の途中の行**（run_id が null）は、作ってから [`STALE_RESERVATION`] を過ぎたら古い予約として扱う
+//!   （[`ChatStore::stale_trial_runs`]）。道具は planned_run_id の run があれば付け直し、無ければ消す。それより新しい
+//!   ものは、run が無ければ「起動中」として合流する。
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -43,35 +47,41 @@ pub(crate) struct TrialKey<'a> {
 pub(crate) struct TrialRow {
     pub chat_run_id: Uuid,
     pub seq: i32,
-    /// 起動した run（`None` は起動の途中）。
+    /// 起動する run の id（予約のときに決める・run はこの id で作る）。
+    pub planned_run_id: Uuid,
+    /// 起動した run（`None` は起動の途中か、run を作った後に書けなかった・入れば `planned_run_id` と同じ）。
     pub run_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
+
+/// 行を読むときの列（[`TrialRow`] の並び）。
+const ROW_COLUMNS: &str = "chat_run_id, seq, planned_run_id, run_id, created_at";
 
 fn db(e: &sqlx::Error) -> ChatError {
     ChatError::Internal(format!("db: {e}"))
 }
 
 impl ChatStore {
-    /// この会話で本人が予約したまま古くなった行（run_id が null のまま [`STALE_RESERVATION_SECS`] を過ぎた）を消す。
-    /// 消した行の数を返す。
-    pub(crate) async fn purge_stale_trial_runs(
+    /// この会話で本人が予約したまま古くなった行（run_id が null のまま [`STALE_RESERVATION_SECS`] を過ぎた）。
+    ///
+    /// 消すか付け直すかは呼び出し側が決める（planned_run_id の run があれば付け直し、無ければ
+    /// [`Self::release_trial_run`] で消す）。
+    pub(crate) async fn stale_trial_runs(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
-    ) -> Result<u64, ChatError> {
-        let done = sqlx::query(&format!(
-            "DELETE FROM workflow_trial_run \
+    ) -> Result<Vec<TrialRow>, ChatError> {
+        sqlx::query_as(&format!(
+            "SELECT {ROW_COLUMNS} FROM workflow_trial_run \
              WHERE tenant_id = $1 AND thread_id = $2 AND invoked_by = $3 AND run_id IS NULL \
                AND created_at < now() - {STALE_RESERVATION}"
         ))
         .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(&ctx.principal().id)
-        .execute(&self.db)
+        .fetch_all(&self.db)
         .await
-        .map_err(|e| db(&e))?;
-        Ok(done.rows_affected())
+        .map_err(|e| db(&e))
     }
 
     /// 同じ鍵の前の行（新しいものから 1 つ）。
@@ -80,12 +90,12 @@ impl ChatStore {
         ctx: &AuthContext,
         key: TrialKey<'_>,
     ) -> Result<Option<TrialRow>, ChatError> {
-        sqlx::query_as(
-            "SELECT chat_run_id, seq, run_id, created_at FROM workflow_trial_run \
+        sqlx::query_as(&format!(
+            "SELECT {ROW_COLUMNS} FROM workflow_trial_run \
              WHERE tenant_id = $1 AND org = $2 AND thread_id = $3 AND invoked_by = $4 \
                AND workflow_id = $5 AND version = $6 AND input_hash = $7 \
-             ORDER BY created_at DESC, seq DESC LIMIT 1",
-        )
+             ORDER BY created_at DESC, seq DESC LIMIT 1"
+        ))
         .bind(ctx.tenant_id())
         .bind(ctx.org())
         .bind(key.thread_id)
@@ -114,7 +124,8 @@ impl ChatStore {
         .map_err(|e| db(&e))
     }
 
-    /// 起動の前に行を入れる（run_id は null）。seq は会話の run の中の最大＋1 で、ぶつかったら取り直す。
+    /// 起動の前に行を入れる（run_id は null）。seq は会話の run の中の最大＋1 で、ぶつかったら取り直す。起動する run の
+    /// id（`planned_run_id`）はここで決める。
     pub(crate) async fn reserve_trial_run(
         &self,
         ctx: &AuthContext,
@@ -122,16 +133,17 @@ impl ChatStore {
         chat_trace_id: Option<&str>,
         key: TrialKey<'_>,
     ) -> Result<TrialRow, ChatError> {
+        let planned_run_id = Uuid::new_v4();
         for _ in 0..RESERVE_ATTEMPTS {
-            let row: Option<TrialRow> = sqlx::query_as(
+            let row: Option<TrialRow> = sqlx::query_as(&format!(
                 "INSERT INTO workflow_trial_run \
                    (tenant_id, org, thread_id, chat_run_id, seq, invoked_by, workflow_id, version, \
-                    input_hash, chat_trace_id) \
-                 SELECT $1, $2, $3, $4, COALESCE(MAX(seq), 0) + 1, $5, $6, $7, $8, $9 \
+                    input_hash, chat_trace_id, planned_run_id) \
+                 SELECT $1, $2, $3, $4, COALESCE(MAX(seq), 0) + 1, $5, $6, $7, $8, $9, $10 \
                  FROM workflow_trial_run WHERE tenant_id = $1 AND chat_run_id = $4 \
                  ON CONFLICT (tenant_id, chat_run_id, seq) DO NOTHING \
-                 RETURNING chat_run_id, seq, run_id, created_at",
-            )
+                 RETURNING {ROW_COLUMNS}"
+            ))
             .bind(ctx.tenant_id())
             .bind(ctx.org())
             .bind(key.thread_id)
@@ -141,6 +153,7 @@ impl ChatStore {
             .bind(key.version)
             .bind(key.input_hash)
             .bind(chat_trace_id)
+            .bind(planned_run_id)
             .fetch_optional(&self.db)
             .await
             .map_err(|e| db(&e))?;
@@ -153,25 +166,30 @@ impl ChatStore {
         ))
     }
 
-    /// 起動した run を行に書く（起動の途中の行だけ）。
+    /// 起動した run（行の `planned_run_id`）を行に書く。もう書いてあれば何もしない（付け直しと起動の後の書き込みが
+    /// 重なっても同じ値）。行が無い（古い予約として消えた）ときは誤りを返す。
     pub(crate) async fn attach_trial_run(
         &self,
         ctx: &AuthContext,
         row: &TrialRow,
-        run_id: Uuid,
     ) -> Result<(), ChatError> {
-        sqlx::query(
-            "UPDATE workflow_trial_run SET run_id = $4 \
-             WHERE tenant_id = $1 AND chat_run_id = $2 AND seq = $3 AND run_id IS NULL",
+        let done = sqlx::query(
+            "UPDATE workflow_trial_run SET run_id = planned_run_id \
+             WHERE tenant_id = $1 AND chat_run_id = $2 AND seq = $3",
         )
         .bind(ctx.tenant_id())
         .bind(row.chat_run_id)
         .bind(row.seq)
-        .bind(run_id)
         .execute(&self.db)
         .await
         .map_err(|e| db(&e))?;
-        Ok(())
+        if done.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(ChatError::Internal(
+                "試運転の台帳の行が見つかりません（古い予約として消えた）".into(),
+            ))
+        }
     }
 
     /// 起動しなかった行を消す（起動に失敗した・起動されなかった）。起動した行は消さない。

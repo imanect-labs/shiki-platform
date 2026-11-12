@@ -9,7 +9,9 @@
 //!   替えられる・TOCTOU）。
 //! - **台帳**（`workflow_trial_run`・[`crate::store`] の trial_runs）: 同じ会話・同じ話した人・同じ版・同じ入力の
 //!   前の run が実行中・順番待ちなら合流し（新しい run を作らない）、終わっていれば `rerun` が無い限り前回の結果を
-//!   返す。起動の途中の行（run_id が無い）は 2 分までは「起動中」として合流し、過ぎたら古い予約として消す。新しい
+//!   返す。起動する run の id は予約のときに決め（`planned_run_id`）、run はその id で作る。run_id が無い行でも、
+//!   その id の run があれば起動したものとして付け直して合流する（run を作った後に台帳へ書けなかった・2 本目を
+//!   立てない）。run の無い起動の途中の行は 2 分までは「起動中」として合流し、過ぎたら古い予約として消す。新しい
 //!   run は会話の 1 回の生成あたり [`MAX_TRIALS_PER_ANSWER`] 本まで。
 //! - **待ち方**（[`wait`]）: 待つ間は生成の枠を返す。上限（[`TryWaitLimits`]・既定 30 秒）まで待って、その時点の
 //!   状態を返す。
@@ -400,7 +402,15 @@ impl Tool for TryWorkflowTool {
         let started = self
             .deps
             .launcher
-            .start_version_as_editor(ctx, workflow_id, req.version, &req.input, trial, trace_id)
+            .start_version_as_editor(
+                ctx,
+                workflow_id,
+                req.version,
+                &req.input,
+                trial,
+                row.planned_run_id,
+                trace_id,
+            )
             .await;
         match started {
             Ok(Some(run_id)) => {
@@ -472,15 +482,7 @@ impl TryWorkflowTool {
         ir: &WorkflowIr,
         rerun: bool,
     ) -> Result<Option<ToolOutcome>, ToolError> {
-        let purged = self
-            .deps
-            .chat
-            .purge_stale_trial_runs(ctx, key.thread_id)
-            .await
-            .map_err(unavailable)?;
-        if purged > 0 {
-            tracing::warn!(thread_id = %key.thread_id, purged, "起動の途中のまま古くなった試運転の予約を消した");
-        }
+        self.settle_stale(ctx, key.thread_id).await?;
         let Some(prev) = self
             .deps
             .chat
@@ -490,20 +492,25 @@ impl TryWorkflowTool {
         else {
             return Ok(None);
         };
-        let Some(run_id) = prev.run_id else {
-            return Ok(Some(ToolOutcome::ok(format!(
-                "試運転（起動中）: 版: v{} / workflow_id: {}\n同じ版・同じ入力の試運転を、いま起動しているところです（新しく\
-                 起動していません）。少し後に同じ引数でもう一度呼ぶと結果を返します（{STALE_RESERVATION_SECS} 秒たっても\
-                 起動しなければ、新しく起動し直します）。",
-                key.version, key.workflow_id
-            ))));
-        };
+        // run_id の無い行も、予約で決めた id の run があれば起動している（run を作った後に台帳へ書けなかった）。
+        let run_id = prev.run_id.unwrap_or(prev.planned_run_id);
         let state = self
             .outcomes
             .live_states(ctx, &[run_id])
             .await
             .map_err(unavailable)?
             .remove(&run_id);
+        if prev.run_id.is_none() {
+            if state.is_none() {
+                return Ok(Some(ToolOutcome::ok(format!(
+                    "試運転（起動中）: 版: v{} / workflow_id: {}\n同じ版・同じ入力の試運転を、いま起動しているところです（新しく\
+                     起動していません）。少し後に同じ引数でもう一度呼ぶと結果を返します（{STALE_RESERVATION_SECS} 秒たっても\
+                     起動しなければ、新しく起動し直します）。",
+                    key.version, key.workflow_id
+                ))));
+            }
+            self.attach(ctx, &prev).await;
+        }
         let origin = match state {
             // 実行履歴の GC で消えた run は、行が無いものとして扱う。
             None => return Ok(None),
@@ -515,6 +522,42 @@ impl TryWorkflowTool {
             self.follow(ctx, ir, &prev, key.workflow_id, key.version, run_id, origin)
                 .await,
         ))
+    }
+
+    /// 起動の途中のまま古くなった行を片付ける。予約で決めた id の run があれば起動したものとして付け直し（消すと同じ
+    /// 入力で 2 本目を立てる）、無ければ古い予約として消す。
+    async fn settle_stale(&self, ctx: &AuthContext, thread_id: Uuid) -> Result<(), ToolError> {
+        let stale = self
+            .deps
+            .chat
+            .stale_trial_runs(ctx, thread_id)
+            .await
+            .map_err(unavailable)?;
+        if stale.is_empty() {
+            return Ok(());
+        }
+        let planned: Vec<Uuid> = stale.iter().map(|r| r.planned_run_id).collect();
+        let started = self
+            .outcomes
+            .live_states(ctx, &planned)
+            .await
+            .map_err(unavailable)?;
+        for row in &stale {
+            if started.contains_key(&row.planned_run_id) {
+                self.attach(ctx, row).await;
+            } else {
+                tracing::warn!(%thread_id, seq = row.seq, "起動の途中のまま古くなった試運転の予約を消す");
+                self.release(ctx, row).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// 起動した run（予約で決めた id）を台帳に書く。書けなくても、次の呼び出しが予約の id から付け直す。
+    async fn attach(&self, ctx: &AuthContext, row: &TrialRow) {
+        if let Err(e) = self.deps.chat.attach_trial_run(ctx, row).await {
+            tracing::warn!(run_id = %row.planned_run_id, error = %e, "試運転の run を台帳に書けない");
+        }
     }
 
     /// 起動した run を台帳に書き、許可を監査に残す（どちらも失敗しても run は動いているので、観測は返す）。
@@ -529,8 +572,11 @@ impl TryWorkflowTool {
         hash: &str,
         trace_id: Option<&str>,
     ) {
-        if let Err(e) = self.deps.chat.attach_trial_run(ctx, row, run_id).await {
-            tracing::warn!(%run_id, error = %e, "試運転の run を台帳に書けない");
+        if run_id == row.planned_run_id {
+            self.attach(ctx, row).await;
+        } else {
+            // 起動の入口は渡した id で作るので、ここへは来ない（来たら台帳に載せず、監査には残す）。
+            tracing::error!(%run_id, planned = %row.planned_run_id, "試運転の run が予約の id と違う");
         }
         let metadata = json!({
             "chat_run_id": self.scope.chat_run_id.to_string(),

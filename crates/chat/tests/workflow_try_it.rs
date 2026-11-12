@@ -613,7 +613,10 @@ async fn joins_returns_previous_reruns_and_caps() {
     .await;
 }
 
-/// 起動の途中の行（run_id が無い）: 2 分までは「起動中」として合流し、過ぎたら古い予約として消して起動する。
+/// 起動の途中の行（run_id が無い）。run は予約で決めた id（planned_run_id）で作る。
+/// - run を作った後に台帳へ書けなかった行は、2 分の前でも後でも、その id の run に合流して run_id を付け直す（同じ入力で
+///   2 本目を立てない）。
+/// - run の無い行は、2 分までは「起動中」として合流し、過ぎたら古い予約として消して起動する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn launching_reservations_are_joined_then_expire() {
     run(|env| async move {
@@ -623,28 +626,92 @@ async fn launching_reservations_are_joined_then_expire() {
         let conv = env.conversation(&env.alice).await;
         let tool = env.tool(conv, &slot, &opts);
         let args = json!({ "workflow_id": wf.to_string(), "version": 1 });
-        // 起動して、run_id を消す（起動の途中で落ちた行を模す）。
         call(&tool, &env.alice, args.clone()).await;
-        sqlx::query("UPDATE workflow_trial_run SET run_id = NULL WHERE tenant_id = $1")
-            .bind(&env.tenant)
-            .execute(&env.pool)
-            .await
-            .unwrap();
-        let launching = call(&tool, &env.alice, args.clone()).await;
-        assert!(launching.content.starts_with("試運転（起動中）"), "{}", launching.content);
-        assert_eq!(env.runs_of(wf).await, 1);
-        // 2 分を過ぎた行は消して、新しく起動する（古い行は上限に数えない）。
+        let first = env.last_run(wf).await.unwrap();
+        let planned: Uuid = sqlx::query_scalar(
+            "SELECT planned_run_id FROM workflow_trial_run WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&env.tenant)
+        .bind(first)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(planned, first, "run は予約で決めた id で作る");
+        let forget = || {
+            let (pool, tenant) = (env.pool.clone(), env.tenant.clone());
+            async move {
+                sqlx::query("UPDATE workflow_trial_run SET run_id = NULL WHERE tenant_id = $1")
+                    .bind(&tenant)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        };
+        let age = || {
+            let (pool, tenant) = (env.pool.clone(), env.tenant.clone());
+            async move {
+                sqlx::query(
+                    "UPDATE workflow_trial_run SET created_at = now() - interval '3 minutes' \
+                     WHERE tenant_id = $1",
+                )
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        // run を作った後に台帳へ書けなかった（run_id を消して模す）: 2 分の前は、その run に合流して付け直す。
+        forget().await;
+        let joined = call(&tool, &env.alice, args.clone()).await;
+        assert!(
+            joined
+                .content
+                .starts_with("試運転（実行中のものに合流）: 実行中"),
+            "{}",
+            joined.content
+        );
+        assert_eq!(env.last_run(wf).await, Some(first), "run_id を付け直す");
+        // 2 分を過ぎても、run があれば古い予約として消さずに付け直す。
+        forget().await;
+        age().await;
+        let rejoined = call(&tool, &env.alice, args.clone()).await;
+        assert!(
+            rejoined.content.starts_with("試運転（実行中のものに合流）"),
+            "{}",
+            rejoined.content
+        );
+        assert_eq!(env.runs_of(wf).await, 1, "同じ入力で 2 本目を立てない");
+        assert_eq!(env.last_run(wf).await, Some(first));
+        assert_eq!(env.ledger_of(wf).await, 1);
+
+        // run の無い起動の途中の行（予約の id を run の無いものに替えて模す）: 2 分までは「起動中」。
         sqlx::query(
-            "UPDATE workflow_trial_run SET created_at = now() - interval '3 minutes' WHERE tenant_id = $1",
+            "UPDATE workflow_trial_run SET run_id = NULL, planned_run_id = gen_random_uuid(), \
+               created_at = now() WHERE tenant_id = $1",
         )
         .bind(&env.tenant)
         .execute(&env.pool)
         .await
         .unwrap();
+        let launching = call(&tool, &env.alice, args.clone()).await;
+        assert!(
+            launching.content.starts_with("試運転（起動中）"),
+            "{}",
+            launching.content
+        );
+        assert_eq!(env.runs_of(wf).await, 1);
+        // 2 分を過ぎた行は消して、新しく起動する（古い行は上限に数えない）。
+        age().await;
         let restarted = call(&tool, &env.alice, args).await;
-        assert!(restarted.content.starts_with("試運転: 実行中"), "{}", restarted.content);
+        assert!(
+            restarted.content.starts_with("試運転: 実行中"),
+            "{}",
+            restarted.content
+        );
         assert_eq!(env.runs_of(wf).await, 2);
         assert_eq!(env.ledger_of(wf).await, 1, "古い予約は消える");
+        let second = env.last_run(wf).await.unwrap();
+        assert_ne!(second, first);
     })
     .await;
 }
@@ -660,8 +727,8 @@ async fn ledger_rows_cannot_point_across_tenants() {
             async move {
                 sqlx::query(
                     "INSERT INTO workflow_trial_run (tenant_id, org, thread_id, chat_run_id, seq, \
-                       invoked_by, workflow_id, version, input_hash) \
-                     VALUES ($1, 'acme', $2, $3, 1, 'alice', gen_random_uuid(), 1, 'h')",
+                       invoked_by, workflow_id, version, input_hash, planned_run_id) \
+                     VALUES ($1, 'acme', $2, $3, 1, 'alice', gen_random_uuid(), 1, 'h', gen_random_uuid())",
                 )
                 .bind(tenant)
                 .bind(thread)
@@ -680,18 +747,33 @@ async fn ledger_rows_cannot_point_across_tenants() {
         insert(env.tenant.clone(), thread_id, chat_run_id)
             .await
             .expect("同じテナントの会話は指せる");
+        // run_id は予約の id のほかは入らない。
+        let mismatch = sqlx::query(
+            "UPDATE workflow_trial_run SET run_id = gen_random_uuid() WHERE tenant_id = $1",
+        )
+        .bind(&env.tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap_err();
+        assert!(
+            mismatch
+                .as_database_error()
+                .is_some_and(|d| d.code().as_deref() == Some("23514")),
+            "{mismatch:?}"
+        );
         sqlx::query("DELETE FROM thread WHERE tenant_id = $1 AND id = $2")
             .bind(&env.tenant)
             .bind(thread_id)
             .execute(&env.pool)
             .await
             .unwrap();
-        let left: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM workflow_trial_run WHERE tenant_id = $1")
-                .bind(&env.tenant)
-                .fetch_one(&env.pool)
-                .await
-                .unwrap();
+        let left: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_trial_run WHERE tenant_id = $1",
+        )
+        .bind(&env.tenant)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
         assert_eq!(left, 0, "会話を消すと台帳の行も消える");
     })
     .await;

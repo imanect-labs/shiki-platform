@@ -142,6 +142,10 @@ pub struct RunOrigin<'a> {
     pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     /// やり直しの元の run（「同じ入力でもう一度実行」で作る run だけ・実行履歴が予定の日時の由来を言い分ける・GAP-89）。
     pub rerun_of: Option<Uuid>,
+    /// 作る run の id（呼び出し側が先に決めて記録しておく・会話の AI の試運転の台帳・D-197）。run を作った後に呼び出し側
+    /// が落ちても、この id で run を引き直せる。`None` なら DB が決める（今までどおり）。同じ id の run が既にあれば
+    /// 作らずに誤り（主キーの重複）になる。
+    pub run_id: Option<Uuid>,
 }
 
 /// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
@@ -337,12 +341,12 @@ impl RunStore {
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
               trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload, \
-              step_order, scheduled_at, rerun_of) \
+              step_order, scheduled_at, rerun_of, run_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15, $16, $17, $18, $19, $20) \
+                     $13, $14, $15, $16, $17, $18, $19, $20, COALESCE($21, gen_random_uuid())) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -369,6 +373,8 @@ impl RunStore {
         // 発火の記録から読めないことがある・GAP-15）。
         .bind(scheduled_at)
         .bind(origin.rerun_of)
+        // 呼び出し側が決めた run の id（無ければ DB が決める）。
+        .bind(origin.run_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
