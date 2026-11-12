@@ -48,6 +48,7 @@ export function PdfRegionLayer({
   precision = "area",
   units = [],
   unitsReady = true,
+  unitsError,
 }: {
   viewport: PageViewport;
   page: number;
@@ -56,6 +57,7 @@ export function PdfRegionLayer({
   precision?: SelectionPrecision;
   units?: FineUnit[];
   unitsReady?: boolean;
+  unitsError?: string;
   onSelect: (
     page: number,
     bbox: PdfRect,
@@ -121,7 +123,7 @@ export function PdfRegionLayer({
     if (!enabled || e.button !== 0 || !e.isPrimary) return;
     const chosen = selections.find((s) => s.id === id);
     const kind = chosen ? (chosen.precision ?? "area") : precision;
-    if (kind !== "area" && !unitsReady) return;
+    if (kind !== "area" && (!unitsReady || unitsError)) return;
     e.preventDefault();
     e.stopPropagation();
     cancel();
@@ -141,7 +143,7 @@ export function PdfRegionLayer({
   const commit = (bbox: PdfRect, id?: string) => {
     const selected = selections.find((s) => s.id === id);
     const kind = selected ? (selected.precision ?? "area") : precision;
-    if (kind !== "area" && !unitsReady) return;
+    if (kind !== "area" && (!unitsReady || unitsError)) return;
     let fine: FineContent | null | undefined;
     try {
       fine = kind !== "area" ? fineContent(units, bbox, kind) : undefined;
@@ -240,7 +242,7 @@ export function PdfRegionLayer({
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const chosen = selections.find((s) => s.id === id);
     const kind = chosen ? (chosen.precision ?? "area") : precision;
-    if (kind !== "area" && !unitsReady) return;
+    if (kind !== "area" && (!unitsReady || unitsError)) return;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       e.stopPropagation();
@@ -392,12 +394,18 @@ export function PdfRegionLayer({
               />
             );
           })}
-      {enabled && precision !== "area" && (
+      {enabled && (precision !== "area" || unitsError) && (
         <span
-          role="status"
-          className="pointer-events-none absolute bottom-2 left-2 rounded bg-background/95 px-2 py-1 text-[10px] text-muted-foreground"
+          role={unitsError ? "alert" : "status"}
+          className={
+            !unitsReady || unitsError
+              ? "pointer-events-none absolute top-2 left-2 z-10 max-w-[90%] rounded border bg-background/95 p-2 text-xs text-foreground shadow"
+              : "pointer-events-none absolute bottom-2 left-2 rounded bg-background/95 px-2 py-1 text-[10px] text-muted-foreground"
+          }
         >
-          {!unitsReady ? (
+          {unitsError ? (
+            unitsError
+          ) : !unitsReady ? (
             "文字の位置を確認中…"
           ) : (
             <>
@@ -407,7 +415,7 @@ export function PdfRegionLayer({
           )}
         </span>
       )}
-      {note && (
+      {note && !unitsError && (
         <span
           role="status"
           className="absolute left-2 top-2 max-w-[90%] rounded bg-background p-2 text-xs text-foreground shadow"

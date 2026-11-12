@@ -21,6 +21,14 @@ export async function copyKeptPages(
     throw new Error(
       "レイヤーの表示設定を持つPDFのページ抽出・削除・結合には未対応です。レイヤーを固定したPDFとして保存してからお試しください。",
     );
+  if (
+    source.catalog
+      .lookupMaybe(PDFName.of("AcroForm"), PDFDict)
+      ?.has(PDFName.of("XFA"))
+  )
+    throw new Error(
+      "XFA形式のフォームのページ抽出・削除・結合には未対応です。入力欄を固定したPDFとして保存してからお試しください。",
+    );
   const destination = namedDestinations(source);
   const all = source.getPages();
   const { prunePageResources } = await import("./pdf-resource-prune");

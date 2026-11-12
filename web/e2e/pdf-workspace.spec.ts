@@ -2599,6 +2599,7 @@ test("非表示または特殊な外観の入力欄を結合で露出・変形�
   for (const mode of [
     "hidden",
     "noView",
+    "noPrint",
     "optional",
     "bbox",
     "matrix",
@@ -2609,8 +2610,8 @@ test("非表示または特殊な外観の入力欄を結合で露出・変形�
     field.setText("secret");
     field.addToPage(p, { x: 20, y: 100, width: 100, height: 30 });
     const widget = field.acroField.getWidgets()[0];
-    if (mode === "hidden" || mode === "noView")
-      widget.setFlags(mode === "hidden" ? 2 : 32);
+    if (mode === "hidden" || mode === "noView" || mode === "noPrint")
+      widget.setFlags(mode === "hidden" ? 2 : mode === "noView" ? 32 : 0);
     else if (mode === "optional") {
       const layer = pdf.context.register(
         pdf.context.obj({
@@ -2827,4 +2828,76 @@ test("フォームがなくても非表示レイヤーを含むPDFの結合・�
   } as unknown as PDFDocumentProxy;
   await expect(mergePdfs([doc, doc])).rejects.toThrow("レイヤーの表示設定");
   await expect(organizePdf(doc, [0])).rejects.toThrow("レイヤーの表示設定");
+});
+
+test("XFAをgetFormによる削除前に検出し、結合・抽出を拒否する", async () => {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const xfa = pdf.context.register(
+    pdf.context.flateStream("<template><field>SECRET</field></template>"),
+  );
+  pdf.catalog.set(
+    PDFName.of("AcroForm"),
+    pdf.context.obj({ Fields: [], XFA: xfa }),
+  );
+  const bytes = await pdf.save({ updateFieldAppearances: false });
+  const doc = {
+    numPages: 2,
+    getData: async () => bytes,
+  } as unknown as PDFDocumentProxy;
+  await expect(mergePdfs([doc, doc])).rejects.toThrow("入力欄の表示");
+  await expect(organizePdf(doc, [0])).rejects.toThrow("XFA形式");
+});
+
+test("文字座標の計測失敗を待機状態から復帰させ、自由範囲で選択できる", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await page.evaluate(() => {
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    HTMLElement.prototype.getBoundingClientRect = function () {
+      if (
+        this.matches('[data-page="1"]') &&
+        this.querySelector(".pdf-text-layer")
+      ) {
+        HTMLElement.prototype.getBoundingClientRect = original;
+        throw new Error("fixture measure failure");
+      }
+      return original.call(this);
+    };
+    (window as unknown as { restorePdfMeasure: () => void }).restorePdfMeasure =
+      () => {
+        HTMLElement.prototype.getBoundingClientRect = original;
+      };
+  });
+  await page.getByRole("button", { name: "行", exact: true }).click();
+  await expect(
+    page.getByText(
+      "文字の位置を取得できません。自由範囲で選択するか、PDFを開き直してください。",
+      { exact: true },
+    ),
+  ).toBeInViewport();
+  await expect(
+    page.locator('[data-page="1"] [data-testid="pdf-region-layer"]'),
+  ).toHaveAttribute("aria-busy", "false");
+  await expect(
+    page.getByText("文字の位置を確認中…", { exact: true }),
+  ).toHaveCount(0);
+  await page.screenshot({ path: "test-results/pdf-measure-failed.png" });
+  await page.evaluate(() =>
+    (
+      window as unknown as { restorePdfMeasure: () => void }
+    ).restorePdfMeasure(),
+  );
+  await page.getByRole("button", { name: "自由範囲", exact: true }).click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
 });

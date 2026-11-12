@@ -14,6 +14,13 @@ export function flattenVisibleForm(source: PDFDocument) {
     new Error(
       "このPDFの入力欄の表示には結合が未対応です。入力欄を固定したPDFとして保存してからお試しください。",
     );
+  // getForm()自体がXFAを削除するため、呼び出す前に元の辞書を検査する。
+  if (
+    source.catalog
+      .lookupMaybe(PDFName.of("AcroForm"), PDFDict)
+      ?.has(PDFName.of("XFA"))
+  )
+    throw unsupported();
   const form = source.getForm();
   const fields = form.getFields();
   if (fields.length && source.catalog.has(PDFName.of("OCProperties")))
@@ -30,7 +37,11 @@ export function flattenVisibleForm(source: PDFDocument) {
   for (const field of fields)
     for (const widget of field.acroField.getWidgets()) {
       // 非表示・画面非表示・拡大や回転に追随しない注釈を本文へ露出させない。
-      if (widget.getFlags() & (1 | 2 | 8 | 16 | 32 | 256)) throw unsupported();
+      if (
+        !(widget.getFlags() & 4) ||
+        widget.getFlags() & (1 | 2 | 8 | 16 | 32 | 256)
+      )
+        throw unsupported();
       if (widget.dict.has(PDFName.of("OC"))) throw unsupported();
       const rect = widget.getRectangle();
       if (

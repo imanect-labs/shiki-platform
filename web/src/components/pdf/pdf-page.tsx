@@ -120,6 +120,7 @@ export function PdfPage({
   const [fineUnits, setFineUnits] = React.useState<{
     viewport: PageViewport;
     values: FineUnit[];
+    error?: string;
   } | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
@@ -204,12 +205,15 @@ export function PdfPage({
     if (!container || !textLayer || !near || !size) return;
     let active = true;
     let layer: { cancel: () => void } | null = null;
-    Promise.all([
-      pdfjsLib(),
-      pageTextContent(doc, pageNumber),
-      nativePdfText(doc, pageNumber),
-      pdfBlocks(doc, pageNumber).catch(() => []),
-    ])
+    Promise.resolve()
+      .then(() =>
+        Promise.all([
+          pdfjsLib(),
+          pageTextContent(doc, pageNumber),
+          nativePdfText(doc, pageNumber),
+          pdfBlocks(doc, pageNumber).catch(() => []),
+        ]),
+      )
       .then(async ([lib, content, native, blocks]) => {
         if (!active) return;
         container.replaceChildren();
@@ -251,7 +255,15 @@ export function PdfPage({
             });
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active)
+          setFineUnits({
+            viewport: size.viewport,
+            values: [],
+            error:
+              "文字の位置を取得できません。自由範囲で選択するか、PDFを開き直してください。",
+          });
+      });
     return () => {
       active = false;
       layer?.cancel();
@@ -394,6 +406,9 @@ export function PdfPage({
           precision={regionSelection.precision}
           units={fineUnits?.viewport === size.viewport ? fineUnits.values : []}
           unitsReady={fineUnits?.viewport === size.viewport}
+          unitsError={
+            fineUnits?.viewport === size.viewport ? fineUnits.error : undefined
+          }
           onSelect={regionSelection.onSelect}
         />
       ) : null}
