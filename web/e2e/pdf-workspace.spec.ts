@@ -1601,6 +1601,14 @@ test("行と表セルを文字層の実座標から選び、セルだけを添�
   await expect(page.getByTestId("pdf-excerpt-card")).not.toContainText(
     "Product B",
   );
+  const cellBox = page.getByTestId("pdf-region-box");
+  const cellBefore = await cellBox.getAttribute("data-bbox");
+  await page.getByRole("button", { name: "自由範囲", exact: true }).click();
+  await cellBox.locator("[data-region-move]").focus();
+  await page.keyboard.press("Shift+ArrowRight");
+  await page.keyboard.press("Enter");
+  await expect(cellBox).not.toHaveAttribute("data-bbox", cellBefore!);
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText("1200");
   await page.getByRole("button", { name: "アシスタントに添付" }).click();
   await expect(page.getByLabel("添付する PDF の抜粋")).toContainText("1200");
   await expect(page.getByLabel("添付する PDF の抜粋")).not.toContainText(
@@ -2702,12 +2710,121 @@ test("セル抜粋の拡大が出典上限を超えても旧枠・本文を保�
   );
   await page.mouse.up();
   await expect(
-    page
-      .getByRole("alert")
-      .filter({
-        hasText: "選択範囲が大きすぎます。範囲を小さくしてください。",
-      }),
+    page.getByRole("alert").filter({
+      hasText: "選択範囲が大きすぎます。範囲を小さくしてください。",
+    }),
   ).toBeVisible();
   await expect(box).toHaveAttribute("data-bbox", before!);
   await expect(cards.nth(1).locator("pre")).toHaveText(oldText!);
+});
+
+test("名前付きDestとGoToを入力ごとのページ参照へ解決し、削除先を除く", async () => {
+  const { PDFArray, PDFDict, PDFHexString } = await import("pdf-lib");
+  const inputs: PDFDocumentProxy[] = [];
+  for (const tree of [false, true]) {
+    const pdf = await PDFDocument.create();
+    const first = pdf.addPage([200, 200]);
+    const second = pdf.addPage([200, 200]);
+    const removed = pdf.addPage([200, 200]);
+    const kept = pdf.context.obj({ D: [second.ref, PDFName.of("Fit")] });
+    const gone = pdf.context.obj([removed.ref, PDFName.of("Fit")]);
+    if (tree)
+      pdf.catalog.set(
+        PDFName.of("Names"),
+        pdf.context.obj({
+          Dests: {
+            Kids: [
+              pdf.context.register(
+                pdf.context.obj({
+                  Names: [
+                    PDFHexString.fromText("chapter"),
+                    kept,
+                    PDFString.of("removed"),
+                    gone,
+                  ],
+                }),
+              ),
+            ],
+          },
+        }),
+      );
+    else
+      pdf.catalog.set(
+        PDFName.of("Dests"),
+        pdf.context.obj({ chapter: kept, removed: gone }),
+      );
+    const name = tree
+      ? PDFHexString.fromText("chapter")
+      : PDFName.of("chapter");
+    const annots = [
+      { Dest: name },
+      { A: { S: PDFName.of("GoTo"), D: PDFString.of("chapter") } },
+      { Dest: PDFString.of("removed") },
+    ].map((dest) =>
+      pdf.context.register(
+        pdf.context.obj({
+          Type: PDFName.of("Annot"),
+          Subtype: PDFName.of("Link"),
+          Rect: [0, 0, 50, 50],
+          ...dest,
+        }),
+      ),
+    );
+    first.node.set(PDFName.of("Annots"), pdf.context.obj(annots));
+    const bytes = await pdf.save();
+    const doc = {
+      numPages: 3,
+      getData: async () => bytes,
+    } as unknown as PDFDocumentProxy;
+    inputs.push(doc);
+    const subset = await PDFDocument.load(await organizePdf(doc, [1, 0]));
+    const links = subset.getPage(1).node.lookup(PDFName.of("Annots"), PDFArray);
+    expect(
+      links
+        .lookup(0, PDFDict)
+        .lookup(PDFName.of("Dest"), PDFArray)
+        .get(0)
+        .toString(),
+    ).toBe(subset.getPage(0).ref.toString());
+    expect(links.lookup(2, PDFDict).has(PDFName.of("Dest"))).toBe(false);
+  }
+  const merged = await PDFDocument.load(await mergePdfs(inputs));
+  for (const offset of [0, 3]) {
+    const links = merged
+      .getPage(offset)
+      .node.lookup(PDFName.of("Annots"), PDFArray);
+    const direct = links
+      .lookup(0, PDFDict)
+      .lookup(PDFName.of("Dest"), PDFArray);
+    const action = links
+      .lookup(1, PDFDict)
+      .lookup(PDFName.of("A"), PDFDict)
+      .lookup(PDFName.of("D"), PDFArray);
+    expect(direct.get(0).toString()).toBe(
+      merged.getPage(offset + 1).ref.toString(),
+    );
+    expect(action.get(0).toString()).toBe(
+      merged.getPage(offset + 1).ref.toString(),
+    );
+  }
+});
+
+test("フォームがなくても非表示レイヤーを含むPDFの結合・抽出を拒否する", async () => {
+  const pdf = await PDFDocument.create();
+  pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const layer = pdf.context.register(
+    pdf.context.obj({ Type: PDFName.of("OCG"), Name: PDFString.of("Hidden") }),
+  );
+  pdf.catalog.set(
+    PDFName.of("OCProperties"),
+    pdf.context.obj({ OCGs: [layer], D: { OFF: [layer] } }),
+  );
+  const bytes = await pdf.save();
+  const doc = {
+    numPages: 2,
+    getData: async () => bytes,
+  } as unknown as PDFDocumentProxy;
+  await expect(mergePdfs([doc, doc])).rejects.toThrow("レイヤーの表示設定");
+  await expect(organizePdf(doc, [0])).rejects.toThrow("レイヤーの表示設定");
 });

@@ -9,6 +9,7 @@ import {
   PDFPageLeaf,
   PDFRef,
 } from "pdf-lib";
+import { namedDestinations } from "./pdf-destinations";
 
 /// copyPagesは内部リンク先のページも辿る。削除ページとその注釈への参照をコピー前に除去する。
 export async function copyKeptPages(
@@ -16,6 +17,11 @@ export async function copyKeptPages(
   output: PDFDocument,
   order: number[],
 ) {
+  if (source.catalog.has(PDFName.of("OCProperties")))
+    throw new Error(
+      "レイヤーの表示設定を持つPDFのページ抽出・削除・結合には未対応です。レイヤーを固定したPDFとして保存してからお試しください。",
+    );
+  const destination = namedDestinations(source);
   const all = source.getPages();
   const { prunePageResources } = await import("./pdf-resource-prune");
   prunePageResources(source, order);
@@ -44,7 +50,7 @@ export async function copyKeptPages(
     removedObjects.has(value) ||
     (value instanceof PDFRef && removed.has(value.toString()));
   const deletedDestination = (value: PDFObject) => {
-    const target = resolve(value);
+    const target = destination(value);
     return (
       target instanceof PDFArray &&
       target.size() > 0 &&
@@ -60,6 +66,13 @@ export async function copyKeptPages(
     if (!item || seen.has(item)) continue;
     seen.add(item);
     if (item instanceof PDFDict) {
+      for (const name of item.get(PDFName.of("S")) === PDFName.of("GoTo")
+        ? ["Dest", "D"]
+        : ["Dest"]) {
+        const value = item.get(PDFName.of(name));
+        const target = value ? destination(value) : undefined;
+        if (target) item.set(PDFName.of(name), target);
+      }
       if (item.get(PDFName.of("Subtype")) === PDFName.of("Widget")) {
         // 入力フォームのルートを引き継がないページ抽出では、他ページのwidgetへ遡らない。
         item.delete(PDFName.of("Parent"));

@@ -93,9 +93,13 @@ export function PdfPage({
   };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
-  const finePrecision = regionSelection?.enabled
-    ? regionSelection.precision
-    : undefined;
+  const fineRequired =
+    regionSelection?.enabled &&
+    (regionSelection.precision === "line" ||
+      regionSelection.precision === "cell" ||
+      regionSelection.selections.some(
+        (s) => s.page === pageNumber && s.precision,
+      ));
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const textRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<Size | null>(null);
@@ -234,10 +238,7 @@ export function PdfPage({
               return divByItem.get(nativeTextOrigin(item)) ?? null;
             });
           setText({ divs, page: buildPageText(content), ocr });
-          if (
-            wrapRef.current &&
-            (finePrecision === "line" || finePrecision === "cell")
-          )
+          if (wrapRef.current && fineRequired)
             setFineUnits({
               viewport: size.viewport,
               values: measureFineUnits(
@@ -258,7 +259,7 @@ export function PdfPage({
       setText(null);
       setFineUnits(null);
     };
-  }, [doc, pageNumber, size, near, textLayer, textRevision, finePrecision]);
+  }, [doc, pageNumber, size, near, textLayer, textRevision, fineRequired]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
