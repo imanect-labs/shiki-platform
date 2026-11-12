@@ -6,6 +6,9 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 /// インストールの `submitter_roles`）。テーブルを持つアプリだけに欄が出て、選んだ部署がインストールの要求に載る。
 /// 画面かサーバーの処理を持つアプリには、アプリのトークンで何が渡るかを言う（使う人と契約の ID。所属グループは
 /// 載らない・D-130）。
+/// 2 本目は、公開の取り下げ（GAP-69b）: 持ち主に「取り下げ」が出て、確かめのダイアログ・失敗の表示・キーボードで
+/// 閉じる・開くができ、取り下げると一覧から消えて新しくはインストールできない。入れてあるアプリのカードからも取り下げ
+/// られ、取り下げた後もアプリはカードに残り、取り下げたことを出す。
 /// PC（1440px）とスマホ（390px）で見る。`E2E_SHOTS_DIR` があれば画面を撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -23,15 +26,16 @@ async function apiJson(page: Page, method: "post" | "put", path: string, body: u
   return res.status() === 204 ? undefined : res.json();
 }
 
-/// テーブルを 1 つ持つアプリを publish する（マニフェストの id = アプリの id）。
-async function publishApp(page: Page, name: string, table: string): Promise<string> {
+/// アプリを publish する（マニフェストの id = アプリの id・`table` があればテーブルを 1 つ持つ）。返すのはアプリの id と、
+/// レジストリの登録の id（取り下げに使う）。
+async function publishApp(page: Page, name: string, table?: string): Promise<{ appId: string; entryId: string }> {
   const manifest = {
     name,
     version: "1.0.0",
     description: "申請を受け付けるアプリ",
     requested_scopes: ["data.read", "data.write"],
     tools: [],
-    tables: [{ name: table, schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] } }],
+    tables: table ? [{ name: table, schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] } }] : [],
     workflows: [],
     budget: {},
     frontend: null,
@@ -39,8 +43,18 @@ async function publishApp(page: Page, name: string, table: string): Promise<stri
     trust_tier: "in_house",
   };
   const created = (await apiJson(page, "post", "/apps/manifests", { manifest })) as { id: string };
-  await apiJson(page, "post", `/apps/manifests/${created.id}/publish`, {});
-  return created.id;
+  const entry = (await apiJson(page, "post", `/apps/manifests/${created.id}/publish`, {})) as { id: string };
+  return { appId: created.id, entryId: entry.id };
+}
+
+/// 公開を取り下げる（もう取り下げていても 204）・アプリを消す後片付け（BUG-126）。
+async function yankAndDelete(page: Page, app: { appId: string; entryId: string } | null): Promise<void> {
+  if (!app) return;
+  const headers = { "x-csrf-token": await csrf(page) };
+  const yanked = await page.request.post(`/api/apps/registry/${app.entryId}/yank`, { headers });
+  expect([204, 404], `公開の取り下げ: ${yanked.status()}`).toContain(yanked.status());
+  const r = await page.request.delete(`/api/artifacts/${app.appId}`, { headers });
+  expect([200, 204, 404], `アーティファクトの削除: ${r.status()}`).toContain(r.status());
 }
 
 test("コードアプリの同意インストールで、テーブルに「追加だけ」を渡す部署を選べる（GAP-53）", async ({ page, browser }) => {
@@ -49,10 +63,11 @@ test("コードアプリの同意インストールで、テーブルに「追�
   await loginViaKeycloak(page);
   const name = uniqueName("e2e-申請アプリ");
   const table = uniqueName("e2e-申請表");
-  let appId = "";
+  let app: { appId: string; entryId: string } | null = null;
   let installed = false;
   try {
-    appId = await publishApp(page, name, table);
+    app = await publishApp(page, name, table);
+    const appId = app.appId;
 
     // スマホ: 同意のダイアログに欄が出て、横にはみ出さない（ここではインストールしない）。
     const phoneCtx = await browser.newContext({
@@ -128,17 +143,114 @@ test("コードアプリの同意インストールで、テーブルに「追�
   } finally {
     await cleanupAll(
       async () => {
-        if (!installed) return;
-        const r = await page.request.delete(`/api/apps/installations/${appId}`, { headers: { "x-csrf-token": await csrf(page) } });
+        if (!installed || !app) return;
+        const r = await page.request.delete(`/api/apps/installations/${app.appId}`, {
+          headers: { "x-csrf-token": await csrf(page) },
+        });
         expect([200, 204, 404]).toContain(r.status());
       },
+      // 公開を取り下げ（組織の「インストールできるアプリ」に残さない）、マニフェストのアーティファクトを消す。
+      () => yankAndDelete(page, app),
+    );
+  }
+});
+
+test("コードアプリの公開を取り下げると、一覧から消えて新しくはインストールできず、入れたアプリは動き続ける（GAP-69b）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const listed = uniqueName("e2e-取り下げ");
+  const running = uniqueName("e2e-入れたアプリ");
+  let a: { appId: string; entryId: string } | null = null;
+  let b: { appId: string; entryId: string } | null = null;
+  let installed = false;
+  try {
+    a = await publishApp(page, listed);
+    b = await publishApp(page, running);
+    await apiJson(page, "post", "/apps/installations", { name: running, version: "1.0.0", granted_scopes: ["data.read"] });
+    installed = true;
+
+    await page.goto("/apps");
+    // 一覧の行で探す（取り下げのトーストも同じ名前を含む li になる）。
+    const registryRows = page.getByRole("list", { name: "インストールできるアプリ" }).getByRole("listitem");
+    const row = registryRows.filter({ hasText: listed });
+    const yankA = row.getByRole("button", { name: `「${listed}」v1.0.0 の公開を取り下げる` });
+    await expect(yankA).toBeVisible();
+    const dialog = page.getByRole("dialog");
+
+    // キーボードで開いて閉じる。開いたら、取り消せない操作なので先に「キャンセル」へフォーカスが来る。
+    // （閉じた後に開いたボタンへフォーカスが戻らないのは、共有の確認ダイアログ〔アンインストールと同じ〕の既存の挙動。）
+    await yankA.focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog.getByRole("heading", { name: "公開を取り下げますか？" })).toBeVisible();
+    await expect(dialog).toContainText(
+      `「${listed}」v1.0.0 の公開を取り下げます。新しくインストールできなくなり、一覧から消えます。入れてあるアプリは動き続けます。`,
+    );
+    await expect(dialog.getByRole("button", { name: "キャンセル" })).toBeFocused();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-confirm-pc.png` });
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(row).toBeVisible();
+
+    // スマホ: 行の「取り下げ」と「インストール」が横にはみ出さない。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(yankA).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    if (SHOTS) {
+      await row.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${SHOTS}/yank-row-phone.png` });
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    // 失敗はダイアログの中に出し、閉じない（ここでは 403 を返させる）。
+    await page.route(`**/api/apps/registry/${a.entryId}/yank`, (route) =>
+      route.fulfill({ status: 403, json: { error: "forbidden" } }),
+    );
+    await yankA.click();
+    await dialog.getByRole("button", { name: "取り下げる" }).click();
+    await expect(dialog).toContainText("取り下げられるのは、アプリの持ち主と組織の管理者だけです。");
+    await expect(dialog.getByRole("button", { name: "取り下げる" })).toBeEnabled();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-failed-pc.png` });
+    await page.unroute(`**/api/apps/registry/${a.entryId}/yank`);
+
+    // 取り下げると一覧から消え、その版は新しくはインストールできない。
+    await dialog.getByRole("button", { name: "取り下げる" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByText(`「${listed}」v1.0.0 の公開を取り下げました`).first()).toBeVisible();
+    await expect(registryRows.filter({ hasText: listed })).toHaveCount(0);
+    const refused = await page.request.post("/api/apps/installations", {
+      headers: { "content-type": "application/json", "x-csrf-token": await csrf(page) },
+      data: JSON.stringify({ name: listed, version: "1.0.0", granted_scopes: ["data.read"] }),
+    });
+    expect(refused.status(), await refused.text()).toBe(409);
+
+    // 入れてあるアプリのカードからも取り下げられる。取り下げた後もカードは残り、そう出す。
+    const card = page.getByRole("list", { name: "インストール済みのアプリ" }).getByRole("listitem").filter({ hasText: running });
+    await expect(card.getByTestId("app-yanked")).toHaveCount(0);
+    await card.getByRole("button", { name: `「${running}」v1.0.0 の公開を取り下げる` }).click();
+    await dialog.getByRole("button", { name: "取り下げる" }).click();
+    await expect(dialog).toBeHidden();
+    const note = card.getByTestId("app-yanked");
+    await expect(note).toContainText("この版は公開を取り下げました");
+    await expect(note).toContainText("このまま使えますが、新しくインストールすることはできません。");
+    await expect(card.getByRole("button", { name: /公開を取り下げる/ })).toHaveCount(0);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-installed-pc.png`, fullPage: true });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(note).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-installed-phone.png`, fullPage: true });
+  } finally {
+    await cleanupAll(
       async () => {
-        if (!appId) return;
-        // マニフェストのアーティファクトは消す。レジストリの登録（/apps の「インストールできるアプリ」）は消す口が
-        // まだ無いので残る（手元で流すたびに 1 行増える。miniapp-b1 も同じ）。
-        const r = await page.request.delete(`/api/artifacts/${appId}`, { headers: { "x-csrf-token": await csrf(page) } });
-        expect([200, 204, 404], `アーティファクトの削除: ${r.status()}`).toContain(r.status());
+        if (!installed || !b) return;
+        const r = await page.request.delete(`/api/apps/installations/${b.appId}`, {
+          headers: { "x-csrf-token": await csrf(page) },
+        });
+        expect([200, 204, 404]).toContain(r.status());
       },
+      () => yankAndDelete(page, a),
+      () => yankAndDelete(page, b),
     );
   }
 });
