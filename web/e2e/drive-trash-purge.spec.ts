@@ -112,9 +112,17 @@ test("ゴミ箱: フォルダの持ち主は中のほかの人のファイルも
   });
   const row = await trashRow(page, folderName);
   await expect(page.getByText("ゴミ箱に入れてから 30 日たつと、自動で完全に削除されます。")).toBeVisible();
-  await expect(row).toContainText(/削除 .+・2026\/12\/24 \d{2}:00 ごろ自動で完全に削除/);
+  await expect(row).toContainText(/フォルダ・削除 .+2026\/12\/24 \d{2}:00 ごろ自動で完全に削除/);
+  await expect(row.getByText(/^2026\/12\/24 \d{2}:00 ごろ自動で完全に削除$/)).toBeVisible();
   await settle(page);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/7p-trash-retention-pc.png` });
+  // スマホの幅でも、自動で消える日時は切れずに読める（折り返す）。
+  await page.setViewportSize({ width: 390, height: 844 });
+  const deadline = row.getByText(/ごろ自動で完全に削除$/);
+  await expect(deadline).toBeInViewport();
+  expect(await deadline.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/7p-trash-retention-mobile.png` });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.unroute(listPattern);
   const purge = row.getByRole("button", { name: `「${folderName}」を完全に削除` });
 

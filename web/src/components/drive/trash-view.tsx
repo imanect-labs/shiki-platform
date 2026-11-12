@@ -178,15 +178,14 @@ export function TrashView() {
             <NodeIcon kind={node.kind} name={node.name} contentType={node.content_type} className="size-7 shrink-0" />
             <div className="min-w-0 flex-1">
               <p className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] md:truncate">{node.name}</p>
-              <p className="text-xs text-muted-foreground max-md:line-clamp-2 md:truncate">
+              <p className="truncate text-xs text-muted-foreground">
                 {nodeKindLabel(node)}・削除 <DateTime iso={node.deleted_at} />
-                {node.purge_after ? (
-                  <>
-                    ・<time dateTime={node.purge_after}>{formatDateTime(node.purge_after)}</time>{" "}
-                    ごろ自動で完全に削除
-                  </>
-                ) : null}
               </p>
+              {node.purge_after ? (
+                <p className="text-xs text-muted-foreground md:truncate">
+                  <time dateTime={node.purge_after}>{formatDateTime(node.purge_after)}</time> ごろ自動で完全に削除
+                </p>
+              ) : null}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               <Button
