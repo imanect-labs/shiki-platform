@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Leaf } from "lucide-react";
+import { ExternalLink, Leaf } from "lucide-react";
 
 import { useMe } from "@/hooks/use-me";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -25,7 +25,7 @@ import { moveToolChoice, readToolChoice, writeToolChoice } from "@/lib/tool-choi
 import { titleFrom } from "@/lib/chat-store";
 import type { InputFormat } from "@/lib/preferences";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
-import { microSeasonOf } from "@/lib/microseason";
+import { MICROSEASON_ABOUT_URL, microSeasonOf, type MicroSeason } from "@/lib/microseason";
 import { notableDayOf } from "@/lib/notable-days";
 import {
   createKindDef,
@@ -37,6 +37,7 @@ import {
   type Suggestion,
 } from "@/lib/home-modes";
 import { type ArtifactMeta } from "@/lib/artifact-api";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/chat/composer";
 import { ComposerArrow } from "@/components/home/composer-arrow";
@@ -289,16 +290,14 @@ function timeGreeting(now: Date): string {
 function TodayLine() {
   const [label, setLabel] = React.useState<{
     date: string;
-    kou: string;
-    term: string;
+    kou: MicroSeason;
     day: string | null;
   } | null>(null);
   React.useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const render = () => {
       const now = new Date();
-      const kou = microSeasonOf(now);
-      setLabel({ date: dateLabel(now), kou: kou.name, term: kou.term, day: notableDayOf(now) });
+      setLabel({ date: dateLabel(now), kou: microSeasonOf(now), day: notableDayOf(now) });
       // 次の午前 0 時に描き直す（数秒遅らせて日付の境目をまたいでから描く）。
       const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
       clearTimeout(timer);
@@ -321,7 +320,7 @@ function TodayLine() {
         <>
           <span className="tabular-nums">{label.date}</span>
           <span aria-hidden>・</span>
-          <span title={`二十四節気「${label.term}」の候`}>{label.kou}</span>
+          <MicroSeasonButton kou={label.kou} />
           {label.day ? (
             <>
               <span aria-hidden>・</span>
@@ -331,6 +330,40 @@ function TodayLine() {
         </>
       ) : null}
     </p>
+  );
+}
+
+/// 候名（押すと読み・意味・節気を出す）。飾りの 1 行なので見た目は文字のまま、下線だけで押せると示す。
+function MicroSeasonButton({ kou }: { kou: MicroSeason }) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        className="rounded-sm underline decoration-dotted underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        data-testid="home-microseason"
+      >
+        {kou.name}
+      </PopoverTrigger>
+      <PopoverContent align="start" className="space-y-2 text-sm" data-testid="home-microseason-detail">
+        <div>
+          <p className="text-xs text-muted-foreground">七十二候</p>
+          <p className="text-base font-medium">{kou.name}</p>
+          <p className="text-muted-foreground">{kou.reading}</p>
+        </div>
+        <p>{kou.meaning}</p>
+        <p className="text-xs text-muted-foreground">
+          二十四節気「{kou.term}」の{kou.phase}
+        </p>
+        <a
+          href={MICROSEASON_ABOUT_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-xs text-primary underline-offset-4 hover:underline"
+        >
+          七十二候について
+          <ExternalLink className="size-3" aria-hidden />
+        </a>
+      </PopoverContent>
+    </Popover>
   );
 }
 
