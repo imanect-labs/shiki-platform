@@ -98,9 +98,13 @@ fn required_scope(tool: ToolName) -> Option<CapabilityScope> {
     }
 }
 
-/// [`AgentEvent`] → SSE 中立形。
-fn to_ai_event(ev: &AgentEvent) -> AiEvent {
-    match ev {
+/// [`AgentEvent`] → SSE 中立形（ミニアプリの契約に載せないものは `None`）。
+fn to_ai_event(ev: &AgentEvent) -> Option<AiEvent> {
+    Some(match ev {
+        // コンテキストの内訳はチャット画面の表示用。ミニアプリの契約には載せない。
+        // 参照カード（D-204）はチャットの画面の部品で、ゲートウェイの道具は作らない。下の Debug の
+        // 受け口で中身（id・名前）をミニアプリへ流さないよう、ここで明示して落とす。
+        AgentEvent::ContextUsage(_) | AgentEvent::BuilderRef { .. } => return None,
         AgentEvent::Text(t) => AiEvent {
             event: "text".into(),
             data: json!({ "text": t }),
@@ -140,7 +144,7 @@ fn to_ai_event(ev: &AgentEvent) -> AiEvent {
             event: "event".into(),
             data: json!({ "debug": format!("{other:?}") }),
         },
-    }
+    })
 }
 
 /// AgentEvent を mpsc へ写す sink（受信側が消えたら協調キャンセル）。
@@ -151,12 +155,11 @@ struct ChannelSink {
 #[async_trait::async_trait]
 impl EventSink for ChannelSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), agent_core::AgentError> {
-        // コンテキストの内訳はチャット画面の表示用。ミニアプリの契約には載せない。
-        if matches!(event, AgentEvent::ContextUsage(_)) {
+        let Some(out) = to_ai_event(&event) else {
             return Ok(());
-        }
+        };
         // 受信側 drop（クライアント切断）は is_cancelled が拾う。ここでは無視してよい。
-        let _ = self.tx.send(to_ai_event(&event)).await;
+        let _ = self.tx.send(out).await;
         Ok(())
     }
 
@@ -566,6 +569,25 @@ mod tests {
             shown.contains("プロバイダに接続できませんでした"),
             "{shown}"
         );
+    }
+
+    /// 参照カード（D-204）とコンテキストの内訳はミニアプリの SSE に出ない（Debug の受け口へも落ちない）。
+    #[tokio::test]
+    async fn builder_refs_are_not_streamed_to_mini_apps() {
+        let (tx, mut rx) = mpsc::channel::<AiEvent>(8);
+        let mut sink = ChannelSink { tx };
+        let item =
+            json!({ "kind": "data_table", "id": "t-secret-id", "name": "顧客", "version": 1 });
+        sink.emit(AgentEvent::BuilderRef { item }).await.unwrap();
+        sink.emit(AgentEvent::Text("本文".into())).await.unwrap();
+        drop(sink);
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].event, "text");
+        assert!(!seen[0].data.to_string().contains("t-secret-id"));
     }
 
     #[test]
