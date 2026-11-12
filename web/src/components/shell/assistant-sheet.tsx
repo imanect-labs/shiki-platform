@@ -39,7 +39,7 @@ const MIN_BODY = 352;
 const GUTTER = 28;
 const WIDTH_KEY = "shiki.assistant-panel-width";
 
-/// 画面に入る最大幅。本文に MIN_BODY を残す（CSS の `calc(100%-380px)` と同じ式）。
+/// 画面に入る最大幅。本文に MIN_BODY を残す（本文の右余白の `calc(100%-352px)` と同じ考え方）。
 /// 画面が狭いときは MIN_WIDTH を下回る（そのときは幅を変えられない）。
 function maxWidthFor(rootWidth: number): number {
   return Math.max(0, Math.min(MAX_WIDTH, rootWidth - MIN_BODY - GUTTER));
@@ -91,8 +91,9 @@ export function AssistantLayout({
   const dock = useAssistantDock();
   const publish = dock?.publish;
   React.useEffect(() => {
-    publish?.({ open, width });
-  }, [publish, open, width]);
+    // 計測前（初回描画）は幅が丸まっていないので、上部バーにはまだ避けさせない。
+    publish?.({ open: open && rootWidth !== null, width });
+  }, [publish, open, width, rootWidth]);
   React.useEffect(() => () => publish?.(null), [publish]);
   const varRef = dock?.el ?? rootRef;
   return (
@@ -167,6 +168,23 @@ function AssistantSheet({
   children: React.ReactNode;
 }) {
   const [mode, setMode] = React.useState<SheetMode>("half");
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  // PC では開いている間、上部バーの ✨ トグルが隠れる。トグルから開いたときはフォーカスを
+  // パネルの × へ移し、× で閉じたときはトグルへ戻す（フォーカスが body へ落ちないように）。
+  React.useEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest("[data-assistant-toggle]")) {
+      closeRef.current?.focus();
+    }
+  }, [open]);
+  const closeAndRestoreFocus = () => {
+    onClose();
+    // トグルはパネルが消えた後の再描画で現れるので、次のフレームで戻す。
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>("[data-assistant-toggle]")?.focus(),
+    );
+  };
   // 幅つまみ（separator）の aria-controls が指すパネルの id。
   const paneId = React.useId();
   const sheetRef = React.useRef<HTMLDivElement>(null);
@@ -240,8 +258,8 @@ function AssistantSheet({
         "z-20 flex flex-col overflow-hidden bg-card",
         "animate-in fade-in-0 duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
         // PC: 画面の右端に縦いっぱい（上部バーも貫通）に浮かぶ角丸カード（幅は左端のつまみで変える）。
-        // 幅は JS 側で本文に MIN_BODY を残すよう丸め済み。
-        "lg:fixed lg:inset-y-3 lg:right-3 lg:w-[var(--assistant-w)] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
+        // 幅は JS 側で本文に MIN_BODY を残すよう丸め済み（計測前の 1 フレーム用に画面幅でも抑える）。
+        "lg:fixed lg:inset-y-3 lg:right-3 lg:w-[min(var(--assistant-w),calc(100vw-380px))] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
         // スマホ/タブレット: 下からのシート（非モーダル・本文は上に見えたまま）。
         "max-lg:absolute max-lg:inset-x-0 max-lg:bottom-0 max-lg:slide-in-from-bottom-8",
         "max-lg:h-[var(--assistant-sheet-h,var(--assistant-sheet-base))] max-lg:transition-[height] max-lg:duration-[var(--duration-normal)]",
@@ -286,8 +304,9 @@ function AssistantSheet({
           )}
         </button>
         <button
+          ref={closeRef}
           type="button"
-          onClick={onClose}
+          onClick={closeAndRestoreFocus}
           aria-label="チャットを閉じる"
           className="flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-90 lg:size-7 lg:rounded-md"
         >
@@ -326,6 +345,16 @@ function WidthHandle({
     null,
   );
   const [active, setActive] = React.useState(false);
+  // ドラッグ中にアンマウント（ページ遷移）しても、シェルの列に書いた状態を残さない。
+  React.useEffect(
+    () => () => {
+      const el = varRef.current;
+      if (!drag.current || !el) return;
+      delete el.dataset.resizing;
+      el.style.removeProperty("--assistant-w");
+    },
+    [varRef],
+  );
   const rootWidth = () => rootRef.current?.getBoundingClientRect().width ?? window.innerWidth;
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -385,6 +414,7 @@ function WidthHandle({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       onDoubleClick={() => onWidthChange(clampWidth(DEFAULT_WIDTH, rootWidth()))}
       onKeyDown={onKeyDown}
       // つまみは枠の内側 8px。目印の線は枠に重ねて 1 本だけ出す（グローバルのフォーカスリングは

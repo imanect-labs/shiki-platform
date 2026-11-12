@@ -279,6 +279,14 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   await expect(handle).toHaveAttribute("aria-valuenow", "420");
   await expect(handle).toHaveAttribute("aria-controls", /.+/);
 
+  // キーボードで開閉してもフォーカスが迷子にならない（✨ は開いている間隠れる）。
+  const toggle = page.getByTestId("note-ask-ai");
+  await page.getByRole("button", { name: "チャットを閉じる" }).click();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("button", { name: "チャットを閉じる" })).toBeFocused();
+  await expect(toggle).toBeHidden();
+
   // 画面が狭いと最大まで広げても本文に 352px を残す（最大幅は画面に合わせて縮む）。
   await page.setViewportSize({ width: 1280, height: 900 });
   await expect(handle).not.toHaveAttribute("aria-valuemax", "960");

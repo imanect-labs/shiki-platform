@@ -225,9 +225,11 @@ function AssistantToggle({ assistant }: { assistant: NonNullable<PageChromeSpec[
       pressed={assistant.active}
       onClick={assistant.onToggle}
       data-testid={assistant.testId}
-      // PC（lg 以上）で開いている間は、パネルが上部バーの隣に縦いっぱいに出て自身の × で閉じられる
-      // ので、トグルは隠して ⋯ だけをパネルの左隣に残す。
-      className={assistant.active ? "lg:hidden" : undefined}
+      data-assistant-toggle=""
+      // PC（lg 以上）でパネルが実際に出ている間は、パネルが上部バーの隣に縦いっぱいに出て自身の ×
+      // で閉じられるので、トグルは隠して ⋯ だけをパネルの左隣に残す（ページの開閉フラグではなく
+      // シェルの列の data-assistant-open で判定する。セッション準備前などパネルが出ていない間は残す）。
+      className="lg:group-data-[assistant-open]/assistant:hidden"
     >
       <Sparkles aria-hidden />
     </ChromeIconButton>
