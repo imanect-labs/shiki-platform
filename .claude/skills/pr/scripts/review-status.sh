@@ -209,7 +209,7 @@ else
       blocked=1
     fi
 
-    # 参考情報: HEAD に対して review も status も残していない bot を挙げる。
+    # 参考情報: HEAD に対して review を残していない bot を挙げる。
     silent_bots=""
     for bot in $PR_REVIEW_BOTS; do
       reviewed=$(printf '%s' "$reviews_json" | jq -r --arg b "$bot" --arg sha "$HEAD_SHA" \

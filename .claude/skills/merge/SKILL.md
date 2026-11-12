@@ -31,11 +31,14 @@ Step 5  後始末と報告          Issue のクローズ確認・作った Issu
 - `.claude/skills/pr/scripts/review-status.sh` が **exit 0** になったら Step 2 へ。
 - `/pr` の Phase 7 で**エスカレート**（3 反復で未解消）になったら、**マージせずに止めて** human に報告する。
 
-緑にした時点の HEAD を控える（Step 3 で使う）:
+緑にした時点の HEAD の SHA を**値として**控える（Step 2・3 で使う）:
 
 ```bash
-GREEN_SHA=$(gh pr view --json headRefOid -q .headRefOid)
+gh pr view --json headRefOid -q .headRefOid
 ```
+
+シェル変数に入れて済ませない。Bash ツールは呼び出しごとにシェル状態が消えるので、後の Step で `$GREEN_SHA` が空になり、
+`--match-head-commit ""` は**固定なし**として通ってしまう。以降の `<GREEN_SHA>` には控えた 40 桁をそのまま書く。
 
 ## Step 2 — マージ前の確認
 
@@ -49,7 +52,7 @@ gh pr view --json number,url,state,isDraft,baseRefName,mergeable,headRefOid,clos
 | `isDraft` | `false` | draft のまま出したのが意図的か human に確認する（勝手に ready にしない） |
 | `baseRefName` | `main` | スタック PR。親 PR が main に入り、この PR の base が main に付け替わるまでマージしない。親のマージは human に確認する |
 | `mergeable` | `MERGEABLE` | `CONFLICTING` なら `git fetch origin main && git rebase origin/main` → push → **Step 1 に戻る**（HEAD が変わったので緑はやり直し）。`UNKNOWN` は数十秒待って再取得 |
-| `headRefOid` | `$GREEN_SHA` と一致 | 緑の後に push がある。Step 1 に戻る |
+| `headRefOid` | 控えた `<GREEN_SHA>` と一致 | 緑の後に push がある。Step 1 に戻る |
 | `closingIssuesReferences` | 対応 Issue がある | 本文に `Closes #<n>` が無ければ足す（`dev-workflow` の規約） |
 
 ## Step 3 — マージキューに入れる
@@ -57,11 +60,11 @@ gh pr view --json number,url,state,isDraft,baseRefName,mergeable,headRefOid,clos
 main はマージキュー必須。マージ方式はキュー側の設定で決まるので、`--squash` 等は付けない。
 
 ```bash
-gh pr merge <PR#> --match-head-commit "$GREEN_SHA"
+gh pr merge <PR#> --match-head-commit <GREEN_SHA>
 ```
 
 - `--match-head-commit` で、確認した HEAD 以外がマージされるのを防ぐ（その間に誰かが push していたら失敗する → Step 1 へ）。
-- 必須チェックの一部が未完了だと auto-merge の予約になる。それで構わない（Step 4 で見届ける）。
+- 必須チェックの一部が未完了だと auto-merge の予約になる。それで構わない（`queue-wait.sh` は予約中を待機として扱う）。
 - 「キューが無い」旨のエラーで直マージを求められたら、リポジトリ設定が変わっている。方式を推測で選ばず human に確認する。
 
 ## Step 4 — キューを見届ける
@@ -92,10 +95,13 @@ gh pr merge <PR#> --match-head-commit "$GREEN_SHA"
    ```
 
 2. 原因を分類する:
+   PR で選ばれなかったテストがキューで落ちると、CI の `selection-gap` ジョブが Issue を自動起票する（既存があればコメント。
+   `.claude/skills/pr/references/gates.md`）。**自分で Issue を切る前に、その Issue が出ていないか確認し、あればそれに紐づける**（二重起票しない）。
+
    - **この PR が壊した**（PR では選ばれなかったテストが落ちた）→ ブランチで直し、`/pr` の Phase 1 から回し直して Step 1 に戻る。
      テスト選択の漏れなら `ci/scenarios.toml` / `scripts/ci-select.py` の規則も同じ PR で直す。
    - **flaky・基盤障害**（この PR の変更と無関係なテスト、再実行で通る）→ 根拠を PR にコメントで残し、Step 3 から 1 回だけ再投入する。
-     2 回目も落ちたら flaky と決めつけずに human に報告する。flaky なテストは Issue に切る。
+     2 回目も落ちたら flaky と決めつけずに human に報告する。flaky なテストは（selection-gap の Issue が無ければ）Issue に切る。
    - **キュー内の前の PR とのコンフリクト** → rebase して Step 1 に戻る。
 3. キュー起因のやり直しは **2 回まで**。超えたら止めて、落ちたジョブ・試したこと・必要な判断を human に報告する。
 
