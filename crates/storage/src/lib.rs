@@ -43,6 +43,7 @@ pub mod pool_router;
 pub mod service;
 pub mod tenant;
 pub mod tenant_scope;
+pub mod trash_retention;
 pub mod tuple_commit;
 pub mod upload_gc_timer;
 

@@ -16,12 +16,27 @@
 //!
 //! ロックの順は **node（id の昇順・FOR UPDATE）→ blob（sha256 の昇順・[`lock_blob`]）→ 監査のチェーン**
 //! （書き込みと同じ・`upload::bump_blob`）。
+//!
+//! 保持期間を過ぎたものの自動の完全削除（GAP-108c・D-202・`crate::trash_retention`）も、同じ本体
+//! （[`StorageService::purge_for_retention`]）で消す。主体はシステム（`system:trash-retention`）で、権限の check は
+//! 通さない。根を押さえた後に、まだ期限を過ぎているかを確かめ直す。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+use sqlx::{Postgres, Transaction};
+
 use super::upload::lock_blob;
 use crate::audit::AuditAction;
+use crate::trash_retention::{due_on, RetentionPurge, SWEEP_ACTOR};
+
+/// 完全削除の監査の書き方（利用者の操作か、保持期間の掃除か）。
+struct PurgeAudit<'a> {
+    action: AuditAction,
+    /// metadata に足す項目（数の項目のほか）。
+    extra: serde_json::Value,
+    trace_id: Option<&'a str>,
+}
 
 /// commit の後に、1 回の呼び出しの中で片付ける片付け待ちの行の上限（残りは掃除が片付ける）。
 ///
@@ -191,6 +206,71 @@ impl StorageService {
             Ok(locked) => locked,
             Err(refused) => return Ok(refused),
         };
+        let audit = PurgeAudit {
+            action: purge_action(kind),
+            extra: json!({}),
+            trace_id,
+        };
+        let report = self
+            .purge_rows(tx, ctx, (root_id, kind), &locked, audit, cleanup_budget)
+            .await?;
+        Ok(PurgeOutcome::Purged(report))
+    }
+
+    /// 保持期間を過ぎた削除の根を、根の組織のシステムの主体（[`SWEEP_ACTOR`]）で配下ごと完全に削除する
+    /// （GAP-108c・D-202・`crate::trash_retention` の掃除だけが呼ぶ）。
+    ///
+    /// 権限の check は通さない（人の操作ではない）。利用者の完全削除と同じく根と配下を押さえ、押さえた後の値で、
+    /// 消してよいか（ゴミ箱の根で、中に生きているノードが無い）と、`now` でまだ期限を過ぎているか
+    /// （[`due_on`]）を確かめ直す。監査は `storage.trash_retention.purge` をチェーンで残す。
+    pub(crate) async fn purge_for_retention(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        (root_id, kind): (Uuid, NodeKind),
+        now: DateTime<Utc>,
+        cleanup_budget: &mut usize,
+    ) -> Result<RetentionPurge, StorageError> {
+        let ctx = system_ctx(tenant_id, org, SWEEP_ACTOR)?;
+        let mut tx = self.db.begin().await?;
+        let locked = match lock_subtree(&mut tx, &ctx, root_id, kind).await? {
+            Ok(locked) => locked,
+            Err(refused) => return Ok(RetentionPurge::Refused(refused)),
+        };
+        // 候補を選んでから押さえるまでの間に、復元して削除し直した・保持期間を変えた、を拾う。
+        let Some(due) = due_on(&mut tx, &ctx, root_id, now).await? else {
+            return Ok(RetentionPurge::NotDue);
+        };
+        let audit = PurgeAudit {
+            action: AuditAction::StorageTrashRetentionPurge,
+            extra: json!({
+                "retention_days": due.days,
+                "deleted_at": due.deleted_at,
+            }),
+            trace_id: None,
+        };
+        let report = self
+            .purge_rows(tx, &ctx, (root_id, kind), &locked, audit, cleanup_budget)
+            .await?;
+        Ok(RetentionPurge::Purged(report))
+    }
+
+    /// 接続プール（テナントを横断する保守の掃除 `crate::trash_retention` が、候補の選び出しとリーダーのロックに使う）。
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.db
+    }
+
+    /// 押さえた根と配下（`locked`）の行を消し、監査・イベント・片付け待ちを残して commit し、その場で片付ける。
+    async fn purge_rows(
+        &self,
+        mut tx: Transaction<'static, Postgres>,
+        ctx: &AuthContext,
+        (root_id, kind): (Uuid, NodeKind),
+        locked: &[LockedNode],
+        audit: PurgeAudit<'_>,
+        cleanup_budget: &mut usize,
+    ) -> Result<PurgeReport, StorageError> {
+        let trace_id = audit.trace_id;
         let ids: Vec<Uuid> = locked.iter().map(|n| n.id).collect();
 
         // 3. 消す版を blob ごとに数える（refcount = node_version の行数）。行を消す前に数える。
@@ -242,34 +322,39 @@ impl StorageService {
                 .sum(),
             freed_bytes,
         };
+        let mut metadata = json!({
+            "subtree_count": report.nodes,
+            "file_count": report.files,
+            "version_count": report.versions,
+            "freed_bytes": report.freed_bytes,
+        });
+        if let (Some(m), serde_json::Value::Object(extra)) = (metadata.as_object_mut(), audit.extra)
+        {
+            m.extend(extra);
+        }
         audit::record_on(
             &mut tx,
             ctx,
             AuditEntry {
-                action: purge_action(kind),
+                action: audit.action,
                 object_type: kind.as_str(),
                 object_id: &root_id.to_string(),
                 decision: Decision::Allow,
                 trace_id,
-                metadata: json!({
-                    "subtree_count": report.nodes,
-                    "file_count": report.files,
-                    "version_count": report.versions,
-                    "freed_bytes": report.freed_bytes,
-                }),
+                metadata,
             },
             Chain::Yes,
         )
         .await?;
 
         // 8. 消したノードのタプルを片付け待ちに入れる（根を先に片付ける）。
-        let mut cleanup = enqueue_tuples(&mut tx, ctx, &locked, root_id).await?;
+        let mut cleanup = enqueue_tuples(&mut tx, ctx, locked, root_id).await?;
         tx.commit().await?;
 
         // commit の後にその場で片付ける（タプル → 本体）。
         cleanup.append(&mut objects);
         self.drain_cleanup(ctx, &cleanup, cleanup_budget).await;
-        Ok(PurgeOutcome::Purged(report))
+        Ok(report)
     }
 
     /// 消すノードの行と、それを指す行（外部キーのある子・外部キーの無い台帳）を消す（完全削除の Tx の中で呼ぶ）。

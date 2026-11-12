@@ -7,9 +7,11 @@
 //! 1 周で TTL sweep → 孤児 sweep の順に回す。TTL sweep が行を消してから孤児 sweep が走ると、
 //! 同じ周でオブジェクトの取り残しまで回収できる（TTL sweep の delete_batch が失敗した場合）。
 //!
-//! 同じ周の最後に、完全削除の片付け待ち（`storage_purge_pending`・GAP-108）も片付ける
-//! （[`StorageService::sweep_purge_pending`]）。api の配線と設定は増やさず、このタイマに相乗りする。
-//! `upload_gc.enabled=false` の環境では片付けが残るが、DB の行はもう無いので利用者に見えるものは増えない。
+//! 同じ周で、保持期間を過ぎたゴミ箱の中身の完全削除（GAP-108c・D-202・[`StorageService::sweep_trash_retention`]）
+//! を回し、最後に完全削除の片付け待ち（`storage_purge_pending`・GAP-108）を片付ける
+//! （[`StorageService::sweep_purge_pending`]）。保持期間の完全削除が積んだ片付け待ちも同じ周で片付く。api の配線と
+//! 設定は増やさず、このタイマに相乗りする。`upload_gc.enabled=false` の環境では、保持期間の完全削除も片付けも回らない
+//! （保持期間を入れたテナントのゴミ箱が消えない。片付けが残っても DB の行はもう無いので利用者に見えるものは増えない）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -71,6 +73,25 @@ pub fn spawn_upload_gc_timer(
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "孤児オブジェクトの削除に失敗しました");
+                    failed = true;
+                }
+            }
+
+            // 根ごとの失敗は数えて次の周に回す。候補を引けない（DB に届かない）ときだけ待ちを延ばす。
+            match service.sweep_trash_retention(chrono::Utc::now()).await {
+                Ok(r) if r.purged > 0 || r.live_descendants > 0 || r.failed > 0 => {
+                    tracing::info!(
+                        purged = r.purged,
+                        nodes = r.nodes,
+                        live_descendants = r.live_descendants,
+                        failed = r.failed,
+                        more = r.more,
+                        "保持期間を過ぎたゴミ箱の中身を完全に削除しました（GAP-108c）"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "ゴミ箱の保持期間を適用できませんでした");
                     failed = true;
                 }
             }
