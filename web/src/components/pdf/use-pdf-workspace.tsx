@@ -18,6 +18,7 @@ import { PdfExcerptPanel } from "./pdf-excerpt-panel";
 import { PdfUtilities } from "./pdf-utilities";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { AVOID_ASSISTANT } from "@/components/shell/assistant-dock";
 import { queuePdfAttachments, clearPdfAttachmentsForTarget } from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "@/lib/storage";
 import type { Attachment } from "@/lib/chat-api";
@@ -302,7 +303,11 @@ export function usePdfWorkspace({
     ));
   const toolbar = (
     <div
-      className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background px-3 py-2 md:px-4"
+      className={cn(
+        "flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-background px-3 py-2 md:px-4",
+        // アシスタントパネルは上まで貫通するので、その下に潜らないよう右を空ける。
+        AVOID_ASSISTANT,
+      )}
       data-testid="pdf-workspace-toolbar"
     >
       <div

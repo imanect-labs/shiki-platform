@@ -2,7 +2,9 @@
 
 /// 文書エディタ（ノート・スライド・CSV・Office）の AI アシスタントの共通コンテナ。
 ///
-/// - lg 以上: 本文の右に浮かぶ角丸カード（本文はパネル幅ぶんの右余白でパネルを避ける）。
+/// - lg 以上: 画面の右端に縦いっぱい（上部バーの高さまで貫通）に浮かぶ角丸カード。本文は
+///   パネル幅ぶんの右余白で、上部バーは `AVOID_ASSISTANT` でパネルを避ける（⋯ がパネルの左隣に
+///   来る）。開閉と幅は `assistant-dock` 経由でシェルの列へ渡す。
 ///   左端のつまみをドラッグ（または ←/→ キー）で幅を変えられ、幅は画面の好みとして保存する
 ///   （ダブルクリックで既定幅へ戻す）。
 /// - lg 未満: 下からの**非モーダル**なシート。初期は約 55dvh（半分）で、本文はシートの上に
@@ -16,6 +18,7 @@
 import { Maximize2, Minimize2, Sparkles, X } from "lucide-react";
 import * as React from "react";
 
+import { useAssistantDock } from "@/components/shell/assistant-dock";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
@@ -83,12 +86,20 @@ export function AssistantLayout({
   const rootWidth = useElementWidth(rootRef);
   const width = clampWidth(saved, rootWidth ?? Number.POSITIVE_INFINITY);
   const maxWidth = Math.round(maxWidthFor(rootWidth ?? Number.POSITIVE_INFINITY));
+  // 幅は CSS 変数で本文の右余白・パネル幅・上部バーの右余白へ渡す（ドラッグ中は変数だけ書き換える）。
+  // シェルの中ではシェルの列に載せ（上部バーも読む）、シェルの外では自分に載せる。
+  const dock = useAssistantDock();
+  const publish = dock?.publish;
+  React.useEffect(() => {
+    publish?.({ open, width });
+  }, [publish, open, width]);
+  React.useEffect(() => () => publish?.(null), [publish]);
+  const varRef = dock?.el ?? rootRef;
   return (
     <div
       ref={rootRef}
-      // 幅は CSS 変数で本文の右余白とパネル幅の両方へ渡す（ドラッグ中は変数だけ書き換える）。
       // 画面が狭くて保存幅が入らないときは calc 側で本文に MIN_BODY を残す。
-      style={{ "--assistant-w": `${width}px` } as React.CSSProperties}
+      style={dock ? undefined : ({ "--assistant-w": `${width}px` } as React.CSSProperties)}
       className={cn("group/assistant relative flex min-h-0 flex-1", className)}
     >
       <div
@@ -122,6 +133,7 @@ export function AssistantLayout({
           width={width}
           maxWidth={maxWidth}
           rootRef={rootRef}
+          varRef={varRef}
           onWidthChange={setStored}
         >
           {panel}
@@ -139,6 +151,7 @@ function AssistantSheet({
   width,
   maxWidth,
   rootRef,
+  varRef,
   onWidthChange,
   children,
 }: {
@@ -149,6 +162,7 @@ function AssistantSheet({
   width: number;
   maxWidth: number;
   rootRef: React.RefObject<HTMLDivElement | null>;
+  varRef: React.RefObject<HTMLDivElement | null>;
   onWidthChange: (w: number) => void;
   children: React.ReactNode;
 }) {
@@ -225,8 +239,9 @@ function AssistantSheet({
       className={cn(
         "z-20 flex flex-col overflow-hidden bg-card",
         "animate-in fade-in-0 duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-        // PC: 本文の右に浮かぶ角丸カード（幅は左端のつまみで変える）。
-        "lg:absolute lg:inset-y-3 lg:right-3 lg:w-[min(var(--assistant-w),calc(100%-380px))] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
+        // PC: 画面の右端に縦いっぱい（上部バーも貫通）に浮かぶ角丸カード（幅は左端のつまみで変える）。
+        // 幅は JS 側で本文に MIN_BODY を残すよう丸め済み。
+        "lg:fixed lg:inset-y-3 lg:right-3 lg:w-[var(--assistant-w)] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
         // スマホ/タブレット: 下からのシート（非モーダル・本文は上に見えたまま）。
         "max-lg:absolute max-lg:inset-x-0 max-lg:bottom-0 max-lg:slide-in-from-bottom-8",
         "max-lg:h-[var(--assistant-sheet-h,var(--assistant-sheet-base))] max-lg:transition-[height] max-lg:duration-[var(--duration-normal)]",
@@ -240,6 +255,7 @@ function AssistantSheet({
           width={width}
           maxWidth={maxWidth}
           rootRef={rootRef}
+          varRef={varRef}
           onWidthChange={onWidthChange}
         />
       ) : null}
@@ -285,13 +301,14 @@ function AssistantSheet({
 
 /// PC パネルの左端の幅つまみ（WAI-ARIA の window splitter）。
 ///
-/// ドラッグ中は再描画せず、ルートの `--assistant-w` を直接書き換える（本文の右余白とパネル幅が
+/// ドラッグ中は再描画せず、`varRef`（シェルの列）の `--assistant-w` を直接書き換える（本文の右余白・パネル幅・上部バーが
 /// 同じ変数で追従する）。離したときに保存する。←/→ キーで 16px ずつ、ダブルクリックで既定幅。
 function WidthHandle({
   controls,
   width,
   maxWidth,
   rootRef,
+  varRef,
   onWidthChange,
 }: {
   /// 幅を変えるパネルの id（aria-controls）。
@@ -299,7 +316,10 @@ function WidthHandle({
   /// 表示中の幅（画面に入るよう丸めた値）。
   width: number;
   maxWidth: number;
+  /// 幅の基準（本文＋パネルの領域）。
   rootRef: React.RefObject<HTMLDivElement | null>;
+  /// ドラッグ中に `--assistant-w` と `data-resizing` を書く要素。
+  varRef: React.RefObject<HTMLDivElement | null>;
   onWidthChange: (w: number) => void;
 }) {
   const drag = React.useRef<{ id: number; startX: number; startW: number; rootW: number; w: number } | null>(
@@ -310,7 +330,7 @@ function WidthHandle({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!root) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -321,7 +341,7 @@ function WidthHandle({
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!d || !root || d.id !== e.pointerId) return;
     // 左端をつかむので、左へ動かすほど広がる。
     d.w = clampWidth(d.startW - (e.clientX - d.startX), d.rootW);
@@ -329,7 +349,7 @@ function WidthHandle({
   };
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!d || d.id !== e.pointerId) return;
     drag.current = null;
     setActive(false);
