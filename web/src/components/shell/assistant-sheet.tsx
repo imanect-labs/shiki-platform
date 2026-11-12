@@ -180,10 +180,16 @@ function AssistantSheet({
   }, [open]);
   const closeAndRestoreFocus = () => {
     onClose();
-    // トグルはパネルが消えた後の再描画で現れるので、次のフレームで戻す。
-    requestAnimationFrame(() =>
-      document.querySelector<HTMLElement>("[data-assistant-toggle]")?.focus(),
-    );
+    // トグルはパネルが消えた後（シェルの列の再描画）で現れるので、現れるまで数フレーム試す。
+    let tries = 0;
+    const restore = () => {
+      const toggle = document.querySelector<HTMLElement>("[data-assistant-toggle]");
+      toggle?.focus();
+      if (toggle && document.activeElement !== toggle && ++tries < 10) {
+        requestAnimationFrame(restore);
+      }
+    };
+    requestAnimationFrame(restore);
   };
   // 幅つまみ（separator）の aria-controls が指すパネルの id。
   const paneId = React.useId();

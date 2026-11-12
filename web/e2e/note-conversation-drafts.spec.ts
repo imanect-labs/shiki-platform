@@ -284,7 +284,10 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   await page.getByRole("button", { name: "チャットを閉じる" }).click();
   await expect(toggle).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("button", { name: "チャットを閉じる" })).toBeFocused();
+  // 開いたらフォーカスはパネルの中（× か入力欄）へ移る。
+  await expect
+    .poll(() => sheet.evaluate((el) => el.contains(document.activeElement)))
+    .toBe(true);
   await expect(toggle).toBeHidden();
 
   // 画面が狭いと最大まで広げても本文に 352px を残す（最大幅は画面に合わせて縮む）。
