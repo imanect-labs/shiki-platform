@@ -95,6 +95,7 @@ import {
 import { Composer } from "./composer";
 import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
+import { BuilderRefCard, parseBuilderRef } from "./builder-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { TranslationBlock } from "./translation-block";
@@ -152,6 +153,8 @@ type StreamState = {
   skillDrafts: unknown[];
   /// AI が作成/編集した文書の参照（#381・save_document / save_sheet / 各編集ツール）。
   documentRefs: unknown[];
+  /// AI が作った・直したテーブル・ビュー・アプリ・ワークフローの参照（D-204・builder_ref）。
+  builderRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   approval: ApprovalRequest | null;
@@ -204,6 +207,7 @@ const EMPTY_STREAM: StreamState = {
   csvDrafts: [],
   skillDrafts: [],
   documentRefs: [],
+  builderRefs: [],
   plan: [],
   approval: null,
   budget: null,
@@ -529,6 +533,8 @@ export function Conversation({
         ),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
+      onBuilderRef: (item) =>
+        updateStream((s) => (s ? { ...s, builderRefs: [...s.builderRefs, item] } : s)),
       onTranslation: (raw) =>
         updateStream((s) => (s ? { ...s, translations: [...s.translations, raw] } : s)),
       onNoteDraft: (raw) => {
@@ -1248,6 +1254,11 @@ function finalizeStream(
   for (const draft of s.skillDrafts) blocks.push({ type: "skill_draft", draft });
   // AI が作成/編集した文書への参照カード（#381）。
   for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
+  // 作ったテーブル・ビュー・アプリ・ワークフローへの参照カード（D-204）。形の崩れたものは残さない。
+  for (const raw of s.builderRefs) {
+    const item = parseBuilderRef(raw);
+    if (item) blocks.push({ type: "builder_ref", item });
+  }
   // 本文が無くても、途中で止まった理由があれば注記だけの行を残す（黙って消えた回答にしない・GAP-106）。
   if (blocks.length === 0 && !stopReason) return;
   setMessages((prev) => [
@@ -1537,6 +1548,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const documentRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
   );
+  const builderRefs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "builder_ref" }> => b.type === "builder_ref",
+  );
   // レガシー下書き（#381 で廃止）。過去スレッドを黙って空にしないため読み取り専用で残す。
   const legacyDocumentDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_draft" }> => b.type === "document_draft",
@@ -1565,6 +1579,9 @@ const AssistantRow = React.memo(function AssistantRow({
           ))}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
+          ))}
+          {builderRefs.map((b, i) => (
+            <BuilderRefCard key={i} raw={b.item} />
           ))}
           {noteRefs.map((b, i) => (
             <NoteRefCard key={i} raw={b.note} />
@@ -1712,6 +1729,9 @@ function StreamingRow({
           ))}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
+          ))}
+          {stream.builderRefs.map((item, i) => (
+            <BuilderRefCard key={i} raw={item} />
           ))}
           {stream.noteDrafts.map((draft, i) => (
             <NoteDraftCard key={i} raw={draft} threadId={threadId} />

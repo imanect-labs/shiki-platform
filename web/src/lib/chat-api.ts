@@ -39,6 +39,11 @@ export type SlideDraft = { name: string; content: string };
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。csv=CSV 本文。
 export type CsvDraft = { name: string; csv: string };
 
+/// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（builder_ref・D-204）。
+/// **`crates/chat` の `builder_obs::BuilderRef` から生成**した型（kind の語彙も backend が単一の定義）。
+export type BuilderRef = components["schemas"]["BuilderRef"];
+export type BuilderKind = components["schemas"]["BuilderKind"];
+
 /// AI が作成/編集した文書への参照（#381）。kind=office/note/slide/csv/file。
 export type DocumentRefPayload = {
   id: string;
@@ -570,6 +575,9 @@ export type StreamHandlers = {
   onSkillDraft?: (draft: unknown) => void;
   /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
   onDocumentRef?: (document: unknown) => void;
+  /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（D-204）。カードにする。
+  /// 値は backend が JSON のまま持つので、描く側が形を確かめる（`parseBuilderRef`）。
+  onBuilderRef?: (item: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
   /// サブエージェント委譲の記録（#391）。担当範囲とステップ数を展開表示に足す。
@@ -695,6 +703,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
+        break;
+      case "builder_ref":
+        handlers.onBuilderRef?.(kind.item);
         break;
       case "subagent_run": {
         // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
