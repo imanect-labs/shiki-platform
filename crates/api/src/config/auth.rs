@@ -99,6 +99,12 @@ impl AuthConfig {
         )
     }
 
+    /// サーバ側 end-session エンドポイント（内部 base 由来）。refresh token を送って Keycloak の SSO セッションを
+    /// 終える（ブラウザを通さない・[`crate::oidc::end_sso_session`]）。
+    pub fn backchannel_end_session_endpoint(&self) -> String {
+        format!("{}/protocol/openid-connect/logout", self.backchannel_base())
+    }
+
     /// Keycloak Account REST の base URL（ユーザー自身の資格情報・セッション）。
     /// サーバ側から叩くため内部 base（無ければ issuer）由来。
     pub fn account_base(&self) -> String {

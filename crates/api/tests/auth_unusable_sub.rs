@@ -2,7 +2,8 @@
 //! 断ることの統合テスト（外部依存なし）。
 //!
 //! - ログイン（`/auth/callback`）: JSON の 401 を見せずに `/login?error=account_unusable` へ戻す。セッションの Cookie を
-//!   出さず、OpenFGA（組織の member・ロール）にも触れない。
+//!   出さず、OpenFGA（組織の member・ロール）にも触れない。受け取った refresh token で Keycloak の SSO セッションを
+//!   サーバ側から終える（終えられなくてもログイン画面へは戻す）。
 //! - セッションの更新: refresh で受け取ったトークンの sub が使えなければ、セッションを捨てて 401 にする（この変更より
 //!   前にできたセッションの人を、古い principal のまま続けさせない）。
 //!
@@ -22,7 +23,7 @@
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -307,16 +308,32 @@ fn jwks_body(kid: &str) -> serde_json::Value {
     })
 }
 
-/// token / JWKS を返す in-process モック IdP を立て、その base URL を返す。
-/// `token_status` で token エンドポイントの応答ステータスを差し替えできる。
+/// モック IdP の logout エンドポイントが受けた form の本文。
+type LogoutCalls = Arc<Mutex<Vec<String>>>;
+
+/// token / JWKS / logout を返す in-process モック IdP を立て、その base URL と logout が受けた本文を返す。
+/// `token_status` で token エンドポイントの、`logout_status` で logout エンドポイントの応答ステータスを差し替えできる。
 async fn spawn_idp(
     token_status: StatusCode,
     token_body: serde_json::Value,
     jwks_kid: &str,
-) -> String {
+    logout_status: StatusCode,
+) -> (String, LogoutCalls) {
     use axum::{routing::get, routing::post, Json, Router};
     let jwks = jwks_body(jwks_kid);
+    let calls = LogoutCalls::default();
+    let seen = Arc::clone(&calls);
     let app = Router::new()
+        .route(
+            "/realms/shiki/protocol/openid-connect/logout",
+            post(move |body: String| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    seen.lock().unwrap().push(body);
+                    logout_status
+                }
+            }),
+        )
         .route(
             "/realms/shiki/protocol/openid-connect/token",
             post(move || {
@@ -336,7 +353,7 @@ async fn spawn_idp(
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    format!("http://{addr}/realms/shiki")
+    (format!("http://{addr}/realms/shiki"), calls)
 }
 
 fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
@@ -640,13 +657,18 @@ fn access_token_for(sub: &str) -> String {
 #[tokio::test]
 async fn login_with_an_unusable_sub_goes_back_to_the_login_page_without_a_session() {
     // フェデレーションで Import を切った人の sub（`f:<provider>:<username>`）と、OpenFGA が受け付けてしまう `|`。
-    for sub in ["f:ldap:bob", "a|b"] {
+    // Keycloak の logout が誤りを返しても、ログイン画面へは同じように戻す。
+    for (sub, logout_status) in [
+        ("f:ldap:bob", StatusCode::NO_CONTENT),
+        ("a|b", StatusCode::NO_CONTENT),
+        ("f:ldap:carol", StatusCode::INTERNAL_SERVER_ERROR),
+    ] {
         let token_body = serde_json::json!({
             "access_token": access_token_for(sub),
             "refresh_token": "rt",
             "expires_in": 3600,
         });
-        let idp = spawn_idp(StatusCode::OK, token_body, KID).await;
+        let (idp, logout_calls) = spawn_idp(StatusCode::OK, token_body, KID, logout_status).await;
         let authz = Arc::new(Counting::default());
         let store = Arc::new(MemorySessionStore::new());
         let app = build_router(state_with(
@@ -688,7 +710,31 @@ async fn login_with_an_unusable_sub_goes_back_to_the_login_page_without_a_sessio
         // 組織の member もロールも書かない（裏の同期も走らせない）。
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(authz.calls(), 0, "{sub:?}: OpenFGA に触れない");
+        // Keycloak の SSO セッションを、受け取った refresh token でサーバ側から終える（開き直したログイン画面で
+        // Keycloak が同じ人を黙って通さない）。
+        let calls = logout_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "{sub:?}: {calls:?}");
+        let form: Vec<(String, String)> = url_form(&calls[0]);
+        for pair in [
+            ("client_id", "shiki-web"),
+            ("client_secret", "secret"),
+            ("refresh_token", "rt"),
+        ] {
+            assert!(
+                form.iter().any(|(k, v)| (k.as_str(), v.as_str()) == pair),
+                "{sub:?}: {form:?}"
+            );
+        }
     }
+}
+
+/// `application/x-www-form-urlencoded` の本文を組に分ける。
+fn url_form(body: &str) -> Vec<(String, String)> {
+    reqwest::Url::parse(&format!("http://x/?{body}"))
+        .unwrap()
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect()
 }
 
 /// 署名なしの JWT 形状トークン（refresh の backchannel 応答を模す。claims を載せる）。
@@ -709,7 +755,7 @@ async fn refresh_with_an_unusable_sub_drops_the_session() {
         "refresh_token": "rt2",
         "expires_in": 3600,
     });
-    let idp = spawn_idp(StatusCode::OK, token_body, KID).await;
+    let (idp, _) = spawn_idp(StatusCode::OK, token_body, KID, StatusCode::NO_CONTENT).await;
     let authz = Arc::new(Counting::default());
     let store = Arc::new(MemorySessionStore::new());
     let record = SessionRecord {

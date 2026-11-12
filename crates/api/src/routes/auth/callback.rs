@@ -22,6 +22,8 @@ use super::{
 const ORG_MEMBER_WAIT: Duration = Duration::from_secs(3);
 /// sub が利用者の id に使えない人を戻すログイン画面（D-205・`web/src/app/login/page.tsx` が文言を出す）。
 const ACCOUNT_UNUSABLE_URL: &str = "/login?error=account_unusable";
+/// sub が使えない人の Keycloak の SSO セッションを終えるのを待つ長さ（過ぎたら終えずに戻す）。
+const END_SSO_WAIT: Duration = Duration::from_secs(3);
 use crate::{
     config::AuthConfig,
     error::ApiError,
@@ -83,7 +85,15 @@ pub async fn callback(
     // クレームが move されるため先に取り出す。
     let keycloak_sid = verified.sid.clone();
     // sub が利用者の id に使えない人（D-205）は、タプルもセッションも作らずに戻し、JSON の 401 は見せない。
-    let principal = match principal_or_unusable(verified, flow.action.as_ref()) {
+    // ふつうのログインでは Keycloak の SSO セッションも終える（principal_or_refuse）。
+    let refused = principal_or_refuse(
+        &state,
+        verified,
+        flow.action.as_ref(),
+        tokens.refresh_token.as_deref(),
+    )
+    .await;
+    let principal = match refused {
         Ok(principal) => principal,
         Err(back) => {
             let jar = jar.add(removal_cookie(FLOW_COOKIE, state.config.session.secure));
@@ -99,24 +109,7 @@ pub async fn callback(
         return Ok((jar, Redirect::to(&back)));
     }
 
-    // 撤去中/撤去済みテナントは新規ログインを拒否する（SAAS.2。セッション失効と IdP ユーザー
-    // 削除の間に完了するログイン競合を塞ぐ）。レジストリ未登録（dev fixture 等）は許可。
-    // レジストリが読めない場合は**警告して継続**（fail-open）: これは purge 中の狭い競合を塞ぐ
-    // 二次ベルトであり、purge 後はデータ面（FGA/DB/オブジェクト）が全て deny するため、
-    // インフラ断でログイン全体を巻き添えにしない方を選ぶ。
-    match state.tenants.get(&tenant_id).await {
-        Ok(Some(t)) if t.status != storage::TenantStatus::Active => {
-            tracing::warn!(%tenant_id, status = t.status.as_str(), "撤去中/済みテナントのログインを拒否");
-            return Err(ApiError::Unauthorized);
-        }
-        Ok(_) => {}
-        Err(e) => {
-            // fail-open は意図的（purge 後はデータ面が全 deny する二次ベルト）。ただし
-            // 撤去中テナントのログインを一時的に許す窓になるため、この警告は監視対象にし
-            // アラートを張ること（#91 L-6・レジストリ DB 障害の早期検知）。
-            tracing::warn!(%tenant_id, error = %e, "tenant レジストリ照会に失敗（fail-open で継続・要監視）");
-        }
-    }
+    refuse_retired_tenant(&state, &tenant_id).await?;
 
     // 組織の member（D-130・org_member）は、ログインの往復の中でそろえてから戻す。
     sync_org_member_before_redirect(&state, &principal, &tenant_id).await;
@@ -202,6 +195,31 @@ pub async fn callback(
     Ok((jar, Redirect::to(&target)))
 }
 
+/// 撤去中/撤去済みテナントの新規ログインを断る（SAAS.2。セッション失効と IdP ユーザー削除の間に完了するログイン
+/// 競合を塞ぐ）。レジストリ未登録（dev fixture 等）は許可する。
+///
+/// レジストリが読めない場合は**警告して継続**（fail-open）: これは purge 中の狭い競合を塞ぐ二次ベルトであり、purge
+/// 後はデータ面（FGA/DB/オブジェクト）が全て deny するため、インフラ断でログイン全体を巻き添えにしない方を選ぶ。
+async fn refuse_retired_tenant(
+    state: &AppState,
+    tenant_id: &authz::TenantId,
+) -> Result<(), ApiError> {
+    match state.tenants.get(tenant_id).await {
+        Ok(Some(t)) if t.status != storage::TenantStatus::Active => {
+            tracing::warn!(%tenant_id, status = t.status.as_str(), "撤去中/済みテナントのログインを拒否");
+            Err(ApiError::Unauthorized)
+        }
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // fail-open は意図的（purge 後はデータ面が全 deny する二次ベルト）。ただし
+            // 撤去中テナントのログインを一時的に許す窓になるため、この警告は監視対象にし
+            // アラートを張ること（#91 L-6・レジストリ DB 障害の早期検知）。
+            tracing::warn!(%tenant_id, error = %e, "tenant レジストリ照会に失敗（fail-open で継続・要監視）");
+            Ok(())
+        }
+    }
+}
+
 /// 組織の member（[`org_member`]・D-130）を、ログインの往復の中でそろえる。
 ///
 /// 戻った直後の `/me` と、続けて開くアプリのゲートウェイが、どちらもこのタプルで組織のメンバーかを判定するため、
@@ -248,9 +266,10 @@ fn action_subject_mismatch(action: Option<&AccountAction>, principal_id: &str) -
 /// 検証したクレームから主体を組む（[`claims::principal_from_claims`]）。sub が利用者の id に使えなければ（D-205）、
 /// 主体の代わりに戻り先を返す。
 ///
-/// ふつうのログインはログイン画面（[`ACCOUNT_UNUSABLE_URL`]）。ログイン画面は自動で送り直さず、再試行のボタンも
-/// 出さない（同じ sub で同じ失敗を繰り返すだけなので）。設定画面から始めたアカウント操作は、始めた人と別の人が
-/// 戻ってきたのと同じく、設定画面へ error で戻す（その人のセッションはそのまま残る）。
+/// ふつうのログインはログイン画面（[`ACCOUNT_UNUSABLE_URL`]）。ログイン画面は自動で送り直さず、同じアカウントでの
+/// 再試行のボタンも出さない（同じ sub で同じ失敗を繰り返すだけなので）。出すのは「別のアカウントでログイン」で、
+/// [`principal_or_refuse`] が Keycloak の SSO セッションを終えておく。設定画面から始めたアカウント操作は、始めた人と
+/// 別の人が戻ってきたのと同じく、設定画面へ error で戻す（その人のセッションはそのまま残る）。
 fn principal_or_unusable(
     verified: claims::Claims,
     action: Option<&AccountAction>,
@@ -262,6 +281,50 @@ fn principal_or_unusable(
             |action| action.return_url("error"),
         )
     })
+}
+
+/// [`principal_or_unusable`] で主体を組み、sub が使えずに断るときは戻り先を返す。ふつうのログイン（`action` が無い）で
+/// 断るときは、受け取った `refresh_token` で Keycloak の SSO セッションも終えてから返す（[`end_unusable_sso_session`]）。
+async fn principal_or_refuse(
+    state: &AppState,
+    verified: claims::Claims,
+    action: Option<&AccountAction>,
+    refresh_token: Option<&str>,
+) -> Result<Principal, String> {
+    let principal = principal_or_unusable(verified, action);
+    if principal.is_err() && action.is_none() {
+        end_unusable_sso_session(state, refresh_token).await;
+    }
+    principal
+}
+
+/// sub が使えずに断った人の Keycloak の SSO セッションを、受け取った refresh token でサーバ側から終える（best-effort）。
+///
+/// 終えないと、ログイン画面を開き直しても Keycloak が同じ人を黙って通して同じ画面に戻り、共有の端末でほかの人が
+/// ログインできない（Import を有効にした後も SSO の Cookie が切れるまで続く）。ブラウザのログアウト
+/// （`logout.rs`・end-session へのフル遷移）は `id_token_hint` を出さないので Keycloak が確認の画面を挟み、戻り先も
+/// `post_logout_redirect_uri` に限られるので、ここはトークンを持っているサーバ側で終える
+/// （[`oidc::end_sso_session`]）。終えられなくてもログイン画面へは戻す（ログイン画面の「別のアカウントでログイン」は、
+/// そのときは同じ画面に戻る）。アカウント操作の往復は、始めた人のセッションを残すので終えない。
+async fn end_unusable_sso_session(state: &AppState, refresh_token: Option<&str>) {
+    let Some(refresh_token) = refresh_token else {
+        tracing::warn!("refresh token が無いので、断った人の SSO セッションを終えられません");
+        return;
+    };
+    let ended = tokio::time::timeout(
+        END_SSO_WAIT,
+        oidc::end_sso_session(&state.http, &state.config.auth, refresh_token),
+    )
+    .await;
+    match ended {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "断った人の Keycloak の SSO セッションを終えられません");
+        }
+        Err(_) => {
+            tracing::warn!("断った人の Keycloak の SSO セッションを終えるのが間に合いません");
+        }
+    }
 }
 
 /// IdP エラー時、相関 Cookie がアカウント操作で state も一致すれば設定画面の戻り先を返す。

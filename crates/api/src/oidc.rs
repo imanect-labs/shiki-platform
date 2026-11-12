@@ -86,6 +86,40 @@ pub async fn refresh_tokens(
     post_token(http, auth, &form).await
 }
 
+/// refresh token で Keycloak の SSO セッションをサーバ側から終える（ブラウザを通さない end-session）。
+///
+/// Keycloak の logout エンドポイントは、client の資格情報と refresh token を form で受けると、その token の SSO
+/// セッションを終えて 204 を返す。ブラウザのログアウト（`routes/auth/logout.rs`）と違い、確認の画面も
+/// `post_logout_redirect_uri` の登録も要らず、トークンもブラウザに出ない。
+pub async fn end_sso_session(
+    http: &reqwest::Client,
+    auth: &AuthConfig,
+    refresh_token: &str,
+) -> Result<(), OidcError> {
+    let mut form = vec![
+        ("client_id", auth.client_id.as_str()),
+        ("refresh_token", refresh_token),
+    ];
+    if let Some(secret) = auth.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
+    let resp = http
+        .post(auth.backchannel_end_session_endpoint())
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| OidcError::Transport(e.to_string()))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(OidcError::Status {
+        status: status.as_u16(),
+        body,
+    })
+}
+
 async fn post_token(
     http: &reqwest::Client,
     auth: &AuthConfig,
