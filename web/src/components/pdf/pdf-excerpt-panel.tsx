@@ -74,7 +74,7 @@ export function PdfExcerptPanel({
         </div>
         <h2 className="text-base font-semibold">選択した抜粋</h2>
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          ドラッグで追加。内容を確認して、チャットへ添付できます。
+          内容を確認して、チャットへ添付できます。
         </p>
       </div>
       <div
