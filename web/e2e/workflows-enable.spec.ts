@@ -313,6 +313,38 @@ test("有効化: 指示が空のブロックと保存先を省いた書込があ
   ]);
   const reg = await page.request.get(`/api/workflows/${saved.id}/registration`);
   expect(((await reg.json()) as { status: string }).status).toBe("none");
+
+  // 有効化する人のアカウントでは使えないモデルの理由（D-196）は、エディタでは直せないので別の見出しで言う。
+  // 制限は起動の設定でしか付けられないので、同意の計画の応答に理由を 1 つ足して確かめる（文はサーバーの文と同じ形）。
+  await page.route(`**/api/workflows/${saved.id}/versions/1/consent-plan`, async (route) => {
+    const res = await route.fetch();
+    const plan = (await res.json()) as { blockers: Record<string, unknown>[] };
+    plan.blockers.push({
+      code: "ir.model_unavailable_for_user",
+      message:
+        "このスキル（tidy@1）はあなたがインストールしていないため、組織の既定のモデル（default）で動くかを確かめられません。このモデルはあなたのアカウントでは使えないため、自動実行をオンにできません。スキルをインストールするか、管理者に相談してください。自動実行は、このモデルを使える人にオンにしてもらうこともできます",
+      node_id: "ask",
+      edge: null,
+      path: "/params/skill",
+    });
+    await route.fulfill({ response: res, json: plan });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+  await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+  const settings = dialog.getByTestId("enable-blockers-settings");
+  const account = dialog.getByTestId("enable-blockers-account");
+  await expect(settings).toContainText("エディタで次の設定を直してから、もう一度開いてください。");
+  await expect(settings).toContainText("「日報をまとめる」「AI への指示」が空です");
+  await expect(settings).not.toContainText("インストールしていない");
+  await expect(account).toContainText("あなたのアカウントでは使えないモデルで自動実行されるため、有効化できません。");
+  await expect(account).toContainText("「日報をまとめる」このスキル（tidy@1）はあなたがインストールしていないため");
+  await expect(account).not.toContainText("エディタで");
+  await expect(dialog.getByRole("button", { name: "有効化できません（3 件）" })).toBeDisabled();
+  if (process.env.E2E_SHOTS_DIR) {
+    await dialog.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/enable-blockers-account.png` });
+  }
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
 /// ファイル保存のきっかけで決まるファイル（`$from: trigger`）は「前のブロックの結果」ではなく、きっかけの

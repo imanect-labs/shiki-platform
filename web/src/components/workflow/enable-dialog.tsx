@@ -48,6 +48,9 @@ import {
 } from "@/lib/workflow-api";
 
 
+/// 有効化する人のアカウントでは使えないモデルの理由のコード（`workflow_engine::MODEL_UNAVAILABLE_FOR_USER`）。
+const MODEL_UNAVAILABLE_FOR_USER = "ir.model_unavailable_for_user";
+
 const RELATION_LABELS: Record<string, string> = {
   viewer: "閲覧",
   editor: "編集",
@@ -246,6 +249,10 @@ export function EnableDialog({
   // ピッカーを出せるのはテーブル・フォルダ・ファイル。それ以外（将来の種類）は保存側の見直しを促す。
   const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked && !g.dynamic);
   const blockers = plan?.blockers ?? [];
+  /// 有効化する人のアカウントでは使えないモデルで自動実行される（エディタでは直せない・D-196）。
+  const accountBlockers = blockers.filter((b) => b.code === MODEL_UNAVAILABLE_FOR_USER);
+  /// エディタで直す設定（必須の欄が空・保存先のフォルダの省略など・D-40・D-43）。
+  const settingBlockers = blockers.filter((b) => b.code !== MODEL_UNAVAILABLE_FOR_USER);
 
   const reconsent = registration?.status === "suspended_reconsent";
   const enabled = registration?.status === "enabled";
@@ -382,21 +389,41 @@ export function EnableDialog({
             {blockers.length > 0 ? (
               <div
                 role="alert"
-                className="space-y-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
+                className="space-y-2.5 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
                 data-testid="enable-blockers"
               >
-                <p className="flex items-center gap-1.5 font-medium text-destructive">
-                  <AlertTriangle className="size-4 shrink-0" aria-hidden />
-                  このままでは有効化できません。エディタで次の設定を直してから、もう一度開いてください。
-                </p>
-                <ul className="list-disc space-y-1 pl-5 text-foreground/80">
-                  {blockers.map((b, i) => (
-                    <li key={i}>
-                      {b.node_id ? <span className="font-medium">「{plan.labels.get(b.node_id) ?? b.node_id}」</span> : null}
-                      {b.message}
-                    </li>
+                {/* エディタで直す設定と、有効化する人のアカウントの制限（エディタでは直せない・D-196）を分けて言う。 */}
+                {[
+                  {
+                    key: "settings",
+                    items: settingBlockers,
+                    title: "このままでは有効化できません。エディタで次の設定を直してから、もう一度開いてください。",
+                  },
+                  {
+                    key: "account",
+                    items: accountBlockers,
+                    title: "あなたのアカウントでは使えないモデルで自動実行されるため、有効化できません。",
+                  },
+                ]
+                  .filter((g) => g.items.length > 0)
+                  .map((g) => (
+                    <div key={g.key} className="space-y-1.5" data-testid={`enable-blockers-${g.key}`}>
+                      <p className="flex items-center gap-1.5 font-medium text-destructive [text-wrap:pretty]">
+                        <AlertTriangle className="size-4 shrink-0" aria-hidden />
+                        {g.title}
+                      </p>
+                      <ul className="list-disc space-y-1 pl-5 text-foreground/80">
+                        {g.items.map((b, i) => (
+                          <li key={i}>
+                            {b.node_id ? (
+                              <span className="font-medium">「{plan.labels.get(b.node_id) ?? b.node_id}」</span>
+                            ) : null}
+                            {b.message}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   ))}
-                </ul>
               </div>
             ) : null}
 
@@ -577,7 +604,9 @@ export function EnableDialog({
                 )}
                 <Button onClick={enable} disabled={busy || unresolved.length > 0 || blockers.length > 0}>
                   {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                  {blockers.length > 0
+                  {accountBlockers.length > 0
+                    ? `有効化できません（${blockers.length} 件）`
+                    : blockers.length > 0
                     ? `設定を直してください（${blockers.length} 件）`
                     : unresolved.length > 0
                     ? `対象を選択してください（残り ${unresolved.length}）`
