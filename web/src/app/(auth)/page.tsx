@@ -343,7 +343,10 @@ function MicroSeasonButton({ kou }: { kou: MicroSeason }) {
       >
         {kou.name}
       </PopoverTrigger>
-      <PopoverContent align="start" className="space-y-2 text-sm" data-testid="home-microseason-detail">
+      <PopoverContent
+        align="start"
+        collisionPadding={12}
+        className="w-64 space-y-2 text-sm" data-testid="home-microseason-detail">
         <div>
           <p className="text-xs text-muted-foreground">七十二候</p>
           <p className="text-base font-medium">{kou.name}</p>
