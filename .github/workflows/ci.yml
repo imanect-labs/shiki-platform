@@ -182,6 +182,10 @@ jobs:
       # 評価の採点の 1 層目（保存時検証の CLI・ir_lint の example）のテスト。nextest は example のテストを流さず、
       # eval-app-builder のジョブは ir_lint のバイナリの要るテスト（lint_bin）を外すので、ここで流す（GAP-30）。
       - run: cargo test -p shiki-workflow-engine --all-features --example ir_lint
+      # ts-rs の書き出し（crates/*/bindings）が Rust の型と合っているか。上の nextest と同じ形で build するので
+      # 作り直さない。JUnit を上書きするので、JUnit を上げるステップより後ろに置く。
+      - name: ts-rs の書き出し（crates/*/bindings）が最新か
+        run: bash scripts/check-ts-bindings.sh
 
   # shiki-server の release バイナリを 1 回だけビルドして compose ジョブ（smoke / web-e2e）へ
   # artifact 共有する。以前は各 compose ジョブが Docker 内で cargo フルビルドしており、
