@@ -24,6 +24,7 @@ mod table_roles;
 mod trusted_key;
 mod usage;
 mod validate;
+mod yank;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
 pub use client_repair::ClientRepairProgress;

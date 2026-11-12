@@ -2,7 +2,10 @@
 //!
 //! ミニアプリ（mini_app_code）を内部レジストリへ**不変 publish** する。`artifact_kind` 列を
 //! 持つ汎用設計で、skill ストア等へ将来流用できる（新しい配布機構は作らない）。
-//! 同一 (tenant, kind, name, version) の再 publish は 409。取り下げは yank（不変性は保つ）。
+//! 同一 (tenant, kind, name, version) の再 publish は 409。取り下げは yank（不変性は保つ・口は
+//! [`crate::InstallService::yank`]・D-203）。
+
+use std::collections::HashSet;
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -212,19 +215,102 @@ impl Registry {
         Ok(row.and_then(|(s,)| s))
     }
 
-    /// エントリを yank する（新規インストールを止める・行は不変で残す）。
+    /// 呼ぶ人の組織が publish した、指定の種類のエントリを id で引く（取り下げの対象の解決・D-203・GAP-69b）。
+    ///
+    /// テナント・組織・種類の 3 つで絞る。ほかの組織の行と、ほかの種類（skill）の行は、無いのと同じ `None`
+    /// （[`crate::InstallService::yank`] が 404 にする）。取り下げたものも返す（2 回目の取り下げを成功にするため）。
+    pub(crate) async fn find_in_org(
+        &self,
+        ctx: &AuthContext,
+        artifact_kind: &str,
+        id: Uuid,
+    ) -> Result<Option<RegistryEntry>, AppPlatformError> {
+        sqlx::query_as(
+            "SELECT id, artifact_kind, name, version, artifact_id, artifact_version, \
+                    manifest_digest, publisher, trust_tier, yanked, created_at \
+             FROM registry_entry \
+             WHERE tenant_id = $1 AND org = $2 AND artifact_kind = $3 AND id = $4",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(artifact_kind)
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
+    /// 呼び出し側の Tx の中でエントリを取り下げる（新しいインストールを止める・行は消さずに残す・D-203・GAP-69b）。
+    ///
+    /// テナント・組織・種類で絞り、まだ取り下げていない行だけを変える。この呼び出しで変えたら `true`、もう取り下げて
+    /// いた・行が無いなら `false`（監査は変えたときだけ残す）。認可は呼び手（[`crate::InstallService::yank`]）が先に
+    /// 確かめる。行を押さえてから監査のチェーンを押さえる順（[`Self::publish_on`] と同じ）。
+    pub(crate) async fn yank_on(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        artifact_kind: &str,
+        id: Uuid,
+    ) -> Result<bool, AppPlatformError> {
+        let updated = sqlx::query(
+            "UPDATE registry_entry SET yanked = true \
+             WHERE tenant_id = $1 AND org = $2 AND artifact_kind = $3 AND id = $4 AND NOT yanked",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(artifact_kind)
+        .bind(id)
+        .execute(conn)
+        .await
+        .map_err(map_db)?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// 認可と監査を通らずにコードアプリのエントリを取り下げる（**テストの準備だけ**・`tests/install_it.rs` が使う）。
+    ///
+    /// 取り下げの口は [`crate::InstallService::yank`]（アプリの持ち主か組織の管理者だけ・監査をチェーンにつなぐ・
+    /// D-203）。`install_it.rs` をそちらに替えたら消す（GAP-69b）。絞り込みは [`Self::yank_on`] と同じ（テナント・
+    /// 組織・`mini_app_code`）で、取り下げる行が無ければ（もう取り下げていても）NotFound。
+    #[doc(hidden)]
     pub async fn yank(&self, ctx: &AuthContext, id: Uuid) -> Result<(), AppPlatformError> {
-        let updated =
-            sqlx::query("UPDATE registry_entry SET yanked = true WHERE tenant_id = $1 AND id = $2")
-                .bind(ctx.tenant_id())
-                .bind(id)
-                .execute(&self.db)
-                .await
-                .map_err(map_db)?;
-        if updated.rows_affected() == 0 {
+        let mut tx = self.begin().await?;
+        let changed = self.yank_on(&mut tx, ctx, "mini_app_code", id).await?;
+        tx.commit().await.map_err(map_db)?;
+        if !changed {
             return Err(AppPlatformError::NotFound);
         }
         Ok(())
+    }
+
+    /// インストールした版のうち、取り下げたもの（インストール済みの一覧に添える・GAP-69b）。
+    ///
+    /// `installed` は (アプリの id, マニフェストの名前, 版) の組。インストールが解決したのと同じ登録（テナントの中の
+    /// name@version・[`Self::get`]）を、アプリの id もそろえて引く。返すのは、そのうち取り下げた組。
+    pub async fn yanked_installs(
+        &self,
+        ctx: &AuthContext,
+        installed: &[(Uuid, String, String)],
+    ) -> Result<HashSet<(Uuid, String, String)>, AppPlatformError> {
+        if installed.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let ids: Vec<Uuid> = installed.iter().map(|(id, _, _)| *id).collect();
+        let names: Vec<&str> = installed.iter().map(|(_, n, _)| n.as_str()).collect();
+        let versions: Vec<&str> = installed.iter().map(|(_, _, v)| v.as_str()).collect();
+        let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT r.artifact_id, r.name, r.version FROM registry_entry r \
+             JOIN unnest($2::uuid[], $3::text[], $4::text[]) AS i(artifact_id, name, version) \
+               ON r.artifact_id = i.artifact_id AND r.name = i.name AND r.version = i.version \
+             WHERE r.tenant_id = $1 AND r.artifact_kind = 'mini_app_code' AND r.yanked",
+        )
+        .bind(ctx.tenant_id())
+        .bind(&ids)
+        .bind(&names)
+        .bind(&versions)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows.into_iter().collect())
     }
 }
 
