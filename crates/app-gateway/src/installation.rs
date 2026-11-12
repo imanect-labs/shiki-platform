@@ -578,6 +578,37 @@ impl AppInstallationStore {
         .map_err(map_db)?;
         Ok(())
     }
+
+    /// 有効でないインストールから、Keycloak から消したクライアントの id を外す（もう入れられないアプリの片付け・
+    /// GAP-69a）。
+    ///
+    /// 外すのは、渡した id と同じ値の列だけ（`b1`・`b2` が `None` か、別の値ならその列は残す）。有効なインストール
+    /// （同じ id で入れ直したもの）は書き換えない。外した行は、起動時の片付けの対象から外れる（2 回目からの起動では
+    /// Keycloak を呼ばない）。
+    pub async fn forget_clients(
+        &self,
+        tenant_id: &str,
+        app_id: Uuid,
+        b1: Option<&str>,
+        b2: Option<&str>,
+    ) -> Result<(), GatewayError> {
+        sqlx::query(&format!(
+            "UPDATE app_installation \
+             SET client_id_b1 = CASE WHEN client_id_b1 = $3 THEN NULL ELSE client_id_b1 END, \
+                 client_id_b2 = CASE WHEN client_id_b2 = $4 THEN NULL ELSE client_id_b2 END, \
+                 updated_at = now() \
+             WHERE tenant_id = $1 AND app_id = $2 AND status <> '{}'",
+            InstallStatus::Active.as_str()
+        ))
+        .bind(tenant_id)
+        .bind(app_id)
+        .bind(b1)
+        .bind(b2)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
 }
 
 /// アプリのクライアントが使えない印（[`AppInstallationStore::mark_clients_repaired`]・インストールの画面が知らせる）。

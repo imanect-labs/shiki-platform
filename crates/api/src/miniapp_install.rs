@@ -65,7 +65,8 @@ const REPAIR_ATTEMPTS: u32 = 12;
 /// 短い間で揃えられなかったときに、試し続ける間（Keycloak が長く落ちていたとき・GAP-70）。
 const REPAIR_RETRY_LATER: Duration = Duration::from_hours(1);
 
-/// 前の版で登録したアプリのクライアントを、今の登録の形に揃える常駐の処理を起動する（BUG-172）。
+/// 前の版で登録したアプリのクライアントを、今の登録の形に揃える常駐の処理を起動する（BUG-172）。あわせて、もう
+/// 入れられないアプリ（アーティファクトを消し、有効なインストールも無い）のクライアントを消す（GAP-69a）。
 ///
 /// 起動を待たせないように裏で動かす。揃えられないもの（Keycloak の失敗）が残ったら、[`REPAIR_RETRY`] おきに
 /// [`REPAIR_ATTEMPTS`] 回試し、その後も揃うまで [`REPAIR_RETRY_LATER`] おきに試し続ける（これまでは次の起動まで
@@ -75,13 +76,15 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
         for attempt in 1u32.. {
             match installs.repair_oauth_clients().await {
                 Ok(p) if p.failed == 0 => {
-                    if p.repaired + p.missing + p.disabled > 0 {
+                    if p.repaired + p.missing + p.disabled + p.deleted > 0 {
                         tracing::info!(
                             repaired = p.repaired,
                             recreated = p.recreated,
                             missing = p.missing,
                             disabled = p.disabled,
-                            "アプリのクライアントを今の登録の形に揃えました"
+                            deleted = p.deleted,
+                            secrets_left = p.secrets_left,
+                            "アプリのクライアントを今の登録の形に揃え、消したアプリのクライアントを片付けました"
                         );
                     }
                     return;
@@ -92,6 +95,8 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
                         recreated = p.recreated,
                         missing = p.missing,
                         disabled = p.disabled,
+                        deleted = p.deleted,
+                        secrets_left = p.secrets_left,
                         failed = p.failed,
                         attempt,
                         "アプリのクライアントの一部を揃えられません（試し直す）"

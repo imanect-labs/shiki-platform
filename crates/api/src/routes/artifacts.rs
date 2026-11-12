@@ -221,6 +221,8 @@ pub async fn get_artifact(
 }
 
 /// 論理削除する（owner・バージョン履歴は保持）。ワークフローなら、自動実行と動いている実行も止める（BUG-128）。
+/// コードアプリ（mini_app_code）なら、有効なインストールが無いとき、Keycloak のクライアントと B2 の secret を消す
+/// （もう入れられないので・GAP-69a）。
 #[utoipa::path(
     delete,
     path = "/artifacts/{id}",
@@ -249,6 +251,13 @@ pub async fn delete_artifact(
             trace.as_deref(),
         )
         .await;
+    }
+    if kind == ArtifactKind::MiniAppCode {
+        // 片付けは削除の commit の後（失敗しても削除は戻さない・起動時の照合がクライアントを消し直す）。
+        state
+            .installs
+            .after_app_deleted(&ctx, id, trace.as_deref())
+            .await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

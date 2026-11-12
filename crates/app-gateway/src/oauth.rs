@@ -23,6 +23,9 @@ use serde::Deserialize;
 
 use crate::GatewayError;
 
+#[path = "oauth_delete.rs"]
+mod delete;
+
 /// 登録するクライアントの種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientKind {

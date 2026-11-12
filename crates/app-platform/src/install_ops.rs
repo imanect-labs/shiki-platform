@@ -247,6 +247,87 @@ impl InstallService {
         Ok(())
     }
 
+    /// アプリの実体（mini_app_code のアーティファクト）を消した後の片付け（削除の API が commit の後に呼ぶ・GAP-69a）。
+    ///
+    /// もう入れられないアプリの Keycloak のクライアント（`app-<app_id>-b1`・`-b2`・[`Self::delete_app_clients`]）と、
+    /// B2 の secret の保管（[`b2_secret_name`]）を消す。アンインストールはクライアントを無効にするだけ（入れ直すと同じ
+    /// id を使う）なので、アプリを消さないとたまり続けていた。
+    ///
+    /// - アーティファクトがまだ消えていない・有効なインストールが残っている（入れたアプリは動き続ける）ときは何もしない。
+    ///   そのインストールをアンインストールした後は、起動時の照合（[`Self::repair_oauth_clients`]）がクライアントを消す。
+    /// - secret は owner（インストールした人）の ctx で消す。インストールはアーティファクトの owner に限るので、削除の
+    ///   API を呼んだ owner の ctx で消せる。呼ぶ人の secret に無ければ何もしない（ほかの人の secret は消せない）。
+    /// - どの失敗も削除を戻さない（best-effort・warn）。消せなかったクライアントは起動時の照合がやり直す。
+    pub async fn after_app_deleted(&self, ctx: &AuthContext, app_id: Uuid, trace_id: Option<&str>) {
+        match self.no_longer_installable(ctx, app_id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, %app_id, "消したアプリの片付けの前の確かめに失敗（起動時の照合がクライアントを消す）");
+                return;
+            }
+        }
+        if let Some(oauth) = &self.oauth {
+            let (b1, b2) = (format!("app-{app_id}-b1"), format!("app-{app_id}-b2"));
+            if let Err(e) = self
+                .delete_app_clients(oauth, ctx.tenant_id(), app_id, Some(&b1), Some(&b2))
+                .await
+            {
+                tracing::warn!(error = %e, %app_id, "消したアプリのクライアントを Keycloak から消せません（起動時の照合がやり直す）");
+            }
+        }
+        self.delete_b2_secret(ctx, app_id, trace_id).await;
+    }
+
+    /// アーティファクトを消し（mini_app_code の行が残り、消した印がある）、有効なインストールも無いか。
+    async fn no_longer_installable(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<bool, AppPlatformError> {
+        let deleted: Option<bool> = sqlx::query_scalar(
+            "SELECT deleted_at IS NOT NULL FROM artifact \
+             WHERE tenant_id = $1 AND id = $2 AND kind = 'mini_app_code'",
+        )
+        .bind(ctx.tenant_id())
+        .bind(app_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(crate::map_db)?;
+        if deleted != Some(true) {
+            return Ok(false);
+        }
+        let active = self
+            .installations
+            .resolve_active_by_app(ctx.tenant_id(), app_id)
+            .await
+            .map_err(map_gateway)?;
+        if active.is_some() {
+            tracing::info!(%app_id, "消したアプリに有効なインストールが残るので、クライアントと secret を残します");
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// B2 の secret の保管を、呼ぶ人（secret の owner）の ctx で消す（無ければ何もしない・失敗は warn）。
+    async fn delete_b2_secret(&self, ctx: &AuthContext, app_id: Uuid, trace_id: Option<&str>) {
+        let Some(store) = &self.secrets else { return };
+        let name = b2_secret_name(app_id);
+        let metas = match store.list_mine(ctx).await {
+            Ok(metas) => metas,
+            Err(e) => {
+                tracing::warn!(error = %e, %app_id, "消したアプリの B2 の secret を探せません");
+                return;
+            }
+        };
+        let Some(meta) = metas.into_iter().find(|m| m.name == name) else {
+            return;
+        };
+        if let Err(e) = store.delete(ctx, meta.id, trace_id).await {
+            tracing::warn!(error = %e, %app_id, "消したアプリの B2 の secret を消せません");
+        }
+    }
+
     /// オフライン（エアギャップ）import: 署名検証 → artifact 作成 → 不変 publish。
     ///
     /// 署名は**常に必須**（ネット非依存の信頼根＝信頼鍵台帳）。検証に成功した場合のみ
