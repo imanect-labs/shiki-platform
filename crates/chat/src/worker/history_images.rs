@@ -40,6 +40,12 @@ fn media_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+// デコードやピクセル配列の確保をせず、プロバイダ共通の安全な上限で弾く。
+fn valid_dimensions(bytes: &[u8]) -> bool {
+    imagesize::blob_size(bytes)
+        .is_ok_and(|size| (1..=8000).contains(&size.width) && (1..=8000).contains(&size.height))
+}
+
 pub(super) async fn load_images(
     ctx: &AuthContext,
     messages: &[Message],
@@ -90,7 +96,8 @@ async fn load_one(
     };
     let note = match result {
         Ok(bytes) if bytes.len() as u64 <= MAX_IMAGE_BYTES => match media_type(&bytes) {
-            Some(media_type) => return vec![Block::Text { text: format!("[画像添付: {name}]") }, Block::Image { media_type: media_type.into(), source_id: node_id.into(), data: ImageData(base64::engine::general_purpose::STANDARD.encode(bytes).into()) }],
+            Some(media_type) if valid_dimensions(&bytes) => return vec![Block::Text { text: format!("[画像添付: {name}]") }, Block::Image { media_type: media_type.into(), source_id: node_id.into(), data: ImageData(base64::engine::general_purpose::STANDARD.encode(bytes).into()) }],
+            Some(_) => format!("[画像添付「{name}」は寸法を確認できないか縦横8,000pxの上限を超えるため画像本体を送信していません。]"),
             None => format!("[画像添付「{name}」は画像本体を送信できません。PNG/JPEG/GIF/WebP形式を使用してください。]"),
         },
         Ok(_) => format!("[画像添付「{name}」は4MiBのサイズ上限を超えるため画像本体を送信していません。]"),

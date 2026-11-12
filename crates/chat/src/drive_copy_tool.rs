@@ -11,12 +11,79 @@ use uuid::Uuid;
 pub struct DriveCopyTool {
     storage: Arc<StorageService>,
     run_id: Uuid,
+    collab: Option<Arc<collab::CollabHub>>,
 }
 
 impl DriveCopyTool {
     pub fn new(storage: Arc<StorageService>, run_id: Uuid) -> Self {
-        Self { storage, run_id }
+        Self {
+            storage,
+            run_id,
+            collab: None,
+        }
     }
+
+    #[must_use]
+    pub fn with_collab(mut self, collab: Option<Arc<collab::CollabHub>>) -> Self {
+        self.collab = collab;
+        self
+    }
+
+    async fn current_bytes(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+        trace_id: Option<&str>,
+    ) -> Result<Vec<u8>, StorageError> {
+        let live = if let Some(hub) = &self.collab {
+            if collab::note::is_note_file(&node.name) {
+                Some(hub.read_note_markdown(ctx, node).await)
+            } else if collab::slide::is_slide_file(&node.name) {
+                Some(hub.read_slide_json(ctx, node).await)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let bytes = if let Some(live) = live {
+            live.map_err(|error| match error {
+                collab::CollabError::Storage(e) => e,
+                collab::CollabError::Forbidden(_) | collab::CollabError::NotFound(_) => {
+                    StorageError::NotFound
+                }
+                _ => StorageError::Invalid("最新の共同編集状態を読み取れません。".into()),
+            })?
+            .into_bytes()
+        } else {
+            self.storage
+                .read_file_internal_bounded(ctx, node.id, 50 * 1024 * 1024, trace_id)
+                .await?
+                .1
+        };
+        if bytes.len() > 50 * 1024 * 1024 {
+            return Err(StorageError::Invalid(
+                "複製のサイズ上限を超えています。".into(),
+            ));
+        }
+        Ok(bytes)
+    }
+}
+
+fn copied_outcome(source_id: Uuid, copied_id: Uuid, name: &str, replayed: bool) -> ToolOutcome {
+    let status = if replayed {
+        "以前に完了した複製結果を復元しました。"
+    } else {
+        "ファイルを複製しました。元ファイルは変更していません。"
+    };
+    let mut outcome = ToolOutcome::ok(format!(
+        "{status}\n元ファイルid: {source_id}\n複製: {name} (id: {copied_id})"
+    ));
+    outcome.artifacts.push(ArtifactRef {
+        node_id: copied_id.to_string(),
+        name: name.into(),
+    });
+    outcome
 }
 
 #[derive(Deserialize)]
@@ -83,6 +150,18 @@ impl Tool for DriveCopyTool {
             return Err(ToolError::Invalid("new_nameを指定してください".into()));
         }
         let requested_parent = destination(input.destination_folder_id.as_deref(), None)?;
+        let operation = json!({"run_id":self.run_id,"actor":ctx.subject().to_string(),"org":ctx.org,"source":input.node_id,"name":new_name,"destination":input.destination_folder_id.as_deref().map(str::trim).filter(|s| !s.is_empty())});
+        let digest = storage::content_address::sha256_hex(operation.to_string().as_bytes());
+        let key = format!("chat-copy:{digest}");
+        match self
+            .storage
+            .replay_internal_file_write(ctx, &key, &digest, trace_id)
+            .await
+        {
+            Ok(Some(node)) => return Ok(copied_outcome(input.node_id, node.id, &node.name, true)),
+            Ok(None) => {}
+            Err(error) => return Ok(copy_error(error)),
+        }
         let metadata = match self
             .storage
             .get_metadata(ctx, input.node_id, trace_id)
@@ -91,24 +170,20 @@ impl Tool for DriveCopyTool {
             Ok(node) => node,
             Err(e) => return Ok(copy_error(e)),
         };
-        if std::path::Path::new(new_name)
-            .extension()
-            .map(std::ffi::OsStr::to_ascii_lowercase)
-            != std::path::Path::new(&metadata.name)
-                .extension()
-                .map(std::ffi::OsStr::to_ascii_lowercase)
-        {
+        let extension = |name: &str| {
+            name.rsplit_once('.')
+                .map(|(_, ext)| ext)
+                .filter(|ext| !ext.is_empty())
+                .map(str::to_lowercase)
+        };
+        if extension(new_name) != extension(&metadata.name) {
             return Err(ToolError::Invalid(
                 "元ファイルの拡張子を保ったnew_nameを指定してください".into(),
             ));
         }
         // 50MiBに固定上限を置く。StorageService自身のアップロード上限も適用される。
-        let (source, bytes) = match self
-            .storage
-            .read_file_internal_bounded(ctx, input.node_id, 50 * 1024 * 1024, trace_id)
-            .await
-        {
-            Ok(source) => source,
+        let bytes = match self.current_bytes(ctx, &metadata, trace_id).await {
+            Ok(bytes) => bytes,
             Err(e) => return Ok(copy_error(e)),
         };
         let parent = if input
@@ -116,16 +191,10 @@ impl Tool for DriveCopyTool {
             .as_deref()
             .is_none_or(|s| s.trim().is_empty())
         {
-            source.parent_id
+            metadata.parent_id
         } else {
             requested_parent
         };
-        let operation = json!({"run_id":self.run_id,"actor":ctx.subject().to_string(),"org":ctx.org,"source":source.id,"name":new_name,"destination":input.destination_folder_id.as_deref().map(str::trim).filter(|s| !s.is_empty())});
-        let key = format!(
-            "chat-copy:{}",
-            storage::content_address::sha256_hex(operation.to_string().as_bytes())
-        );
-        let digest = storage::content_address::sha256_hex(json!({"operation":operation,"parent":parent,"source_version":source.version,"sha256":source.blob_sha256}).to_string().as_bytes());
         let copied = match self
             .storage
             .write_file_internal_idempotent(
@@ -133,7 +202,7 @@ impl Tool for DriveCopyTool {
                 parent,
                 new_name,
                 &bytes,
-                source
+                metadata
                     .content_type
                     .as_deref()
                     .unwrap_or("application/octet-stream"),
@@ -151,11 +220,6 @@ impl Tool for DriveCopyTool {
             .and_then(Value::as_str)
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or_else(|| ToolError::Internal("複製結果のIDが不正です".into()))?;
-        let mut outcome = ToolOutcome::ok(format!("ファイルを複製しました。元ファイルは変更していません。\n元: {} (id: {})\n複製: {} (id: {})", source.name, source.id, new_name, copied_id));
-        outcome.artifacts.push(ArtifactRef {
-            node_id: copied_id.to_string(),
-            name: new_name.into(),
-        });
-        Ok(outcome)
+        Ok(copied_outcome(input.node_id, copied_id, new_name, false))
     }
 }

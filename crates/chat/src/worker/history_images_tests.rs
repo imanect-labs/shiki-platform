@@ -63,7 +63,10 @@ fn reader(bytes: Option<Vec<u8>>) -> Reader {
     }
 }
 fn png() -> Vec<u8> {
-    b"\x89PNG\r\n\x1a\nimage".to_vec()
+    let mut header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
+    header.extend_from_slice(&640_u32.to_be_bytes());
+    header.extend_from_slice(&320_u32.to_be_bytes());
+    header
 }
 
 #[tokio::test]
@@ -198,4 +201,31 @@ async fn preserves_attachment_order_while_loading_in_parallel() {
         })
         .collect();
     assert_eq!(ids, ["first", "second"]);
+}
+
+#[tokio::test]
+async fn oversized_or_unreadable_dimensions_are_not_sent() {
+    let messages = vec![message(Role::User, &[("a", "a.png")])];
+    for (width, height, allowed) in [
+        (8000_u32, 1_u32, true),
+        (8001, 1, false),
+        (1, 9000, false),
+        (0, 1, false),
+    ] {
+        let mut bytes = png();
+        bytes[16..20].copy_from_slice(&width.to_be_bytes());
+        bytes[20..24].copy_from_slice(&height.to_be_bytes());
+        let store = reader(Some(bytes));
+        let result = load_images(&ctx(), &messages, Some(&store)).await;
+        assert_eq!(
+            result
+                .values()
+                .flatten()
+                .any(|b| matches!(b, Block::Image { .. })),
+            allowed
+        );
+    }
+    let store = reader(Some(b"\x89PNG\r\n\x1a\n".to_vec()));
+    let result = load_images(&ctx(), &messages, Some(&store)).await;
+    assert!(matches!(&result[&messages[0].id][0], Block::Text { text } if text.contains("寸法")));
 }

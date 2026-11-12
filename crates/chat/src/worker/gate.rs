@@ -39,15 +39,16 @@ pub(super) enum GateStage {
     Execute,
 }
 
-/// 計画フェーズまで**提示しない**ツール（調査＝外部/社内へ取りに行く操作と委譲）。
+/// 計画フェーズまで**提示しない**ツール（調査・委譲・ドライブへの複製）。
 ///
 /// 作業ファイル（`fs_write`/`fs_read`…）は brief/outline を書くために計画段階でも要る。
-const RESEARCH_TOOLS: [ToolName; 5] = [
+const RESEARCH_TOOLS: [ToolName; 6] = [
     ToolName::WebSearch,
     ToolName::WebFetch,
     ToolName::DocSearch,
     ToolName::DocRead,
     ToolName::Subagent,
+    ToolName::DriveCopy,
 ];
 
 impl GateStage {
@@ -340,7 +341,7 @@ mod tests {
             s.allows("subagent"),
             "計画を子に書かせる導線は開ける（#402）"
         );
-        for denied in ["web_search", "web_fetch", "doc_search"] {
+        for denied in ["web_search", "web_fetch", "doc_search", "drive.copy"] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
     }
@@ -398,7 +399,7 @@ mod tests {
 
     #[test]
     fn execute_allows_everything() {
-        for name in ["web_search", "subagent", "shell", "fs_delete"] {
+        for name in ["web_search", "subagent", "shell", "fs_delete", "drive.copy"] {
             assert!(GateStage::Execute.allows(name));
         }
     }
