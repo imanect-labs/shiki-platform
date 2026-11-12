@@ -7,10 +7,13 @@
 /// テーブルに「追加だけ」（レコードを追加し、自分が追加したレコードだけ見られる・D-113）を渡す部署・グループを選べる
 /// （GAP-53・インストールの `submitter_roles`）。インストールの後は、カードの「使える部署・グループ」から、アプリの
 /// テーブルを使える部署・グループ（閲覧・編集・追加だけ）を足す・外す（GAP-68）。
+///
+/// アプリの持ち主と組織の管理者は、公開を取り下げられる（GAP-69b）。取り下げると新しくインストールできなくなり、
+/// 一覧から消える。入れてあるアプリは動き続け、カードに取り下げたことを出す。
 
 import * as React from "react";
 import Link from "next/link";
-import { AlertTriangle, Download, Loader2, Package, Play, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, Download, EyeOff, Info, Loader2, Package, Play, Trash2, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +39,7 @@ import {
   listInstallations,
   listRegistry,
   uninstallApp,
+  yankRegistryEntry,
   type AppFunctionFailure,
   type AppInstallation,
   type RegistryEntry,
@@ -52,6 +56,18 @@ const TRIGGER_LABEL: Record<string, string> = {
   event: "テーブルの変更など",
   cron: "スケジュール",
 };
+
+/// 取り下げの失敗を、利用者に分かる言葉にする（ダイアログの中に出す）。
+function yankFailure(e: unknown): Error {
+  const status = (e as { status?: number } | null)?.status;
+  if (status === 403) {
+    return new Error("取り下げられるのは、アプリの持ち主と組織の管理者だけです。");
+  }
+  if (status === 404) {
+    return new Error("この公開は見つかりません。一覧を読み込み直してください。");
+  }
+  return new Error(`取り下げられませんでした（${e instanceof Error ? e.message : String(e)}）。`);
+}
 
 /// 自動実行の関数の直近の失敗（アプリの持ち主にだけ届く・GAP-60）。次に成功すると消える。
 function FunctionFailures({ failures }: { failures: AppFunctionFailure[] }) {
@@ -103,6 +119,13 @@ export function InstalledAppsSection() {
   } | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<AppInstallation | null>(null);
+  /// 公開を取り下げようとしている登録（確かめのダイアログ・GAP-69b）。閉じる動きの間も文言を保つよう、閉じても残す。
+  const [yanking, setYanking] = React.useState<RegistryEntry | null>(null);
+  const [yankOpen, setYankOpen] = React.useState(false);
+  const askYank = (entry: RegistryEntry) => {
+    setYanking(entry);
+    setYankOpen(true);
+  };
   /// テーブルを使える部署・グループを開いているアプリ（GAP-68）。閉じる動きの間も題を保つよう、アプリは閉じても残す。
   const [roles, setRoles] = React.useState<AppInstallation | null>(null);
   const [rolesOpen, setRolesOpen] = React.useState(false);
@@ -186,6 +209,22 @@ export function InstalledAppsSection() {
     }
   };
 
+  /// 公開を取り下げる（確かめのダイアログから呼ぶ。失敗はダイアログ内に出す）。
+  const doYank = async (entry: RegistryEntry) => {
+    try {
+      await yankRegistryEntry(entry.id);
+    } catch (e) {
+      throw yankFailure(e);
+    }
+    toast({ title: `「${entry.name}」v${entry.version} の公開を取り下げました` });
+    reload();
+  };
+
+  /// 入れた版の公開（まだ取り下げていないもの）。カードから取り下げる口を出すのに使う。
+  const publishedOf = (app: AppInstallation) =>
+    registry.find(
+      (r) => r.artifact_id === app.app_id && r.name === app.app_name && r.version === app.installed_version,
+    );
   const installedIds = new Set((installed ?? []).map((i) => `${i.app_name}@${i.installed_version}`));
   const installable = registry.filter(
     (r) => !r.yanked && !installedIds.has(`${r.name}@${r.version}`),
@@ -218,7 +257,7 @@ export function InstalledAppsSection() {
           インストール済みのコードアプリはありません。
         </p>
       ) : (
-        <ul className="grid gap-3 sm:grid-cols-2">
+        <ul className="grid gap-3 sm:grid-cols-2" aria-label="インストール済みのアプリ">
           {installed.map((app) => (
             <li key={app.id} className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4">
               <div className="min-w-0">
@@ -261,6 +300,22 @@ export function InstalledAppsSection() {
               {app.function_failures && app.function_failures.length > 0 ? (
                 <FunctionFailures failures={app.function_failures} />
               ) : null}
+              {app.yanked ? (
+                // 入れた版の公開を取り下げた（GAP-69b）。入れたアプリは動き続けるので、注意の色にしない。
+                <div
+                  role="status"
+                  data-testid="app-yanked"
+                  className="flex gap-2 rounded-md border border-border bg-muted/50 p-2.5 text-xs"
+                >
+                  <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground">この版は公開を取り下げました</p>
+                    <p className="mt-0.5 text-muted-foreground">
+                      このまま使えますが、新しくインストールすることはできません。
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
                 {app.frontend_bundle ? (
                   <Button size="sm" asChild>
@@ -296,6 +351,20 @@ export function InstalledAppsSection() {
                     使える部署・グループ
                   </Button>
                 ) : null}
+                {publishedOf(app)?.can_yank ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const entry = publishedOf(app);
+                      if (entry) askYank(entry);
+                    }}
+                    aria-label={`「${app.app_name}」v${app.installed_version} の公開を取り下げる`}
+                  >
+                    <EyeOff className="size-4" aria-hidden />
+                    公開を取り下げ
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -324,22 +393,37 @@ export function InstalledAppsSection() {
             <Package className="mr-1 inline size-4" aria-hidden />
             レジストリからインストール
           </h3>
-          <ul className="grid gap-2 sm:grid-cols-2">
+          <ul className="grid gap-2 sm:grid-cols-2" aria-label="インストールできるアプリ">
             {installable.map((entry) => (
               <li
                 key={entry.id}
                 className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{entry.name}</p>
+                  <p className="truncate text-sm font-medium" title={entry.name}>
+                    {entry.name}
+                  </p>
                   <p className="text-xs text-muted-foreground">
                     v{entry.version}・{entry.trust_tier === "first_party" ? "署名済み" : "社内"}
                   </p>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => void openConsent(entry)}>
-                  <Download className="size-4" aria-hidden />
-                  インストール
-                </Button>
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                  {entry.can_yank ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => askYank(entry)}
+                      aria-label={`「${entry.name}」v${entry.version} の公開を取り下げる`}
+                    >
+                      <EyeOff className="size-4" aria-hidden />
+                      取り下げ
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="outline" onClick={() => void openConsent(entry)}>
+                    <Download className="size-4" aria-hidden />
+                    インストール
+                  </Button>
+                </div>
               </li>
             ))}
           </ul>
@@ -459,6 +543,21 @@ export function InstalledAppsSection() {
         destructive
         onConfirm={async () => {
           if (removing) await doUninstall(removing);
+        }}
+      />
+      <ConfirmDialog
+        open={yankOpen && yanking !== null}
+        onOpenChange={setYankOpen}
+        title="公開を取り下げますか？"
+        description={
+          yanking
+            ? `「${yanking.name}」v${yanking.version} の公開を取り下げます。新しくインストールできなくなり、一覧から消えます。入れてあるアプリは動き続けます。`
+            : undefined
+        }
+        confirmLabel="取り下げる"
+        destructive
+        onConfirm={async () => {
+          if (yanking) await doYank(yanking);
         }}
       />
     </section>

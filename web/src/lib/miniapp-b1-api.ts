@@ -1,6 +1,6 @@
 /// コードベース・ミニアプリ（B1）のクライアント側データ層（Task 9.11/9.13b）。
 ///
-/// レジストリ一覧・同意インストール・インストール済み一覧・アンインストールを叩く。
+/// レジストリ一覧・同意インストール・インストール済み一覧・アンインストール・公開の取り下げを叩く。
 /// 型は backend（utoipa → api.d.ts）を正とし、ここは薄いラッパのみ。
 
 "use client";
@@ -29,6 +29,8 @@ export type RegistryEntry = {
   trust_tier: string;
   yanked: boolean;
   created_at: string;
+  /// 呼ぶ人がこの公開を取り下げられるか（アプリの持ち主か組織の管理者・GAP-69b）。前の版のサーバーは返さない。
+  can_yank?: boolean;
 };
 
 export type AppInstallation = {
@@ -56,6 +58,8 @@ export type AppInstallation = {
   table_count?: number;
   /// 自動実行の関数の直近の失敗（新しい順）。アプリの持ち主にだけ、失敗があるときだけ返る（GAP-60）。
   function_failures?: AppFunctionFailure[];
+  /// 入れた版の公開が取り下げられた（入れたアプリは動き続け、新しくは入れられない・GAP-69b）。前の版のサーバーは返さない。
+  yanked?: boolean;
 };
 
 async function ok<T>(res: Response): Promise<T> {
@@ -110,6 +114,13 @@ export async function installApp(input: {
     body: JSON.stringify(body),
   });
   return ok(res);
+}
+
+/// 公開を取り下げる（新しくインストールできなくなり、一覧から消える。入れてあるアプリは動き続ける・GAP-69b）。
+/// もう取り下げていても成功する。取り下げられるのはアプリの持ち主と組織の管理者だけ（それ以外は 403）。
+export async function yankRegistryEntry(entryId: string): Promise<void> {
+  const res = await apiFetch(`/apps/registry/${entryId}/yank`, { method: "POST" });
+  await ok<void>(res);
 }
 
 export async function uninstallApp(appId: string): Promise<void> {
