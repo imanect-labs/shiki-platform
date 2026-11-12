@@ -87,6 +87,23 @@ pub async fn verify_gateway_token(
     let claims = jsonwebtoken::decode::<GatewayClaims>(token, &key, &validation)
         .map(|d| d.claims)
         .map_err(|e| GatewayError::Unauthenticated(format!("トークン検証に失敗: {e}")))?;
+    identity_from_claims(claims)
+}
+
+/// 署名を確かめたクレームから [`GatewayIdentity`] を組む（本番の [`verify_gateway_token`] と試しの検証が共有する）。
+///
+/// - `sub` に FGA の区切りの文字（`:`・`#`・`|`）・制御文字・空白があれば断る（[`authz::validate_user_id`]・D-205）。
+///   ログインとセッションの更新と同じ決まりで、組織の member の check（`router.rs`）より前で断る。`|` を含む人は
+///   OpenFGA が member にできてしまい、定期の照合で外れない（D-136）。
+/// - `azp` 欠落は拒否（登録 client を特定できないトークンは受理しない）。
+/// - `scope` に未知スコープが 1 つでもあれば拒否（fail-closed）。
+fn identity_from_claims(claims: GatewayClaims) -> Result<GatewayIdentity, GatewayError> {
+    if let Err(violation) = authz::validate_user_id(&claims.sub) {
+        return Err(GatewayError::Unauthenticated(format!(
+            "sub {:?} は利用者の id に使えません（{violation}）",
+            claims.sub
+        )));
+    }
 
     let client_id = claims
         .azp
@@ -119,7 +136,7 @@ mod tests {
         }
     }
 
-    /// HS256 で検証する変種（テスト専用・本番は RS256）。
+    /// HS256 で検証する変種（テスト専用・本番は RS256）。署名を確かめた後は本番と同じ [`identity_from_claims`] を通る。
     fn verify_hs(
         token: &str,
         secret: &[u8],
@@ -133,18 +150,7 @@ mod tests {
         let claims = jsonwebtoken::decode::<GatewayClaims>(token, &key, &validation)
             .map(|d| d.claims)
             .map_err(|e| GatewayError::Unauthenticated(e.to_string()))?;
-        let client_id = claims
-            .azp
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| GatewayError::Unauthenticated("azp なし".into()))?;
-        let token_scopes = CapabilityScope::parse_scope_string(&claims.scope)
-            .map_err(GatewayError::Unauthenticated)?;
-        Ok(GatewayIdentity {
-            user_sub: claims.sub,
-            client_id,
-            tenant: claims.tenant,
-            token_scopes,
-        })
+        identity_from_claims(claims)
     }
 
     fn cfg() -> GatewayTokenConfig {
@@ -211,6 +217,28 @@ mod tests {
             }),
         );
         assert!(verify_hs(&token, secret, &cfg()).is_err());
+    }
+
+    #[test]
+    fn sub_with_fga_separators_is_unauthenticated() {
+        // `|` を含む sub は OpenFGA が member にできてしまい、定期の照合で外れない（D-136）。`:`・`#`・空白・制御文字も、
+        // ログインと同じく組織の member の check より前で断る（D-205）。
+        let secret = b"s";
+        for sub in ["a|b", "f:ldap:bob", "a#b", "a b", "a\u{7}b"] {
+            let token = make_token(
+                secret,
+                &serde_json::json!({
+                    "sub": sub, "azp": "app", "scope": "data.read",
+                    "aud": "shiki-gateway", "iss": "https://kc/realms/shiki",
+                    "exp": 9_999_999_999u64,
+                }),
+            );
+            let err = verify_hs(&token, secret, &cfg()).unwrap_err();
+            assert!(
+                matches!(&err, GatewayError::Unauthenticated(m) if m.contains("sub")),
+                "{sub:?}: {err:?}"
+            );
+        }
     }
 
     #[test]
