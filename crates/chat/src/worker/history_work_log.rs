@@ -23,16 +23,23 @@ const INPUT_MAX_CHARS: usize = 200;
 /// 結果の抜粋の上限（文字）。id・件数・先頭の値が読める程度。
 const RESULT_MAX_CHARS: usize = 300;
 /// 記録しないメタツール（計画の更新・定義の読み込みは、続きの作業の材料にならない）。
-const SKIPPED_TOOLS: &[&str] = &["plan", "tool_search"];
+/// 名前は正本の語彙から引く（手書きの対応物を作らない）。
+fn is_skipped(name: &str) -> bool {
+    use agent_core::MetaToolName as M;
+    name == M::Plan.as_str() || name == M::ToolSearch.as_str()
+}
 
 /// assistant メッセージの本文ブロックから作業記録を組む。記録する呼び出しが無ければ `None`。
 pub(super) fn work_log(blocks: &[ContentBlock]) -> Option<String> {
+    // サブエージェントの子の呼び出し（画面向けに中継されたもの）は載せない。親へ返すのは
+    // 委譲の成果（親の `subagent` の結果）だけ（docs/design.md の委譲の隔離）。
+    let children = super::trajectory::child_call_ids(blocks);
     let calls: Vec<(&str, &str, &serde_json::Value)> = blocks
         .iter()
         .filter_map(|b| match b {
             ContentBlock::ToolCall {
                 id, name, input, ..
-            } if !SKIPPED_TOOLS.contains(&name.as_str()) => {
+            } if !is_skipped(name) && !children.contains(&id.as_str()) => {
                 Some((id.as_str(), name.as_str(), input))
             }
             _ => None,
@@ -144,6 +151,50 @@ mod tests {
             "{log}"
         );
         assert!(!log.contains("- plan"), "計画は記録しない: {log}");
+    }
+
+    /// サブエージェントの子の呼び出し（step 無しで中継されたもの）は載せず、委譲の成果だけ残す。
+    #[test]
+    fn subagent_children_are_not_recorded() {
+        let blocks = vec![
+            call("s", "subagent", serde_json::json!({"objective": "調べる"})),
+            ContentBlock::ToolCall {
+                id: "child".into(),
+                name: "web_fetch".into(),
+                input: serde_json::json!({"url": "https://example.com/"}),
+                step: None,
+            },
+            result("child", true, "子が読んだ生の本文"),
+            result("s", true, "委譲の成果"),
+        ];
+        let log = work_log(&blocks).unwrap();
+        assert!(log.contains("- subagent"), "{log}");
+        assert!(log.contains("委譲の成果"), "{log}");
+        assert!(!log.contains("web_fetch"), "{log}");
+        assert!(!log.contains("生の本文"), "{log}");
+    }
+
+    /// 検索クエリ・Langfuse 入力に使う発話のプレビューへ作業記録を混ぜない（古典 RAG の検索）。
+    #[test]
+    fn preview_skips_the_work_log_block() {
+        let log = work_log(&[
+            call("a", "drive.find", serde_json::json!({"query": "本票"})),
+            result("a", true, "id: 1111"),
+        ])
+        .unwrap();
+        let message = llm_gateway::Message {
+            role: llm_gateway::Role::User,
+            content: vec![
+                llm_gateway::Block::Text { text: log },
+                llm_gateway::Block::Text {
+                    text: "天候別に集計して".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            super::super::history::message_preview(&message),
+            "天候別に集計して"
+        );
     }
 
     /// 呼び出しが無い（本文だけの）ターンには何も添えない。

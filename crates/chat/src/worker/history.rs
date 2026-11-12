@@ -462,7 +462,11 @@ pub(super) fn message_preview(m: &LlmMessage) -> String {
     m.content
         .iter()
         .filter_map(|b| match b {
-            llm_gateway::Block::Text { text } => Some(text.as_str()),
+            // 前のターンの作業記録（history_work_log）は発話ではない（検索クエリ・Langfuse の
+            // 入力に混ぜない）。
+            llm_gateway::Block::Text { text } if !text.starts_with(llm_gateway::WORK_LOG_MARK) => {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()

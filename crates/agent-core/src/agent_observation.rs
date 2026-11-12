@@ -106,10 +106,14 @@ pub(crate) fn truncated_call_results(
     call_ids: &[(String, String)],
     max_tokens: Option<u32>,
 ) -> Option<Vec<Block>> {
+    // 回数は**切れた応答（ステップ）単位**で数える（1 応答に複数の呼び出しがあっても 1 回）。
     let retried = messages
         .iter()
-        .flat_map(|m| m.content.iter())
-        .filter(|b| matches!(b, Block::ToolResult { content, .. } if content.starts_with(TRUNCATED_CALL_MARK)))
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, Block::ToolResult { content, .. } if content.starts_with(TRUNCATED_CALL_MARK))
+            })
+        })
         .count();
     if retried >= MAX_TRUNCATED_RETRIES {
         return None;
@@ -220,7 +224,11 @@ mod tests {
     /// 切れた呼び出しは失敗の結果で閉じ、上限回数を超えたら諦める。
     #[test]
     fn truncated_calls_are_closed_and_retried_a_bounded_number_of_times() {
-        let ids = vec![("c1".to_string(), "office.excel_edit".to_string())];
+        // 1 応答に 2 件の呼び出しがあっても、数えるのは応答（ステップ）単位。
+        let ids = vec![
+            ("c1".to_string(), "office.excel_edit".to_string()),
+            ("c2".to_string(), "drive.move".to_string()),
+        ];
         let mut messages = vec![LlmMessage::text(LlmRole::User, "埋めて")];
         for _ in 0..MAX_TRUNCATED_RETRIES {
             let blocks = truncated_call_results(&messages, &ids, Some(8192)).unwrap();
