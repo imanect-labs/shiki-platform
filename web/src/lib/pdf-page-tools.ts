@@ -56,6 +56,7 @@ export async function mergePdfs(docs: PDFDocumentProxy[]) {
   const { PDFDocument } = await import("pdf-lib");
   const output = await PDFDocument.create();
   const { copyKeptPages } = await import("./pdf-page-copy");
+  const { flattenVisibleForm } = await import("./pdf-form-flatten");
   let total = 0;
   for (const doc of docs) {
     docs.forEach(assertPdfSource);
@@ -65,7 +66,7 @@ export async function mergePdfs(docs: PDFDocumentProxy[]) {
       throw new Error("一度に結合できるPDFは合計100MBまでです。");
     const source = await PDFDocument.load(bytes);
     // フォーム階層は結合しない。保存済みの外観をページ描画へ固定して値を残す。
-    source.getForm().flatten({ updateFieldAppearances: false });
+    flattenVisibleForm(source);
     for (const page of await copyKeptPages(
       source,
       output,

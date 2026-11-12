@@ -2586,3 +2586,128 @@ test("結合したPDFにフォームの保存済み表示値を残す", async ({
     "123",
   );
 });
+
+test("非表示または特殊な外観の入力欄を結合で露出・変形させない", async () => {
+  for (const mode of [
+    "hidden",
+    "noView",
+    "optional",
+    "bbox",
+    "matrix",
+  ] as const) {
+    const pdf = await PDFDocument.create();
+    const p = pdf.addPage([200, 200]);
+    const field = pdf.getForm().createTextField("private.amount");
+    field.setText("secret");
+    field.addToPage(p, { x: 20, y: 100, width: 100, height: 30 });
+    const widget = field.acroField.getWidgets()[0];
+    if (mode === "hidden" || mode === "noView")
+      widget.setFlags(mode === "hidden" ? 2 : 32);
+    else if (mode === "optional") {
+      const layer = pdf.context.register(
+        pdf.context.obj({
+          Type: PDFName.of("OCG"),
+          Name: PDFString.of("Hidden"),
+        }),
+      );
+      widget.dict.set(PDFName.of("OC"), layer);
+      pdf.catalog.set(
+        PDFName.of("OCProperties"),
+        pdf.context.obj({ OCGs: [layer], D: { OFF: [layer] } }),
+      );
+    } else {
+      const normal = widget.getAppearances()!.normal;
+      const { PDFStream } = await import("pdf-lib");
+      expect(normal).toBeInstanceOf(PDFStream);
+      if (normal instanceof PDFStream)
+        normal.dict.set(
+          PDFName.of(mode === "bbox" ? "BBox" : "Matrix"),
+          pdf.context.obj(
+            mode === "bbox" ? [10, 20, 60, 40] : [2, 0, 0, 2, 0, 0],
+          ),
+        );
+    }
+    const bytes = await pdf.save({ updateFieldAppearances: false });
+    const doc = {
+      numPages: 1,
+      getData: async () => bytes,
+    } as unknown as PDFDocumentProxy;
+    await expect(mergePdfs([doc, doc]), mode).rejects.toThrow(
+      "入力欄の表示には結合が未対応",
+    );
+  }
+});
+
+test("セル抜粋の拡大が出典上限を超えても旧枠・本文を保持する", async ({
+  page,
+}) => {
+  await setup(page);
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([600, 800]);
+  const rows = Array.from({ length: 8 }, (_, r) =>
+    Array.from({ length: 7 }, (_, c) => `C${r}${c}`),
+  );
+  rows.forEach((row, r) =>
+    row.forEach((text, c) =>
+      p.drawText(text, { x: 50 + c * 60, y: 700 - r * 40, size: 8 }),
+    ),
+  );
+  const bytes = Buffer.from(await pdf.save());
+  const text = rows.map((row) => `| ${row.join(" | ")} |`).join("\n");
+  await page.route("**/fixture.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: bytes }),
+  );
+  await page.route(`**/api/files/${id}/versions/1/blocks*`, (route) =>
+    route.fulfill({
+      json: {
+        blocks: [
+          {
+            ordinal: 0,
+            type: "table",
+            page: 1,
+            text,
+            prov: [
+              { page: 1, bbox: [40, 720, 460, 400], origin: "bottom_left" },
+            ],
+          },
+        ],
+        next_from: null,
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await expect(page.getByTestId("pdf-fine-unit")).toHaveCount(56);
+  await dragRegion(page, 1, [40 / 600, 80 / 800, 440 / 600, 240 / 800]);
+  await dragRegion(page, 1, [40 / 600, 240 / 800, 440 / 600, 400 / 800]);
+  const cards = page.getByTestId("pdf-excerpt-card");
+  await expect(cards).toHaveCount(2);
+  const box = page.getByTestId("pdf-region-box").nth(1);
+  const before = await box.getAttribute("data-bbox");
+  const oldText = await cards.nth(1).locator("pre").textContent();
+  const handle = page.getByLabel("抜粋2の上を調整", { exact: true });
+  await box.locator("[data-region-move]").focus();
+  const bounds = (await handle.boundingBox())!;
+  const layer = (await page.getByTestId("pdf-region-layer").boundingBox())!;
+  await page.mouse.move(
+    bounds.x + bounds.width / 2,
+    bounds.y + bounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    bounds.x + bounds.width / 2,
+    layer.y + (layer.height * 80) / 800,
+    { steps: 5 },
+  );
+  await page.mouse.up();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({
+        hasText: "選択範囲が大きすぎます。範囲を小さくしてください。",
+      }),
+  ).toBeVisible();
+  await expect(box).toHaveAttribute("data-bbox", before!);
+  await expect(cards.nth(1).locator("pre")).toHaveText(oldText!);
+});

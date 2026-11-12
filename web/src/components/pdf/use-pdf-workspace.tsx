@@ -82,7 +82,9 @@ export function usePdfWorkspace({
   const [mode, setMode] = React.useState<Mode>("read");
   const [selections, setSelections] = React.useState<PdfExcerpt[]>([]);
   const selectionsRef = React.useRef(selections);
-  selectionsRef.current = selections;
+  React.useLayoutEffect(() => {
+    selectionsRef.current = selections;
+  }, [selections]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [assistantOpen, setAssistantOpen] = React.useState(false);
@@ -155,7 +157,7 @@ export function usePdfWorkspace({
         if (previous) pendingOperations.current.delete(previous);
         replacements.current.set(replaceId, replacementToken);
       }
-      if (replaceId)
+      if (replaceId && !fine)
         setSelections((prev) =>
           prev.map((s) =>
             s.id === replaceId ? { ...s, bbox, text: "", tables: [] } : s,

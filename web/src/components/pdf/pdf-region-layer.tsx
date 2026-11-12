@@ -47,6 +47,7 @@ export function PdfRegionLayer({
   onSelect,
   precision = "area",
   units = [],
+  unitsReady = true,
 }: {
   viewport: PageViewport;
   page: number;
@@ -54,6 +55,7 @@ export function PdfRegionLayer({
   selections: PdfExcerpt[];
   precision?: SelectionPrecision;
   units?: FineUnit[];
+  unitsReady?: boolean;
   onSelect: (
     page: number,
     bbox: PdfRect,
@@ -89,6 +91,9 @@ export function PdfRegionLayer({
     keyboard.current = null;
     setPreview(null);
   }, [viewport, enabled, precision]);
+  React.useEffect(() => {
+    setNote("");
+  }, [viewport, precision]);
   const point = (e: React.PointerEvent): [number, number] => {
     const r = ref.current!.getBoundingClientRect();
     return [
@@ -114,6 +119,9 @@ export function PdfRegionLayer({
     handle: RegionHandle = "move",
   ) => {
     if (!enabled || e.button !== 0 || !e.isPrimary) return;
+    const chosen = selections.find((s) => s.id === id);
+    const kind = chosen ? (chosen.precision ?? "area") : precision;
+    if (kind !== "area" && !unitsReady) return;
     e.preventDefault();
     e.stopPropagation();
     cancel();
@@ -133,6 +141,7 @@ export function PdfRegionLayer({
   const commit = (bbox: PdfRect, id?: string) => {
     const selected = selections.find((s) => s.id === id);
     const kind = selected ? (selected.precision ?? "area") : precision;
+    if (kind !== "area" && !unitsReady) return;
     let fine: FineContent | null | undefined;
     try {
       fine = kind !== "area" ? fineContent(units, bbox, kind) : undefined;
@@ -229,6 +238,9 @@ export function PdfRegionLayer({
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const chosen = selections.find((s) => s.id === id);
+    const kind = chosen ? (chosen.precision ?? "area") : precision;
+    if (kind !== "area" && !unitsReady) return;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       e.stopPropagation();
@@ -342,6 +354,7 @@ export function PdfRegionLayer({
           tabIndex={0}
           aria-label={`p.${page} の範囲を選択。ドラッグまたは矢印で位置、Shiftと矢印でサイズ、Enterで追加、Escapeで中止`}
           data-testid="pdf-region-layer"
+          aria-busy={precision !== "area" && !unitsReady}
           className="pointer-events-auto absolute inset-0 cursor-crosshair touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
           onPointerDown={(e) => begin(e)}
           onKeyDown={(e) => keys(e)}
@@ -380,9 +393,18 @@ export function PdfRegionLayer({
             );
           })}
       {enabled && precision !== "area" && (
-        <span className="pointer-events-none absolute bottom-2 left-2 rounded bg-background/95 px-2 py-1 text-[10px] text-muted-foreground">
-          文字層のある{precision === "line" ? "行" : "表セル"}を選択 ·
-          OCRは自由範囲で
+        <span
+          role="status"
+          className="pointer-events-none absolute bottom-2 left-2 rounded bg-background/95 px-2 py-1 text-[10px] text-muted-foreground"
+        >
+          {!unitsReady ? (
+            "文字の位置を確認中…"
+          ) : (
+            <>
+              文字層のある{precision === "line" ? "行" : "表セル"}を選択 ·
+              OCRは自由範囲で
+            </>
+          )}
         </span>
       )}
       {note && (

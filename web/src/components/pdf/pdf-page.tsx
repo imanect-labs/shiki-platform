@@ -392,6 +392,7 @@ export function PdfPage({
           selections={regionSelection.selections}
           precision={regionSelection.precision}
           units={fineUnits?.viewport === size.viewport ? fineUnits.values : []}
+          unitsReady={fineUnits?.viewport === size.viewport}
           onSelect={regionSelection.onSelect}
         />
       ) : null}
