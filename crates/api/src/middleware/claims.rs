@@ -109,16 +109,38 @@ pub fn decode_claims_insecure(token: &str) -> Result<Claims, AuthError> {
         .map_err(|e| AuthError::InvalidToken(format!("クレームの parse に失敗: {e}")))
 }
 
+/// sub が利用者の id に使えない（[`principal_from_claims`] が断った）。
+///
+/// 表示は sub を `{:?}` で出す（制御文字をそのままログに書かない）。
+#[derive(Debug, thiserror::Error)]
+#[error("sub {sub:?} は利用者の id に使えません（{violation}）")]
+pub struct UnusableSub {
+    pub sub: String,
+    pub violation: authz::IdentViolation,
+}
+
 /// クレームから認証主体を組み立てる（純粋関数）。
-pub fn principal_from_claims(claims: Claims) -> Principal {
-    Principal {
+///
+/// sub に FGA の区切りの文字（`:`・`#`・`|`）・制御文字・空白があれば断る（[`authz::validate_user_id`]・D-205）。
+/// sub はタプルの `user:<tenant>|<sub>` にそのまま入るので、断らずに通すと member にならない（`:`・`#`）か、
+/// 定期の照合で外れない（`|`・D-136）。ログインとセッションの更新はどちらもここを通る。provisioner の bearer
+/// （[`verify_access_token`](crate::middleware::auth::verify_access_token) を共用）は sub を主体に使わないので、
+/// 確かめはトークンの検証ではなくここに置く。
+pub fn principal_from_claims(claims: Claims) -> Result<Principal, UnusableSub> {
+    if let Err(violation) = authz::validate_user_id(&claims.sub) {
+        return Err(UnusableSub {
+            sub: claims.sub,
+            violation,
+        });
+    }
+    Ok(Principal {
         kind: authz::PrincipalKind::User,
         id: claims.sub,
         email: claims.email,
         groups: claims.groups,
         roles: claims.roles,
         tenant_id: claims.tenant,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -187,13 +209,38 @@ mod tests {
             azp: None,
             sid: None,
         };
-        let principal = principal_from_claims(claims);
+        let principal = principal_from_claims(claims).unwrap();
         assert_eq!(principal.id, "user-3");
         assert_eq!(principal.email.as_deref(), Some("p@example.com"));
         assert_eq!(principal.groups, vec!["/acme"]);
         assert_eq!(principal.roles, vec!["sales", "eng"]);
         assert_eq!(principal.tenant_id.as_deref(), Some("acme"));
         // preferred_username は Principal には載らない（マッピング対象外）。
+    }
+
+    fn claims_with_sub(sub: &str) -> Claims {
+        serde_json::from_value(serde_json::json!({ "sub": sub, "tenant": "acme" })).unwrap()
+    }
+
+    #[test]
+    fn principal_from_claims_accepts_a_uuid_sub() {
+        // Keycloak の既定の sub（UUID）はそのまま主体になる。
+        let sub = "0b6f3a52-8f1e-4c1a-9d1e-2f7a2c1b9e10";
+        let principal = principal_from_claims(claims_with_sub(sub)).unwrap();
+        assert_eq!(principal.id, sub);
+        assert_eq!(principal.kind, authz::PrincipalKind::User);
+    }
+
+    #[test]
+    fn principal_from_claims_rejects_fga_separators_in_the_sub() {
+        // フェデレーションで Import を切った人の sub（`f:<provider>:<username>`）・userset の区切り・テナントの区切り・
+        // 制御文字・空白は、主体にしない（D-205）。
+        for sub in ["f:ldap:bob", "a#b", "a|b", "a\u{7}b", "a b", "a\u{3000}b"] {
+            let err = principal_from_claims(claims_with_sub(sub)).unwrap_err();
+            assert_eq!(err.sub, sub);
+            // 表示は sub を {:?} で出す（制御文字をそのままログに書かない）。
+            assert!(!err.to_string().contains('\u{7}'), "{err}");
+        }
     }
 
     #[test]

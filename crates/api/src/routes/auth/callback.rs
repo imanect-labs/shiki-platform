@@ -20,6 +20,8 @@ use super::{
 
 /// ログインの往復で、組織の member の同期を待つ長さ（[`org_member`]・過ぎたら裏で続ける）。
 const ORG_MEMBER_WAIT: Duration = Duration::from_secs(3);
+/// sub が利用者の id に使えない人を戻すログイン画面（D-205・`web/src/app/login/page.tsx` が文言を出す）。
+const ACCOUNT_UNUSABLE_URL: &str = "/login?error=account_unusable";
 use crate::{
     config::AuthConfig,
     error::ApiError,
@@ -80,7 +82,14 @@ pub async fn callback(
     // Keycloak SSO セッション id（backchannel logout の逆引き鍵・#91）。principal 生成で
     // クレームが move されるため先に取り出す。
     let keycloak_sid = verified.sid.clone();
-    let principal = claims::principal_from_claims(verified);
+    // sub が利用者の id に使えない人（D-205）は、タプルもセッションも作らずに戻し、JSON の 401 は見せない。
+    let principal = match principal_or_unusable(verified, flow.action.as_ref()) {
+        Ok(principal) => principal,
+        Err(back) => {
+            let jar = jar.add(removal_cookie(FLOW_COOKIE, state.config.session.secure));
+            return Ok((jar, Redirect::to(&back)));
+        }
+    };
     let tenant_id = resolve_tenant_id(&principal, &state.config.auth)?;
 
     // アカウント操作の往復で、Keycloak 側の SSO セッションが始めたユーザーと別人だった場合
@@ -236,6 +245,25 @@ fn action_subject_mismatch(action: Option<&AccountAction>, principal_id: &str) -
     None
 }
 
+/// 検証したクレームから主体を組む（[`claims::principal_from_claims`]）。sub が利用者の id に使えなければ（D-205）、
+/// 主体の代わりに戻り先を返す。
+///
+/// ふつうのログインはログイン画面（[`ACCOUNT_UNUSABLE_URL`]）。ログイン画面は自動で送り直さず、再試行のボタンも
+/// 出さない（同じ sub で同じ失敗を繰り返すだけなので）。設定画面から始めたアカウント操作は、始めた人と別の人が
+/// 戻ってきたのと同じく、設定画面へ error で戻す（その人のセッションはそのまま残る）。
+fn principal_or_unusable(
+    verified: claims::Claims,
+    action: Option<&AccountAction>,
+) -> Result<Principal, String> {
+    claims::principal_from_claims(verified).map_err(|e| {
+        tracing::warn!(error = %e, "sub が利用者の id に使えない人のログインを断る");
+        action.map_or_else(
+            || ACCOUNT_UNUSABLE_URL.to_string(),
+            |action| action.return_url("error"),
+        )
+    })
+}
+
 /// IdP エラー時、相関 Cookie がアカウント操作で state も一致すれば設定画面の戻り先を返す。
 fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Option<String> {
     let flow = jar.get(FLOW_COOKIE).and_then(|c| parse_flow(c.value()))?;
@@ -381,8 +409,9 @@ fn desired_role_ids(roles: &[String], departments: &[String], org: &str) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::{desired_from_claims, desired_role_ids};
+    use super::{desired_from_claims, desired_role_ids, principal_or_unusable};
     use crate::config::{AuthConfig, Tenancy};
+    use crate::routes::auth::action::{AccountAction, AccountActionKind};
 
     fn v(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
@@ -494,6 +523,31 @@ mod tests {
         let (org, sourced) = desired_from_claims(&p, "default", &auth(Tenancy::Single));
         assert_eq!(org, "acme");
         assert_eq!(sourced, vec![("acme/eng".to_string(), true)]);
+    }
+
+    #[test]
+    fn unusable_sub_goes_back_to_the_login_page_or_the_settings() {
+        let claims = |sub: &str| -> crate::middleware::claims::Claims {
+            serde_json::from_value(serde_json::json!({ "sub": sub })).unwrap()
+        };
+        // UUID の sub はそのまま主体になる。
+        let uuid = "0b6f3a52-8f1e-4c1a-9d1e-2f7a2c1b9e10";
+        assert_eq!(principal_or_unusable(claims(uuid), None).unwrap().id, uuid);
+        // ふつうのログインはログイン画面へ（画面が「このアカウントは使えません」を出す・D-205）。
+        assert_eq!(
+            principal_or_unusable(claims("f:ldap:bob"), None).unwrap_err(),
+            "/login?error=account_unusable"
+        );
+        // 設定画面から始めたアカウント操作は、設定画面へ error で戻す（始めた人のセッションは残る）。
+        let action = AccountAction {
+            kind: AccountActionKind::Passkey,
+            credential_id: None,
+            subject: Some("u1".into()),
+        };
+        assert_eq!(
+            principal_or_unusable(claims("a|b"), Some(&action)).unwrap_err(),
+            "/settings/security?action=passkey&status=error"
+        );
     }
 
     #[test]
