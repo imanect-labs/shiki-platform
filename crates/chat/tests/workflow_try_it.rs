@@ -649,6 +649,54 @@ async fn launching_reservations_are_joined_then_expire() {
     .await;
 }
 
+/// 台帳の行は、会話と生成の run を (tenant_id, id) の複合の外部キーで指す（0080・#815 と同じ）。別のテナントの行から
+/// 会話や生成の run を指せない。会話を消すと行も消える。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ledger_rows_cannot_point_across_tenants() {
+    run(|env| async move {
+        let (thread_id, chat_run_id) = env.conversation(&env.alice).await;
+        let insert = |tenant: String, thread: Uuid, chat_run: Uuid| {
+            let pool = env.pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO workflow_trial_run (tenant_id, org, thread_id, chat_run_id, seq, \
+                       invoked_by, workflow_id, version, input_hash) \
+                     VALUES ($1, 'acme', $2, $3, 1, 'alice', gen_random_uuid(), 1, 'h')",
+                )
+                .bind(tenant)
+                .bind(thread)
+                .bind(chat_run)
+                .execute(&pool)
+                .await
+            }
+        };
+        let other = format!("t-{}", Uuid::new_v4());
+        let err = insert(other, thread_id, chat_run_id).await.unwrap_err();
+        assert!(
+            err.as_database_error()
+                .is_some_and(|d| d.code().as_deref() == Some("23503")),
+            "別のテナントの会話を指せない: {err:?}"
+        );
+        insert(env.tenant.clone(), thread_id, chat_run_id)
+            .await
+            .expect("同じテナントの会話は指せる");
+        sqlx::query("DELETE FROM thread WHERE tenant_id = $1 AND id = $2")
+            .bind(&env.tenant)
+            .bind(thread_id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM workflow_trial_run WHERE tenant_id = $1")
+                .bind(&env.tenant)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0, "会話を消すと台帳の行も消える");
+    })
+    .await;
+}
+
 /// あふれ: skip は「起動されませんでした」で台帳の行が消える。queue のまま上限に来たら「順番待ち」で行は残る。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn overflow_skip_and_queue() {

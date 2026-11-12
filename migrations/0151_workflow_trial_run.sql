@@ -21,8 +21,8 @@
 create table workflow_trial_run (
     tenant_id            text        not null,
     org                  text        not null,
-    thread_id            uuid        not null references thread (id) on delete cascade,
-    chat_run_id          uuid        not null references generation_run (run_id) on delete cascade,
+    thread_id            uuid        not null,
+    chat_run_id          uuid        not null,
     seq                  int         not null check (seq >= 1),
     invoked_by           text        not null,
     workflow_id          uuid        not null,
@@ -33,7 +33,13 @@ create table workflow_trial_run (
     reported_tokens      bigint      not null default 0 check (reported_tokens >= 0),
     reported_cost_micros bigint      not null default 0 check (reported_cost_micros >= 0),
     created_at           timestamptz not null default now(),
-    primary key (tenant_id, chat_run_id, seq)
+    primary key (tenant_id, chat_run_id, seq),
+    -- 親子の tenant の一致を DB で保証する（0080・#815 と同じ複合の外部キー）。カスケードの検索には、PK の先頭
+    -- (tenant_id, chat_run_id) と key_idx の先頭 (tenant_id, thread_id) が効く。
+    foreign key (tenant_id, thread_id) references thread (tenant_id, id)
+        on delete cascade deferrable initially immediate,
+    foreign key (tenant_id, chat_run_id) references generation_run (tenant_id, run_id)
+        on delete cascade deferrable initially immediate
 );
 
 -- 前の行を引く（同じ会話・同じ話した人・同じ版・同じ入力の新しい順）。
