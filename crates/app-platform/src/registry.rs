@@ -171,6 +171,37 @@ impl Registry {
         Ok(rows)
     }
 
+    /// 呼ぶ人の組織が publish し、今もインストールできるエントリの一覧（新しい順・コードアプリのインストール UI 用）。
+    ///
+    /// [`Self::list`] と同じくテナントと組織で絞り、取り下げたもの（yank）と、実体の artifact を消したものを除く
+    /// （組織の公開アプリの一覧から外す・D-203・GAP-69a）。除くものを SQL で落とすので、取り下げたもの・消したものが
+    /// 件数の上限（200）を食わない。skill の一覧（`GET /skills/registry`）は [`Self::list`] のまま（D-203 で skill の登録は
+    /// 扱わない）。
+    pub async fn list_installable(
+        &self,
+        ctx: &AuthContext,
+        artifact_kind: &str,
+        limit: i64,
+    ) -> Result<Vec<RegistryEntry>, AppPlatformError> {
+        let rows: Vec<RegistryEntry> = sqlx::query_as(
+            "SELECT r.id, r.artifact_kind, r.name, r.version, r.artifact_id, r.artifact_version, \
+                    r.manifest_digest, r.publisher, r.trust_tier, r.yanked, r.created_at \
+             FROM registry_entry r \
+             JOIN artifact a ON a.tenant_id = r.tenant_id AND a.id = r.artifact_id \
+             WHERE r.tenant_id = $1 AND r.org = $2 AND r.artifact_kind = $3 AND NOT r.yanked \
+               AND a.deleted_at IS NULL \
+             ORDER BY r.created_at DESC LIMIT $4",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(artifact_kind)
+        .bind(limit.clamp(1, 200))
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows)
+    }
+
     /// エントリの署名（publish 時添付・first-party インストール検証用）。
     pub async fn signature_of(
         &self,

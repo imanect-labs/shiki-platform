@@ -257,7 +257,8 @@ pub async fn app_usage(
     Ok(Json(usage))
 }
 
-/// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。
+/// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。取り下げたものと、実体の
+/// アーティファクトを消したものは出さない（D-203・GAP-69a）。
 #[utoipa::path(
     get,
     path = "/apps/registry",
@@ -271,7 +272,7 @@ pub async fn list_registry(
     let items = state
         .installs
         .registry()
-        .list(&ctx, "mini_app_code", 200)
+        .list_installable(&ctx, "mini_app_code", 200)
         .await?;
     Ok(Json(serde_json::json!({ "items": items })))
 }
