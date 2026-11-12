@@ -148,7 +148,13 @@ gh api repos/{owner}/{repo}/rules/branches/main --jq '[.[] | select(.type == "me
    gh run watch <run-id> --exit-status        # 一覧に出るまで少し待つことがある
    ```
 
-   落ちたら `selection-gap` の Issue を確認し、この PR が原因なら直す PR を出す。
+   - **run が作られない変更がある。** main の push には `paths-ignore`（`docs/**`・`*.md`・`.claude/**`）が掛かっている
+     （正は `ci.yml` 冒頭）。PR の変更ファイル（`gh pr view <PR#> --json files`）が**すべて**これに当たるなら run は来ないので、
+     待たずに「push run なし（paths-ignore）」と報告して次へ進む。
+   - **`cancelled` で終わったら、全量テストの結果は得られていない。** main の concurrency は保留中の run を 1 本しか保たず、
+     連続 push で保留中の run が取り消される。`gh run rerun <run-id>` で 1 回だけ再実行し、それも取れなければ
+     「この merge commit の全量テストは未確認」と報告する（緑とは書かない）。
+   - **落ちたら** `selection-gap` の Issue を確認し、この PR が原因なら直す PR を出す。
 
 3. ローカルを最新化する（次のタスクは `origin/main` から切る）:
 
