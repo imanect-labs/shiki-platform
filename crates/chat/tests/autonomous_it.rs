@@ -555,6 +555,34 @@ async fn drive_copy_preserves_source_and_tenant_boundary() {
         .await
         .is_err());
     assert!(tool.call(&ctx, serde_json::json!({"node_id":source.id,"new_name":"copy.csv","destination_folder_id":"bad"}), None).await.is_err());
+    let dotted = storage
+        .write_file_internal(
+            &ctx,
+            None,
+            ".docx",
+            b"data",
+            "application/octet-stream",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":dotted.id,"new_name":".xlsx"}),
+            None
+        )
+        .await
+        .is_err());
+    let dotted_copy = tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":dotted.id,"new_name":"dotted.DOCX"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!dotted_copy.is_error);
     let root = tool
         .call(
             &ctx,
@@ -587,4 +615,133 @@ async fn drive_copy_preserves_source_and_tenant_boundary() {
 // テスト内のctx変数とコンテキスト生成関数を区別する。
 fn super_context(tenant: &str) -> AuthContext {
     ctx(tenant)
+}
+
+/// 確定済みコピーは、元の更新・移動・削除後にも同じ結果へ収束する。
+#[tokio::test]
+async fn drive_copy_replays_after_source_changes() {
+    use agent_core::Tool;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("copy-replay-{}", uuid::Uuid::new_v4());
+    let ctx = ctx(&tenant);
+    let (_, storage) = workspace_harness(pool).await;
+    let source = storage
+        .write_file_internal(&ctx, None, "original.txt", b"original", "text/plain", None)
+        .await
+        .unwrap();
+    let folder = storage
+        .create_folder(&ctx, None, "moved", None)
+        .await
+        .unwrap();
+    let run_id = uuid::Uuid::new_v4();
+    let tool = chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), run_id);
+    let input = serde_json::json!({"node_id":source.id,"new_name":"copied.txt"});
+    let first = tool.call(&ctx, input.clone(), None).await.unwrap();
+    assert!(!first.is_error);
+    let copied_id = uuid::Uuid::parse_str(&first.artifacts[0].node_id).unwrap();
+    storage
+        .update_file_content_internal(&ctx, source.id, b"changed", "text/plain", None)
+        .await
+        .unwrap();
+    storage
+        .update_file(&ctx, source.id, None, Some(Some(folder.id)), None)
+        .await
+        .unwrap();
+    let resumed = chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), run_id);
+    let replay = resumed.call(&ctx, input.clone(), None).await.unwrap();
+    assert!(!replay.is_error, "{}", replay.content);
+    assert_eq!(replay.artifacts[0].node_id, copied_id.to_string());
+    let (copy, bytes) = storage
+        .read_file_internal(&ctx, copied_id, None)
+        .await
+        .unwrap();
+    assert_eq!(copy.parent_id, None);
+    assert_eq!(bytes, b"original");
+    storage
+        .soft_delete_file(&ctx, source.id, None)
+        .await
+        .unwrap();
+    assert!(
+        !resumed
+            .call(&ctx, input.clone(), None)
+            .await
+            .unwrap()
+            .is_error
+    );
+    storage
+        .soft_delete_file(&ctx, copied_id, None)
+        .await
+        .unwrap();
+    assert!(resumed.call(&ctx, input, None).await.unwrap().is_error);
+}
+
+/// 未保存の共有Yjsを複製し、古いファイルblobを成功として返さない。
+#[tokio::test]
+async fn drive_copy_uses_open_note_and_slide_state() {
+    use agent_core::Tool;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("copy-live-{}", uuid::Uuid::new_v4());
+    let ctx = ctx(&tenant);
+    let (_, storage) = workspace_harness(pool.clone()).await;
+    let hub = Arc::new(collab::CollabHub::new(
+        pool,
+        Arc::new(AllowAll),
+        storage.clone(),
+    ));
+    let tool = chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), uuid::Uuid::new_v4())
+        .with_collab(Some(hub.clone()));
+    let empty_slide = collab::slide::SlideDoc::default().to_json();
+    for (name, copy_name, initial, marker) in [
+        ("note.md", "note_copy.md", "# Old\n", "LatestNoteMarker"),
+        (
+            "slides.slide",
+            "slides_copy.slide",
+            empty_slide.as_str(),
+            "LatestSlideMarker",
+        ),
+    ] {
+        let node = storage
+            .write_file_internal(
+                &ctx,
+                None,
+                name,
+                initial.as_bytes(),
+                "application/octet-stream",
+                None,
+            )
+            .await
+            .unwrap();
+        let open = hub.join(&ctx, &node).await.unwrap();
+        if collab::note::is_note_file(name) {
+            open.import_markdown(&format!("# New\n\n{marker}\n"))
+                .unwrap();
+        } else {
+            let (_, report) = open
+                .apply_ai_slide_edit(&[collab::slide::SlideEditOp::AppendSlide {
+                    html: format!("<h1>{marker}</h1>"),
+                    notes: None,
+                }])
+                .unwrap();
+            assert_eq!(report.applied, 1);
+        }
+        let copied = tool
+            .call(
+                &ctx,
+                serde_json::json!({"node_id":node.id,"new_name":copy_name}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!copied.is_error, "{}", copied.content);
+        let id = uuid::Uuid::parse_str(&copied.artifacts[0].node_id).unwrap();
+        let (_, bytes) = storage.read_file_internal(&ctx, id, None).await.unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains(marker), "{name}: {text}");
+        let (_, original) = storage
+            .read_file_internal(&ctx, node.id, None)
+            .await
+            .unwrap();
+        assert_eq!(original, initial.as_bytes());
+        hub.leave(&open).await;
+    }
 }
