@@ -55,7 +55,7 @@ function NavTile({
 }
 
 /// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 5 マスを 1 行。
-/// 履歴に使える縦幅を広げるため、ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
+/// 履歴に使える縦幅を広げるため、ドライブの子メニューはここに出さない（区画の切替はドライブ画面上端のタブ）。
 function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -183,7 +183,8 @@ function DesktopNav({ onNavigate }: { onNavigate?: () => void }) {
               key={item.key}
               href={item.href}
               onClick={onNavigate}
-              aria-current={active ? "page" : undefined}
+              // 配下（/drive/trash 等）では現在地の "page" を区画タブに譲り、ここは "true"（含む）にする。
+              aria-current={active ? (pathname === item.href ? "page" : "true") : undefined}
               className={cn(TILE_CLASS, active && TILE_ACTIVE_CLASS)}
               style={{ ["--tile" as string]: item.tone }}
             >
@@ -208,12 +209,16 @@ export function SidebarNav({
   mobile?: boolean;
   onNavigate?: () => void;
 }) {
+  if (mobile) return <MobileNav onNavigate={onNavigate} />;
+  if (!collapsed) return <DesktopNav onNavigate={onNavigate} />;
+  return <RailNav onNavigate={onNavigate} />;
+}
+
+/// レール（collapsed）: アイコンのみの縦列。ラベルはツールチップで補う。
+function RailNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { setSearchOpen } = useSidebar();
-
-  if (mobile) return <MobileNav onNavigate={onNavigate} />;
-  if (!collapsed) return <DesktopNav onNavigate={onNavigate} />;
 
   return (
     <div className="flex flex-col gap-2 px-2.5">
