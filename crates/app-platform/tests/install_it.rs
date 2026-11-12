@@ -8,6 +8,8 @@
 //! - first-party = 署名必須（trusted key 検証・改竄拒否）
 //! - オフライン import（署名検証のみで登録・不変 publish）
 //! - 部分失敗の補償（残骸なし）・アンインストール（失効＋archive＋tuple 撤去）
+//! - コードアプリの公開の一覧（取り下げたもの・消したものを出さない）・publish の owner の確かめと監査・消したアプリの
+//!   クライアントと secret の片付け（GAP-69a）
 
 #![allow(
     clippy::unwrap_used,
@@ -37,10 +39,12 @@ use uuid::Uuid;
 #[path = "../../gui/tests/common/mod.rs"]
 mod common;
 
-/// 記録スタブ: check は `deny` で切替・write/delete を捕捉する。
+/// 記録スタブ: check は `deny` で切替（`deny_owner` は owner だけを断る＝共有で viewer・editor になった人）・
+/// write/delete を捕捉する。
 #[derive(Default)]
 struct RecordingAuthz {
     deny: bool,
+    deny_owner: bool,
     writes: Mutex<Vec<(String, String, String)>>,
     deleted_objects: Mutex<Vec<String>>,
 }
@@ -50,11 +54,12 @@ impl AuthzClient for RecordingAuthz {
     async fn check(
         &self,
         _: &Subject,
-        _: Relation,
+        relation: Relation,
         _: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(!self.deny)
+        let denied = self.deny || (self.deny_owner && relation == Relation::Owner);
+        Ok(!denied)
     }
     async fn write_tuple(
         &self,
@@ -193,6 +198,7 @@ fn manifest(name: &str, tier: TrustTier, tables: Vec<&str>) -> MiniAppManifest {
 
 struct Harness {
     authz: Arc<RecordingAuthz>,
+    artifacts: Arc<ArtifactStore>,
     code: Arc<MiniAppCodeStore>,
     installs: InstallService,
     keys: TrustedKeyStore,
@@ -209,10 +215,21 @@ fn harness_with_oauth(
     oauth: Option<app_gateway::OAuthClient>,
     b1_redirects: Vec<String>,
 ) -> Harness {
-    let authz = Arc::new(RecordingAuthz {
+    let authz = RecordingAuthz {
         deny,
         ..RecordingAuthz::default()
-    });
+    };
+    harness_with_authz(pool, authz, oauth, b1_redirects)
+}
+
+/// authz のスタブを決めて組む harness。
+fn harness_with_authz(
+    pool: PgPool,
+    authz: RecordingAuthz,
+    oauth: Option<app_gateway::OAuthClient>,
+    b1_redirects: Vec<String>,
+) -> Harness {
+    let authz = Arc::new(authz);
     let authz_dyn: Arc<dyn AuthzClient> = authz.clone();
     let artifacts = Arc::new(ArtifactStore::new(pool.clone(), authz_dyn.clone()));
     let code = Arc::new(MiniAppCodeStore::new(
@@ -236,6 +253,7 @@ fn harness_with_oauth(
     Harness {
         keys: TrustedKeyStore::new(pool),
         authz,
+        artifacts,
         code,
         installs,
     }
@@ -1389,4 +1407,394 @@ async fn service_token_sub(
         .as_str()
         .unwrap()
         .to_string()
+}
+
+/// 本体を走らせ、落ちてもテナントの行を片付けてから落とす（Keycloak を使わないテスト）。
+async fn run_then_purge<F: std::future::Future<Output = ()>>(pool: &PgPool, tenant: &str, body: F) {
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    common::purge_tenant_rows(pool, tenant).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn registry_names(entries: Vec<app_platform::RegistryEntry>) -> Vec<String> {
+    let mut names: Vec<String> = entries.into_iter().map(|e| e.name).collect();
+    names.sort();
+    names
+}
+
+/// コードアプリの公開の一覧（`GET /apps/registry` の [`Registry::list_installable`]）は、取り下げたものと、実体の
+/// アーティファクトを消したものを出さず、それらが件数の上限を食わない（D-203・GAP-69a）。skill の一覧が使う
+/// [`Registry::list`] は今のまま、どちらも返す（D-203 で skill の登録は扱わない）。
+#[tokio::test]
+async fn installable_registry_hides_yanked_and_deleted_apps() {
+    let Some(pool) = setup().await else { return };
+    let h = harness(pool.clone(), false);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let body = async {
+        publish_b1(&h, &c, "live-app").await;
+        publish_b1(&h, &c, "yanked-app").await;
+        let deleted = publish_b1(&h, &c, "deleted-app").await;
+        let registry = h.installs.registry();
+        let yanked = registry
+            .get(&c, "mini_app_code", "yanked-app", "1.0.0")
+            .await
+            .unwrap()
+            .expect("entry");
+        registry.yank(&c, yanked.id).await.expect("yank");
+        h.artifacts.delete(&c, deleted, None).await.expect("delete");
+
+        let installable = registry
+            .list_installable(&c, "mini_app_code", 200)
+            .await
+            .expect("list_installable");
+        assert_eq!(registry_names(installable), ["live-app"]);
+        // 消したもの（いちばん新しい）が 1 件の上限を食わない。
+        let first = registry
+            .list_installable(&c, "mini_app_code", 1)
+            .await
+            .expect("list_installable 1");
+        assert_eq!(registry_names(first), ["live-app"]);
+
+        // skill の一覧と同じ `list` は今のまま（取り下げたもの・消したものも返す）。
+        let all = registry.list(&c, "mini_app_code", 200).await.expect("list");
+        assert_eq!(
+            registry_names(all),
+            ["deleted-app", "live-app", "yanked-app"]
+        );
+        let newest = registry.list(&c, "mini_app_code", 1).await.expect("list 1");
+        assert_eq!(registry_names(newest), ["deleted-app"]);
+    };
+    run_then_purge(&pool, &tenant, body).await;
+}
+
+/// publish は artifact の owner だけ（共有で viewer・editor になった人が name@version を先に取り、持ち主がその版を
+/// 出せなくなるのを防ぐ・GAP-69a）。断ったら `app.registry.publish` の deny を残す。通ったら同じ Tx で
+/// `app.registry.publish` をチェーンにつないで残し、409 の再 publish は監査を残さない。
+#[tokio::test]
+async fn publish_requires_the_owner_and_chains_the_audit() {
+    let Some(pool) = setup().await else { return };
+    let owner_h = harness(pool.clone(), false);
+    let viewer_h = harness_with_authz(
+        pool.clone(),
+        RecordingAuthz {
+            deny_owner: true,
+            ..RecordingAuthz::default()
+        },
+        None,
+        vec![],
+    );
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let owner = ctx(&tenant, "admin");
+    let viewer = ctx(&tenant, "viewer");
+    let audit_rows = |decision: &'static str| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            sqlx::query_as::<_, (String, String, String, bool, serde_json::Value)>(
+                "SELECT actor, object_type, object_id, chained, metadata FROM audit_log \
+                 WHERE tenant_id = $1 AND action = 'app.registry.publish' AND decision = $2 \
+                 ORDER BY id",
+            )
+            .bind(&tenant)
+            .bind(decision)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let body = async {
+        let m = manifest("shared-app", TrustTier::InHouse, vec![]);
+        let id = owner_h.code.create(&owner, &m, None).await.expect("create");
+
+        // viewer は読めるが publish できない（登録も残らない）。
+        viewer_h
+            .code
+            .get(&viewer, id, None, None)
+            .await
+            .expect("viewer は読める");
+        let refused = viewer_h.code.publish(&viewer, id, None, None, None).await;
+        assert!(
+            matches!(refused, Err(app_platform::AppPlatformError::Forbidden)),
+            "{refused:?}"
+        );
+        let registry = owner_h.installs.registry();
+        assert!(registry
+            .get(&owner, "mini_app_code", "shared-app", "1.0.0")
+            .await
+            .unwrap()
+            .is_none());
+        let denied = audit_rows("deny").await;
+        assert_eq!(denied.len(), 1, "{denied:?}");
+        assert_eq!(
+            (denied[0].0.as_str(), denied[0].1.as_str(), denied[0].3),
+            ("viewer", "artifact", false)
+        );
+        assert!(audit_rows("allow").await.is_empty());
+
+        // owner は通り、同じ Tx でチェーンにつないだ監査が残る。
+        let entry = owner_h
+            .code
+            .publish(&owner, id, None, None, None)
+            .await
+            .expect("owner の publish");
+        assert_eq!(entry.artifact_id, id);
+        let allowed = audit_rows("allow").await;
+        assert_eq!(allowed.len(), 1, "{allowed:?}");
+        let (actor, object_type, object_id, chained, metadata) = &allowed[0];
+        assert_eq!(
+            (
+                actor.as_str(),
+                object_type.as_str(),
+                object_id.as_str(),
+                *chained
+            ),
+            ("admin", "miniapp", id.to_string().as_str(), true)
+        );
+        assert_eq!(
+            metadata,
+            &serde_json::json!({
+                "name": "shared-app",
+                "version": "1.0.0",
+                "artifact_id": id,
+                "artifact_version": 1,
+            })
+        );
+
+        // 同じ版の再 publish は 409 で、監査も残さない（登録と同じ Tx）。
+        let again = owner_h.code.publish(&owner, id, None, None, None).await;
+        assert!(
+            matches!(again, Err(app_platform::AppPlatformError::Conflict(_))),
+            "{again:?}"
+        );
+        assert_eq!(audit_rows("allow").await.len(), 1);
+
+        // チェーンは先頭から崩れていない。
+        let report = storage::audit_chain::AuditChainVerifier::new(pool.clone())
+            .verify(&owner, None, 1000)
+            .await
+            .expect("verify");
+        assert!(
+            report.broken.is_none() && report.complete && report.checked >= 1,
+            "{report:?}"
+        );
+    };
+    run_then_purge(&pool, &tenant, body).await;
+}
+
+/// B2 を持つアプリの harness（B2 の secret の保管を配線する）。
+fn b2_harness(pool: &PgPool, realm: &app_gateway::test_support::TestRealm) -> Harness {
+    let Harness {
+        authz,
+        artifacts,
+        code,
+        installs,
+        keys,
+    } = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        vec![SHELL_CALLBACK.to_string()],
+    );
+    let secrets_authz: Arc<dyn AuthzClient> = Arc::new(RecordingAuthz::default());
+    let secrets = Arc::new(secrets::SecretStore::new(
+        pool.clone(),
+        secrets_authz,
+        Arc::new(secrets::LocalKeyFileProvider::from_bytes([9u8; 32])),
+    ));
+    Harness {
+        authz,
+        artifacts,
+        code,
+        installs: installs.with_secrets(Some(secrets), Some("localhost".into())),
+        keys,
+    }
+}
+
+/// サーバーの関数を持つ（B2 を登録する）アプリを作って publish し、artifact の id を返す。
+async fn publish_b2(h: &Harness, c: &AuthContext, name: &str) -> Uuid {
+    let mut m = manifest(name, TrustTier::InHouse, vec![]);
+    m.requested_scopes = vec!["data.read".into()];
+    m.server = Some(app_platform::ServerSpec {
+        functions: vec!["remind".into()],
+        ..app_platform::ServerSpec::default()
+    });
+    let id = h.code.create(c, &m, None).await.expect("create");
+    h.code
+        .publish(c, id, None, None, None)
+        .await
+        .expect("publish");
+    id
+}
+
+/// アプリの B2 の secret の保管があるか。
+async fn b2_secret_exists(pool: &PgPool, tenant: &str, app_id: Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM secret WHERE tenant_id = $1 AND name = $2)")
+        .bind(tenant)
+        .bind(format!("miniapp-b2-{app_id}"))
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// インストールに書いてあるクライアントの id（B1・B2）。
+async fn recorded_clients(
+    pool: &PgPool,
+    tenant: &str,
+    app_id: Uuid,
+) -> (Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT client_id_b1, client_id_b2 FROM app_installation \
+         WHERE tenant_id = $1 AND app_id = $2",
+    )
+    .bind(tenant)
+    .bind(app_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// アプリの実体（アーティファクト）を消すと、削除の API の後始末（[`InstallService::after_app_deleted`]）が Keycloak の
+/// クライアント（B1・B2）と B2 の secret の保管を消し、インストールからクライアントの id を外す（GAP-69a）。有効な
+/// インストールが残っている間は消さない（入れたアプリは動き続ける）。もう無いものの片付けも成功する。
+#[tokio::test]
+async fn deleting_an_app_deletes_its_clients_and_secret() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let h = b2_harness(&pool, &realm);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let name = format!("b2-{}", Uuid::new_v4().simple());
+    let id = publish_b2(&h, &c, &name).await;
+    let (b1, b2) = (format!("app-{id}-b1"), format!("app-{id}-b2"));
+    let body = async {
+        h.installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("install");
+        assert!(b2_secret_exists(&pool, &tenant, id).await);
+
+        // 有効なインストールが残っている間は、消しても片付けない。
+        h.artifacts.delete(&c, id, None).await.expect("delete");
+        h.installs.after_app_deleted(&c, id, None).await;
+        assert_eq!(realm.client(&b1).await.expect("b1")["enabled"], true);
+        assert_eq!(realm.client(&b2).await.expect("b2")["enabled"], true);
+        assert!(b2_secret_exists(&pool, &tenant, id).await);
+        assert_eq!(
+            recorded_clients(&pool, &tenant, id).await,
+            (Some(b1.clone()), Some(b2.clone()))
+        );
+
+        // アンインストールは無効にするだけ。その後の片付けで、クライアントと secret を消す。
+        h.installs.uninstall(&c, id, None).await.expect("uninstall");
+        assert_eq!(realm.client(&b1).await.expect("b1")["enabled"], false);
+        h.installs.after_app_deleted(&c, id, None).await;
+        assert!(realm.client(&b1).await.is_none(), "B1 を消す");
+        assert!(realm.client(&b2).await.is_none(), "B2 を消す");
+        assert!(
+            !b2_secret_exists(&pool, &tenant, id).await,
+            "B2 の secret を消す"
+        );
+        assert_eq!(recorded_clients(&pool, &tenant, id).await, (None, None));
+
+        // もう無いものの片付けも成功として扱う（2 回呼んでも困らない）。
+        h.installs.after_app_deleted(&c, id, None).await;
+        assert!(realm.client(&b1).await.is_none());
+    };
+    run_then(body, async {
+        realm.delete_client(&b1).await;
+        realm.delete_client(&b2).await;
+        common::purge_tenant_rows(&pool, &tenant).await;
+    })
+    .await;
+}
+
+/// 起動時の照合は、もう入れられないアプリ（アーティファクトを消し、有効なインストールも無い・削除の API の片付けの
+/// 前に消したもの）のクライアントを Keycloak から消し、インストールから id を外す。B2 の secret の保管は消さずに
+/// 数える（利用者の ctx が無い）。アーティファクトを消しても有効なインストールが残るアプリには触らない（GAP-69a）。
+#[tokio::test]
+async fn startup_repair_deletes_clients_of_deleted_apps() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let h = b2_harness(&pool, &realm);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let (gone_name, kept_name) = (
+        format!("b2-{}", Uuid::new_v4().simple()),
+        format!("b1-{}", Uuid::new_v4().simple()),
+    );
+    let gone = publish_b2(&h, &c, &gone_name).await;
+    let kept = publish_b1(&h, &c, &kept_name).await;
+    let (gone_b1, gone_b2, kept_b1) = (
+        format!("app-{gone}-b1"),
+        format!("app-{gone}-b2"),
+        format!("app-{kept}-b1"),
+    );
+    let body = async {
+        h.installs
+            .install(&c, install_req(&gone_name, &["data.read"]), None)
+            .await
+            .expect("install gone");
+        h.installs
+            .install(&c, install_req(&kept_name, &["llm.invoke"]), None)
+            .await
+            .expect("install kept");
+        // 前の版で、アンインストールしてから消したアプリ（削除の API の片付けが無かった）と、入れたまま消したアプリ。
+        h.installs
+            .uninstall(&c, gone, None)
+            .await
+            .expect("uninstall");
+        h.artifacts
+            .delete(&c, gone, None)
+            .await
+            .expect("delete gone");
+        h.artifacts
+            .delete(&c, kept, None)
+            .await
+            .expect("delete kept");
+        assert_eq!(realm.client(&gone_b2).await.expect("b2")["enabled"], false);
+
+        let progress = h.installs.repair_oauth_clients().await.expect("repair");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        assert!(progress.deleted >= 1, "{progress:?}");
+        assert!(progress.secrets_left >= 1, "{progress:?}");
+        assert!(realm.client(&gone_b1).await.is_none(), "B1 を消す");
+        assert!(realm.client(&gone_b2).await.is_none(), "B2 を消す");
+        assert_eq!(recorded_clients(&pool, &tenant, gone).await, (None, None));
+        assert!(
+            b2_secret_exists(&pool, &tenant, gone).await,
+            "secret は消さない（利用者の ctx が無い）"
+        );
+        // 有効なインストールが残るアプリは、アーティファクトを消しても触らない。
+        assert_eq!(realm.client(&kept_b1).await.expect("kept")["enabled"], true);
+        assert_eq!(
+            recorded_clients(&pool, &tenant, kept).await,
+            (Some(kept_b1.clone()), None)
+        );
+
+        // 外したので、次の照合では引かない（もう一度消さない・数えない）。
+        let again = h
+            .installs
+            .repair_oauth_clients()
+            .await
+            .expect("repair again");
+        assert_eq!(again.failed, 0, "{again:?}");
+        assert_eq!(recorded_clients(&pool, &tenant, gone).await, (None, None));
+    };
+    run_then(body, async {
+        let _ = h.installs.uninstall(&c, kept, None).await;
+        for client in [&gone_b1, &gone_b2, &kept_b1] {
+            realm.delete_client(client).await;
+        }
+        common::purge_tenant_rows(&pool, &tenant).await;
+    })
+    .await;
 }
