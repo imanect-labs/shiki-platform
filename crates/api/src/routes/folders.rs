@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use storage::service::PurgeOutcome;
+
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
@@ -414,13 +416,35 @@ pub async fn restore_folder(
     Ok(Json(node.into()))
 }
 
+/// ゴミ箱の 1 項目（削除の根ノード ＋ 完全削除の添え物・GAP-108b）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TrashItemResponse {
+    #[serde(flatten)]
+    pub node: NodeResponse,
+    /// 呼んだ人が完全に削除できるか（根の持ち主か組織の管理者・D-201）。表示のための値で、削除の口が毎回確かめ直す。
+    pub can_purge: bool,
+    /// フォルダなら配下のファイルの数（ファイルなら `null`）。完全削除で一緒に消える数を確かめのダイアログに出す。
+    pub file_count: Option<i64>,
+    /// フォルダなら、配下のファイルのうち呼んだ人が作ったのでないものの数（ファイルなら `null`）。
+    pub others_file_count: Option<i64>,
+}
+
+/// ゴミ箱の 1 ページ。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TrashResponse {
+    pub items: Vec<TrashItemResponse>,
+    /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。
+    pub next_cursor: Option<String>,
+}
+
 /// ゴミ箱の中身（削除の根ノード）を新しい順に 1 ページ返す。
 #[utoipa::path(
     get,
     path = "/trash",
     params(PageQuery),
     responses(
-        (status = 200, description = "ゴミ箱の根ノード（復元できるもののみ）", body = ChildrenResponse),
+        (status = 200, description = "ゴミ箱の根ノード（復元できるもののみ）", body = TrashResponse),
+        (status = 400, description = "cursor が読めない"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
     ),
@@ -431,20 +455,164 @@ pub async fn list_trash(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Query(q): Query<PageQuery>,
-) -> Result<Json<ChildrenResponse>, ApiError> {
+) -> Result<Json<TrashResponse>, ApiError> {
     let page = state
         .storage
-        .list_trash(
+        .list_trash_entries(
             &ctx,
             q.cursor.as_deref(),
             q.limit.unwrap_or(50),
             trace.as_deref(),
         )
         .await?;
-    let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();
-    resolve_updated_by_names(&state, &ctx, &mut items).await;
-    Ok(Json(ChildrenResponse {
+    let mut nodes: Vec<NodeResponse> = page.items.iter().map(|e| e.node.clone().into()).collect();
+    resolve_updated_by_names(&state, &ctx, &mut nodes).await;
+    let items = nodes
+        .into_iter()
+        .zip(page.items)
+        .map(|(node, e)| TrashItemResponse {
+            node,
+            can_purge: e.can_purge,
+            file_count: e.file_count,
+            others_file_count: e.others_file_count,
+        })
+        .collect();
+    Ok(Json(TrashResponse {
         items,
         next_cursor: page.next_cursor,
     }))
+}
+
+/// 完全削除で何も消さなかったときの 409（`code` と、利用者に見せてよい文言）。
+fn purge_refused(outcome: &PurgeOutcome) -> Option<ApiError> {
+    let (code, title) = match outcome {
+        PurgeOutcome::Purged(_) => return None,
+        PurgeOutcome::NotInTrash => ("not_in_trash", "ゴミ箱にありません"),
+        PurgeOutcome::InsideDeletedFolder => (
+            "inside_deleted_folder",
+            "フォルダごとゴミ箱にあります。ゴミ箱に出ているフォルダを完全に削除してください",
+        ),
+        PurgeOutcome::HasLiveDescendants => (
+            "live_descendants",
+            "このフォルダの中に、削除した後に作られたファイルがあります。フォルダを元に戻して中を確かめてください",
+        ),
+    };
+    Some(ApiError::ConflictJson(serde_json::json!({
+        "status": 409,
+        "title": title,
+        "code": code,
+    })))
+}
+
+/// ゴミ箱の根（ファイルかフォルダ）を、配下ごと完全に削除する（元に戻せない・GAP-108b・D-201）。
+///
+/// 消せるのは根の持ち主と組織の管理者。フォルダなら、その下のほかの人のファイルも消える。消したファイルを指して
+/// いた参照（ワークフロー・チャットの引用・レコードの添付）は見つからなくなる。
+#[utoipa::path(
+    delete,
+    path = "/trash/{id}",
+    params(("id" = Uuid, Path, description = "ゴミ箱の根のノード ID")),
+    responses(
+        (status = 204, description = "完全に削除した"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "持ち主でも組織の管理者でもない"),
+        (status = 404, description = "無い（システム領域・ほかの組織を含む）"),
+        (status = 409, description = "消さなかった（code: not_in_trash・inside_deleted_folder・live_descendants）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn purge_trash_item(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let outcome = state.storage.purge_node(&ctx, id, trace.as_deref()).await?;
+    match purge_refused(&outcome) {
+        Some(err) => Err(err),
+        None => Ok(StatusCode::NO_CONTENT),
+    }
+}
+
+/// 「ゴミ箱を空にする」のリクエスト。
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct EmptyTrashRequest {
+    /// 前回の応答の `next_cursor`（省略で先頭から）。
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// 「ゴミ箱を空にする」1 回の結果。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EmptyTrashResponse {
+    /// 完全に削除した根の数。
+    pub purged: usize,
+    /// 一覧に出ているが残した根の数（持ち主か管理者だけが削除できる・中に削除の後で作られたものがある）。
+    pub skipped: usize,
+    /// 続きがあれば、次の呼び出しの `cursor` に渡す値（`null` になるまで繰り返す）。
+    pub next_cursor: Option<String>,
+}
+
+/// 呼んだ人のゴミ箱の一覧に出ている根のうち、呼んだ人が消せるものを古い順に完全に削除する（GAP-108b・D-201）。
+///
+/// 1 回に消す数に上限があり、続きがあれば `next_cursor` を返す。一覧に出ない他人の根は、管理者が呼んでも消さない。
+#[utoipa::path(
+    post,
+    path = "/trash/empty",
+    request_body = EmptyTrashRequest,
+    responses(
+        (status = 200, description = "消した数・残した数・続きの位置", body = EmptyTrashResponse),
+        (status = 400, description = "cursor が読めない"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "組織のメンバーでない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn empty_trash(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<EmptyTrashRequest>,
+) -> Result<Json<EmptyTrashResponse>, ApiError> {
+    let cursor = req.cursor.as_deref().filter(|c| !c.is_empty());
+    let out = state
+        .storage
+        .empty_trash(&ctx, cursor, trace.as_deref())
+        .await?;
+    Ok(Json(EmptyTrashResponse {
+        purged: out.purged,
+        skipped: out.skipped,
+        next_cursor: out.next_cursor,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 消さなかった理由は、それぞれの code を持つ 409 になる（画面が文言を出し分ける）。
+    #[test]
+    fn purge_refusals_map_to_coded_conflicts() {
+        for (outcome, code) in [
+            (PurgeOutcome::NotInTrash, "not_in_trash"),
+            (PurgeOutcome::InsideDeletedFolder, "inside_deleted_folder"),
+            (PurgeOutcome::HasLiveDescendants, "live_descendants"),
+        ] {
+            match purge_refused(&outcome) {
+                Some(ApiError::ConflictJson(body)) => {
+                    assert_eq!(body["code"], code);
+                    assert_eq!(body["status"], 409);
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+        let report = storage::service::PurgeReport {
+            kind: storage::NodeKind::File,
+            nodes: 1,
+            files: 1,
+            versions: 1,
+            freed_bytes: 0,
+        };
+        assert!(purge_refused(&PurgeOutcome::Purged(report)).is_none());
+    }
 }

@@ -566,6 +566,13 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/files/{id}/restore", &["POST"], SessionLongRunning, || {
             post(routes::files::restore_file)
         }),
+        // ゴミ箱の完全削除（GAP-108b）。大きなフォルダは行・本体・タプルの片付けに数秒以上かかる。
+        r("/trash/empty", &["POST"], SessionLongRunning, || {
+            post(routes::folders::empty_trash)
+        }),
+        r("/trash/{id}", &["DELETE"], SessionLongRunning, || {
+            delete(routes::folders::purge_trash_item)
+        }),
         r("/files/{id}/versions", &["GET"], SessionLongRunning, || {
             get(routes::file_versions::list_versions)
         }),
