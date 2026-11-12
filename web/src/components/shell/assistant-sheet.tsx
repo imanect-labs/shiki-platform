@@ -351,13 +351,15 @@ function WidthHandle({
     null,
   );
   const [active, setActive] = React.useState(false);
-  // ドラッグ中にアンマウント（ページ遷移）しても、シェルの列に書いた状態を残さない。
+  // ドラッグ中にアンマウント（ページ遷移・lg 未満への縮小）しても、シェルの列に書いた状態を残さない。
+  // 幅は消さずにドラッグ前の確定幅へ戻す（パネルが残る場合も列の変数をそのまま使い続けるため）。
   React.useEffect(
     () => () => {
       const el = varRef.current;
-      if (!drag.current || !el) return;
+      const d = drag.current;
+      if (!d || !el) return;
       delete el.dataset.resizing;
-      el.style.removeProperty("--assistant-w");
+      el.style.setProperty("--assistant-w", `${d.startW}px`);
     },
     [varRef],
   );

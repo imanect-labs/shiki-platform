@@ -246,8 +246,13 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
 
   // パネルは上部バーまで貫通し、⋯ はパネルの左隣に来る（開いている間は ✨ トグルを隠す）。
   expect((await sheet.boundingBox())!.y).toBeLessThan(24);
-  const menu = (await page.getByTestId("chrome-menu").boundingBox())!;
-  expect(menu.x + menu.width).toBeLessThanOrEqual((await sheet.boundingBox())!.x);
+  // 上部バーの右余白はアニメーションするので、落ち着くまで取り直して比べる。
+  await expect
+    .poll(async () => {
+      const menu = (await page.getByTestId("chrome-menu").boundingBox())!;
+      return (await sheet.boundingBox())!.x - (menu.x + menu.width);
+    })
+    .toBeGreaterThanOrEqual(0);
   await expect(page.getByTestId("note-ask-ai")).toBeHidden();
 
   // 左へドラッグすると広がり、本文はパネルの下に潜らない。
