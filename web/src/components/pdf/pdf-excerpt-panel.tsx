@@ -116,7 +116,7 @@ export function PdfExcerptPanel({
                 <ArrowUpRight className="size-3" />
               </button>
               <span className="ml-auto text-[10px] text-muted-foreground">
-                {s.tables.length ? "表を含む" : "テキスト"}
+                {s.precision === "line" ? "行" : s.precision === "cell" ? "表セル" : s.tables.length ? "表を含む" : "テキスト"}
               </span>
               <button
                 type="button"

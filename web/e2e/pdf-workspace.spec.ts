@@ -4,7 +4,10 @@ import {
   clearPdfAttachmentsForTarget,
 } from "../src/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "../src/lib/storage";
-import { clearUserStorage, storageScopeGeneration } from "../src/lib/user-storage";
+import {
+  clearUserStorage,
+  storageScopeGeneration,
+} from "../src/lib/user-storage";
 import type { DocBlock } from "../src/lib/storage";
 import {
   withOcrContent,
@@ -31,7 +34,11 @@ import {
 import { searchDocument, buildPageText, findInText } from "../src/lib/pdf-text";
 import { rectFromViewport, blockRect, tableCsv } from "../src/lib/pdf-excerpts";
 import { boxToViewport, viewportDimensions } from "../src/lib/pdf-geometry";
-import { parsePageRange } from "../src/components/pdf/pdf-utilities";
+import { editRegion, pdfRect, screenRect } from "../src/lib/pdf-region-edit";
+import { fineContent } from "../src/lib/pdf-fine-selection";
+import { checkPdfBudget, readPdfResponse } from "../src/lib/pdf-input";
+import { organizePdf, validatePageOrder } from "../src/lib/pdf-page-tools";
+import { parsePageRange } from "../src/lib/pdf-page-tools";
 import { readFile } from "node:fs/promises";
 
 const id = "a0000000-0000-0000-0000-000000000001";
@@ -292,21 +299,26 @@ test("CropBox の位置と選択範囲が一致し、回転・ズーム・スク
     blocks[0].text,
   );
   const before = source.reads();
-  // 回転後、同じ PDF 座標を再び選択（90度では x=y, y=x）。
+  const originalBox = await page
+    .getByTestId("pdf-region-box")
+    .getAttribute("data-bbox");
   await page.screenshot({ path: "test-results/pdf-selection-light.png" });
   await page.getByTestId("chrome-menu").click();
   await page.getByTestId("pdf-rotate").click();
-  await dragRegion(page, 1, [645 / 740, 35 / 550, 695 / 740, 425 / 550]);
-  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
-  await expect(page.getByTestId("pdf-excerpt-card").nth(1)).toContainText(
-    blocks[0].text,
+  await expect(page.getByTestId("pdf-region-box")).toHaveAttribute(
+    "data-bbox",
+    originalBox!,
   );
   await page.getByRole("button", { name: "拡大（⌘＋）" }).click();
-  await dragRegion(page, 1, [645 / 740, 35 / 550, 695 / 740, 425 / 550]);
-  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(3);
+  await expect(page.getByTestId("pdf-region-box")).toHaveAttribute(
+    "data-bbox",
+    originalBox!,
+  );
+  await dragRegion(page, 1, [445 / 740, 35 / 550, 585 / 740, 425 / 550]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
   expect(source.reads()).toBe(before);
   await page.getByRole("button", { name: "抜粋2を削除" }).click();
-  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
   await page.screenshot({ path: "test-results/pdf-selection-transformed.png" });
 });
 
@@ -1321,9 +1333,17 @@ test("カードの再取得中に削除した範囲を遅延応答で復活さ�
   await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(0);
 });
 
-
 test("古い画面の失敗復元とcleanupは新しい宛先の本文・画像を壊さない", () => {
-  const context = excerptContext(id, "test.pdf", 1, [{ id: "x", page: 1, bbox: [0,0,100,100], text: "old", tables: [], blockOrdinals: [] }]);
+  const context = excerptContext(id, "test.pdf", 1, [
+    {
+      id: "x",
+      page: 1,
+      bbox: [0, 0, 100, 100],
+      text: "old",
+      tables: [],
+      blockOrdinals: [],
+    },
+  ]);
   const generation = storageScopeGeneration();
   const target = `pdf:${id}`;
   setPendingSelection({ ...context, excerpt: "new home" }, "home");
@@ -1344,21 +1364,52 @@ test("古い画面の失敗復元とcleanupは新しい宛先の本文・画像�
 test("OCR矩形内の表記が異なるnative文字を検索で二重に数えない", () => {
   const native = {
     items: [
-      { str: "Total 1000", dir: "ltr", transform: [12,0,0,12,50,700], width: 100, height: 12, fontName: "f", hasEOL: true },
-      { str: "Unparsed extra", dir: "ltr", transform: [12,0,0,12,170,700], width: 100, height: 12, fontName: "f", hasEOL: true },
+      {
+        str: "Total 1000",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 50, 700],
+        width: 100,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
+      {
+        str: "Unparsed extra",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 170, 700],
+        width: 100,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
     ],
-    styles: { f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false } }, lang: "en",
+    styles: {
+      f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false },
+    },
+    lang: "en",
   };
-  const block: DocBlock = { ordinal: 0, type: "paragraph", text: "Total 1,000", page: 1, prov: [{ page: 1, bbox: [40,720,180,680], origin: "bottom_left" }] };
-  const viewport = { rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 } };
-  const text = buildPageText(withOcrContent(native, [block], 1, viewport as never)).text;
+  const block: DocBlock = {
+    ordinal: 0,
+    type: "paragraph",
+    text: "Total 1,000",
+    page: 1,
+    prov: [{ page: 1, bbox: [40, 720, 180, 680], origin: "bottom_left" }],
+  };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
+  const text = buildPageText(
+    withOcrContent(native, [block], 1, viewport as never),
+  ).text;
   expect(findInText(text, "Total")).toHaveLength(1);
   expect(findInText(text, "Total 1,000")).toHaveLength(1);
   expect(findInText(text, "Unparsed extra")).toHaveLength(1);
   expect(native.items[0].str).toBe("Total 1000");
 });
 
-test("画像添付中の削除は旧添付を中止し、残る範囲を添付できる", async ({ page }) => {
+test("画像添付中の削除は旧添付を中止し、残る範囲を添付できる", async ({
+  page,
+}) => {
   await setup(page);
   await page.getByTestId("pdf-mode-select").click();
   await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
@@ -1367,25 +1418,52 @@ test("画像添付中の削除は旧添付を中止し、残る範囲を添付�
   await page.getByRole("checkbox", { name: /画像も添付/ }).check();
   await page.route("**/fixture-upload", (route) => route.fulfill({ body: "" }));
   let uploads = 0;
-  await page.route("**/api/files", (route) => route.fulfill({ json: { upload_id: `pdf-image-${++uploads}`, node_id: id, upload_url: new URL("/fixture-upload", page.url()).toString() } }));
+  await page.route("**/api/files", (route) =>
+    route.fulfill({
+      json: {
+        upload_id: `pdf-image-${++uploads}`,
+        node_id: id,
+        upload_url: new URL("/fixture-upload", page.url()).toString(),
+      },
+    }),
+  );
   let release!: () => void;
   let requested = false;
-  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   await page.route("**/api/files/pdf-image-*/finalize", async (route) => {
     const first = route.request().url().includes("pdf-image-1/");
-    if (first) { requested = true; await pending; }
-    await route.fulfill({ json: { id, name: first ? "deleted.png" : "remaining.png", kind: "file", version: 1, content_type: "image/png" } });
+    if (first) {
+      requested = true;
+      await pending;
+    }
+    await route.fulfill({
+      json: {
+        id,
+        name: first ? "deleted.png" : "remaining.png",
+        kind: "file",
+        version: 1,
+        content_type: "image/png",
+      },
+    });
   });
   await page.getByRole("button", { name: "アシスタントに添付" }).click();
   await expect.poll(() => requested).toBe(true);
   await page.getByRole("button", { name: "抜粋1を削除" }).click();
   await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
-  await expect(page.getByRole("button", { name: "アシスタントに添付" })).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "アシスタントに添付" }),
+  ).toBeEnabled();
   await page.getByRole("button", { name: "アシスタントに添付" }).click();
-  await expect(page.getByLabel("添付する PDF の抜粋")).toContainText("Product A");
+  await expect(page.getByLabel("添付する PDF の抜粋")).toContainText(
+    "Product A",
+  );
   release();
   await page.waitForTimeout(300);
-  await expect(page.getByLabel("添付する PDF の抜粋")).not.toContainText("Quarterly results");
+  await expect(page.getByLabel("添付する PDF の抜粋")).not.toContainText(
+    "Quarterly results",
+  );
   await expect(page.getByText("deleted.png", { exact: true })).toHaveCount(0);
   expect(uploads).toBe(2);
 });
@@ -1393,20 +1471,866 @@ test("画像添付中の削除は旧添付を中止し、残る範囲を添付�
 test("重なるOCR枠でも別段落と一致するnative本文を検索から消さない", () => {
   const native = {
     items: [
-      { str: "Alpha", dir: "ltr", transform: [12,0,0,12,10,700], width: 60, height: 12, fontName: "f", hasEOL: true },
-      { str: "Beta", dir: "ltr", transform: [12,0,0,12,10,650], width: 60, height: 12, fontName: "f", hasEOL: true },
+      {
+        str: "Alpha",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 10, 700],
+        width: 60,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
+      {
+        str: "Beta",
+        dir: "ltr",
+        transform: [12, 0, 0, 12, 10, 650],
+        width: 60,
+        height: 12,
+        fontName: "f",
+        hasEOL: true,
+      },
     ],
-    styles: { f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false } }, lang: "en",
+    styles: {
+      f: { fontFamily: "serif", ascent: 0.8, descent: -0.2, vertical: false },
+    },
+    lang: "en",
   };
   const saved: DocBlock[] = [
-    { ordinal: 0, type: "paragraph", text: "Alpha normalized", page: 1, prov: [{ page: 1, bbox: [0,730,100,620], origin: "bottom_left" }] },
-    { ordinal: 1, type: "paragraph", text: "Beta", page: 1, prov: [{ page: 1, bbox: [0,670,100,630], origin: "bottom_left" }] },
+    {
+      ordinal: 0,
+      type: "paragraph",
+      text: "Alpha normalized",
+      page: 1,
+      prov: [{ page: 1, bbox: [0, 730, 100, 620], origin: "bottom_left" }],
+    },
+    {
+      ordinal: 1,
+      type: "paragraph",
+      text: "Beta",
+      page: 1,
+      prov: [{ page: 1, bbox: [0, 670, 100, 630], origin: "bottom_left" }],
+    },
   ];
-  const viewport = { rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 } };
+  const viewport = {
+    rawDims: { pageX: 0, pageY: 0, pageWidth: 600, pageHeight: 800 },
+  };
   for (const ordered of [saved, [...saved].reverse()]) {
-    const text = buildPageText(withOcrContent(native, ordered, 1, viewport as never)).text;
+    const text = buildPageText(
+      withOcrContent(native, ordered, 1, viewport as never),
+    ).text;
     expect(findInText(text, "Alpha normalized")).toHaveLength(1);
     expect(findInText(text, "Beta")).toHaveLength(1);
     expect(text.indexOf("alpha")).toBeLessThan(text.indexOf("beta"));
   }
+});
+
+test("確定枠を移動・リサイズしてもIDと件数を保ち、変換途中の操作を中止できる", async ({
+  page,
+}) => {
+  const source = await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  const box = page.getByTestId("pdf-region-box");
+  const id = await box.getAttribute("data-selection-id");
+  const before = JSON.parse((await box.getAttribute("data-bbox"))!);
+  await box.locator("[data-region-move]").focus();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(box).toHaveAttribute("data-selection-id", id!);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await expect
+    .poll(async () => JSON.parse((await box.getAttribute("data-bbox"))!)[1])
+    .toBeLessThan(before[1]);
+  await box.locator("[data-region-move]").focus();
+  const handle = page.getByLabel("抜粋1の右下を調整", { exact: true });
+  const r = (await handle.boundingBox())!;
+  await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(r.x + r.width / 2 + 30, r.y + r.height / 2 + 20, {
+    steps: 5,
+  });
+  await page.mouse.up();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await expect
+    .poll(async () => JSON.parse((await box.getAttribute("data-bbox"))!)[2])
+    .toBeGreaterThan(before[2]);
+  const saved = await box.getAttribute("data-bbox");
+  await box.locator("[data-region-move]").focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Escape");
+  await expect(box).toHaveAttribute("data-bbox", saved!);
+  const b = (await box.boundingBox())!;
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2 + 10, b.y + b.height / 2 + 10);
+  await page.keyboard.press("Control++");
+  await page.mouse.up();
+  await expect(box).toHaveAttribute("data-bbox", saved!);
+  expect(source.reads()).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: "test-results/pdf-edit-handles.png" });
+});
+
+test("行と表セルを文字層の実座標から選び、セルだけを添付できる", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "行", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "行を選択: Quarterly results are ready for review.",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText(
+    "Quarterly results are ready for review.",
+  );
+  await expect(page.getByTestId("pdf-excerpt-card")).not.toContainText(
+    "Financial overview",
+  );
+  await page.getByRole("button", { name: "すべて解除", exact: true }).click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await page
+    .getByRole("button", { name: "セルを選択: 1200", exact: true })
+    .click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toContainText("1200");
+  await expect(page.getByTestId("pdf-excerpt-card")).not.toContainText(
+    "Product B",
+  );
+  await page.getByRole("button", { name: "アシスタントに添付" }).click();
+  await expect(page.getByLabel("添付する PDF の抜粋")).toContainText("1200");
+  await expect(page.getByLabel("添付する PDF の抜粋")).not.toContainText(
+    "1800",
+  );
+});
+
+test("ページ整理で並べ替え・削除・取り消しを行い、実PDFへ反映する", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-tools").click();
+  await page.getByRole("button", { name: /ページを整理/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByTestId("pdf-organize-page")).toHaveCount(2);
+  await dialog.getByLabel("ページ2を前へ", { exact: true }).click();
+  await expect(dialog.getByTestId("pdf-organize-page").first()).toHaveAttribute(
+    "data-source-page",
+    "2",
+  );
+  let event = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  let out = await PDFDocument.load(
+    await readFile((await (await event).path())!),
+  );
+  expect(out.getPage(0).getRotation().angle).toBe(90);
+  expect(out.getForm().getTextField("stable-field").getText()).toBe("keep-me");
+  expect(out.catalog.has(PDFName.of("Outlines"))).toBe(true);
+  await dialog.getByLabel("ページ1を削除", { exact: true }).click();
+  await expect(dialog.getByTestId("pdf-organize-page")).toHaveCount(1);
+  event = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  out = await PDFDocument.load(await readFile((await (await event).path())!));
+  expect(out.getPageCount()).toBe(1);
+  expect(out.getPage(0).getRotation().angle).toBe(90);
+  await dialog.getByRole("button", { name: "元に戻す", exact: true }).click();
+  await expect(dialog.getByTestId("pdf-organize-page")).toHaveCount(2);
+  await dialog
+    .getByRole("button", { name: "最初の状態へ", exact: true })
+    .click();
+  await dialog
+    .getByTestId("pdf-organize-page")
+    .first()
+    .dragTo(dialog.getByTestId("pdf-organize-page").last());
+  await expect(dialog.getByTestId("pdf-organize-page").first()).toHaveAttribute(
+    "data-source-page",
+    "2",
+  );
+  await dialog
+    .getByRole("button", { name: "最初の状態へ", exact: true })
+    .click();
+  await dialog.getByLabel("ページ2を削除", { exact: true }).click();
+  const textDownload = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const textDoc = await getDocument({
+    data: new Uint8Array(await readFile((await (await textDownload).path())!)),
+    useSystemFonts: true,
+  }).promise;
+  const textContent = await (await textDoc.getPage(1)).getTextContent();
+  expect(
+    textContent.items.map((i) => ("str" in i ? i.str : "")).join(" "),
+  ).toContain("Quarterly results are ready for review.");
+  await textDoc.destroy();
+  await dialog.getByRole("button", { name: "元に戻す", exact: true }).click();
+  await page.screenshot({ path: "test-results/pdf-organize-light.png" });
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  await page.screenshot({ path: "test-results/pdf-organize-dark.png" });
+  await dialog.getByLabel("ページ1を削除", { exact: true }).click();
+  await dialog.getByLabel("ページ2を削除", { exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "PDF を保存", exact: true }),
+  ).toBeDisabled();
+});
+
+test("端末のPDFを結合し、追加順の変更とファイル除外を反映する", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-tools").click();
+  await page.getByRole("button", { name: /PDFを結合/ }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "PDF を保存", exact: true }),
+  ).toBeDisabled();
+  const extra = await PDFDocument.create();
+  extra.addPage([321, 456]);
+  extra.addPage([322, 457]);
+  await page.getByLabel("結合するPDFを追加").setInputFiles({
+    name: "追加資料.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await extra.save()),
+  });
+  await expect(dialog.getByTestId("pdf-merge-source")).toHaveCount(2);
+  await dialog.getByLabel("追加資料.pdfを前へ", { exact: true }).click();
+  const event = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "PDF を保存", exact: true }).click();
+  const result = await PDFDocument.load(
+    await readFile((await (await event).path())!),
+  );
+  expect(result.getPageCount()).toBe(4);
+  expect(result.getPage(0).getWidth()).toBe(321);
+  expect(result.getPage(1).getWidth()).toBe(322);
+  expect(result.getPage(3).getRotation().angle).toBe(90);
+  await dialog
+    .getByLabel("追加資料.pdfを結合から外す", { exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "PDF を保存", exact: true }),
+  ).toBeDisabled();
+  await page.getByLabel("結合するPDFを追加").setInputFiles({
+    name: "壊れた.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("invalid"),
+  });
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(dialog.getByTestId("pdf-merge-source")).toHaveCount(1);
+  await page.screenshot({ path: "test-results/pdf-merge-light.png" });
+});
+
+test("全回転・倍率で枠の移動方向とハンドルの画面方向を保ち、ページ外へ出さない", async () => {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const doc = await getDocument({
+    data: new Uint8Array(await fixture()),
+    useSystemFonts: true,
+  }).promise;
+  try {
+    for (const number of [1, 2]) {
+      const page = await doc.getPage(number);
+      for (const rotation of [0, 90, 180, 270])
+        for (const scale of [0.33, 1, 2.25]) {
+          const vp = page.getViewport({
+            scale,
+            rotation: (page.rotate + rotation) % 360,
+          });
+          const original = screenRect([100, 300, 250, 450], vp);
+          const moved = editRegion(
+            original,
+            "move",
+            12,
+            -8,
+            vp.width,
+            vp.height,
+          );
+          const back = screenRect(pdfRect(moved, vp), vp);
+          expect(back[0]).toBeCloseTo(original[0] + 12, 5);
+          expect(back[1]).toBeCloseTo(original[1] - 8, 5);
+          expect(back[2] - back[0]).toBeCloseTo(original[2] - original[0], 5);
+          for (const handle of [
+            "nw",
+            "n",
+            "ne",
+            "e",
+            "se",
+            "s",
+            "sw",
+            "w",
+            "move",
+          ] as const) {
+            const edge = editRegion(
+              original,
+              handle,
+              100000,
+              -100000,
+              vp.width,
+              vp.height,
+            );
+            expect(edge[0]).toBeGreaterThanOrEqual(0);
+            expect(edge[1]).toBeGreaterThanOrEqual(0);
+            expect(edge[2]).toBeLessThanOrEqual(vp.width);
+            expect(edge[3]).toBeLessThanOrEqual(vp.height);
+            expect(edge[2]).toBeGreaterThan(edge[0]);
+            expect(edge[3]).toBeGreaterThan(edge[1]);
+          }
+        }
+    }
+  } finally {
+    await doc.destroy();
+  }
+});
+
+test("行・セルの細粒度座標は回転とズームでも同じ文字を指す", async ({
+  page,
+}) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  let saved: number[] | null = null;
+  for (let turn = 0; turn < 4; turn++) {
+    if (turn) {
+      await page.getByTestId("chrome-menu").click();
+      await page.getByTestId("pdf-rotate").click();
+    }
+    await page
+      .getByRole("button", { name: "セルを選択: 1200", exact: true })
+      .click();
+    await expect(page.getByTestId("pdf-excerpt-card")).toContainText("1200");
+    const bbox = JSON.parse(
+      (await page.getByTestId("pdf-region-box").getAttribute("data-bbox"))!,
+    ) as number[];
+    if (saved) bbox.forEach((v, i) => expect(v).toBeCloseTo(saved![i], 0));
+    else saved = bbox;
+    await page.getByRole("button", { name: "すべて解除", exact: true }).click();
+    if (turn === 1)
+      await page.getByRole("button", { name: "拡大（⌘＋）" }).click();
+  }
+});
+
+for (const theme of ["light", "dark"] as const)
+  test(`狭幅・${theme}でもページ編集の操作と保存ボタンが画面内に収まる`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await setup(page);
+    if (theme === "dark")
+      await page.evaluate(() => document.documentElement.classList.add("dark"));
+    await page.getByTestId("pdf-mode-tools").click();
+    await page.getByRole("button", { name: /ページを整理/ }).click();
+    const dialog = page.getByRole("dialog", {
+      name: "ページを、思いどおりに。",
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    await expect
+      .poll(async () => {
+        const r = (await dialog.boundingBox())!;
+        return r.y + r.height;
+      })
+      .toBeLessThanOrEqual(845);
+    const r = (await dialog.boundingBox())!;
+    expect(r.width).toBeLessThanOrEqual(390);
+    await dialog.getByLabel("ページ2を前へ", { exact: true }).click();
+    await expect(
+      dialog.getByRole("button", { name: "PDF を保存", exact: true }),
+    ).toBeInViewport();
+    await page.screenshot({
+      path: `test-results/pdf-organize-mobile-${theme}.png`,
+    });
+  });
+
+test("ドライブのPDFも結合リストへ追加できる", async ({ page }) => {
+  await setup(page);
+  const other = "a0000000-0000-0000-0000-000000000002";
+  await page.route("**/api/nodes?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            id: other,
+            kind: "file",
+            name: "ドライブ資料.pdf",
+            content_type: "application/pdf",
+            version: 1,
+          },
+        ],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.getByTestId("pdf-mode-tools").click();
+  await page.getByRole("button", { name: /PDFを結合/ }).click();
+  await page.getByRole("button", { name: "ドライブから", exact: true }).click();
+  await page
+    .getByRole("button", { name: "ドライブ資料.pdf", exact: true })
+    .click();
+  await expect(page.getByTestId("pdf-merge-source")).toHaveCount(2);
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "資料を、ひとつのPDFに。", exact: true })
+    .getByRole("button", { name: "PDF を保存", exact: true })
+    .click();
+  const out = await PDFDocument.load(
+    await readFile((await (await download).path())!),
+  );
+  expect(out.getPageCount()).toBe(4);
+});
+
+test("ページ順の検証と書き出し中の認証変更を拒否する", async () => {
+  expect(() => validatePageOrder([], 2)).toThrow();
+  expect(() => validatePageOrder([0, 0], 2)).toThrow();
+  expect(() => validatePageOrder([2], 2)).toThrow();
+  let release!: (v: Uint8Array) => void;
+  const bytes = new Promise<Uint8Array>((resolve) => {
+    release = resolve;
+  });
+  const doc = {
+    numPages: 2,
+    getData: () => bytes,
+  } as unknown as PDFDocumentProxy;
+  bindPdfSource(doc, id, 1);
+  const pending = organizePdf(doc, [1, 0]);
+  clearUserStorage();
+  release(new Uint8Array(await fixture()));
+  await expect(pending).rejects.toThrow("ログイン状態が変わりました");
+});
+
+test("書式で分かれた表セルを集約し、空セルの列をCSVでも保持する", async ({
+  page,
+}) => {
+  await setup(page);
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([400, 400]);
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  p.drawText("Product", { x: 30, y: 300, size: 12, font: regular });
+  p.drawText(" A", { x: 80, y: 300, size: 12, font: bold });
+  p.drawText("B", { x: 230, y: 300, size: 12, font: regular });
+  p.drawText("D", { x: 230, y: 260, size: 12, font: regular });
+  const bytes = Buffer.from(await pdf.save());
+  await page.route("**/fixture.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: bytes }),
+  );
+  await page.route(`**/api/files/${id}/versions/1/blocks*`, (route) =>
+    route.fulfill({
+      json: {
+        blocks: [
+          {
+            ordinal: 0,
+            type: "table",
+            page: 1,
+            text: "| Product A | B |\n| --- | --- |\n|  | D |",
+            prov: [
+              { page: 1, bbox: [20, 320, 330, 240], origin: "bottom_left" },
+            ],
+          },
+        ],
+        next_from: null,
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: Product A", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: Product", exact: true }),
+  ).toHaveCount(0);
+  await dragRegion(page, 1, [20 / 400, 70 / 400, 340 / 400, 180 / 400]);
+  await expect(page.getByTestId("pdf-excerpt-card").locator("pre")).toHaveText(
+    "Product A\tB\n\tD",
+  );
+  const event = page.waitForEvent("download");
+  await page.getByRole("button", { name: "CSV", exact: true }).click();
+  const csv = await readFile((await (await event).path())!, "utf8");
+  expect(csv).toContain('"Product A","B"');
+  expect(csv).toContain('"","D"');
+});
+
+test("セル選択の矩形化とPDF読み込みは上限を展開前に確認する", async () => {
+  expect(() => checkPdfBudget(60 * 1024 * 1024, 50 * 1024 * 1024)).toThrow(
+    "合計100MB",
+  );
+  expect(() => checkPdfBudget(0, 51 * 1024 * 1024)).toThrow("50MB");
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream({
+      pull(c) {
+        c.enqueue(new Uint8Array(10));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+  );
+  await expect(readPdfResponse(response, 12)).rejects.toThrow("上限");
+  expect(cancelled).toBe(true);
+  const units = Array.from({ length: 10000 }, (_, i) => ({
+    kind: "cell" as const,
+    row: i < 5000 ? 0 : i - 4999,
+    column: i < 5000 ? i : 0,
+    table: 0,
+    text: "x",
+    bbox: [0, 0, 10, 10] as [number, number, number, number],
+  }));
+  expect(() => fineContent(units, [0, 0, 10, 10], "cell")).toThrow(
+    "大きすぎます",
+  );
+});
+
+test("削除ページへの内部リンクから本文を出力へコピーしない", async () => {
+  const { decodePDFRawStream, PDFRawStream } = await import("pdf-lib");
+  const pdf = await PDFDocument.create();
+  const kept = pdf.addPage([200, 200]),
+    deleted = pdf.addPage([300, 300]);
+  const secret = pdf.context.flateStream("DELETED_SECRET_CONTENT");
+  deleted.node.set(PDFName.of("Contents"), pdf.context.register(secret));
+  const link = pdf.context.obj({
+    Type: PDFName.of("Annot"),
+    Subtype: PDFName.of("Link"),
+    Rect: [0, 0, 100, 100],
+    Dest: [deleted.ref, PDFName.of("Fit")],
+  });
+  kept.node.set(
+    PDFName.of("Annots"),
+    pdf.context.obj([pdf.context.register(link)]),
+  );
+  const bytes = await pdf.save();
+  const doc = {
+    numPages: 2,
+    getData: async () => bytes,
+  } as unknown as PDFDocumentProxy;
+  const result = await PDFDocument.load(await organizePdf(doc, [0]));
+  expect(result.getPageCount()).toBe(1);
+  for (const [, object] of result.context.enumerateIndirectObjects())
+    if (object instanceof PDFRawStream)
+      expect(
+        Buffer.from(decodePDFRawStream(object).decode()).toString(),
+      ).not.toContain("DELETED_SECRET_CONTENT");
+});
+
+test("自由範囲の枠はセルモードへ切り替えた後も調整できる", async ({ page }) => {
+  await setup(page);
+  await page.getByTestId("pdf-mode-select").click();
+  await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
+  const box = page.getByTestId("pdf-region-box");
+  const before = await box.getAttribute("data-bbox");
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await box.locator("[data-region-move]").focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await expect(box).not.toHaveAttribute("data-bbox", before!);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+});
+
+test("削除ページだけの画像を共有・入れ子のリソースから引き継がない", async () => {
+  for (const nested of [false, true]) {
+    const pdf = await PDFDocument.create();
+    const kept = pdf.addPage([200, 200]),
+      deleted = pdf.addPage([200, 200]);
+    const image = (bytes: number[]) =>
+      pdf.context.register(
+        pdf.context.stream(new Uint8Array(bytes), {
+          Type: "XObject",
+          Subtype: "Image",
+          Width: 1,
+          Height: 1,
+          ColorSpace: "DeviceRGB",
+          BitsPerComponent: 8,
+        }),
+      );
+    const objects = pdf.context.obj({
+      Keep: image([255, 0, 0]),
+      Secret: image([17, 23, 42]),
+    });
+    const resources = pdf.context.obj({ XObject: objects });
+    if (nested) {
+      const form = pdf.context.flateStream("/Keep Do", {
+        Type: "XObject",
+        Subtype: "Form",
+        BBox: [0, 0, 100, 100],
+        Resources: resources,
+      });
+      objects.set(PDFName.of("VisibleForm"), pdf.context.register(form));
+    }
+    kept.node.set(PDFName.of("Resources"), resources);
+    deleted.node.set(PDFName.of("Resources"), resources);
+    kept.node.set(
+      PDFName.of("Contents"),
+      pdf.context.register(
+        pdf.context.flateStream(nested ? "/VisibleForm Do" : "/Keep Do"),
+      ),
+    );
+    deleted.node.set(
+      PDFName.of("Contents"),
+      pdf.context.register(pdf.context.flateStream("/Secret Do")),
+    );
+    const bytes = await pdf.save();
+    const result = await PDFDocument.load(
+      await organizePdf(
+        {
+          numPages: 2,
+          getData: async () => bytes,
+        } as unknown as PDFDocumentProxy,
+        [0],
+      ),
+    );
+    const { PDFDict } = await import("pdf-lib");
+    const out = result
+      .getPage(0)
+      .node.Resources()!
+      .lookup(PDFName.of("XObject"), PDFDict);
+    expect(out.has(PDFName.of("Secret"))).toBe(false);
+    expect(out.has(PDFName.of(nested ? "VisibleForm" : "Keep"))).toBe(true);
+  }
+});
+
+test("残すページへの内部リンクを保存後の実ページ参照へ向け直す", async () => {
+  const pdf = await PDFDocument.create();
+  const first = pdf.addPage([200, 200]),
+    second = pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const annotation = pdf.context.obj({
+    Type: PDFName.of("Annot"),
+    Subtype: PDFName.of("Link"),
+    Rect: [0, 0, 100, 100],
+    Dest: [second.ref, PDFName.of("Fit")],
+  });
+  first.node.set(
+    PDFName.of("Annots"),
+    pdf.context.obj([pdf.context.register(annotation)]),
+  );
+  const bytes = await pdf.save();
+  const result = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 3,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0, 1],
+    ),
+  );
+  const { PDFArray, PDFDict } = await import("pdf-lib");
+  const annots = result.getPage(0).node.lookup(PDFName.of("Annots"), PDFArray);
+  const link = annots.lookup(0, PDFDict);
+  const dest = link.lookup(PDFName.of("Dest"), PDFArray);
+  expect(dest.get(0).toString()).toBe(result.getPage(1).ref.toString());
+});
+
+test("大量の同一Contents参照でも引数展開による保存失敗を起こさない", async () => {
+  const pdf = await PDFDocument.create();
+  const kept = pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const empty = pdf.context.register(pdf.context.flateStream(""));
+  kept.node.set(
+    PDFName.of("Contents"),
+    pdf.context.obj(Array(200000).fill(empty)),
+  );
+  const bytes = await pdf.save();
+  const result = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 2,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0],
+    ),
+  );
+  expect(result.getPageCount()).toBe(1);
+});
+
+test("離れた別セルのAとBをOCRセルABへまとめない", async ({ page }) => {
+  await setup(page);
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([400, 400]);
+  p.drawText("A", { x: 30, y: 300, size: 12 });
+  p.drawText("B", { x: 230, y: 300, size: 12 });
+  const bytes = Buffer.from(await pdf.save());
+  await page.route("**/fixture.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: bytes }),
+  );
+  await page.route(`**/api/files/${id}/versions/1/blocks*`, (route) =>
+    route.fulfill({
+      json: {
+        blocks: [
+          {
+            ordinal: 0,
+            type: "table",
+            page: 1,
+            text: "| A | B | AB |\n| --- | --- | --- |",
+            prov: [
+              { page: 1, bbox: [20, 320, 390, 280], origin: "bottom_left" },
+            ],
+          },
+        ],
+        next_from: null,
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: A", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: B", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: AB", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("分割Contentsと共有Font辞書でも使用中の書体を残す", async () => {
+  const { PDFDict } = await import("pdf-lib");
+  const pdf = await PDFDocument.create();
+  const a = pdf.addPage([200, 200]),
+    b = pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const font1 = pdf.context.register(
+    pdf.context.obj({
+      Type: "Font",
+      Subtype: "Type1",
+      BaseFont: "Courier-Bold",
+    }),
+  );
+  const font2 = pdf.context.register(
+    pdf.context.obj({ Type: "Font", Subtype: "Type1", BaseFont: "Symbol" }),
+  );
+  const fonts = pdf.context.register(pdf.context.obj({ F1: font1, F2: font2 }));
+  a.node.set(PDFName.of("Resources"), pdf.context.obj({ Font: fonts }));
+  b.node.set(PDFName.of("Resources"), pdf.context.obj({ Font: fonts }));
+  a.node.set(
+    PDFName.of("Contents"),
+    pdf.context.obj([
+      pdf.context.register(pdf.context.flateStream("BT /F1 12 ")),
+      pdf.context.register(
+        pdf.context.flateStream("Tf 20 50 Td (HELLO) Tj ET"),
+      ),
+    ]),
+  );
+  b.node.set(
+    PDFName.of("Contents"),
+    pdf.context.register(
+      pdf.context.flateStream("BT /F2 12 Tf 20 50 Td (A) Tj ET"),
+    ),
+  );
+  const bytes = await pdf.save();
+  const result = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 3,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0, 1],
+    ),
+  );
+  for (const page of result.getPages()) {
+    const font = page.node.Resources()!.lookup(PDFName.of("Font"), PDFDict);
+    expect(font.has(PDFName.of("F1"))).toBe(true);
+    expect(font.has(PDFName.of("F2"))).toBe(true);
+  }
+});
+
+test("ページ本体にResourcesがなくても注釈の未使用画像を取り除く", async () => {
+  const pdf = await PDFDocument.create();
+  const a = pdf.addPage([200, 200]),
+    b = pdf.addPage([200, 200]);
+  a.node.delete(PDFName.of("Resources"));
+  const secret = pdf.context.register(
+    pdf.context.stream(new Uint8Array([17, 23, 42]), {
+      Type: "XObject",
+      Subtype: "Image",
+      Width: 1,
+      Height: 1,
+      ColorSpace: "DeviceRGB",
+      BitsPerComponent: 8,
+    }),
+  );
+  const resources = pdf.context.obj({
+    XObject: pdf.context.obj({ Secret: secret }),
+  });
+  const ap = pdf.context.register(
+    pdf.context.flateStream("0 0 10 10 re S", {
+      Type: "XObject",
+      Subtype: "Form",
+      BBox: [0, 0, 100, 100],
+      Resources: resources,
+    }),
+  );
+  const stamp = pdf.context.register(
+    pdf.context.obj({
+      Type: "Annot",
+      Subtype: "Stamp",
+      Rect: [0, 0, 100, 100],
+      AP: { N: ap },
+    }),
+  );
+  a.node.set(PDFName.of("Annots"), pdf.context.obj([stamp]));
+  b.node.set(PDFName.of("Resources"), resources);
+  b.node.set(
+    PDFName.of("Contents"),
+    pdf.context.register(pdf.context.flateStream("/Secret Do")),
+  );
+  const bytes = await pdf.save();
+  const result = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 2,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0],
+    ),
+  );
+  const { PDFRawStream } = await import("pdf-lib");
+  expect(
+    result.context
+      .enumerateIndirectObjects()
+      .filter(
+        ([, o]) =>
+          o instanceof PDFRawStream &&
+          o.dict.get(PDFName.of("Subtype")) === PDFName.of("Image"),
+      ),
+  ).toHaveLength(0);
+});
+
+test("既定の色空間を保持し、残したページの色を変えない", async () => {
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  p.node.set(
+    PDFName.of("Resources"),
+    pdf.context.obj({
+      ColorSpace: {
+        DefaultRGB: [
+          "CalRGB",
+          { WhitePoint: [0.9505, 1, 1.089], Gamma: [3, 3, 3] },
+        ],
+        DefaultGray: ["CalGray", { WhitePoint: [0.9505, 1, 1.089], Gamma: 3 }],
+      },
+    }),
+  );
+  p.node.set(
+    PDFName.of("Contents"),
+    pdf.context.register(
+      pdf.context.flateStream("0.5 0.5 0.5 rg 10 10 100 100 re f"),
+    ),
+  );
+  const bytes = await pdf.save();
+  const result = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 2,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0],
+    ),
+  );
+  const { PDFDict } = await import("pdf-lib");
+  const spaces = result
+    .getPage(0)
+    .node.Resources()!
+    .lookup(PDFName.of("ColorSpace"), PDFDict);
+  expect(spaces.has(PDFName.of("DefaultRGB"))).toBe(true);
+  expect(spaces.has(PDFName.of("DefaultGray"))).toBe(true);
 });

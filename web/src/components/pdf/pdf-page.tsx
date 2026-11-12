@@ -11,6 +11,8 @@
 /// テキスト層は pdf.js の `TextLayer`（透明な文字を canvas に重ね、選択・コピー・検索の塗りに使う）。
 /// 検索の文字位置とnative spanを明示対応させる。行座標の無いOCRは段落・表の枠で示す。
 import * as React from "react";
+import { measureFineUnits, type FineUnit, type FineContent, type SelectionPrecision } from "@/lib/pdf-fine-selection";
+import { pdfBlocks } from "@/lib/pdf-excerpts";
 import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
 import {
   syntheticOcrRect,
@@ -76,7 +78,8 @@ export function PdfPage({
   regionSelection?: {
     enabled: boolean;
     selections: PdfExcerpt[];
-    onSelect: (page: number, bbox: PdfRect) => void;
+    precision?: SelectionPrecision;
+    onSelect: (page: number, bbox: PdfRect, replaceId?: string, fine?: FineContent) => void;
   };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
@@ -97,6 +100,7 @@ export function PdfPage({
     ocr: Map<number, PdfRect>;
   } | null>(null);
   const highlightKey = React.useId();
+  const [fineUnits, setFineUnits] = React.useState<{viewport:PageViewport;values:FineUnit[]} | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
   React.useEffect(() => {
@@ -184,8 +188,9 @@ export function PdfPage({
       pdfjsLib(),
       pageTextContent(doc, pageNumber),
       nativePdfText(doc, pageNumber),
+      pdfBlocks(doc, pageNumber).catch(() => []),
     ])
-      .then(async ([lib, content, native]) => {
+      .then(async ([lib, content, native, blocks]) => {
         if (!active) return;
         container.replaceChildren();
         const tl = new lib.TextLayer({
@@ -213,6 +218,7 @@ export function PdfPage({
               return divByItem.get(nativeTextOrigin(item)) ?? null;
             });
           setText({ divs, page: buildPageText(content), ocr });
+          if (wrapRef.current) setFineUnits({viewport:size.viewport,values:measureFineUnits(wrapRef.current,tl.textDivs,native,size.viewport,blocks)});
         }
       })
       .catch(() => undefined);
@@ -221,6 +227,7 @@ export function PdfPage({
       layer?.cancel();
       container.replaceChildren();
       setText(null);
+      setFineUnits(null);
     };
   }, [doc, pageNumber, size, near, textLayer, textRevision]);
 
@@ -354,6 +361,8 @@ export function PdfPage({
             size.rotation === rotation
           }
           selections={regionSelection.selections}
+          precision={regionSelection.precision}
+          units={fineUnits?.viewport===size.viewport?fineUnits.values:[]}
           onSelect={regionSelection.onSelect}
         />
       ) : null}

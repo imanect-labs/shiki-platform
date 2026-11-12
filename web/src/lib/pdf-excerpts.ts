@@ -9,6 +9,8 @@ import { boxToViewport, viewportDimensions } from "@/lib/pdf-geometry";
 
 export type PdfRect = [number, number, number, number];
 export type PdfExcerpt = {
+  precision?: "line" | "cell";
+  cells?: { row: number; column: number; bbox: PdfRect }[];
   id: string;
   page: number;
   bbox: PdfRect;
@@ -210,7 +212,7 @@ function blockFragments(
 }
 
 /// TextItem の局所軸から矩形を求め、原本内の縦書き・回転文字にも適用する。
-function nativeRect(
+export function nativeRect(
   item: TextItem,
   pageX: number,
   pageY: number,
@@ -550,13 +552,15 @@ export function excerptContext(
         bbox: e.bbox,
         origin: "bottom_left",
         blocks: e.blockOrdinals,
+        ...(e.precision ? { precision: e.precision } : {}),
+        ...(e.cells ? { cells: e.cells } : {}),
       })),
     },
   };
 }
 
 /// GFM の表構造だけを取り出す。ヘッダ直後以外の --- はデータとして残す。
-function tableRows(markdown: string): string[][] {
+export function tableRows(markdown: string): string[][] {
   return markdown
     .trim()
     .split("\n")

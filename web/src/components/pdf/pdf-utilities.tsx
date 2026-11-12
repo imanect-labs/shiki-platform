@@ -7,24 +7,27 @@ import {
   Loader2,
   RotateCw,
   Scissors,
+  Files,
+  LayoutGrid,
 } from "lucide-react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { saveBlob, assertPdfSource } from "@/lib/pdf-excerpts";
 import { cn } from "@/lib/utils";
 
-export function parsePageRange(input: string, count: number): number[] {
-  const pages: number[] = [];
-  for (const part of input.split(/[,、]/)) {
-    const m = part.trim().match(/^(\d+)(?:\s*[-–]\s*(\d+))?$/);
-    if (!m) throw new Error("ページは「1-3, 5」のように入力してください。");
-    const a = Number(m[1]),
-      b = Number(m[2] ?? m[1]);
-    if (a < 1 || b < a || b > count)
-      throw new Error(`1〜${count} のページを指定してください。`);
-    for (let p = a; p <= b; p++) if (!pages.includes(p - 1)) pages.push(p - 1);
-  }
-  return pages;
-}
+import dynamic from "next/dynamic";
+const PdfPageWorkbench = dynamic(
+  () => import("./pdf-page-workbench").then((m) => m.PdfPageWorkbench),
+  {
+    loading: () => (
+      <p role="status" className="p-4 text-xs">
+        ページ編集を準備しています…
+      </p>
+    ),
+  },
+);
+
+export { parsePageRange } from "@/lib/pdf-page-tools";
+import { parsePageRange } from "@/lib/pdf-page-tools";
 export function PdfUtilities({
   doc,
   name,
@@ -34,6 +37,7 @@ export function PdfUtilities({
   name: string;
   current: number;
 }) {
+  const [editor, setEditor] = React.useState<"organize" | "merge" | null>(null);
   const [tool, setTool] = React.useState<"extract" | "rotate">("extract");
   const [range, setRange] = React.useState(`1-${doc.numPages}`);
   const [degrees, setDegrees] = React.useState(90);
@@ -51,7 +55,8 @@ export function PdfUtilities({
       const source = await PDFDocument.load(await doc.getData());
       const output = tool === "extract" ? await PDFDocument.create() : source;
       if (tool === "extract") {
-        for (const p of await output.copyPages(source, pages))
+        const {copyKeptPages} = await import("@/lib/pdf-page-copy");
+        for (const p of await copyKeptPages(source, output, pages))
           output.addPage(p);
       } else {
         for (const index of pages) {
@@ -85,6 +90,25 @@ export function PdfUtilities({
       </div>
       <div className="flex-1 space-y-6 overflow-auto p-5">
         <div className="grid grid-cols-2 gap-2">
+          {(
+            [
+              ["organize", LayoutGrid, "ページを整理", "並べ替え・削除"],
+              ["merge", Files, "PDFを結合", "複数の資料をひとつに"],
+            ] as const
+          ).map(([key, Icon, label, sub]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setEditor(key)}
+              className="rounded-xl border border-border bg-primary/[0.03] p-3 text-left transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Icon className="mb-3 size-5 text-primary" />
+              <span className="block text-xs font-medium">{label}</span>
+              <span className="mt-1 block text-[10px] text-muted-foreground">
+                {sub}
+              </span>
+            </button>
+          ))}
           {(
             [
               {
@@ -194,6 +218,14 @@ export function PdfUtilities({
           </p>
         </div>
       </div>
+      {editor && (
+        <PdfPageWorkbench
+          doc={doc}
+          name={name}
+          mode={editor}
+          onClose={() => setEditor(null)}
+        />
+      )}
       <div className="shiki-dash-top rule-soft p-4">
         {error && (
           <p role="alert" className="mb-3 text-xs text-destructive">
