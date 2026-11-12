@@ -2,7 +2,8 @@
 //!
 //! 照らすのは、どの実行でも形の変わらない出力だけ（[`NodeType::closed_output_keys`]）。
 //!
-//! - data.query の結果の最上位（集計を書いたかで items と groups のどちらかになる・件数は with_count のとき）と、
+//! - data.query の結果の最上位（集計を書いたかで items と groups のどちらかになる・件数は with_count のときで、集計を
+//!   書くと入らない）と、
 //!   items・groups の行の項目（行の列の値は `/items/<n>/data/<列>`）。
 //! - data.record.create・update・upsert・delete と data.transition の結果の最上位。
 //! - 繰り返しの中の 1 件（`$from: each`）の最上位（item・index）と、繰り返す並びが data.query の items か
@@ -124,7 +125,7 @@ fn output_problem(target: &Node, segs: &[String]) -> Option<String> {
     }
     let name = named(target);
     if !keys.contains(&first) {
-        return Some(top_unknown(nt, &name, first));
+        return Some(top_unknown(nt, target, &name, first));
     }
     if let Some(text) = absent_by_params(nt, target, &name, first) {
         return Some(text);
@@ -161,13 +162,17 @@ fn field_names(nt: NodeType) -> String {
 }
 
 /// 出力の最上位に無い項目を指すときの文。
-fn top_unknown(nt: NodeType, name: &str, k: &str) -> String {
+fn top_unknown(nt: NodeType, target: &Node, name: &str, k: &str) -> String {
     if k == "error" {
         return format!(
             "{name}の結果に error はありません。error は、on_error を continue にしたブロックが失敗したときだけ入ります。"
         );
     }
     match nt {
+        // 集計を書いた data.query の行は groups にある（items は無いので、/items/0/data/<列> を勧めない）。
+        NodeType::DataQuery if aggregated(target) => format!(
+            "{name}の結果に {k} はありません。集計（aggregate）を書いているので、結果の行は groups に入ります。まとめた列の値は key の下（/groups/0/key/{k}）、集計の値は value か values（/groups/0/value・/groups/0/values/<aggregate の位置>）にあります。"
+        ),
         NodeType::DataQuery => format!(
             "{name}の結果に {k} はありません（結果の項目: {}）。行の列の値は、行の data の下にあります（/items/0/data/{k}）。",
             field_names(nt)
@@ -183,22 +188,38 @@ fn top_unknown(nt: NodeType, name: &str, k: &str) -> String {
     }
 }
 
-/// 設定で決まる項目（data.query の groups・count と、集計を書いたときの items）が、書いた設定では入らないときの文。
-/// 設定が `$from` などで実行の値で決まるときは照らさない。
+/// data.query の設定に集計（aggregate）が書いてあり、結果が groups に入ると決まるか（カタログの groups の
+/// present_if で判定する。設定が値式なら決まらないので false）。
+fn aggregated(target: &Node) -> bool {
+    NodeType::DataQuery
+        .output_fields()
+        .iter()
+        .find(|f| f.name == "groups")
+        .is_some_and(|f| f.present_in(&target.params) == Some(true))
+}
+
+/// 設定で決まる項目（カタログの present_if・absent_if）が、書いた設定では入らないときの文。data.query の groups は
+/// 集計（aggregate）を書いたときだけ、items と count は集計を書くと入らず、count は件数（with_count）を求めたとき
+/// だけ入る。設定が `$from` などで実行の値で決まるときは照らさない。
 fn absent_by_params(nt: NodeType, target: &Node, name: &str, k: &str) -> Option<String> {
-    let field = |n: &str| nt.output_fields().iter().find(|f| f.name == n);
-    if nt == NodeType::DataQuery
-        && k == "items"
-        && field("groups")?.present_in(&target.params) == Some(true)
-    {
-        return Some(format!(
-            "{name}は集計（aggregate）を書いているので、結果は groups に入り、items はありません（{}・/groups/0/value）。",
-            row_example("groups", "0")
-        ));
-    }
-    let f = field(k)?;
+    let f = nt.output_fields().iter().find(|f| f.name == k)?;
     if f.present_in(&target.params) != Some(false) {
         return None;
+    }
+    // 設定で消える項目（absent_if）は、present_if の案内より先に言う（集計を書いた data.query の count に
+    // with_count を勧めない。集計のときは with_count を書いても件数は入らない）。
+    if f.absent_in(&target.params) {
+        return Some(if nt == NodeType::DataQuery {
+            format!(
+                "{name}は集計（aggregate）を書いているので、結果は groups に入り、{k} はありません（集計のときは items も count も入らず、with_count を書いても件数は入りません）。まとめた列の値は {}、集計の値は /groups/0/value（2 つ目からは /groups/0/values/<aggregate の位置>）で読みます。件数は aggregate に {{\"metric\":\"count\"}} を書いて数えます（group_by が無ければ、groups は全体の 1 行）。",
+                row_example("groups", "0")
+            )
+        } else {
+            format!(
+                "{name}の設定に {} があるので、結果に {k} はありません。",
+                f.absent_if
+            )
+        });
     }
     Some(match k {
         "groups" => format!(

@@ -182,3 +182,22 @@ def test_present_if_treats_false_as_absent(with_count):
     shaped = [e for e in r.errors if e["code"] == "ir.unknown_output_path"]
     assert bool(shaped) is (with_count is not True), r.errors
     assert not r.output_paths, r.output_paths
+
+
+@pytest.mark.parametrize("with_count", [True, None])
+def test_aggregate_leaves_out_items_and_count(with_count):
+    """集計を書いた data.query の結果に items と count は無い（製品のカタログの absent_if・with_count を書いても
+    count は入らない）。製品の検証が errors の `ir.unknown_output_path` に出し、output_paths には重ねない。
+    """
+    refs = [
+        {"$from": "nodes.agg.output", "path": "/items/0/id"},
+        {"$from": "nodes.agg.output", "path": "/count/exact"},
+        {"$from": "nodes.agg.output", "path": "/groups/0/value"},
+    ]
+    ir = _uses(refs)
+    if with_count is not None:
+        ir["nodes"][3]["params"]["query"]["with_count"] = with_count
+    r = run_ir_lint([("a", ir)], BIN)[0]["a"]
+    shaped = [e for e in r.errors if e["code"] == "ir.unknown_output_path"]
+    assert sorted(e["path"] for e in shaped) == ["/params/input/v/0", "/params/input/v/1"], r.errors
+    assert not r.output_paths, r.output_paths

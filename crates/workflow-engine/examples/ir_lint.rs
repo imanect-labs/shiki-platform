@@ -581,6 +581,26 @@ mod tests {
         let out = lint_one(&ir("/items/0/data/status"));
         assert!(codes(&out, "errors").is_empty(), "{out:#}");
         assert!(codes(&out, "output_paths").is_empty(), "{out:#}");
+        // 集計を書いた data.query の items と count も、製品の誤り（カタログの absent_if・with_count を書いても
+        // count は入らない）。groups は読める。
+        let agg = |path: &str| {
+            let mut v = ir(path);
+            v["nodes"][0]["params"]["query"] = json!({
+                "with_count": true, "group_by": ["status"], "aggregate": [{ "metric": "count" }] });
+            v
+        };
+        for path in ["/items/0/data/status", "/count/exact"] {
+            let out = lint_one(&agg(path));
+            assert_eq!(
+                codes(&out, "errors"),
+                ["ir.unknown_output_path"],
+                "{path}: {out:#}"
+            );
+            assert!(codes(&out, "output_paths").is_empty(), "{path}: {out:#}");
+        }
+        let out = lint_one(&agg("/groups/0/value"));
+        assert!(codes(&out, "errors").is_empty(), "{out:#}");
+        assert!(codes(&out, "output_paths").is_empty(), "{out:#}");
     }
 
     #[test]

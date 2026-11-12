@@ -207,6 +207,105 @@ fn aggregate_decides_between_items_and_groups() {
     assert_eq!(flagged(bare, &["/groups", "/items/0/id"]), ["/groups"]);
 }
 
+/// `q` の後ろの script.run `use` が `path` を読む IR の、出力に無い所を指す誤りの文（1 つだけのはず）。
+fn message(target: Value, path: &str) -> String {
+    let errs = unknown(v5(json!({
+        "ir_version": 1, "name": "wf",
+        "nodes": [target,
+            { "id": "use", "type": "script.run",
+              "params": { "source": { "inline": SCRIPT }, "input": at(path) } }],
+        "edges": [{ "from": "q", "to": "use" }]
+    })));
+    assert_eq!(errs.len(), 1, "{path}: {errs:?}");
+    errs[0].message.clone()
+}
+
+/// 集計を書いた data.query の結果に count は無い（data の集計の枝は件数を数える前に返る）。with_count を足しても
+/// 入らないので、保存を通さない（通すと、分岐の条件で黙って偽になる・7o の指摘）。
+#[test]
+fn count_is_never_there_with_aggregate_even_with_with_count() {
+    let agg = |with_count: Option<bool>| {
+        let mut q = json!({ "group_by": ["status"], "aggregate": [{ "metric": "count" }] });
+        if let Some(w) = with_count {
+            q["with_count"] = json!(w);
+        }
+        query(q)
+    };
+    for with_count in [Some(true), Some(false), None] {
+        assert_eq!(
+            flagged(
+                agg(with_count),
+                &["/count", "/count/exact", "/groups/0/value"]
+            ),
+            ["/count", "/count/exact"],
+            "{with_count:?}"
+        );
+    }
+    // 分岐の条件に書いた /count/exact（指摘の形）も誤り。
+    let errs = v5(json!({
+        "ir_version": 1, "name": "wf",
+        "nodes": [
+            agg(Some(true)),
+            { "id": "br", "type": "control.branch", "params": { "condition":
+                { "cmp": { "left": at("/count/exact"), "op": "gt", "right": 0 } } } }
+        ],
+        "edges": [{ "from": "q", "to": "br" }]
+    }));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].code, UNKNOWN_OUTPUT_PATH);
+    assert_eq!(errs[0].path.as_deref(), Some("/params/condition/cmp/left"));
+    // 集計の空の並びは書いていないのと同じ（with_count があれば count を読める）。
+    let plain = query(json!({ "with_count": true, "aggregate": [] }));
+    assert!(flagged(plain, &["/count/exact", "/items/0/id"]).is_empty());
+}
+
+/// 集計を書いた data.query の /count の文は with_count を勧めない（勧めると、従った IR が保存を通って実行で
+/// 解決しない）。件数は aggregate の count で数え、groups で読むと言う。
+#[test]
+fn the_count_message_with_aggregate_points_to_groups() {
+    let agg = json!({ "group_by": ["status"], "aggregate": [{ "metric": "count" }] });
+    let mut counted = agg.clone();
+    counted["with_count"] = json!(true);
+    for q in [agg, counted] {
+        let text = message(query(q.clone()), "/count");
+        assert!(!text.contains("\"with_count\": true"), "{q}: {text}");
+        assert_eq!(
+            text,
+            "「貸出を調べる」（q）は集計（aggregate）を書いているので、結果は groups に入り、count はありません（集計のときは items も count も入らず、with_count を書いても件数は入りません）。まとめた列の値は /groups/0/key/<列>、集計の値は /groups/0/value（2 つ目からは /groups/0/values/<aggregate の位置>）で読みます。件数は aggregate に {\"metric\":\"count\"} を書いて数えます（group_by が無ければ、groups は全体の 1 行）。実行すると、このブロックは値を解決できずに失敗します。",
+            "{q}"
+        );
+        // items も同じ文（集計のときは items も無い）。
+        assert!(
+            message(query(q.clone()), "/items/0/data/status").starts_with(
+                "「貸出を調べる」（q）は集計（aggregate）を書いているので、結果は groups に入り、items はありません（"
+            ),
+            "{q}"
+        );
+    }
+    // 集計を書いていない data.query の /count は、これまでどおり with_count を勧める。
+    assert!(message(query(json!({})), "/count").contains("\"with_count\": true"));
+}
+
+/// 集計を書いた data.query の結果に無い項目（列の名前など）の文は、items ではなく groups の読み方を言う（items を
+/// 勧めると、従った IR が 2 回目の誤りになる）。
+#[test]
+fn an_unknown_top_with_aggregate_points_to_groups() {
+    let agg = query(json!({ "group_by": ["region"], "aggregate": [{ "metric": "count" }] }));
+    let text = message(agg, "/region");
+    assert!(text.contains("/groups/0/key/region"), "{text}");
+    assert!(text.contains("/groups/0/value"), "{text}");
+    assert!(!text.contains("/items/"), "{text}");
+    assert_eq!(
+        text,
+        "「貸出を調べる」（q）の結果に region はありません。集計（aggregate）を書いているので、結果の行は groups に入ります。まとめた列の値は key の下（/groups/0/key/region）、集計の値は value か values（/groups/0/value・/groups/0/values/<aggregate の位置>）にあります。実行すると、このブロックは値を解決できずに失敗します。"
+    );
+    // 案内に従った path は通る。
+    let agg = query(json!({ "group_by": ["region"], "aggregate": [{ "metric": "count" }] }));
+    assert!(flagged(agg, &["/groups/0/key/region", "/groups/0/value"]).is_empty());
+    // 集計を書いていなければ、これまでどおり items の data を勧める。
+    assert!(message(query(json!({})), "/region").contains("/items/0/data/region"));
+}
+
 /// `on_error: continue` の失敗の出力 `{ error }` は、data.query でも data.record.* でも読める。
 #[test]
 fn error_is_readable_only_with_on_error_continue() {
