@@ -397,7 +397,6 @@ pub(crate) async fn provision_roles(
     // あるべき集合（claims 由来・正規化済み）。
     let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
-    let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
 
     // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
     // 失敗しても認可には影響しない（次回のログイン・refresh で再試行）。
@@ -434,7 +433,7 @@ pub(crate) async fn provision_roles(
     // ロールの直接タプルと台帳をあるべき集合にそろえる（剥奪・付与・台帳の欠けの復元・BUG-270）。付け外しは監査に残す。
     let audit = MembershipAudit::new(&*state.audit, source, ctx.tenant(), &ctx.principal().id);
     let changed =
-        role_member::sync_roles(&*state.authz, &state.directory, &audit, &ctx, &desired).await;
+        role_member::sync_roles(&*state.authz, &state.directory, &audit, &ctx, &sourced).await;
     // ロールが変わったら構造化データの SSE 購読へ知らせる（TTL を待たずに材料を引き直す・PIT-70 ③）。
     if changed {
         if let Err(e) = state.data.notify_authz_changed(&ctx, None).await {

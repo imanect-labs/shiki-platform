@@ -7,7 +7,9 @@
 //! 1. 初めての同期は、台帳の行とタプルを両方作る。
 //! 2. 台帳の行だけを消してから同期し直すと、行が戻る（タプルは変えない）。残っていた行（表示名を変えたもの）は、
 //!    表示名・作成日時・更新日時を変えない。
-//! 3. あるべき集合から外れたロールはタプルを外し、台帳の行は残す（台帳はテナント撤去の列挙に使う・今までどおり）。
+//! 3. 部署の行の組織が部署の組織と違えば（前は付けた人の組織で書いていた）、同期し直したときに直す（表示名・作成
+//!    日時は変えない）。
+//! 4. あるべき集合から外れたロールはタプルを外し、台帳の行は残す（台帳はテナント撤去の列挙に使う・今までどおり）。
 
 #![allow(
     clippy::unwrap_used,
@@ -70,7 +72,9 @@ async fn scenario(pool: &PgPool, fga: &dyn AuthzClient, tenant: &str) {
         ctx.tenant(),
         &ctx.principal().id,
     );
-    let desired: Vec<String> = vec!["engineering".into(), "acme/sales".into()];
+    // engineering は属性 roles から、acme/sales は所属グループ（部署）から来たロール。
+    let desired: Vec<(String, bool)> =
+        vec![("engineering".into(), false), ("acme/sales".into(), true)];
 
     // 1. 初めての同期: 台帳の行とタプルを両方作る。
     assert!(
@@ -116,7 +120,37 @@ async fn scenario(pool: &PgPool, fga: &dyn AuthzClient, tenant: &str) {
     );
     assert!(directory.role_exists(&ctx, "acme/sales").await.unwrap());
 
-    // 3. あるべき集合から外れたロールはタプルを外し、台帳の行は残す。
+    // 3. 部署の行の組織が持ち主と違う（前は付けた人の組織で書いていた）と、同期し直したときに部署の組織に直す。
+    //    表示名・作成日時は変えない。属性 roles のロールの行は変えない。
+    sqlx::query(
+        "UPDATE directory_role SET org = 'globex', display_name = '営業部' \
+         WHERE tenant_id = $1 AND role_id = $2",
+    )
+    .bind(tenant)
+    .bind("acme/sales")
+    .execute(pool)
+    .await
+    .unwrap();
+    let moved = row(pool, tenant, "acme/sales").await.expect("acme/sales");
+    assert!(!directory.role_exists(&ctx, "acme/sales").await.unwrap());
+    assert!(
+        !sync_roles(fga, &directory, &audit, &ctx, &desired).await,
+        "タプルは変えない"
+    );
+    assert!(directory.role_exists(&ctx, "acme/sales").await.unwrap());
+    let fixed = row(pool, tenant, "acme/sales").await.expect("acme/sales");
+    assert_eq!(
+        (fixed.0.as_str(), fixed.1),
+        (moved.0.as_str(), moved.1),
+        "表示名・作成日時は変えない"
+    );
+    assert_eq!(
+        row(pool, tenant, "engineering").await.expect("engineering"),
+        kept,
+        "属性 roles のロールの行は変えない"
+    );
+
+    // 4. あるべき集合から外れたロールはタプルを外し、台帳の行は残す。
     assert!(sync_roles(fga, &directory, &audit, &ctx, &desired[..1]).await);
     assert_eq!(
         current_roles(fga, &ctx.subject(), &ctx.ns()).await.unwrap(),

@@ -23,7 +23,7 @@
 //! - 付け外しは、システムを主体にした監査に組織ごとに 1 行ずつ残す（[`super::membership_audit`]・GAP-78）。付けたことを
 //!   記録できなければ付けたタプルを外し、外したことを記録できなくても外したものは戻さない（どちらも権限が減る向き）。
 //!   付ける書き込みが誤りで返ったとき（応答が切れても適用されていることがある）は確かめ直し、あれば付けたものとして
-//!   記録し、確かめられなければ外す（記録の無い付与を残さない）。
+//!   記録し、確かめられなければ外して、外したことを記録する（記録の無い付与を残さない）。
 
 use authz::{
     AuthzClient, Consistency, GroupLayout, Namespace, ObjectType, Principal, PrincipalKind,
@@ -143,7 +143,7 @@ async fn grant(
         Ok(wrote) => wrote,
         Err(e) => {
             tracing::warn!(%org, error = %e, "組織の member の書き込みが誤りで返った（適用されたかを確かめる）");
-            settle_unknown_write(authz, subject, &object, org).await
+            settle_unknown_write(authz, audit, subject, &object, org).await
         }
     };
     if !wrote {
@@ -164,10 +164,17 @@ async fn grant(
 /// 書き込みが誤りで返った組織の member が実際に書けているかを、強い整合の check で確かめる（書けていれば `true`・
 /// `tuple_commit.rs` の決まり (a) と同じく、誤りでも適用されていることがあるものとして扱う）。
 ///
-/// 確かめられなければ、書けていたかもしれないタプルを外して `false`（冪等・直前の check で無かったので、ほかの経路が
-/// 頼るタプルを消すことはまず無い。権限が減る向きで、次の同期で付け直して記録する）。
+/// 確かめられなければ、書けていたかもしれないタプルを外して `false`（冪等・権限が減る向きで、次の同期で付け直して
+/// 記録する）。直前の check で無かったので、外すのはこの書き込みが足したものか、同じ人の並行する同期（ログインと
+/// セッションの更新は直列にしていない）が足したもの。実際に外したときは、外したと記録する（並行する同期が付けて記録
+/// した member を外したときも、監査とタプルが食い違わない）。並行する同期が付けた member を確かめ直しで見つけると、
+/// 同じ付与を 2 回記録することがある（まれ・権限は変わらない）。
+///
+/// 確かめ直しは誤りを受けた直後なので、クライアントが打ち切った後でサーバーが書き込みを確定させたときは、無いと
+/// 答えて外しもしない。そのときは記録の無い付与が残る（狭い時間の窓・定期の照合では見つけない）。
 async fn settle_unknown_write(
     authz: &dyn AuthzClient,
+    audit: &MembershipAudit<'_>,
     subject: &Subject,
     object: &authz::FgaObject,
     org: &str,
@@ -184,9 +191,13 @@ async fn settle_unknown_write(
         Ok(present) => present,
         Err(e) => {
             tracing::warn!(%org, error = %e, "組織の member を確かめ直せません（書けていたかもしれないので外す）");
-            if let Err(e) = authz.delete_tuple(subject, Relation::Member, object).await {
-                tracing::error!(%org, error = %e,
-                    "確かめられなかった組織の member を外せません（記録の無い付与が残っているかもしれない）");
+            match authz.delete_tuple(subject, Relation::Member, object).await {
+                Ok(true) => audit.org_revoked(org).await,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(%org, error = %e,
+                        "確かめられなかった組織の member を外せません（記録の無い付与が残っているかもしれない）");
+                }
             }
             false
         }

@@ -34,7 +34,8 @@
 //!   `membership_reconcile_cursor`）から `batch_size` 人（既定 500・1〜1,000）を照合する。最後まで読んだら頭に戻る。
 //!   ディレクトリの N 人を 1 周するのに ceil(N / batch_size) 回かかる（既定では 1,000 人で 2 分、10,000 人で 20 分）。
 //! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（所属グループで決まらないロールの候補がある人は
-//!   2 回）。直接タプルの無い人は Keycloak を読まない。Keycloak のトークンは 1 回に 1 つ取る。
+//!   2 回）。直接タプルの無い人は Keycloak を読まない。外す部署・ロールがある人は、台帳（`directory_role`）の読みが
+//!   1 回増える（監査の行の組織を決める）。Keycloak のトークンは 1 回に 1 つ取る。
 //! - サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める。advisory lock を取れた 1 台が、最後に照合を始めた時刻
 //!   （`last_run_at`・DB の時刻）を読み、間隔の 9 割（[`INTERVAL_SLACK`]・各サーバーのタイマーのずれで 1 回ずつ飛ばさない
 //!   ため）が経っていなければ何もしない。ロックを取れない回も何もしない。Keycloak と OpenFGA への読みは台数で増えない。
@@ -451,11 +452,17 @@ async fn reconcile_user(
     }
 
     // 3. 外す（ログインの同期と同じ手順）。外したものは監査に残す（ロールの行の組織はログインの同期と同じく、ロールを
-    //    持つ組織。接頭辞の無いロールだけ `AuthContext` と同じ規則の利用者の組織・role_member::role_owner_org）。
+    //    持つ組織。台帳がその部署の組織のロールとしている部署はその組織、ほかは `AuthContext` と同じ規則の利用者の組織・
+    //    role_member::role_owner_org・role_member::with_ledger_sources）。
     let audit = MembershipAudit::new(sink, MembershipSource::Reconcile, &tenant, &entry.user_id);
     let user_org = org_of_groups(&groups, tenant_id, layout);
     let keep = org_member::orgs_kept_by_reconcile(&groups, tenant_id, layout);
     let revoked_orgs = org_member::revoke_stale(authz, &audit, &subject, &ns, &orgs, &keep).await;
+    let stale_roles = if stale_roles.is_empty() {
+        Vec::new()
+    } else {
+        role_member::with_ledger_sources(&deps.directory, tenant_id, &stale_roles).await
+    };
     let revoked_roles =
         role_member::revoke_roles(authz, &audit, &user_org, &subject, &ns, &stale_roles).await;
     if !revoked_orgs.is_empty() || !revoked_roles.is_empty() {

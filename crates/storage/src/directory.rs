@@ -330,6 +330,57 @@ impl DirectoryStore {
         Ok(done.rows_affected())
     }
 
+    /// 持ち主の組織が決まっているロール（所属グループから来た部署）の台帳の行を、無ければ足し、組織が `org` と違えば
+    /// `org` に直す（表示名と作成日時は変えない）。足したか直した行の数を返す。
+    ///
+    /// ログイン時の claim 同期が、メンバーのタプルが既にある部署に使う（[`Self::ensure_roles`] の部署の版）。前は
+    /// [`Self::upsert_role`] が付けた人の組織で行を書き換えていたので、ほかの組織の部署がその組織の検索と
+    /// [`Self::role_exists`] に出ていた。その行を、部署の人の次のログインで直す。
+    pub async fn ensure_group_roles(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        role_ids: &[String],
+    ) -> Result<u64, StorageError> {
+        if role_ids.is_empty() {
+            return Ok(0);
+        }
+        let done = sqlx::query(
+            "INSERT INTO directory_role (role_id, tenant_id, org, display_name) \
+             SELECT r, $2, $3, r FROM unnest($1::text[]) AS r \
+             ON CONFLICT (tenant_id, role_id) DO UPDATE \
+               SET org = excluded.org, updated_at = now() \
+               WHERE directory_role.org <> excluded.org",
+        )
+        .bind(role_ids)
+        .bind(tenant_id)
+        .bind(org)
+        .execute(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(done.rows_affected())
+    }
+
+    /// テナントのロールの台帳の組織（`(role_id, org)`・行の無いロールは入らない）。
+    pub async fn role_orgs(
+        &self,
+        tenant_id: &str,
+        role_ids: &[String],
+    ) -> Result<Vec<(String, String)>, StorageError> {
+        if role_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as(
+            "SELECT role_id, org FROM directory_role \
+             WHERE tenant_id = $1 AND role_id = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(role_ids)
+        .fetch_all(&self.db)
+        .await
+        .map_err(StorageError::Db)
+    }
+
     /// 利用者の部署（ロール）の写しを、claims から作ったあるべき集合で置き換える（#751）。
     ///
     /// 正本は IdP claims → OpenFGA の role タプル（ログイン時の同期）。AI 活用分析の集計が

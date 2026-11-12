@@ -17,7 +17,7 @@
 )]
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -117,10 +117,12 @@ pub(super) fn row(
 ///
 /// `write_err` を `Some(applied)` にすると、書き込みは誤りを返す（`applied` なら誤りでもタプルは足す・応答が切れた
 /// 書き込みを模す）。`fail_after_write_err` の間は、書き込みが誤りを返した直後の check・read を 1 回だけ失敗させる。
+/// `fail_reads` は、次の read をその回数だけ失敗させる（読み直しで読める形を模す）。
 #[derive(Default)]
 pub(super) struct Tuples {
     rows: Mutex<Vec<(String, Relation, String)>>,
     pub(super) fail_read: AtomicBool,
+    pub(super) fail_reads: AtomicUsize,
     pub(super) write_err: Mutex<Option<bool>>,
     pub(super) fail_after_write_err: AtomicBool,
     armed: AtomicBool,
@@ -218,7 +220,11 @@ impl AuthzClient for Tuples {
         ty: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
         self.fail_armed()?;
-        if self.fail_read.load(Ordering::SeqCst) {
+        let counted = self
+            .fail_reads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if counted || self.fail_read.load(Ordering::SeqCst) {
             return Err(AuthzError::Unexpected {
                 status: 500,
                 body: "read".into(),
@@ -249,6 +255,16 @@ pub(super) fn user(tenant: &str, groups: &[&str]) -> Principal {
 
 pub(super) fn v(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// 属性 `roles` から来たロール（[`sync_roles`]・[`revoke_roles`] に渡す形）。
+pub(super) fn attr(items: &[&str]) -> Vec<(String, bool)> {
+    items.iter().map(|s| ((*s).to_string(), false)).collect()
+}
+
+/// 所属グループから来たロール（部署）。
+pub(super) fn dept(items: &[&str]) -> Vec<(String, bool)> {
+    items.iter().map(|s| ((*s).to_string(), true)).collect()
 }
 
 #[tokio::test]
@@ -391,15 +407,8 @@ async fn reconcile_records_under_its_own_actor_and_counts_failures() {
     let current = current_orgs(&fga, &me, &ns).await.unwrap();
     let revoked = revoke_stale(&fga, &audit, &me, &ns, &current, &v(&["acme"])).await;
     assert_eq!(revoked, ["old"]);
-    let roles = revoke_roles(
-        &fga,
-        &audit,
-        "acme",
-        &me,
-        &ns,
-        &v(&["acme/eng", "sales", "none"]),
-    )
-    .await;
+    let stale = [dept(&["acme/eng"]), attr(&["sales", "none"])].concat();
+    let roles = revoke_roles(&fga, &audit, "acme", &me, &ns, &stale).await;
     assert_eq!(roles, ["acme/eng", "sales"]);
     assert_eq!(
         sink.take(),
@@ -424,9 +433,11 @@ async fn reconcile_records_under_its_own_actor_and_counts_failures() {
     assert_eq!(audit.failed(), 0);
 
     // 外すものが無ければ記録しない。
-    assert!(revoke_roles(&fga, &audit, "acme", &me, &ns, &v(&["none"]))
-        .await
-        .is_empty());
+    assert!(
+        revoke_roles(&fga, &audit, "acme", &me, &ns, &attr(&["none"]))
+            .await
+            .is_empty()
+    );
     assert!(sink.take().is_empty());
 
     // 記録できなくても外したものは戻さず、記録できなかった行を数える。
@@ -441,7 +452,7 @@ async fn reconcile_records_under_its_own_actor_and_counts_failures() {
         ["old"]
     );
     assert_eq!(
-        revoke_roles(&fga, &failing, "acme", &me, &ns, &v(&["sales"])).await,
+        revoke_roles(&fga, &failing, "acme", &me, &ns, &attr(&["sales"])).await,
         ["sales"]
     );
     assert_eq!(failing.failed(), 2);
@@ -499,14 +510,21 @@ async fn role_grants_record_only_the_roles_actually_written() {
             .await
             .unwrap();
 
-        // 1. 今のタプルを読めない（今の集合が空に見える）と eng も書きにいくが、実際に書いた sales だけを記録する。
-        fga.fail_read.store(true, Ordering::SeqCst);
-        assert!(sync_roles(&fga, &directory, &audit, &ctx, &v(&["eng", "sales"])).await);
+        // 1. 足りないロールだけを書き、もとからあった eng は記録しない。
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &attr(&["eng", "sales"])).await);
         assert_eq!(sink.take(), [grant(&["sales"])]);
-        fga.fail_read.store(false, Ordering::SeqCst);
 
         // 2. 足りないロールだけを書き、付与と剥奪をそれぞれ 1 行にまとめる（剥奪が先）。
-        assert!(sync_roles(&fga, &directory, &audit, &ctx, &v(&["sales", "ops", "qa"])).await);
+        assert!(
+            sync_roles(
+                &fga,
+                &directory,
+                &audit,
+                &ctx,
+                &attr(&["sales", "ops", "qa"])
+            )
+            .await
+        );
         assert_eq!(
             sink.take(),
             [
@@ -522,7 +540,16 @@ async fn role_grants_record_only_the_roles_actually_written() {
         );
 
         // 3. 変えないなら記録しない。
-        assert!(!sync_roles(&fga, &directory, &audit, &ctx, &v(&["sales", "ops", "qa"])).await);
+        assert!(
+            !sync_roles(
+                &fga,
+                &directory,
+                &audit,
+                &ctx,
+                &attr(&["sales", "ops", "qa"])
+            )
+            .await
+        );
         assert!(sink.take().is_empty());
 
         // 4. 記録できなければ、付けたタプルを外す（台帳の行は残す）。
@@ -532,7 +559,7 @@ async fn role_grants_record_only_the_roles_actually_written() {
             &directory,
             &audit,
             &ctx,
-            &v(&["sales", "ops", "qa", "dev"]),
+            &attr(&["sales", "ops", "qa", "dev"]),
         )
         .await;
         let mut held = current_roles(&fga, &me, &ns).await.unwrap();
@@ -670,6 +697,11 @@ async fn login_and_reconcile_rows_are_chained_and_found_by_user() {
             .replace_user_roles(&tenant_id, "acme", "u1", &[("acme/eng".into(), true)])
             .await
             .unwrap();
+        // 台帳の部署の行（ログインの同期が部署の組織で書いたもの・照合が外した行の組織を決める）。
+        deps.directory
+            .upsert_role("acme/eng", &tenant_id, "acme", "acme/eng")
+            .await
+            .unwrap();
 
         // Keycloak の所属グループから外れた（グループも属性 roles も無い）ので、照合が組織と部署を外す。
         let admin = KeycloakAdmin::from_config(&deps.http, &deps.auth).unwrap();
@@ -773,6 +805,7 @@ async fn login_and_reconcile_rows_are_chained_and_found_by_user() {
         "DELETE FROM audit_log WHERE tenant_id = $1",
         "DELETE FROM directory_user_role WHERE tenant_id = $1",
         "DELETE FROM directory_user WHERE tenant_id = $1",
+        "DELETE FROM directory_role WHERE tenant_id = $1",
     ] {
         if let Err(e) = sqlx::query(sql).bind(&tenant_id).execute(&pool).await {
             eprintln!("{sql}: {e}");

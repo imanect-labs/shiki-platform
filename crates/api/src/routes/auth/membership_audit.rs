@@ -9,10 +9,14 @@
 //!
 //! - `object_type = "user"`・`object_id = <sub>`（監査の画面の対象の絞り込みで、人ごとに引ける）。
 //! - org の列: 組織の付け外しは member を変えた組織。ロールの付け外しは、ロールを持つ組織
-//!   （[`super::role_member::role_owner_org`]）。部署のロール（`<org>/<dept>`）はその部署の組織で、接頭辞の無いロール
-//!   （属性 `roles` のロール）だけが、`AuthContext` と同じ規則で決まる利用者の組織（ログインの同期は `ctx.org()`、照合は
-//!   所属グループから決めた組織）。監査は組織ごとに引き、部署の台帳も組織の中に閉じているので、ほかの組織の部署の
-//!   付け外しをその組織の監査に書かない。
+//!   （[`super::role_member::role_owner_org`]）。所属グループから来たロール（部署の `<org>/<dept>` と、2 つ目の組織の
+//!   グループの `<org>`）はその組織で、属性 `roles` のロールは（`/` を含んでも）、`AuthContext` と同じ規則で決まる
+//!   利用者の組織（ログインの同期は `ctx.org()`、照合は所属グループから決めた組織）。外すロールは今の直接タプルから
+//!   決めるのでどこから来たかが分からず、台帳（`directory_role`）がそのロールを先頭のセグメントの組織のものとして
+//!   いるときだけ所属グループから来たものとする（[`super::role_member::with_ledger_sources`]）。監査は組織ごとに引き、
+//!   部署の台帳も組織の中に閉じているので、ほかの組織の部署の付け外しをその組織の監査に書かない。
+//!   属性 `roles` のロールは、付けたときと外したときで利用者の組織が変わっていれば、付けた行と外した行が別の組織の
+//!   監査に分かれる（属性 `roles` のロールはテナント全体のもので、持ち主の組織が無い）。
 //! - metadata: 組織は `{source, org}`、ロールは `{source, roles: […]}`。`source` は `login`・`session_refresh`・
 //!   `reconcile`。所属グループの一覧は入れない。
 //! - 組織は 1 つにつき 1 行、ロールは 1 回の同期の付与・剥奪を、ロールを持つ組織ごとにそれぞれ 1 行にまとめる。変えた
@@ -178,7 +182,7 @@ impl<'a> MembershipAudit<'a> {
             )
             .await
         {
-            tracing::error!(tenant_id = %self.tenant, user = %self.user, ?roles, source = self.source.as_str(),
+            tracing::error!(tenant_id = %self.tenant, user = %self.user, %org, ?roles, source = self.source.as_str(),
                 error = %e, "ロールの member を外したことを監査に残せません（外したものは戻さない）");
         }
     }

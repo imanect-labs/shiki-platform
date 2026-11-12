@@ -4,7 +4,8 @@
 //!
 //! - 単体: 剥奪の行の組織・組織の member の書き込みの誤り。
 //! - 結合（`STORAGE_TEST_DATABASE_URL`・台帳に実 Postgres が要る）: ログインの同期（`sync_roles`）で、組織を移った人・
-//!   2 つの組織の部署にいる人の付け外しの行の組織と、ロールの書き込みの誤り。
+//!   2 つの組織の部署にいる人・`/` を含む属性 roles のロールを持つ人の付け外しの行と台帳の行の組織と、ロールの
+//!   書き込みの誤り（今のタプルを読めないときを含む）。
 
 #![allow(
     clippy::unwrap_used,
@@ -24,23 +25,38 @@ use storage::DirectoryStore;
 use uuid::Uuid;
 
 use super::membership_audit::{MembershipAudit, MembershipSource, RECONCILE_ACTOR, SYNC_ACTOR};
-use super::membership_audit_tests::{row, test_pool, user, v, Rows, Tuples};
+use super::membership_audit_tests::{attr, dept, row, test_pool, user, v, Rows, Tuples};
 use super::org_member::sync_org_member_audited;
 use super::role_member::{current_roles, revoke_roles, role_owner_org, roles_by_owner, sync_roles};
 
 #[test]
 fn the_owner_of_a_department_role_is_its_org() {
-    assert_eq!(role_owner_org("acme/eng", "globex"), "acme");
-    assert_eq!(role_owner_org("acme/eng/qa", "globex"), "acme");
-    // 接頭辞の無いロール（属性 roles）と、組織の名前にできない接頭辞は、利用者の組織。
-    assert_eq!(role_owner_org("sales", "globex"), "globex");
-    assert_eq!(role_owner_org("/eng", "globex"), "globex");
-    assert_eq!(role_owner_org("a:b/eng", "globex"), "globex");
+    // 所属グループから来たロールは、先頭のセグメントの組織（2 つ目の組織のグループそのものは、その組織）。
+    assert_eq!(role_owner_org("acme/eng", true, "globex"), "acme");
+    assert_eq!(role_owner_org("acme/eng/qa", true, "globex"), "acme");
+    assert_eq!(role_owner_org("beta", true, "acme"), "beta");
+    // 属性 roles のロールは、`/` を含んでも利用者の組織（ほかの組織の名前・組織でない接頭辞で決めない）。
+    assert_eq!(role_owner_org("sales", false, "globex"), "globex");
+    assert_eq!(role_owner_org("acme/admin", false, "globex"), "globex");
+    assert_eq!(role_owner_org("sales/manager", false, "globex"), "globex");
+    // 組織の名前にできない接頭辞は、利用者の組織。
+    assert_eq!(role_owner_org("/eng", true, "globex"), "globex");
+    assert_eq!(role_owner_org("a:b/eng", true, "globex"), "globex");
+    let roles = [
+        dept(&["acme/eng"]),
+        attr(&["sales"]),
+        dept(&["globex/x", "acme/ops"]),
+        attr(&["acme/admin"]),
+    ]
+    .concat();
     assert_eq!(
-        roles_by_owner(&v(&["acme/eng", "sales", "globex/x", "acme/ops"]), "globex"),
+        roles_by_owner(&roles, "globex"),
         [
             ("acme".to_string(), v(&["acme/eng", "acme/ops"])),
-            ("globex".to_string(), v(&["sales", "globex/x"])),
+            (
+                "globex".to_string(),
+                v(&["sales", "globex/x", "acme/admin"])
+            ),
         ]
     );
 }
@@ -59,7 +75,8 @@ async fn revoked_department_roles_are_recorded_under_the_department_org() {
     let sink = Rows::default();
     let tenant = TenantId::parse("t").unwrap();
     let audit = MembershipAudit::new(&sink, MembershipSource::Reconcile, &tenant, "u1");
-    let revoked = revoke_roles(&fga, &audit, "globex", &me, &ns, &v(&["acme/eng", "ops"])).await;
+    let stale = [dept(&["acme/eng"]), attr(&["ops"])].concat();
+    let revoked = revoke_roles(&fga, &audit, "globex", &me, &ns, &stale).await;
     assert_eq!(revoked, ["acme/eng", "ops"]);
     assert_eq!(
         sink.take(),
@@ -116,7 +133,8 @@ async fn an_org_member_write_that_errors_but_applies_is_recorded() {
     assert!(!out.granted && out.revoked.is_empty());
     assert!(sink.take().is_empty());
 
-    // 2. 誤りで返り、確かめ直しもできない: 書けていたかもしれないタプルを外し、記録しない。
+    // 2. 誤りで返り、確かめ直しもできない: 書けていたかもしれないタプルを外し、付けたとは記録しない。実際に外したので、
+    //    外したことは記録する（同じ人の並行する同期が付けて記録した member を外したときも、監査とタプルがそろう）。
     fga.delete_tuple(&me, Relation::Member, &acme)
         .await
         .unwrap();
@@ -128,7 +146,16 @@ async fn an_org_member_write_that_errors_but_applies_is_recorded() {
         !fga.has(&me, Relation::Member, &acme),
         "記録の無い付与を残さない"
     );
-    assert!(sink.take().is_empty());
+    assert_eq!(
+        sink.take(),
+        [row(
+            "t",
+            SYNC_ACTOR,
+            "acme",
+            "org.member.revoke",
+            json!({ "source": "login", "org": "acme" }),
+        )]
+    );
     // 次の同期で付け直して記録する。
     *fga.write_err.lock().unwrap() = None;
     fga.fail_after_write_err.store(false, Ordering::SeqCst);
@@ -190,14 +217,18 @@ async fn login_sync_records_role_changes_under_each_department_org() {
         let meta = |roles: &[&str]| json!({ "source": "login", "roles": roles });
 
         // 1. acme/eng にいた人を globex/sales へ移した（利用者の組織は globex）: acme/eng の剥奪は acme に、globex/sales の
-        //    付与は globex に残す。
+        //    付与は globex に残す。acme/eng は、acme の人のログインの同期が acme の部署として台帳に書いたもの。
         let ctx = ctx_for(&tenant, "globex");
         let (me, ns) = (ctx.subject(), ctx.ns());
         fga.write_tuple(&me, Relation::Member, &ns.role("acme/eng"))
             .await
             .unwrap();
+        directory
+            .upsert_role("acme/eng", &tenant, "acme", "acme/eng")
+            .await
+            .unwrap();
         let audit = MembershipAudit::new(&sink, MembershipSource::Login, ctx.tenant(), "u1");
-        assert!(sync_roles(&fga, &directory, &audit, &ctx, &v(&["globex/sales"])).await);
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &dept(&["globex/sales"])).await);
         assert_eq!(
             sink.take(),
             [
@@ -219,11 +250,11 @@ async fn login_sync_records_role_changes_under_each_department_org() {
         );
 
         // 2. acme/eng と globex/sales の両方にいる人（利用者の組織は acme）: 付与はそれぞれの組織に 1 行ずつ。属性 roles の
-        //    ロールは利用者の組織に。
+        //    ロールは利用者の組織に。台帳の部署の行は、付けた人の組織（acme）ではなく部署の組織に書く。
         let ctx = ctx_for(&tenant, "acme");
         let fga = Tuples::default();
         let audit = MembershipAudit::new(&sink, MembershipSource::Login, ctx.tenant(), "u1");
-        let desired = v(&["acme/eng", "globex/sales", "lead"]);
+        let desired = [dept(&["acme/eng", "globex/sales"]), attr(&["lead"])].concat();
         assert!(sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
         assert_eq!(
             sink.take(),
@@ -244,6 +275,26 @@ async fn login_sync_records_role_changes_under_each_department_org() {
                 ),
             ]
         );
+        let globex = ctx_for(&tenant, "globex");
+        assert!(!directory.role_exists(&ctx, "globex/sales").await.unwrap());
+        assert!(directory
+            .role_exists(&globex, "globex/sales")
+            .await
+            .unwrap());
+        assert!(directory.role_exists(&ctx, "lead").await.unwrap());
+
+        // 前の形（付けた人の組織で書いた行）は、部署の人の次のログインで部署の組織に直す。
+        directory
+            .upsert_role("globex/sales", &tenant, "acme", "globex/sales")
+            .await
+            .unwrap();
+        assert!(!sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
+        assert!(sink.take().is_empty());
+        assert!(!directory.role_exists(&ctx, "globex/sales").await.unwrap());
+        assert!(directory
+            .role_exists(&globex, "globex/sales")
+            .await
+            .unwrap());
 
         // 3. 片方の組織に記録できなければ、その組織のぶんのタプルだけを外す（記録の無い付与を残さない）。
         let fga = Tuples::default();
@@ -256,6 +307,64 @@ async fn login_sync_records_role_changes_under_each_department_org() {
         held.sort();
         assert_eq!(held, ["acme/eng", "lead"], "globex のぶんだけ外す");
         assert_eq!(audit.failed(), 1);
+
+        // 4. 2 つ目の組織のグループそのもの（beta）がロールになった人: その付与は beta の監査に書く。
+        let fga = Tuples::default();
+        let audit = MembershipAudit::new(&sink, MembershipSource::Login, ctx.tenant(), "u1");
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &dept(&["beta"])).await);
+        assert_eq!(
+            sink.take(),
+            [row(
+                &tenant,
+                SYNC_ACTOR,
+                "beta",
+                "role.member.grant",
+                meta(&["beta"])
+            )]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn attribute_roles_with_a_slash_stay_in_the_users_org() {
+    with_ledger(|directory, tenant| async move {
+        // 属性 roles の値に `/` を含む（ほかの組織の名前の接頭辞・組織でない接頭辞）。付け外しの行も台帳の行も、
+        // 利用者の組織（globex）に書く。acme の監査に globex の人の sub とロールを出さず、存在しない組織 sales の
+        // 監査にも書かない。
+        let fga = Tuples::default();
+        let sink = Rows::default();
+        let ctx = ctx_for(&tenant, "globex");
+        let acme = ctx_for(&tenant, "acme");
+        let audit = MembershipAudit::new(&sink, MembershipSource::Login, ctx.tenant(), "u1");
+        let meta = |roles: &[&str]| json!({ "source": "login", "roles": roles });
+        let desired = attr(&["acme/admin", "sales/manager"]);
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
+        assert_eq!(
+            sink.take(),
+            [row(
+                &tenant,
+                SYNC_ACTOR,
+                "globex",
+                "role.member.grant",
+                meta(&["acme/admin", "sales/manager"])
+            )]
+        );
+        assert!(directory.role_exists(&ctx, "acme/admin").await.unwrap());
+        assert!(!directory.role_exists(&acme, "acme/admin").await.unwrap());
+
+        // 外すときも利用者の組織（台帳がその接頭辞の組織のロールとしていない）。
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &[]).await);
+        assert_eq!(
+            sink.take(),
+            [row(
+                &tenant,
+                SYNC_ACTOR,
+                "globex",
+                "role.member.revoke",
+                meta(&["acme/admin", "sales/manager"])
+            )]
+        );
     })
     .await;
 }
@@ -285,51 +394,68 @@ async fn a_role_write_that_errors_but_applies_is_recorded() {
         let ctx = ctx_for(&tenant, "acme");
         let (me, ns) = (ctx.subject(), ctx.ns());
         let audit = MembershipAudit::new(&sink, MembershipSource::Login, ctx.tenant(), "u1");
-        let grant = |roles: &[&str]| {
+        let line = |action: &'static str, roles: &[&str]| {
             row(
                 &tenant,
                 SYNC_ACTOR,
                 "acme",
-                "role.member.grant",
+                action,
                 json!({ "source": "login", "roles": roles }),
             )
         };
+        let grant = |roles: &[&str]| line("role.member.grant", roles);
 
         // 1. 書き込みは誤りで返ったが適用された: 今の直接タプルを読み直してあるので、付けたものとして記録する。
         *fga.write_err.lock().unwrap() = Some(true);
-        assert!(sync_roles(&fga, &directory, &audit, &ctx, &v(&["acme/eng"])).await);
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &dept(&["acme/eng"])).await);
         assert!(fga.has(&me, Relation::Member, &ns.role("acme/eng")));
         assert_eq!(sink.take(), [grant(&["acme/eng"])]);
         // 次の同期は何も変えず、何も記録しない（タプルと grant の行がそろっている）。
         *fga.write_err.lock().unwrap() = None;
-        assert!(!sync_roles(&fga, &directory, &audit, &ctx, &v(&["acme/eng"])).await);
+        assert!(!sync_roles(&fga, &directory, &audit, &ctx, &dept(&["acme/eng"])).await);
         assert!(sink.take().is_empty());
 
-        // 2. 誤りで返り、読み直しもできない（同期の初めには読めた）: 書けていたかもしれないタプルを外し、記録しない。
+        // 2. 誤りで返り、読み直しもできない（同期の初めには読めた）: 書けていたかもしれないタプルを外し、付けたとは記録
+        //    しない。実際に外したので、外したことは記録する。
         *fga.write_err.lock().unwrap() = Some(true);
         fga.fail_after_write_err.store(true, Ordering::SeqCst);
-        let desired = v(&["acme/eng", "acme/ops"]);
+        let desired = dept(&["acme/eng", "acme/ops"]);
         sync_roles(&fga, &directory, &audit, &ctx, &desired).await;
         assert!(
             !fga.has(&me, Relation::Member, &ns.role("acme/ops")),
             "記録の無い付与を残さない"
         );
         assert!(fga.has(&me, Relation::Member, &ns.role("acme/eng")));
-        assert!(sink.take().is_empty());
+        assert_eq!(sink.take(), [line("role.member.revoke", &["acme/ops"])]);
         // 次の同期で付け直して記録する。
         *fga.write_err.lock().unwrap() = None;
         fga.fail_after_write_err.store(false, Ordering::SeqCst);
         assert!(sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
         assert_eq!(sink.take(), [grant(&["acme/ops"])]);
 
-        // 3. 同期の初めに今のタプルを読めなかったときは、確かめられなくても外さない（もとからあったかもしれない）。
-        fga.fail_read.store(true, Ordering::SeqCst);
+        // 3. 同期の初めの読み取りだけ失敗し、読み直しは読める: もとからあったロールは書きにいかず、記録もしない。
+        //    書き込みが誤りで返った新しいロールだけを、確かめて記録する。
+        let desired = dept(&["acme/eng", "acme/ops", "acme/qa"]);
+        fga.fail_reads.store(1, Ordering::SeqCst);
         *fga.write_err.lock().unwrap() = Some(true);
-        sync_roles(&fga, &directory, &audit, &ctx, &desired).await;
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
+        assert!(fga.has(&me, Relation::Member, &ns.role("acme/qa")));
+        assert_eq!(sink.take(), [grant(&["acme/qa"])]);
+
+        // 4. 同期の初めに今のタプルを読み直しても読めない: もとの集合が分からないので、付けも外しもしない（もとからあった
+        //    ロールと付けたロールを見分けられない）。次の同期で付けて記録する。
+        let desired = dept(&["acme/eng", "acme/ops", "acme/qa", "acme/dev"]);
+        fga.fail_read.store(true, Ordering::SeqCst);
+        assert!(!sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
         fga.fail_read.store(false, Ordering::SeqCst);
-        assert!(fga.has(&me, Relation::Member, &ns.role("acme/eng")));
-        assert!(fga.has(&me, Relation::Member, &ns.role("acme/ops")));
+        assert!(!fga.has(&me, Relation::Member, &ns.role("acme/dev")));
+        for role in ["acme/eng", "acme/ops", "acme/qa"] {
+            assert!(fga.has(&me, Relation::Member, &ns.role(role)), "{role}");
+        }
         assert!(sink.take().is_empty());
+        *fga.write_err.lock().unwrap() = None;
+        assert!(sync_roles(&fga, &directory, &audit, &ctx, &desired).await);
+        assert_eq!(sink.take(), [grant(&["acme/dev"])]);
     })
     .await;
 }
