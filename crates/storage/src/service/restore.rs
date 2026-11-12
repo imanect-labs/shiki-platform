@@ -397,6 +397,8 @@ impl StorageService {
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 復元先の blob を refcount +1（新版が参照するため）。実体はオブジェクトストアに既存。
+        // 呼び出し側が対象の行を押さえてから来る（ロックの順 node → blob → 監査のチェーン）。復元元の版の行が
+        // blob を参照しているので、行は必ずある（Existing・無ければ内部の誤り）。
         let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         self.bump_blob(
             tx,
@@ -406,6 +408,7 @@ impl StorageService {
             size,
             &content_type,
             &final_key,
+            super::upload::BlobBody::Existing,
         )
         .await?;
         let sql = format!(

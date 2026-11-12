@@ -16,6 +16,7 @@
 use super::*;
 use crate::audit::AuditAction;
 
+use super::upload::{lock_parent_for_create, BlobBody};
 use crate::content_address::sha256_hex;
 use crate::naming::{numbered_name, OnNameTaken};
 use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
@@ -239,6 +240,7 @@ impl StorageService {
 
         // content-addressing: バイトを所持しているのでメモリ上でハッシュし、新規 blob のみ書き込む。
         // 既存 blob があれば上書きしない（並行 finalize が参照する共有本体を壊さない・dedup）。
+        // ここの put はロックの外なので、行を新しく作ったときは bump_blob がロックの中で本体を確かめ直す。
         let sha256 = sha256_hex(bytes);
         let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
@@ -294,6 +296,11 @@ impl StorageService {
             }
         }
 
+        // 親を Tx の中で確かめ直して押さえる（ロックの順 node → blob → 監査のチェーン・bump_blob より前）。
+        // 論理削除と互いに待ち、削除したフォルダの下に生きたファイルを残さない。
+        if let Some(p) = parent_id {
+            lock_parent_for_create(&mut tx, ctx, p).await?;
+        }
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -302,6 +309,7 @@ impl StorageService {
             size,
             content_type,
             &final_key,
+            BlobBody::Bytes(bytes),
         )
         .await?;
         let node = self

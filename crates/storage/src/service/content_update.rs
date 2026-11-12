@@ -12,12 +12,14 @@
 use super::*;
 use crate::audit::AuditAction;
 
+use super::upload::{lock_file_for_content, BlobBody};
 use crate::content_address::sha256_hex;
 
 impl StorageService {
     /// 既存ファイルの内容を新バージョンへ差し替える（内部書込・`editor@file` 認可）。
     ///
-    /// 対象行を `FOR UPDATE` でロックし、並行保存の lost-update を防ぐ。rename/move とは
+    /// 対象行を `FOR UPDATE` でロックし（blob より前・ロックの順 node → blob → 監査のチェーン）、
+    /// 並行保存の lost-update を防ぐ。rename/move とは
     /// 独立（名前・親は触らない）。返り値は更新後のノードメタ。
     pub async fn update_file_content_internal(
         &self,
@@ -105,6 +107,10 @@ impl StorageService {
         }
 
         let mut tx = self.db.begin().await?;
+        // 対象の行を bump_blob より前に押さえる（ロックの順 node → blob → 監査のチェーン）。
+        // `base_version` があれば押さえた後の版と比べる（finalize の内容更新と同じ条件）。
+        lock_file_for_content(&mut tx, ctx, file_id, base_version).await?;
+        // 上の put はロックの外なので、行を新しく作ったときはロックの中で本体を確かめ直す。
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -113,10 +119,10 @@ impl StorageService {
             size,
             content_type,
             &final_key,
+            BlobBody::Bytes(bytes),
         )
         .await?;
-        // 行ロック込みの UPDATE（finalize_content_update / write_file_at の update と同一形）。
-        // `base_version` があれば、その版のときだけ差し替える（finalize の内容更新と同じ条件）。
+        // finalize_content_update / write_file_at の update と同一形の UPDATE（条件は前と同じに保つ）。
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \

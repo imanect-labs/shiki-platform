@@ -8,6 +8,8 @@ use super::*;
 use crate::audit::AuditAction;
 use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 
+use super::upload::{lock_file_for_content, lock_parent_for_create, BlobBody};
+
 impl StorageService {
     /// finalize: staging を読み戻して内容ハッシュを検証し、content-addressed に昇格してノード化する。
     // staging 読み戻し → ハッシュ検証 → content-addressed 昇格 → ノード化 ＋ FGA タプルを
@@ -142,6 +144,7 @@ impl StorageService {
                     actual_size as i64,
                     &pending.content_type,
                     &final_key,
+                    &incoming_key,
                     pending.base_version,
                     trace_id,
                 )
@@ -153,6 +156,12 @@ impl StorageService {
             None => {
                 async {
                     let mut tx = self.db.begin().await?;
+                    // 親を Tx の中で確かめ直して押さえる（ロックの順 node → blob → 監査のチェーン・bump_blob より前）。
+                    // declare・上の ensure_folder の後に親が論理削除されても、削除したフォルダの下に生きたファイルを残さない。
+                    if let Some(p) = pending.parent_id {
+                        lock_parent_for_create(&mut tx, ctx, p).await?;
+                    }
+                    // 行を新しく作ったら、ロックの中で本体を確かめ直し、無ければ incoming（commit まで残す）から写す。
                     self.bump_blob(
                         &mut tx,
                         ctx.tenant_id(),
@@ -161,6 +170,7 @@ impl StorageService {
                         actual_size as i64,
                         &pending.content_type,
                         &final_key,
+                        BlobBody::CopyFrom(&incoming_key),
                     )
                     .await?;
                     let node = self
@@ -279,10 +289,10 @@ impl StorageService {
 
     /// 既存ファイルの内容を新版へ差し替える（finalize の内容更新経路・Task 1.7）。
     ///
-    /// blob を bump（refcount +1）→ 対象ファイルを行ロックしつつ blob/size/content_type と
-    /// version を更新 → 新版を履歴に記録 → 書込イベント（op=update）→ 監査 を 1 txn で原子的に
-    /// 確定する。owner/parent タプルは既存ファイルのものを流用するため触らない。古い版の blob は
-    /// 減算しない（履歴＝安全網のため download/restore 可能に保つ・LbvQZ と対称）。
+    /// 対象ファイルを行ロック → blob を bump（refcount +1）→ blob/size/content_type と version を更新 →
+    /// 新版を履歴に記録 → 書込イベント（op=update）→ 監査 を 1 txn で原子的に確定する（ロックの順
+    /// node → blob → 監査のチェーン）。owner/parent タプルは既存ファイルのものを流用するため触らない。古い版の
+    /// blob は減算しない（履歴＝安全網のため download/restore 可能に保つ・LbvQZ と対称）。
     #[allow(clippy::too_many_arguments)] // finalize から確定済みのメタ一式を受け取る。
     async fn finalize_content_update(
         &self,
@@ -293,6 +303,7 @@ impl StorageService {
         size: i64,
         content_type: &str,
         final_key: &str,
+        incoming_key: &str,
         base_version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
@@ -308,6 +319,9 @@ impl StorageService {
         if claimed.rows_affected() == 0 {
             return Err(StorageError::NotFound);
         }
+        // 対象の行を bump_blob より前に押さえる（ロックの順 node → blob → 監査のチェーン）。並行内容更新の
+        // lost-update もここで防ぐ。base_version があれば押さえた後の版と比べる（間に入った保存を上書きしない）。
+        lock_file_for_content(&mut tx, ctx, target, base_version).await?;
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -316,10 +330,10 @@ impl StorageService {
             size,
             content_type,
             final_key,
+            BlobBody::CopyFrom(incoming_key),
         )
         .await?;
-        // UPDATE は対象行をロックするため、並行内容更新の lost-update を防げる。
-        // base_version があれば「その版のままなら」の条件付きにする（間に入った保存を上書きしない）。
+        // 行は押さえてあるが、条件は前と同じに保つ（base_version があれば「その版のままなら」）。
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \

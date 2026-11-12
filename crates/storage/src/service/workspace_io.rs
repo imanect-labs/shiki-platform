@@ -19,6 +19,8 @@ use crate::audit::AuditAction;
 use crate::content_address::sha256_hex;
 use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 
+use super::upload::{lock_parent_for_create, BlobBody};
+
 /// [`write_file_at`](StorageService::write_file_at) の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteAtOutcome {
@@ -76,6 +78,7 @@ impl StorageService {
                     size,
                     content_type,
                     object_key: &final_key,
+                    bytes,
                 },
                 trace_id,
             )
@@ -120,15 +123,10 @@ impl StorageService {
 
         let sha256 = sha256_hex(&content);
         let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
-        // 追記は「既存を読んでから」ハッシュが決まるため、put は txn 内になる（ロックを跨ぐ）。
-        // rollback すると参照されない blob オブジェクトが残るが、content-addressed なので
-        // 同一内容の再試行で再利用され、実害は容量のみ（blob 行は commit されない）。
-        if !Self::blob_exists(&mut tx, &sha256, ctx).await? {
-            self.store
-                .put_object(&final_key, content, content_type)
-                .await?;
-        }
-
+        // 追記は「既存を読んでから」ハッシュが決まるため、本体は txn 内で置く（ロックを跨ぐ）。置くのは
+        // bump_blob が blob の行を新しく作ったとき（blob のロックの中で本体を確かめ、無ければ置く）。行が既に
+        // あれば本体もある（行が無いのを確かめてからでないと本体は消されない）。rollback すると参照されない
+        // blob オブジェクトが残るが、content-addressed なので同一内容の再試行で再利用され、実害は容量のみ。
         let (node, created) = self
             .apply_write_at(
                 &mut tx,
@@ -141,6 +139,7 @@ impl StorageService {
                     size,
                     content_type,
                     object_key: &final_key,
+                    bytes: &content,
                 },
                 trace_id,
             )
@@ -184,8 +183,8 @@ impl StorageService {
 
     /// 同一内容の blob が既にあるか（あれば put を省く）。
     ///
-    /// **接続は呼び出し側が渡す**。追記経路はトランザクション（＝1 コネクション占有）を
-    /// 保持したまま呼ぶため、プールから別コネクションを取ると
+    /// **接続は呼び出し側が渡す**。トランザクション（＝1 コネクション占有）を保持したまま
+    /// 呼ぶ経路でプールから別コネクションを取ると
     /// 「全コネクションが tx を持ったまま互いに待つ」枯渇/デッドロックになり得る
     /// （レビュー指摘・CodeRabbit Critical / Codex P1）。
     async fn blob_exists(
@@ -255,6 +254,11 @@ impl StorageService {
         blob: &BlobFacts<'_>,
         trace_id: Option<&str>,
     ) -> Result<(Node, bool), StorageError> {
+        // 既存のファイルは lock_child_file で押さえてある。新規作成は親を Tx の中で確かめ直して押さえる。
+        // どちらも bump_blob より前（ロックの順 node → blob → 監査のチェーン）。
+        if existing.is_none() {
+            lock_parent_for_create(tx, ctx, parent_id).await?;
+        }
         self.bump_blob(
             tx,
             ctx.tenant_id(),
@@ -263,6 +267,7 @@ impl StorageService {
             blob.size,
             blob.content_type,
             blob.object_key,
+            BlobBody::Bytes(blob.bytes),
         )
         .await?;
 
@@ -421,4 +426,6 @@ struct BlobFacts<'a> {
     size: i64,
     content_type: &'a str,
     object_key: &'a str,
+    /// 内容のバイト（blob の行を新しく作ったとき、本体が無ければここから置く）。
+    bytes: &'a [u8],
 }
