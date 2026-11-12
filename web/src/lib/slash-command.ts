@@ -147,6 +147,12 @@ export function matchSuggestions(
     return terms.every((t) => hay.includes(t));
   };
   const prefix = suggestions.filter((s) => s.token && s.token.toLowerCase().startsWith(lower));
+  // 既知のコマンドに本文が続いている（`/summarize 四半期…`）なら引数を打っている最中。
+  // 説明文で拾うと補完が開いたままになり、Enter が送信ではなく確定になって本文を失う。
+  const typingArgs = suggestions.some(
+    (s) => s.token && /\s/.test(lower.charAt(s.token.length)) && lower.startsWith(s.token.toLowerCase()),
+  );
+  if (typingArgs) return prefix;
   const seen = new Set(prefix);
   const hits = [...prefix, ...suggestions.filter((s) => !seen.has(s) && byText(s))];
   // 完全一致 1 件だけになっても候補は出し続ける（Enter で確定できることを示す）。

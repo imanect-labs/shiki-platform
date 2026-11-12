@@ -106,6 +106,9 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const posted = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
   );
+  // 既知のコマンドに続けた本文が説明文の語でも、補完は開かない（Enter が送信になる）。
+  await input.fill(`/${cmd} web 社内文書`);
+  await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
   await input.fill(`/${cmd} auto 市場規模を調べて`);
   await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
   await page.getByRole("button", { name: "送信" }).click();
