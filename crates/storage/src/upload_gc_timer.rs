@@ -40,7 +40,7 @@ const MIN_INTERVAL: Duration = Duration::from_mins(1);
 
 /// 中断アップロードの回収タイマをバックグラウンド起動する。
 ///
-/// 返した `JoinHandle` は保持不要（プロセス生存中は動き続ける）。
+/// 返した `JoinHandle` は保持不要（プロセス生存中は動き続ける）。1 周は [`run_upload_gc_cycle`]。
 pub fn spawn_upload_gc_timer(
     service: Arc<StorageService>,
     opts: UploadGcOptions,
@@ -50,68 +50,7 @@ pub fn spawn_upload_gc_timer(
         // 起動直後に 1 回走らせる（前回プロセスが落ちた時の取り残しを引き継いで回収する）。
         let mut backoff = MIN_BACKOFF;
         loop {
-            let mut failed = false;
-
-            match service.sweep_expired_pending_uploads(opts.ttl).await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(count = n, "中断アップロードを回収しました（#468）");
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "中断アップロードの回収に失敗しました");
-                    failed = true;
-                }
-            }
-
-            match service.sweep_orphan_upload_objects().await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(
-                        count = n,
-                        "対応行の無い staging/incoming オブジェクトを削除しました（#468）"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "孤児オブジェクトの削除に失敗しました");
-                    failed = true;
-                }
-            }
-
-            // 根ごとの失敗は数えて次の周に回す。候補を引けない（DB に届かない）ときだけ待ちを延ばす。
-            match service.sweep_trash_retention(chrono::Utc::now()).await {
-                Ok(r) if r.purged > 0 || r.live_descendants > 0 || r.failed > 0 => {
-                    tracing::info!(
-                        purged = r.purged,
-                        nodes = r.nodes,
-                        live_descendants = r.live_descendants,
-                        failed = r.failed,
-                        more = r.more,
-                        "保持期間を過ぎたゴミ箱の中身を完全に削除しました（GAP-108c）"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "ゴミ箱の保持期間を適用できませんでした");
-                    failed = true;
-                }
-            }
-
-            // 行ごとの失敗は行に残して次の周に回す（ここでは数を記録するだけ）。DB に届かないときだけ待ちを延ばす。
-            match service.sweep_purge_pending().await {
-                Ok(r) if r.done > 0 || r.failed > 0 => {
-                    tracing::info!(
-                        done = r.done,
-                        failed = r.failed,
-                        "完全削除の片付け待ちを片付けました（GAP-108）"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "完全削除の片付け待ちを片付けられませんでした");
-                    failed = true;
-                }
-            }
-
+            let failed = run_upload_gc_cycle(&service, opts.ttl).await;
             let wait = if failed {
                 let w = backoff;
                 backoff = (backoff * 2).min(interval).max(MIN_BACKOFF);
@@ -123,4 +62,96 @@ pub fn spawn_upload_gc_timer(
             tokio::time::sleep(wait).await;
         }
     })
+}
+
+/// 回収タイマの 1 周（TTL sweep → 孤児 sweep → ゴミ箱の保持期間 → 完全削除の片付け待ち）。
+///
+/// どれかが DB・オブジェクトストアに届かずに失敗したら `true`（タイマは待ちを延ばす）。根ごと・行ごとの失敗は
+/// それぞれの掃除が数えて次の周に回すので、ここでは `true` にしない。
+pub async fn run_upload_gc_cycle(service: &StorageService, ttl: Duration) -> bool {
+    // 失敗しても続ける（1 つの掃除の失敗で、後の掃除を止めない）。
+    let expired = sweep_expired(service, ttl).await;
+    let orphans = sweep_orphans(service).await;
+    let retention = sweep_retention(service).await;
+    let pending = sweep_pending(service).await;
+    expired || orphans || retention || pending
+}
+
+/// TTL を過ぎた中断アップロードを回収する。失敗したら `true`。
+async fn sweep_expired(service: &StorageService, ttl: Duration) -> bool {
+    match service.sweep_expired_pending_uploads(ttl).await {
+        Ok(n) => {
+            if n > 0 {
+                tracing::info!(count = n, "中断アップロードを回収しました（#468）");
+            }
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "中断アップロードの回収に失敗しました");
+            true
+        }
+    }
+}
+
+/// 対応行の無い staging/incoming オブジェクトを消す。失敗したら `true`。
+async fn sweep_orphans(service: &StorageService) -> bool {
+    match service.sweep_orphan_upload_objects().await {
+        Ok(n) => {
+            if n > 0 {
+                tracing::info!(
+                    count = n,
+                    "対応行の無い staging/incoming オブジェクトを削除しました（#468）"
+                );
+            }
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "孤児オブジェクトの削除に失敗しました");
+            true
+        }
+    }
+}
+
+/// 保持期間を過ぎたゴミ箱の中身を完全に削除する。根ごとの失敗は数えて次の周に回し、候補を引けない（DB に
+/// 届かない）ときだけ `true`。
+async fn sweep_retention(service: &StorageService) -> bool {
+    match service.sweep_trash_retention(chrono::Utc::now()).await {
+        Ok(r) => {
+            if r.purged > 0 || r.live_descendants > 0 || r.failed > 0 {
+                tracing::info!(
+                    purged = r.purged,
+                    nodes = r.nodes,
+                    live_descendants = r.live_descendants,
+                    failed = r.failed,
+                    more = r.more,
+                    "保持期間を過ぎたゴミ箱の中身を完全に削除しました（GAP-108c）"
+                );
+            }
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ゴミ箱の保持期間を適用できませんでした");
+            true
+        }
+    }
+}
+
+/// 完全削除の片付け待ちを片付ける。行ごとの失敗は行に残して次の周に回し、DB に届かないときだけ `true`。
+async fn sweep_pending(service: &StorageService) -> bool {
+    match service.sweep_purge_pending().await {
+        Ok(r) => {
+            if r.done > 0 || r.failed > 0 {
+                tracing::info!(
+                    done = r.done,
+                    failed = r.failed,
+                    "完全削除の片付け待ちを片付けました（GAP-108）"
+                );
+            }
+            false
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "完全削除の片付け待ちを片付けられませんでした");
+            true
+        }
+    }
 }
