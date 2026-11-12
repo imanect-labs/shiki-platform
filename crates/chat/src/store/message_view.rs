@@ -33,8 +33,9 @@ const CHECK_CONCURRENCY: usize = 8;
 /// run の実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔（PIT-84・D-214）。
 ///
 /// 開いた配信 1 本あたり、HigherConsistency の check と会話の生存の SELECT が毎秒 1 回まで増える。
-/// 共有を外してから、この間隔の中に届いた分は流れうる（既知の限界）。
-const VIEWER_RECHECK: Duration = Duration::from_secs(1);
+/// 共有を外してから、この間隔の中に届いた分は流れうる（既知の限界）。ストアごとの値は
+/// [`ChatStore::with_viewer_recheck`] で差し替えられる（試験用・既定はこの値）。
+pub(super) const VIEWER_RECHECK: Duration = Duration::from_secs(1);
 /// 問い直しで断られた閲覧者に、配信の最後に 1 件だけ流す文（中身を含まない固定の文）。
 ///
 /// 画面は `error` を受けると購読を閉じる（`web/src/lib/chat-api.ts` の `dispatch`）。読み込み直すと、
@@ -190,7 +191,7 @@ impl ChatStore {
     /// **実行主体でない閲覧者には、開いた後も会話の閲覧権限を問い直す**（PIT-84・D-214）。
     /// 開くときの認可だけだと、共有を外しても（`unshare_thread` はストリームを閉じない）run が終わるまで
     /// 本文・思考・ツールの行が流れ続ける。共有の取り消しを、引用だけでなくこれらにも効かせるため、
-    /// 届いた分を流す前に、前の確認から [`VIEWER_RECHECK`] 以上たっていれば `require_thread`（Viewer・
+    /// 届いた分を流す前に、前の確認から [`VIEWER_RECHECK`]（ストアの間隔）以上たっていれば `require_thread`（Viewer・
     /// HigherConsistency・拒否は監査に残る）を問う。断られたか確かめられなければ、その分は流さず、
     /// 固定の文の `Error` を 1 件だけ流して閉じる（fail-closed）。間隔の中に届いた分は流れうる。
     /// 実行主体の配信は問い直さない（流れるのは本人の生成だけで、読み手を増やさないため）。
@@ -225,6 +226,7 @@ impl ChatStore {
             return Err(ChatError::NotFound);
         };
         let is_actor = actor == ctx.principal().id;
+        let recheck = self.viewer_recheck;
         let state = ViewerStreamState {
             rx: self.event_stream(ctx.tenant_id(), run_id, from_seq),
             store: self.clone(),
@@ -255,7 +257,7 @@ impl ChatStore {
                         Err(_) => break, // 空（ライブの合間）か、送り手が閉じた
                     }
                 }
-                if !is_actor && st.checked_at.elapsed() >= VIEWER_RECHECK {
+                if !is_actor && st.checked_at.elapsed() >= recheck {
                     match st
                         .store
                         .require_thread(

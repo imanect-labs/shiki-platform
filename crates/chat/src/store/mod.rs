@@ -58,6 +58,8 @@ pub struct ChatStore {
     authz: Arc<dyn AuthzClient>,
     audit: AuditRecorder,
     redis: Option<RedisPubSub>,
+    /// 実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔（既定は 1 秒・[`Self::with_viewer_recheck`]）。
+    viewer_recheck: std::time::Duration,
 }
 
 impl ChatStore {
@@ -81,7 +83,18 @@ impl ChatStore {
             authz,
             audit,
             redis,
+            viewer_recheck: message_view::VIEWER_RECHECK,
         })
+    }
+
+    /// 実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔を差し替える（既定は 1 秒・PIT-84・D-214）。
+    ///
+    /// 試験が実時間に頼らずに「間隔の中では問い直さない」（長い間隔）と「過ぎたら問い直す」（`Duration::ZERO`）を
+    /// 組むための口。サーバーは既定のまま使う。
+    #[must_use]
+    pub fn with_viewer_recheck(mut self, every: std::time::Duration) -> Self {
+        self.viewer_recheck = every;
+        self
     }
 
     /// 生成イベントを Redis へ publish する（best-effort・失敗は警告のみ）。

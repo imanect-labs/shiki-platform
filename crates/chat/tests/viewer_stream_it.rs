@@ -556,8 +556,8 @@ async fn many_documents_are_checked_in_parallel_round_trips() {
 
 // ── 共有を外された閲覧者の配信の打ち切り（PIT-84・D-214） ──────────────────────────────
 
-/// 問い直しの間隔（1 秒）より少し長く待つ。
-const PAST_RECHECK: Duration = Duration::from_millis(1100);
+/// 「間隔の中では問い直さない」を見るときの問い直しの間隔（試験の間に過ぎない長さ）。
+const LONG_RECHECK: Duration = Duration::from_hours(1);
 /// 打ち切りのときに流れる固定の文（`store/message_view.rs` の `VIEWER_REVOKED_MESSAGE`）。
 const REVOKED_MESSAGE: &str = "表示を続けられなくなりました。ページを読み込み直してください。";
 
@@ -652,9 +652,11 @@ async fn revoked_viewer_stream_is_cut(revoke: Revoke) {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let authz = Arc::new(SlowAuthz::default());
+    // 届いた分ごとに問い直す（間隔が過ぎたのを、実時間を待たずに作る）。
     let store = ChatStore::connect(pool.clone(), Arc::clone(&authz) as _, None)
         .await
-        .unwrap();
+        .unwrap()
+        .with_viewer_recheck(Duration::ZERO);
     let owner = ctx(&tenant, "alice");
     let dave = ctx(&tenant, "dave");
     let run = live_run(&store, &owner).await;
@@ -666,9 +668,9 @@ async fn revoked_viewer_stream_is_cut(revoke: Revoke) {
         .viewer_event_stream(&dave, run.thread_id, run.run_id, 0, Some(&trace))
         .await
         .unwrap();
-    // 開いた直後に届いた分は、開くときの認可で足りる（問い直さない）。
+    // 共有している間は、問い直しても流れる（開くときと、届いた分の前の 1 回）。
     assert_eq!(next_event(&mut s).await, token("共有中の本文"));
-    assert_eq!(authz.thread_checks.load(Ordering::SeqCst), 1);
+    assert_eq!(authz.thread_checks.load(Ordering::SeqCst), 2);
 
     match revoke {
         Revoke::Deny => authz.deny.lock().unwrap().push(
@@ -679,7 +681,6 @@ async fn revoked_viewer_stream_is_cut(revoke: Revoke) {
         ),
         Revoke::Unreadable => authz.thread_check_fails.store(true, Ordering::SeqCst),
     }
-    tokio::time::sleep(PAST_RECHECK).await;
     for ev in [
         token("外した後の本文 SECRET-AFTER-UNSHARE"),
         StreamEventKind::Thinking {
@@ -692,8 +693,8 @@ async fn revoked_viewer_stream_is_cut(revoke: Revoke) {
     assert_cut(&mut s).await;
     assert_eq!(
         authz.thread_checks.load(Ordering::SeqCst),
-        2,
-        "間隔より後に届いた分の前に 1 回だけ問い直す"
+        3,
+        "外した後に届いた分の前に 1 回だけ問い直して閉じる"
     );
 
     // 断られた問い直しは、開くときと同じく deny の監査を残す（読めなかったときは判定が無いので残さない）。
@@ -721,7 +722,7 @@ async fn unreadable_recheck_stops_viewer_stream() {
     revoked_viewer_stream_is_cut(Revoke::Unreadable).await;
 }
 
-/// run の実行主体の配信は問い直さない（会話の check が断る状態にしても、本人の生成は最後まで流れる）。
+/// run の実行主体の配信は問い直さない（間隔が無くても・会話の check が断る状態にしても、本人の生成は最後まで流れる）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actor_stream_is_not_rechecked() {
     let Some(pool) = setup().await else { return };
@@ -729,7 +730,8 @@ async fn actor_stream_is_not_rechecked() {
     let authz = Arc::new(SlowAuthz::default());
     let store = ChatStore::connect(pool.clone(), Arc::clone(&authz) as _, None)
         .await
-        .unwrap();
+        .unwrap()
+        .with_viewer_recheck(Duration::ZERO);
     let owner = ctx(&tenant, "alice");
     let run = live_run(&store, &owner).await;
 
@@ -745,7 +747,6 @@ async fn actor_stream_is_not_rechecked() {
             .as_str()
             .to_string(),
     );
-    tokio::time::sleep(PAST_RECHECK).await;
     append(&store, &run, &token("本人の本文")).await;
     append(&store, &run, &done(&run)).await;
     assert_eq!(next_event(&mut s).await, token("本人の本文"));
@@ -753,9 +754,11 @@ async fn actor_stream_is_not_rechecked() {
     assert_not_rechecked(&authz);
 }
 
-/// 共有したままの閲覧者には流れ続ける。問い直しは間隔ごとに 1 回で、まとめて届いた分ごとに問わない。
-/// ツール結果の本文を落とす見直しは、問い直しの後も今までどおり掛かる。
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// 共有したままの閲覧者には流れ続ける。問い直しは間隔の中では起きず、間隔を過ぎていれば、まとめて届いた分の前に
+/// 1 回だけで、1 件ごとには問わない。ツール結果の本文を落とす見直しは、問い直しの後も今までどおり掛かる。
+///
+/// 1 スレッドで回す（溜まった分の送り直しは、読み手が動く前に全部がチャネルに入るので、1 回にまとめて届く）。
+#[tokio::test]
 async fn shared_viewer_keeps_streaming_with_one_recheck_per_interval() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
@@ -766,12 +769,6 @@ async fn shared_viewer_keeps_streaming_with_one_recheck_per_interval() {
     let owner = ctx(&tenant, "alice");
     let dave = ctx(&tenant, "dave");
     let run = live_run(&store, &owner).await;
-
-    authz.thread_checks.store(0, Ordering::SeqCst);
-    let mut s = store
-        .viewer_event_stream(&dave, run.thread_id, run.run_id, 0, None)
-        .await
-        .unwrap();
     let events = [
         token("一段落目。"),
         token("二段落目。"),
@@ -785,31 +782,38 @@ async fn shared_viewer_keeps_streaming_with_one_recheck_per_interval() {
     for ev in &events {
         append(&store, &run, ev).await;
     }
-    // 読み出す前に間隔を過ぎさせる（溜まった分は 1 回の問い直しの後にまとめて流れる）。
-    tokio::time::sleep(PAST_RECHECK).await;
-    let mut out = vec![];
-    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
-        out.push(ev.event);
+    let expected = vec![
+        events[0].clone(),
+        events[1].clone(),
+        StreamEventKind::ToolResult {
+            tool_call_id: "t1".into(),
+            ok: true,
+            content: String::new(),
+        },
+        events[3].clone(),
+    ];
+    // 間隔の中なら開くときの 1 回だけ。間隔が過ぎていれば、まとめて届いた 4 件の前にもう 1 回だけ。
+    for (every, checks) in [(LONG_RECHECK, 1), (Duration::ZERO, 2)] {
+        authz.thread_checks.store(0, Ordering::SeqCst);
+        let viewer = store.clone().with_viewer_recheck(every);
+        let mut s = viewer
+            .viewer_event_stream(&dave, run.thread_id, run.run_id, 0, None)
+            .await
+            .unwrap();
+        let mut out = vec![];
+        while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(10), s.next()).await {
+            out.push(ev.event);
+        }
+        assert_eq!(
+            out, expected,
+            "共有したままなら最後まで流れる（ツール結果の本文は落とす・{every:?}）"
+        );
+        assert_eq!(
+            authz.thread_checks.load(Ordering::SeqCst),
+            checks,
+            "問い直しの回数（間隔 {every:?}）"
+        );
     }
-    assert_eq!(
-        out,
-        vec![
-            events[0].clone(),
-            events[1].clone(),
-            StreamEventKind::ToolResult {
-                tool_call_id: "t1".into(),
-                ok: true,
-                content: String::new(),
-            },
-            events[3].clone(),
-        ],
-        "共有したままなら最後まで流れる（ツール結果の本文は落とす）"
-    );
-    assert_eq!(
-        authz.thread_checks.load(Ordering::SeqCst),
-        2,
-        "開くときと、間隔の後の 1 回だけ"
-    );
 }
 
 /// 実 OpenFGA で、`unshare_thread` が開いたままの配信を止める（共有したままの carol は流れ続ける）。
@@ -831,9 +835,11 @@ async fn unshare_thread_stops_the_partners_open_stream() {
     )
     .await
     .expect("OpenFGA 接続");
+    // 届いた分ごとに問い直す（間隔が過ぎたのを、実時間を待たずに作る）。
     let store = ChatStore::connect(pool.clone(), Arc::new(fga), None)
         .await
-        .unwrap();
+        .unwrap()
+        .with_viewer_recheck(Duration::ZERO);
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let owner = ctx(&tenant, "alice");
     let dave = ctx(&tenant, "dave");
@@ -868,7 +874,6 @@ async fn unshare_thread_stops_the_partners_open_stream() {
         )
         .await
         .unwrap();
-    tokio::time::sleep(PAST_RECHECK).await;
     append(&store, &run, &token("外した後の本文 SECRET-AFTER-UNSHARE")).await;
     append(&store, &run, &done(&run)).await;
 
