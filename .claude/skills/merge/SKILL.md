@@ -28,17 +28,22 @@ Step 5  後始末と報告          Issue のクローズ確認・作った Issu
 `pr` スキルを Phase 1 から Phase 6 まで、そのスキルの手順どおりに実施する（ここに手順を重複させない）。
 既に PR があるなら Phase 6（レビュー解消ループ）から入ってよいが、未実施の Phase があるなら先に回す。
 
-- `.claude/skills/pr/scripts/review-status.sh` が **exit 0** になったら Step 2 へ。
 - `/pr` の Phase 7 で**エスカレート**（3 反復で未解消）になったら、**マージせずに止めて** human に報告する。
 
-緑にした時点の HEAD の SHA を**値として**控える（Step 2・3 で使う）:
+緑の判定は、**判定した HEAD** を挟み込んで確定させる。判定後に SHA を取ると、その間の push で
+検証していない HEAD を `<GREEN_SHA>` として控えてしまい、`--match-head-commit` もそれを素通しする
+（このフラグは「その SHA と一致するか」しか見ず、「その SHA が検証済みか」は保証しない）:
 
 ```bash
-gh pr view --json headRefOid -q .headRefOid
+gh pr view --json headRefOid -q .headRefOid        # ① 判定前の HEAD を控える
+.claude/skills/pr/scripts/review-status.sh         # ② exit 0 を確認
+gh pr view --json headRefOid -q .headRefOid        # ③ ① と一致することを確認
 ```
 
-シェル変数に入れて済ませない。Bash ツールは呼び出しごとにシェル状態が消えるので、後の Step で `$GREEN_SHA` が空になり、
-`--match-head-commit ""` は**固定なし**として通ってしまう。以降の `<GREEN_SHA>` には控えた 40 桁をそのまま書く。
+① と ③ が一致し、② が exit 0 のときだけ、その SHA を `<GREEN_SHA>` として Step 2 へ進む。不一致なら判定をやり直す。
+
+SHA は**値として**控える。シェル変数に入れて済ませない。Bash ツールは呼び出しごとにシェル状態が消えるので、後の Step で
+`$GREEN_SHA` が空になり、`--match-head-commit ""` は**固定なし**として通ってしまう。以降の `<GREEN_SHA>` には控えた 40 桁をそのまま書く。
 
 ## Step 2 — マージ前の確認
 
