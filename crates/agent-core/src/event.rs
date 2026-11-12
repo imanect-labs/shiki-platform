@@ -93,6 +93,10 @@ pub enum AgentEvent {
     /// **StorageService 上に実在するノードのみ**がここへ乗る（chat 側で document_ref へ写り、
     /// 「〜を編集しました（v3）→ 開く」カードになる）。作成系と編集系が共有する。
     DocumentRef { document: serde_json::Value },
+    /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（D-204・T02）。
+    /// `item = {kind, id, name, version}`。**保存に成功し、発話ユーザーが読めるものだけ**がここへ乗る
+    /// （chat 側で builder_ref へ写り、参照カードになる）。ドライブのノードは [`Self::DocumentRef`]。
+    BuilderRef { item: serde_json::Value },
     /// skill ツールの発動記録（#344 Task 10.11）。`skill = {skill_id, skill_version, name}`。
     /// **発話ユーザー権限で解決に成功した**発動のみが乗る（`generation_event` に append され
     /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —

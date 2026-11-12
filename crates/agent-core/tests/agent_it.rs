@@ -135,6 +135,10 @@ impl Tool for MockSearchTool {
             csv_drafts: vec![],
             skill_drafts: vec![],
             document_refs: vec![],
+            // 参照カード 1 件（ループが BuilderRef イベントとして外部化することの検証用・D-204）。
+            builder_refs: vec![serde_json::json!({
+                "kind": "workflow", "id": "wf-1", "name": "経費", "version": 1
+            })],
             skill_invocations: vec![],
             subagent_runs: vec![],
             translations: vec![],
@@ -366,6 +370,18 @@ async fn run_agent_dispatches_tool_then_completes() {
             if !tool_call_id.is_empty() && artifact.name == "result.csv" && artifact.node_id == "artifact-n1")
     });
     assert!(artifact_ok, "成果物イベントが 1 件流れる");
+    // 参照カードは builder_refs の中身のまま BuilderRef イベントとして流れる（D-204）。
+    let builder_refs: Vec<&serde_json::Value> = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::BuilderRef { item } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(builder_refs.len(), 1, "参照カードが 1 件流れる");
+    assert_eq!(builder_refs[0]["kind"], "workflow");
+    assert_eq!(builder_refs[0]["id"], "wf-1");
 }
 
 /// プロバイダ固有の推論アイテム（#542）は、前後の本文・ツール呼び出しと届いた順のまま assistant
