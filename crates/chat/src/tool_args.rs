@@ -7,9 +7,10 @@
 //! - 読めない文字列・object にならない文字列（配列・数・文字列の JSON）・object でない値は、直し方を言って断る。
 //!   同じ道具が SQL の文を別の引数で受けるとき（data_query の `sql`）、SQL の文が来たらそちらに書くよう言う。
 //! - 読めない文字列は、読めなくなった所の前後を印を入れて見せ、壊れ方の種類（括弧の数の食い違いが多い・途中で
-//!   終わっている）を言う。モデルは長い 1 行の中で serde の列の番号を数えられないため（GAP-136）。壊れた所を
-//!   推測で直して受けることはしない（D-193）。前後に出すのはモデルが今書いた道具の引数で、他人の文章ではないので
-//!   封筒には包まない。
+//!   終わっている・文字列の中の生の改行などの制御文字・JSON に無いエスケープ）を言う。モデルは長い 1 行の中で serde の
+//!   列の番号を数えられないため（GAP-136）。生の制御文字は、正しくエスケープした `\n` と見分けられる記号（⏎ など）で
+//!   見せる。壊れた所を推測で直して受けることはしない（D-193）。前後に出すのはモデルが今書いた道具の引数で、他人の
+//!   文章ではないので封筒には包まない。
 //!
 //! input_schema で `type: object` の引数を持つ道具は、すべてここの [`ObjectArg`] を通す（道具ごとの定数で分かる）。
 
@@ -62,14 +63,24 @@ fn visible(s: &str) -> String {
     out
 }
 
-/// 読めなくなった所の前 [`BEFORE`] 字と後 [`AFTER`] 字を、間に [`MARK`] を入れて切り出す。切ったほうにだけ `…` を
-/// 付ける。途中で終わっている（Eof）ときは文字列の終わりに印を入れる。
-fn broken_at(raw: &str, e: &serde_json::Error) -> String {
-    let at = if e.is_eof() {
+/// 読めなくなった所のバイトの位置（途中で終わっている〔Eof〕ときは文字列の終わり）。
+fn error_at(raw: &str, e: &serde_json::Error) -> usize {
+    if e.is_eof() {
         raw.len()
     } else {
         byte_at(raw, e.line(), e.column())
-    };
+    }
+}
+
+/// 読めなくなった所の前 [`BEFORE`] 字と後 [`AFTER`] 字を、間に [`MARK`] を入れて切り出す。切ったほうにだけ `…` を
+/// 付ける。途中で終わっている（Eof）ときは文字列の終わりに印を入れる。
+fn broken_at(raw: &str, e: &serde_json::Error) -> String {
+    excerpt(raw, error_at(raw, e), None)
+}
+
+/// `at`（バイトの位置・字の境界）の前後を、間に [`MARK`] を入れて切り出す。`first` を渡すと、印の直後の 1 字を
+/// その記号で見せる（文字列の中の生の制御文字を、エスケープの `\n` と見分けられるようにする）。
+fn excerpt(raw: &str, at: usize, first: Option<&str>) -> String {
     let (head, tail) = raw.split_at(at);
     let from = head
         .char_indices()
@@ -80,17 +91,104 @@ fn broken_at(raw: &str, e: &serde_json::Error) -> String {
         .char_indices()
         .nth(AFTER)
         .map_or(tail.len(), |(i, _)| i);
+    let shown_tail = match first {
+        Some(symbol) => {
+            let mut rest = tail[..to].chars();
+            rest.next();
+            format!("{symbol}{}", visible(rest.as_str()))
+        }
+        None => visible(&tail[..to]),
+    };
     format!(
         "{}{}{MARK}{}{}",
         if from > 0 { "…" } else { "" },
         visible(&head[from..]),
-        visible(&tail[..to]),
+        shown_tail,
         if to < tail.len() { "…" } else { "" }
     )
 }
 
+/// 文字列の中で読めなくなった字（括弧の食い違いではない壊れ方）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BadInString {
+    /// 生の制御文字（改行・タブなど）。`at` はその字のバイトの位置。
+    Control { at: usize, c: char },
+    /// JSON に無いエスケープ（`\` の後ろが `" \ / b f n r t u` でない・`\u` の後ろが 16 進 4 桁でない）。`at` は
+    /// その `\` のバイトの位置。
+    Escape { at: usize },
+}
+
+/// serde の誤りが文字列の中の生の制御文字か、JSON に無いエスケープなら、その字を返す。
+///
+/// serde_json は誤りの種類を公開していないので、文の頭（`control character`・`invalid escape`）で見分ける（文が
+/// 変われば単体テストが落ちる）。位置は字を読んだ後のもの: 生の改行は次の行の 0 列（字の後ろ）、ほかの制御文字は
+/// その字の列（字の前）、エスケープは `\` の後ろの字か 16 進の 4 桁目を指す。
+fn bad_in_string(raw: &str, e: &serde_json::Error) -> Option<BadInString> {
+    let text = e.to_string();
+    let at = error_at(raw, e);
+    if text.starts_with("control character") {
+        let before = raw[..at]
+            .chars()
+            .next_back()
+            .map(|c| (at - c.len_utf8(), c));
+        let here = raw[at..].chars().next().map(|c| (at, c));
+        let (at, c) = if e.column() == 0 {
+            before.or(here)
+        } else {
+            here.or(before)
+        }
+        .filter(|(_, c)| c.is_control())?;
+        return Some(BadInString::Control { at, c });
+    }
+    if text.starts_with("invalid escape") {
+        // `\uXXXX` の 4 桁目まで戻れば、壊れたエスケープの `\` に届く。
+        let from = at.saturating_sub(6);
+        let back = raw[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(i, _)| *i >= from)
+            .find(|(_, c)| *c == '\\')
+            .map_or(at, |(i, _)| i);
+        return Some(BadInString::Escape { at: back });
+    }
+    None
+}
+
+/// 生の制御文字の見せ方（エスケープの `\n` と見分けられる記号）と名前。
+fn control_symbol(c: char) -> (String, &'static str) {
+    match c {
+        '\n' => ("⏎".into(), "改行"),
+        '\r' => ("␍".into(), "復帰（CR）"),
+        '\t' => ("⇥".into(), "タブ"),
+        c => (visible(&c.to_string()), "制御文字"),
+    }
+}
+
+/// 文字列の中の壊れ方の説明（括弧の数の食い違いとは言わない）。
+fn in_string(raw: &str, bad: BadInString) -> String {
+    match bad {
+        BadInString::Control { at, c } => {
+            let (symbol, name) = control_symbol(c);
+            format!(
+                "読めなくなったのは {MARK} の所です（直後の {symbol} が生の{name}）: {}。文字列の中に生の{name}が\
+                 あります。JSON の文字列の中では、改行は \\n、タブは \\t と書きます（JSON をさらに文字列にして渡す\
+                 なら、その \\ もエスケープして \\\\n と書きます）。",
+                excerpt(raw, at, Some(&symbol))
+            )
+        }
+        BadInString::Escape { at } => format!(
+            "読めなくなったのは {MARK} の所です: {}。文字列の中の \\ の後ろが JSON のエスケープ\
+             （\\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX）ではありません。\\ そのものは \\\\ と書きます。",
+            excerpt(raw, at, None)
+        ),
+    }
+}
+
 /// 読めない文字列の壊れ方の説明（断る文の serde の位置の後、直し方の前に入れる）。
 fn how_broken(raw: &str, e: &serde_json::Error) -> String {
+    if let Some(bad) = bad_in_string(raw, e) {
+        return in_string(raw, bad);
+    }
     match e.classify() {
         Category::Syntax => format!(
             "読めなくなったのは {MARK} の所です: {}。多いのは括弧の数の食い違いで、閉じ括弧（}} か ]）が 1 つ多いか、\
@@ -434,11 +532,63 @@ mod tests {
             "{msg}"
         );
         assert!(!msg.chars().any(char::is_control), "{msg:?}");
+        // 文字列の中の生のタブは、エスケープの \t と見分けられる記号で見せる（後ろの制御文字は今までどおり）。
         let in_string = refused_ir("{\"a\": \"x\ty\u{0}z\"}");
         assert!(
-            in_string.contains("\\t") && !in_string.chars().any(char::is_control),
+            in_string.contains(
+                "の所です（直後の ⇥ が生のタブ）: {\"a\": \"x⟪ここ⟫⇥y\\u{0000}z\"}。文字列の中に生のタブがあります。"
+            ) && !in_string.chars().any(char::is_control),
             "{in_string:?}"
         );
+    }
+
+    /// 文字列の中の生の改行（IR を文字列で渡すときに外側の \n を 1 段しかエスケープしなかった）は、括弧の数の食い違いと
+    /// 言わず、生の改行と言う。印は改行の前に入れ、改行は正しいエスケープの \n と見分けられる ⏎ で見せる。
+    #[test]
+    fn a_raw_newline_in_a_string_is_not_called_a_bracket_mismatch() {
+        let raw = "{\"nodes\":[{\"params\":{\"prompt\":\"1行目\\n2行目\n3行目\"}}]}";
+        let msg = refused_ir(raw);
+        assert!(msg.contains("（control character"), "{msg}");
+        assert!(
+            msg.contains(
+                "読めなくなったのは ⟪ここ⟫ の所です（直後の ⏎ が生の改行）: \
+                 {\"nodes\":[{\"params\":{\"prompt\":\"1行目\\n2行目⟪ここ⟫⏎3行目\"}}]}。\
+                 文字列の中に生の改行があります。JSON の文字列の中では、改行は \\n、タブは \\t と書きます\
+                 （JSON をさらに文字列にして渡すなら、その \\ もエスケープして \\\\n と書きます）。"
+            ),
+            "{msg}"
+        );
+        assert!(!msg.contains("括弧の数"), "{msg}");
+        // 生の復帰（CR）とほかの制御文字も、その字の前に印を入れる。
+        let cr = refused_ir("{\"a\":\"x\ry\"}");
+        assert!(
+            cr.contains("\"x⟪ここ⟫␍y\"}。文字列の中に生の復帰（CR）があります。"),
+            "{cr}"
+        );
+        let bell = refused_ir("{\"a\":\"x\u{7}y\"}");
+        assert!(
+            bell.contains("（直後の \\u{0007} が生の制御文字）: {\"a\":\"x⟪ここ⟫\\u{0007}y\"}。"),
+            "{bell}"
+        );
+    }
+
+    /// JSON に無いエスケープ（\q・16 進でない \u）は、括弧の数の食い違いと言わず、エスケープの書き方を言う。印は壊れた
+    /// エスケープの \ の前に入れる。
+    #[test]
+    fn an_invalid_escape_names_the_escapes() {
+        let msg = refused_ir(r#"{"a":"C:\q","b":1}"#);
+        assert!(
+            msg.contains(
+                r#"読めなくなったのは ⟪ここ⟫ の所です: {"a":"C:⟪ここ⟫\q","b":1}。文字列の中の \ の後ろが JSON のエスケープ（\" \\ \/ \b \f \n \r \t \uXXXX）ではありません。\ そのものは \\ と書きます。"#
+            ),
+            "{msg}"
+        );
+        assert!(!msg.contains("括弧の数"), "{msg}");
+        let hex = refused_ir(r#"{"a":"\u12G4"}"#);
+        assert!(hex.contains(r#"の所です: {"a":"⟪ここ⟫\u12G4"}。"#), "{hex}");
+        // 正しいエスケープの後ろの括弧の誤りは今までどおり括弧の数と言う。
+        let bracket = refused_ir(r#"{"a":"\n\\"}}"#);
+        assert!(bracket.contains("括弧の数の食い違い"), "{bracket}");
     }
 
     /// serde の位置をバイトの位置に写すとき、列の 0・長さを超える列・字の途中を指す列・無い行を丸める。
