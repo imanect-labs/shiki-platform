@@ -85,8 +85,8 @@
   - [ ] trace_id でベンダー側テレメトリと突合できる
 
 ### Task 12.7: ヘルプ基盤
-- **area**: frontend / **path**: `help/`, `web/`, `crates/rag`
-- **仕様**: `help/`（md・リリース同バージョン）1ソース→①ヘルプセンター UI ②RAG 組み込みスコープ「shiki-help」
+- **area**: frontend / **path**: `web/`, `crates/rag`, `crates/agent-core`, `crates/chat`, `scripts/help-corpus/`
+- **仕様（正本の変更提案・人間承認済み）**: private `imanect-labs/shiki-hp/help/` だけを原稿の正本とし、①Cloudflare のヘルプセンター UI ②GHCR コーパスをビルド時に取り込む RAG 組み込みスコープ「shiki-help」
   （事前インデックス同梱・テナントデータと別インデックス・認可チェック不要の公開コーパス）。
   チャットでは**ヘルプ専用のツール `help_search`** が help を検索する（`doc_search` には混ぜない・design §4.12）。
   ツール名は agent-core の語彙（`ToolName`）に足して単一定義から生成する。ツール説明と既定システムプロンプトに

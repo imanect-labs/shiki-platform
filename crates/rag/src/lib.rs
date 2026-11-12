@@ -64,3 +64,5 @@ pub use search_types::{
 };
 pub use vector_qdrant::QdrantVectorStore;
 pub use vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};
+
+pub mod help;

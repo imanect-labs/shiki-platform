@@ -1061,13 +1061,21 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
   貼れば本文添付と同じため）=報告ダイアログでのユーザー明示同意時のみ。さらに**組織管理者ポリシーで禁止可能**
   （禁止時はカテゴリ選択のみ・自由記述欄自体を出さない）。添付の事実は監査記録。
   👎カテゴリ「やり方がわからなかった」をヘルプの穴検出器に使う。
-- **ヘルプ**: `help/` ディレクトリ（Markdown・リリースと同バージョン・1ソース）を
+- **ヘルプ（正本の変更提案・人間承認済み）**: private `imanect-labs/shiki-hp` の `help/` のみを原稿の正本とし、Shiki に原稿を置かず、
   ①ヘルプセンター UI ②**RAG 組み込み知識スコープ「shiki-help」**（全テナント同梱・事前インデックス・テナントデータと別イン
   デックス）の両面に出す。チャットでは**ヘルプ専用のツール `help_search`** が help コーパスを検索し、
   Shiki 自体の使い方・「できること」の質問に答える。`doc_search`（社内文書・二段 authz）には混ぜない:
   `doc_search` は「社内固有の情報が要るとき」に絞って提示しており（#1018）、Shiki の使い方の質問を
   それに当てるとモデルが検索せず推測で答えうる。また help は認可チェック不要の公開コーパスなので、
   テナント文書の pre/post-filter と同じ経路・同じ引用台帳に載せない（2026-11 決定）。
+  Cloudflare の `https://shiki.imanect.app/help/` と同じ reviewed/final 公開本文を、
+  GHCR `shiki-help-corpus:sha-<12桁>` / `:main`（manifest/chunks、画像なし）で配布する。
+  server のビルドで digest を固定しラベルへ記録、既定 ruri の document vectors を同梱する。
+  起動時に専用メモリ Tantivy/Lindera 索引を作り、本人 AuthContext の EmbeddingProvider で
+  query を埋め込み、dense と BM25 を RRF で融合する。モデル不一致・推論失敗はログとメトリクスを
+  残して keyword へ縮退する。未同梱なら help_search は提示しない。
+  出典は専用 HelpCitation/台帳で `[H1]` と表示し、サーバ設定の base URL と検証済み相対 URL
+  から生成した節リンク、題名・見出し・抜粋を保持する。運用手順は `docs/help-corpus.md`。
 - **管理ダッシュボードは2枚**:
   ①**顧客管理者**（shiki web の通常ページ。SaaS/オンプレ共通）: メンバー/ロール・モデルカタログ/予算・
   使用量（org/ユーザー/アプリ/ワークフロー別）・監査ビューア＋エクスポート（管理者とは独立した監査閲覧ロール

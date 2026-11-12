@@ -27,7 +27,11 @@ RUN pnpm install --frozen-lockfile
 COPY web/editor-sandbox ./editor-sandbox
 RUN node editor-sandbox/build.mjs
 
+# 本文は CI で準備する。ローカル build は空ディレクトリでも起動できる。
 FROM debian:bookworm-slim
+ARG HELP_CORPUS_DIGEST=none
+LABEL app.imanect.shiki.help-corpus.digest=$HELP_CORPUS_DIGEST
+COPY deploy/help-corpus/ /opt/shiki/help/
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/bin/shiki-server /usr/local/bin/shiki-server
