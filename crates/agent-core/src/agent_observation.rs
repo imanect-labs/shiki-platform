@@ -86,6 +86,58 @@ pub(crate) fn demand_final_answer(messages: &mut [LlmMessage]) -> bool {
     append_to_last_tool_result(messages, FINAL_ANSWER_INSTRUCTION)
 }
 
+/// 出力上限で切れたツール呼び出しへ返す結果の目印（回数を数えるのにも使う）。
+const TRUNCATED_CALL_MARK: &str = "[出力上限] この呼び出しは";
+
+/// 1 run で「切れた呼び出し」を書き直させる回数の上限。超えたら Truncated で畳む
+/// （毎回同じ大きさで書いて切れ続けるモデルで、ステップ予算を空費させない）。
+const MAX_TRUNCATED_RETRIES: usize = 3;
+
+/// **出力上限（`max_tokens`）で切れたツール呼び出し**へ返す結果を組む。上限回数を超えたら `None`。
+///
+/// 切れた呼び出しの引数は途中までしか無く、プロバイダは解釈できない引数を `{}` にして返す
+/// （openai.rs / anthropic.rs）。それを実行すると空の編集・既定値での操作になるので**実行しない**。
+/// 黙って run を畳むと、画面ではツールカードが出たまま止まり、利用者には何が起きたか分からない
+/// （実測: エージェントモードで大きな表の編集・委譲の指示文が切れ、そのまま終わっていた）。
+/// 「切れた・小さく分けて呼び直せ」をツール結果として返し、次の生成で書き直させる。
+/// tool_use と対の tool_result にするのは、両プロバイダが確実に受け付ける形だから（冒頭の注記）。
+pub(crate) fn truncated_call_results(
+    messages: &[LlmMessage],
+    call_ids: &[(String, String)],
+    max_tokens: Option<u32>,
+) -> Option<Vec<Block>> {
+    // 回数は**切れた応答（ステップ）単位**で数える（1 応答に複数の呼び出しがあっても 1 回）。
+    let retried = messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, Block::ToolResult { content, .. } if content.starts_with(TRUNCATED_CALL_MARK))
+            })
+        })
+        .count();
+    if retried >= MAX_TRUNCATED_RETRIES {
+        return None;
+    }
+    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    Some(
+        call_ids
+            .iter()
+            .map(|(id, name)| {
+                Block::tool_result(
+                    id.clone(),
+                    format!(
+                        "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
+                         実行していません（{name} は何も変更していません）。\
+                         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
+                         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+                    ),
+                    true,
+                )
+            })
+            .collect(),
+    )
+}
+
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
 pub(crate) fn nudge_empty_response(messages: &mut [LlmMessage]) -> bool {
     let already = last_tool_result(messages).is_some_and(|c| c.contains(EMPTY_RESPONSE_NUDGE));
@@ -167,6 +219,41 @@ mod tests {
     fn nothing_to_nudge_without_a_tool_result() {
         let mut messages = vec![LlmMessage::text(LlmRole::User, "調べて")];
         assert!(!nudge_empty_response(&mut messages));
+    }
+
+    /// 切れた呼び出しは失敗の結果で閉じ、上限回数を超えたら諦める。
+    #[test]
+    fn truncated_calls_are_closed_and_retried_a_bounded_number_of_times() {
+        // 1 応答に 2 件の呼び出しがあっても、数えるのは応答（ステップ）単位。
+        let ids = vec![
+            ("c1".to_string(), "office.excel_edit".to_string()),
+            ("c2".to_string(), "drive.move".to_string()),
+        ];
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "埋めて")];
+        for _ in 0..MAX_TRUNCATED_RETRIES {
+            let blocks = truncated_call_results(&messages, &ids, Some(8192)).unwrap();
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = &blocks[0]
+            else {
+                panic!("形が違う");
+            };
+            assert_eq!(tool_use_id, "c1");
+            assert!(*is_error);
+            assert!(content.contains("8192 トークン"), "{content}");
+            assert!(content.contains("実行していません"), "{content}");
+            messages.push(LlmMessage {
+                role: LlmRole::Tool,
+                content: blocks,
+            });
+        }
+        assert!(
+            truncated_call_results(&messages, &ids, Some(8192)).is_none(),
+            "上限回数を超えたら書き直させない"
+        );
     }
 
     /// 予算超過の着地指示は「ツールはもう使えない・いま書け」と伝える。

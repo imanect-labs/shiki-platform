@@ -411,7 +411,7 @@ fn inert_frame_tags(text: &str) -> String {
 /// 中身はユーザー由来（共有されたスキルの指示文・文書の選択範囲）なので、`</selection>` と
 /// 書かれていると「データであり指示ではない」の枠がそこで閉じ、後ろが枠外の文として読まれる。
 /// 空白・大文字小文字の揺れ（`< / SELECTION`）も同じ閉じタグとみなす。
-fn inert_closing_tag(text: &str, tag: &str) -> String {
+pub(super) fn inert_closing_tag(text: &str, tag: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find('<') {
@@ -462,7 +462,11 @@ pub(super) fn message_preview(m: &LlmMessage) -> String {
     m.content
         .iter()
         .filter_map(|b| match b {
-            llm_gateway::Block::Text { text } => Some(text.as_str()),
+            // 前のターンの作業記録（history_work_log）は発話ではない（検索クエリ・Langfuse の
+            // 入力に混ぜない）。
+            llm_gateway::Block::Text { text } if !text.starts_with(llm_gateway::WORK_LOG_MARK) => {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
