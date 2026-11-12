@@ -122,7 +122,10 @@ test("ログイン済みで /login に来たらアプリへリダイレクトす
 test("ID に使えない文字を含むアカウントで戻されたら、管理者への連絡を促し、別のアカウントでだけ入り直せる", async ({ page }) => {
   // BFF の callback は、sub に ID の区切りの文字を含むアカウント（D-205）を /login?error=account_unusable へ戻す。
   // 送り直しても同じ理由で断られるので、自動で Keycloak へ送らず、同じアカウントでの再試行のボタンも出さない。
-  // callback が Keycloak の SSO セッションを終えるので、「別のアカウントでログイン」で Keycloak のログイン画面に出る。
+  // ここで確かめるのは、「別のアカウントでログイン」が出ること・キーボードで押せること・押すと Keycloak のログイン画面へ
+  // 送ること。試しは SSO の Cookie の無い新しいコンテキストで始まるので、callback が Keycloak の SSO セッションを
+  // 終えることまでは確かめない（callback が終えにいくことは crates/api/tests/auth_unusable_sub.rs、終えた SSO セッションが
+  // 使えなくなることは crates/api/tests/keycloak_end_session.rs が確かめる）。
   await page.goto("/login?error=account_unusable");
   // Next.js のルートの読み上げ（role=alert）と取り違えないよう、文言で絞る。
   const alert = page.getByRole("alert").filter({ hasText: "このアカウントは使えません" });
