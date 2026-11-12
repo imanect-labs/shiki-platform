@@ -129,6 +129,7 @@ e2e = [
     "drive-share.spec.ts",
     "drive-shared-paging.spec.ts",
     "drive-text-encoding.spec.ts",
+    "drive-trash-purge.spec.ts",
     "drive-upload-same-name.spec.ts",
     "drive-versions.spec.ts",
     "immersive-editor.spec.ts",

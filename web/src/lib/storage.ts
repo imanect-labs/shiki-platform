@@ -8,6 +8,10 @@ import { sha256Hex } from "./sha256";
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
 export type ChildrenResponse = components["schemas"]["ChildrenResponse"];
+/// ゴミ箱の 1 項目（ノード ＋ 完全に削除できるか・フォルダの配下のファイルの数・GAP-108b）。
+export type TrashItem = components["schemas"]["TrashItemResponse"];
+export type TrashResponse = components["schemas"]["TrashResponse"];
+export type EmptyTrashResponse = components["schemas"]["EmptyTrashResponse"];
 export type CrumbResponse = components["schemas"]["CrumbResponse"];
 type ChildByNameResponse = components["schemas"]["ChildByNameResponse"];
 export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"];
@@ -593,10 +597,46 @@ export function searchRoles(opts: {
 
 // --- ゴミ箱 ---------------------------------------------------------------
 
-export function listTrash(opts?: { cursor?: string; limit?: number }): Promise<ChildrenResponse> {
+export function listTrash(opts?: { cursor?: string; limit?: number }): Promise<TrashResponse> {
   return apiFetch(`/trash${qs({ cursor: opts?.cursor, limit: opts?.limit })}`).then((r) =>
-    okJson<ChildrenResponse>(r),
+    okJson<TrashResponse>(r),
   );
+}
+
+/// 完全に削除しなかった理由（409 の `code`）。
+export type PurgeRefusal = "not_in_trash" | "inside_deleted_folder" | "live_descendants";
+
+/// 完全削除で何も消さなかった（409）。`code` で画面の文言を出し分ける。
+export class PurgeRefusedError extends StorageApiError {
+  constructor(
+    public code: string,
+    message: string,
+  ) {
+    super(409, message);
+    this.name = "PurgeRefusedError";
+  }
+}
+
+/// ゴミ箱の根（ファイルかフォルダ）を、配下ごと完全に削除する（元に戻せない・GAP-108b）。
+export async function purgeTrashItem(id: string): Promise<void> {
+  const res = await apiFetch(`/trash/${id}`, { method: "DELETE" });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => null)) as { code?: unknown; title?: unknown } | null;
+    throw new PurgeRefusedError(
+      typeof body?.code === "string" ? body.code : "",
+      typeof body?.title === "string" ? body.title : statusMessage(409),
+    );
+  }
+  return okEmpty(res);
+}
+
+/// 「ゴミ箱を空にする」を 1 回呼ぶ（続きがあれば `next_cursor` を返す。null になるまで繰り返す）。
+export function emptyTrash(cursor?: string): Promise<EmptyTrashResponse> {
+  return apiFetch("/trash/empty", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cursor: cursor ?? null }),
+  }).then((r) => okJson<EmptyTrashResponse>(r));
 }
 
 /// kind に応じた復元（file/folder で別エンドポイント）。
