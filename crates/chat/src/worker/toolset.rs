@@ -61,6 +61,9 @@ impl ChatWorker {
                 tools.push(Arc::new(doc_search));
             }
         }
+        if let Some(help) = &self.help_search {
+            tools.push(Arc::new(agent_core::HelpSearchTool::new(help.clone())));
+        }
         if let Some(sandbox) = &self.sandbox {
             let mut code = CodeInterpreterTool::new(
                 sandbox.clone(),
@@ -328,10 +331,11 @@ impl ChatWorker {
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) {
         /// 子が使えるツール（調査に必要な読み取りだけ）。ここに破壊系を足さないこと。
-        const CHILD_TOOLS: [agent_core::ToolName; 8] = [
+        const CHILD_TOOLS: [agent_core::ToolName; 9] = [
             agent_core::ToolName::WebSearch,
             agent_core::ToolName::WebFetch,
             agent_core::ToolName::DocSearch,
+            agent_core::ToolName::HelpSearch,
             agent_core::ToolName::DocRead,
             agent_core::ToolName::FsRead,
             // 検証ロールが最初に引用の実在を機械で確かめる（#409）。

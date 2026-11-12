@@ -18,6 +18,7 @@ pub(super) struct CollectingSink {
     pub(super) tool_events: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
     pub(super) text: String,
     pub(super) citations: Vec<Citation>,
+    pub(super) help_citations: Vec<crate::help_cite::HelpCitation>,
     pub(super) tool_calls: Vec<String>,
     /// ステップ境界で観測した消費（`save_checkpoint` 経由）。
     ///
@@ -38,6 +39,7 @@ impl CollectingSink {
             tool_events,
             text: String::new(),
             citations: Vec::new(),
+            help_citations: Vec::new(),
             tool_calls: Vec::new(),
             spent: crate::budget::Spent::default(),
             cancel,
@@ -62,6 +64,7 @@ impl EventSink for CollectingSink {
         match event {
             AgentEvent::Text(t) => self.text.push_str(&t),
             AgentEvent::Citation(c) => self.citations.push(c),
+            AgentEvent::HelpCitation(c) => self.help_citations.push(c),
             AgentEvent::ToolCall { name, .. } => {
                 self.tool_calls.push(name);
                 // ツール呼び出しの前に出た本文は「これから調べます」の前置き。findings は

@@ -34,6 +34,7 @@ fn main() {
         HandlerKind,
         // ツール名語彙は agent-core が単一ソース（skill の allowed_tools が参照する）。
         agent_core::ToolName,
+        agent_core::help_cite::HelpCitation,
         // ループが横取りするメタツール（plan / tool_search）。表示辞書が引く。
         agent_core::MetaToolName,
         ActionBinding,

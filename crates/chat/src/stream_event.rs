@@ -20,9 +20,13 @@ use crate::model::{Citation, RunStatus};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEventKind {
     /// 本文トークン（差分）。
-    Token { text: String },
+    Token {
+        text: String,
+    },
     /// 思考トークン（差分）。
-    Thinking { text: String },
+    Thinking {
+        text: String,
+    },
     /// ツール呼び出し開始（エージェントモード可視化）。
     ///
     /// `step` は同一ループステップで出た呼び出しに共通の通し番号（0 始まり）。
@@ -52,41 +56,73 @@ pub enum StreamEventKind {
     },
     /// 引用。
     Citation(Citation),
+    HelpCitation(agent_core::help_cite::HelpCitation),
     /// ツール成果物のファイル参照（code_interpreter の保存済み成果物・Task 4.11）。
-    FileRef { node_id: String, name: String },
+    FileRef {
+        node_id: String,
+        name: String,
+    },
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
-    WorkflowRef { workflow: serde_json::Value },
+    WorkflowRef {
+        workflow: serde_json::Value,
+    },
     /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
-    NoteRef { note: serde_json::Value },
+    NoteRef {
+        note: serde_json::Value,
+    },
     /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
-    NoteDraft { draft: serde_json::Value },
+    NoteDraft {
+        draft: serde_json::Value,
+    },
     /// ページの訳文（web_translate・docs/agent/web-translate.md §4.6）。
-    Translation { translation: serde_json::Value },
+    Translation {
+        translation: serde_json::Value,
+    },
     /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
-    SlideDraft { draft: serde_json::Value },
+    SlideDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
-    CsvDraft { draft: serde_json::Value },
+    CsvDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
-    SkillDraft { draft: serde_json::Value },
+    SkillDraft {
+        draft: serde_json::Value,
+    },
     /// AI が作成/編集した文書への参照カード（#381）。`document = {id, name, kind, version}`。
-    DocumentRef { document: serde_json::Value },
+    DocumentRef {
+        document: serde_json::Value,
+    },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
     /// 新規に発火しない。`generation_event` の replay 互換のためだけに残す。
-    DocumentDraft { draft: serde_json::Value },
+    DocumentDraft {
+        draft: serde_json::Value,
+    },
     /// skill ツールの発動記録（#344）。`skill = {skill_id, skill_version, name}`。
     /// `generation_event` に append され replay 可能（監査・再現性）。content へは projection
     /// しない（instructions は tool_result block として履歴に残る）。UI はチップ表示に使う。
-    SkillInvoked { skill: serde_json::Value },
+    SkillInvoked {
+        skill: serde_json::Value,
+    },
     /// サブエージェント委譲の記録（#391）。
     /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
     /// `SkillInvoked` と同型で `generation_event` に append され replay 可能（監査・再現性）。
     /// content へは projection しない（findings は tool_result block として履歴に残る）。
     /// UI はツール実行表示の展開で担当範囲とステップ数を出すのに使う。
-    SubagentRun { subagent: serde_json::Value },
+    SubagentRun {
+        subagent: serde_json::Value,
+    },
     /// 計画の改訂（自律エージェント・Task 5.2）。サブタスク列を丸ごと配信する。
-    Plan { subtasks: Vec<PlanSubtask> },
+    Plan {
+        subtasks: Vec<PlanSubtask>,
+    },
     /// 予算上限への接近警告（Task 5.7）。
-    BudgetWarning { kind: String, used: u64, limit: u64 },
+    BudgetWarning {
+        kind: String,
+        used: u64,
+        limit: u64,
+    },
     /// 承認要求（破壊系/egress/高コスト・Task 5.6）。UI が承認ダイアログを出す。
     ApprovalRequested {
         tool_call_id: String,
@@ -100,19 +136,32 @@ pub enum StreamEventKind {
         approved: bool,
     },
     /// 失敗回復の判断（自己修正リトライ／ループ検出停止・Task 5.5）。
-    FailureRecovery { detail: String, action: String },
+    FailureRecovery {
+        detail: String,
+        action: String,
+    },
     /// 直前の LLM リクエストのコンテキスト使用量（チャット画面のコンテキスト表示）。
     /// 生成のたびに出る（後のものが最新）。content へは projection しない。
-    ContextUsage { usage: agent_core::ContextUsage },
+    ContextUsage {
+        usage: agent_core::ContextUsage,
+    },
     /// 会話の自動タイトルが付いた（最初の発話からの要約・生成ワーカーが本文と並行して付ける）。
     /// UI はサイドバー履歴と会話の見出しを読み直す。content へは projection しない。
-    ThreadTitle { title: String },
+    ThreadTitle {
+        title: String,
+    },
     /// 状態遷移（running/waiting_approval/done/failed/cancelled）。UI の生成状態表示に使う。
-    Status { status: RunStatus },
+    Status {
+        status: RunStatus,
+    },
     /// エラー（生成失敗）。
-    Error { message: String },
+    Error {
+        message: String,
+    },
     /// 完了（確定した assistant message id）。
-    Done { message_id: Uuid },
+    Done {
+        message_id: Uuid,
+    },
 }
 
 /// 計画のサブタスク 1 件（SSE `plan` イベント用・agent-core `Subtask` のミラー）。
@@ -133,6 +182,7 @@ impl StreamEventKind {
             StreamEventKind::ToolCall { .. } => "tool_call",
             StreamEventKind::ToolResult { .. } => "tool_result",
             StreamEventKind::Citation(_) => "citation",
+            StreamEventKind::HelpCitation(_) => "help_citation",
             StreamEventKind::FileRef { .. } => "file_ref",
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",

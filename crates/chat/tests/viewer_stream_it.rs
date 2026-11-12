@@ -516,3 +516,91 @@ async fn many_documents_are_checked_in_parallel_round_trips() {
         "往復を直列に重ねない: {elapsed:?}"
     );
 }
+
+/// 公開ヘルプは専用イベントとブロックのまま、他の閲覧者への再送・保存後の共有にも残る。
+#[tokio::test]
+async fn help_citation_survives_replay_persistence_and_shared_viewer() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(SlowAuthz::default());
+    let store = ChatStore::connect(pool, authz.clone(), None).await.unwrap();
+    let owner = ctx(&tenant, "alice");
+    let viewer = ctx(&tenant, "bob");
+    let thread = store
+        .create_thread(&owner, "ヘルプ", false, None, None)
+        .await
+        .unwrap();
+    store
+        .share_thread(
+            &owner,
+            thread.id,
+            &storage::ShareTarget::User { id: "bob".into() },
+            chat::ThreadRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let posted = store
+        .post_message(
+            &owner,
+            thread.id,
+            "パスキー",
+            &[],
+            None,
+            None,
+            true,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    let run = store
+        .claim_run(posted.run_id, "help-test", 30)
+        .await
+        .unwrap()
+        .unwrap();
+    let cite = agent_core::help_cite::HelpCitation {
+        cite_id: 1,
+        corpus_version: "v1".into(),
+        chunk_id: "c1".into(),
+        title: "パスキー".into(),
+        heading_path: vec!["手順".into()],
+        snippet: "設定を開く".into(),
+        url: "https://shiki.imanect.app/help/a/#step".into(),
+    };
+    let event = StreamEventKind::HelpCitation(cite.clone());
+    store
+        .append_stream_event(posted.run_id, run.fencing_token, &event)
+        .await
+        .unwrap();
+    let done = StreamEventKind::Done {
+        message_id: posted.assistant_message_id,
+    };
+    store
+        .finalize_run(
+            posted.run_id,
+            run.fencing_token,
+            chat::RunStatus::Done,
+            &[
+                chat::ContentBlock::Text {
+                    text: "手順です。[H1]".into(),
+                },
+                chat::ContentBlock::HelpCitation(cite.clone()),
+            ],
+            None,
+            Some(&done),
+        )
+        .await
+        .unwrap();
+    let mut stream = store
+        .viewer_event_stream(&viewer, thread.id, posted.run_id, 0, None)
+        .await
+        .unwrap();
+    assert_eq!(next_event(&mut stream).await, event);
+    let messages = store.get_messages(&viewer, thread.id, None).await.unwrap();
+    assert!(messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .any(|b| matches!(b, chat::ContentBlock::HelpCitation(c) if c == &cite)));
+    assert_eq!(authz.checks.load(Ordering::SeqCst), 0);
+}

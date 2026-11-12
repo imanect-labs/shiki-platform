@@ -592,6 +592,7 @@ async fn run_step(
         calls,
         &mut state.plan,
         &mut state.citations,
+        &mut state.help_citations,
         sink,
         detector,
     )
