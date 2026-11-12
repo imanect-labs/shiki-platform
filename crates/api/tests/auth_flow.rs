@@ -953,12 +953,15 @@ async fn last_audit_id(pool: &sqlx::PgPool, tenant: &str) -> i64 {
 /// 監査の 1 行（主体・action・org の列・metadata・チェーンにつないだか）。
 type OrgMemberAuditRow = (String, String, String, serde_json::Value, bool);
 
-/// `after` より後に書かれた、利用者 `sub` の組織の付け外しの行（書いた順）。`want` 件そろうまで少し待つ。
+/// `after` より後に仕事 `source`（metadata の `source`）が書いた、利用者 `sub` の組織の付け外しの行（書いた順）。
+/// ログイン（auth_flow）とセッションの更新（http）のテストは、同じ sub・テナント・DB に行を書き、nextest はバイナリを
+/// またいで並べて走らせるので、仕事で絞って相手の行を拾わない。`want` 件そろうまで少し待つ。
 async fn org_member_audit_rows(
     pool: &sqlx::PgPool,
     tenant: &str,
     sub: &str,
     after: i64,
+    source: &str,
     want: usize,
 ) -> Vec<OrgMemberAuditRow> {
     let mut rows = Vec::new();
@@ -966,12 +969,13 @@ async fn org_member_audit_rows(
         let raw: Vec<(String, String, String, String, bool)> = sqlx::query_as(
             "SELECT actor, action, org, metadata::text, chained FROM audit_log \
              WHERE tenant_id = $1 AND object_type = 'user' AND object_id = $2 AND id > $3 \
-             AND decision = 'allow' AND action IN ('org.member.grant', 'org.member.revoke') \
-             ORDER BY id",
+             AND metadata->>'source' = $4 AND decision = 'allow' \
+             AND action IN ('org.member.grant', 'org.member.revoke') ORDER BY id",
         )
         .bind(tenant)
         .bind(sub)
         .bind(after)
+        .bind(source)
         .fetch_all(pool)
         .await
         .unwrap();
@@ -1052,6 +1056,7 @@ async fn login_writes_the_org_member_before_redirecting() {
             "default",
             "00000000-0000-0000-0000-000000000001",
             after,
+            "login",
             2
         )
         .await,
