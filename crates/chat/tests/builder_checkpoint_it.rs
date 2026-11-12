@@ -10,6 +10,7 @@
 //!
 //! - emit_workflow（作成系）を呼んだステップの終わりから保存が始まる。再開した run は境界から続き、作成を
 //!   やり直さない。広げた予算（元の 1 手を越えて続ける）と 1 応答の上限も、再開の後まで保たれる。
+//! - 境界の前に落ちて頭からやり直した run は、同じ名前の作り直しを作成済みとして返す（作成の冪等の配線）。
 //! - try_workflow（試運転）の次の生成で断られて再開しても、承認カードは 1 回だけで、試運転は二重に走らない。
 //! - 作成系の道具を使わない通常の会話はチェックポイントを書かない。
 
@@ -550,6 +551,106 @@ async fn emit_starts_checkpoints_and_the_resumed_run_keeps_the_extended_budget()
             .map(|e| e["usage"]["reserved_output_tokens"].clone())
             .collect();
         assert_eq!(caps, [json!(8192), json!(16_384)], "{caps:?}");
+        for h in handles {
+            h.abort();
+        }
+    })
+    .await;
+}
+
+/// 境界の前に落ちて頭からやり直した run（チェックポイントが無い）は、同じ名前で作り直そうとして名前の重なりで
+/// 断られても、この run で本人が作ったものを作成済みとして返す（作成の冪等・R1）。ワーカーは run の作られた時刻を
+/// 渡すので（`with_created_since(run.created_at)`）、やり直しの時刻では引けなくならず、2 本目も誤りも出ない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_redone_from_the_start_returns_the_workflow_it_created() {
+    run_in_db("chat_builder_cp_redo", |pool| async move {
+        let tenant = format!("t-{}", Uuid::new_v4());
+        let alice = user_ctx(&tenant, "alice");
+        let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+            .await
+            .unwrap();
+        let artifacts = Arc::new(artifact::ArtifactStore::new(
+            pool.clone(),
+            Arc::new(AllowAll),
+        ));
+        let workflows = Arc::new(WorkflowStore::new(Arc::clone(&artifacts)));
+        let worker = ChatWorker::new(
+            pool.clone(),
+            store.clone(),
+            deps(
+                limited_gateway(pool.clone()),
+                Arc::clone(&workflows),
+                true,
+                Some(Arc::clone(&artifacts)),
+            ),
+            worker_config(1),
+        );
+        let handles = worker.spawn(1);
+        let thread = conversation(&pool, &store, &alice).await;
+        let name = format!("redo-{}", Uuid::new_v4().simple());
+        let (run_id, message_id) = post(&store, &alice, thread, &format!("emitwf:ok {name}")).await;
+
+        // 1 手目で作成し、2 手目で断られる。チェックポイントを消して、境界の前に落ちたのと同じにする。
+        wait_rate_limited(&pool, &tenant, run_id).await;
+        sqlx::query(
+            "UPDATE generation_run SET checkpoint = NULL WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&tenant)
+        .bind(run_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        // 頭からやり直した run も、1 手目でもう一度作ろうとしてから 2 手目で断られる。
+        let_it_retry(&pool, &tenant, run_id).await;
+        wait_rate_limited(&pool, &tenant, run_id).await;
+        let (_, fencing, _) = run_row(&pool, &tenant, run_id).await;
+        assert_eq!(fencing, 2, "同じ run を頭からやり直した");
+        let_it_retry(&pool, &tenant, run_id).await;
+        wait_done_without_asking_again(&pool, &tenant, run_id).await;
+
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT current_version FROM artifact \
+             WHERE tenant_id = $1 AND kind = 'workflow' AND name = $2 AND deleted_at IS NULL",
+        )
+        .bind(&tenant)
+        .bind(&name)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [(1,)],
+            "作ったワークフローは 1 つだけで、版は増えない"
+        );
+        let all: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM artifact WHERE tenant_id = $1 AND kind = 'workflow'",
+        )
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(all, 1, "名前を変えた 2 本目も無い");
+        let results: Vec<String> = events(&pool, &tenant, run_id, "tool_result")
+            .await
+            .into_iter()
+            .map(|e| e["content"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(
+            results[1].contains("すでに作っています"),
+            "やり直した作成は作成済みとして返る: {results:?}"
+        );
+        let (content, _) = answer(&pool, &tenant, message_id).await;
+        assert!(
+            content
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["type"] == "builder_ref"
+                    && b["item"]["name"] == name.as_str()
+                    && b["item"]["version"] == 1),
+            "回答に v1 の参照カードがある: {content}"
+        );
         for h in handles {
             h.abort();
         }
