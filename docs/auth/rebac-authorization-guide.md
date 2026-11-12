@@ -398,7 +398,7 @@ pub enum PrincipalKind { User, Workflow }   // context.rs:18
 | `read_tuples(object, relation?) -> Vec<ReadTupleKey>` | オブジェクトの**直接タプル**列挙 | ✗（直接のみ） | 共有相手一覧（誰に共有したか） |
 | `list_objects(subject, relation, object_type) -> Vec<String>` | subject が relation を持つ**実効集合** | ○ | 共有された一覧・RAG pre-filter |
 | `read_subject_objects(subject, object_type) -> Vec<String>` | subject が**直接タプル**を持つ object 一覧 | ✗（直接のみ） | ロール同期の差分算出・テナント撤去 |
-| `delete_object_tuples(object) -> u32` | オブジェクトの全直接タプル一括剥奪 | — | テナント撤去（SAAS.2） |
+| `delete_object_tuples(object) -> u32` | オブジェクトの全直接タプル一括剥奪 | — | テナント撤去（SAAS.2）・完全削除・テーブル等の削除（§9.5） |
 
 `read_tuples` と `list_objects` の違いは頻出の混乱ポイント:
 
@@ -640,9 +640,24 @@ sequenceDiagram
 
 - **ゴミ箱（soft-delete）は authz タプルに触らない**。`soft_delete_*`（`service/trash.rs`）は DB の `deleted_at` を立てるだけ。
   復元可能な間はタプルを残す（復元と対称）。
-- **`delete_object_tuples` を呼ぶのはテナント撤去 `purge_tenant`（`admin.rs:57`）だけ**。node/role/org/artifact/secret を
-  DB から列挙し、各オブジェクトの全直接タプルを一括剥奪する。OpenFGA 側は Read → `delete_tuples_batch`（100 件チャンク）を
-  空になるまでループ（`client.rs:260`）。冪等。
+- **完全削除（1 件ずつ `purge_node`・ゴミ箱を空にする `empty_trash`・保持期間の自動削除）は、消したノードの直接のタプルを外す**
+  （`service/purge.rs`）。ノード・版・blob などの行を 1 つの Tx で消し、**同じ Tx で**消したノードごとの「タプルを外す仕事」
+  を片付け待ち `storage_purge_pending`（migration 0154）に積む（`enqueue_tuples`）。commit の後に、根の行から先に
+  その場で `delete_object_tuples` で外す（`drain_cleanup` → `cleanup_one`。根から継いでいた閲覧を先に閉じる）。
+  その場で外しきれなかった分・失敗した分は、中断アップロードの回収タイマの周の掃除 `sweep_purge_pending`
+  （`service/purge_pending.rs`・`upload_gc_timer.rs`）がやり直す。`upload_gc.enabled=false` だと掃除は回らない
+  （DB の行はもう無いので、残ったタプルから見えるものは増えない）。子は `from parent` で継ぐだけでなく、自分の直接の
+  タプル（共有など）も持ちうるので、根だけでなく消したノードすべてを積む。
+- **`delete_object_tuples` を呼ぶ所**（どれも冪等。OpenFGA 側は Read → `delete_tuples_batch`（100 件チャンク）を空になる
+  までループ・`client.rs:330`）:
+  - テナント撤去 `purge_tenant`（`storage/src/service/admin.rs:77`）: node/role/org/artifact/secret/thread を DB から列挙し、
+    各オブジェクトの全直接タプルを一括剥奪する。テーブルは `data` の `purge_tenant`（`data/src/store.rs`）。
+  - ストレージの完全削除（上の項）。
+  - 構造化データのテーブルの削除（`data/src/table_purge.rs`・BUG-149）: 削除の commit の後に外し、外せなかったものは
+    `DeletedTableTupleSweeper` がやり直す。アプリのアンインストールとインストールの補償（`app-platform/src/install_ops.rs`
+    の `uninstall`・`compensate_tables`）も、アプリが持つテーブルのタプルを外す。
+  - シークレットの削除（`secrets/src/store/mod.rs` の `delete`）。
+  - 会話の分岐に失敗したときの後始末（`chat/src/store/branches.rs` の `discard_forked`）。
 
 ### 9.6 補償ロールバック — bool で実変更時だけ巻き戻す
 
