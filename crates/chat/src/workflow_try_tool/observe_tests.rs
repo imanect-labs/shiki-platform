@@ -307,7 +307,8 @@ fn guidance_follows_the_state() {
         Some(WaitEnd::ParkRefused),
     ));
     assert!(
-        out.contains("実行中です。") && out.contains("run の画面で確かめてください"),
+        out.contains("実行中です。待てる数の上限に達しているので")
+            && out.contains("同じ引数でもう一度呼ぶと、新しく起動せずに続きの結果を返します"),
         "{out}"
     );
     let out = render(&observed(
@@ -351,4 +352,63 @@ fn launch_refused_wraps_reasons() {
     );
     assert_eq!(out.matches(CLOSE).count(), 1, "{out}");
     assert!(out.ends_with("input を直して呼び直してください。"), "{out}");
+}
+
+/// 保留の上限で待たなかったときの案内は、読み直した run の状態に合わせる（先頭の行の状態と食い違わない）。順番待ちは
+/// 「順番待ちです」、待ち（承認）と終わった run はほかの状態と同じ案内、状態を読めなければ読めないと言う。
+#[test]
+fn park_refused_guidance_follows_the_state() {
+    let ir = ir("まとめる");
+    let refused = |d: Option<&RunDigest>| {
+        render(&observed(
+            &ir,
+            d,
+            Origin::Started,
+            Some(WaitEnd::ParkRefused),
+        ))
+    };
+    let queued = digest(Uuid::from_u128(5), RunStatus::Queued, None);
+    let out = refused(Some(&queued));
+    assert!(out.starts_with("試運転: 順番待ち"), "{out}");
+    assert!(
+        out.contains("\n順番待ちです。待てる数の上限に達しているので、結果は待たずに返しました。同じ引数でもう一度呼ぶと")
+            && !out.contains("実行中です"),
+        "{out}"
+    );
+    let indexing = digest(
+        Uuid::from_u128(5),
+        RunStatus::Running,
+        Some(WaitingFor::Index),
+    );
+    assert!(
+        refused(Some(&indexing)).contains("\n実行中です。待てる数の上限に達している"),
+        "取り込み待ちは実行中"
+    );
+    let approval = digest(
+        Uuid::from_u128(5),
+        RunStatus::Running,
+        Some(WaitingFor::Approval),
+    );
+    let out = refused(Some(&approval));
+    assert!(
+        out.contains("待っているところで止まっています") && !out.contains("待てる数の上限"),
+        "{out}"
+    );
+    let done = digest(Uuid::from_u128(5), RunStatus::Succeeded, None);
+    let out = refused(Some(&done));
+    assert!(out.starts_with("試運転: 成功"), "{out}");
+    assert!(
+        out.contains("\n終わりました。")
+            && !out.contains("実行中です")
+            && !out.contains("待てる数の上限"),
+        "{out}"
+    );
+    let failed = digest(Uuid::from_u128(5), RunStatus::Failed, None);
+    assert!(refused(Some(&failed)).contains("\n失敗しました。"));
+    let out = refused(None);
+    assert!(out.starts_with("試運転: 状態を読めません"), "{out}");
+    assert!(
+        out.contains("run の状態は読めませんでした") && !out.contains("実行中です"),
+        "{out}"
+    );
 }

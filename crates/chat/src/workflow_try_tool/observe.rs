@@ -371,14 +371,37 @@ fn tail_text(o: &Observed<'_>) -> String {
     out
 }
 
+/// 待たずに返したときの、run がまだ動いている（順番待ち・待ちの印の無い実行中）状態の言い方。待ち（承認・できごと・
+/// 時間）と終わった run は `None`（ほかの状態と同じ案内にする）。
+fn not_waited_label(d: &RunDigest) -> Option<&'static str> {
+    match (d.status, d.waiting_for) {
+        (RunStatus::Queued, _) => Some("順番待ち"),
+        (RunStatus::Running, None | Some(WaitingFor::Index)) => Some("実行中"),
+        _ => None,
+    }
+}
+
 /// 状態ごとの次の手。
 fn state_guidance(o: &Observed<'_>) -> String {
     let secs = o.max_wait.as_secs();
-    match (o.end, o.digest) {
-        (Some(WaitEnd::ParkRefused), _) => {
-            "実行中です。待てる数の上限に達しているので、結果は待たずに返しました。run の画面で確かめてください。"
-                .into()
+    // 保留の上限で待たなかった。状態は待たずに読み直したもの（その間に待ちや終わりになっていれば下の案内）。
+    if o.end == Some(WaitEnd::ParkRefused) {
+        match o.digest.map(not_waited_label) {
+            Some(Some(label)) => {
+                return format!(
+                    "{label}です。待てる数の上限に達しているので、結果は待たずに返しました。同じ引数でもう一度呼ぶと、\
+                     新しく起動せずに続きの結果を返します。"
+                )
+            }
+            None => {
+                return "待てる数の上限に達しているので、結果は待たずに返しました。run の状態は読めませんでした。run の\
+                        画面で確かめてください。"
+                    .into()
+            }
+            Some(None) => {}
         }
+    }
+    match (o.end, o.digest) {
         (Some(WaitEnd::Cancelled), _) => {
             "停止の指示で待つのをやめました（run は取り消していません。止めるときは run の画面から取り消してください）。"
                 .into()
