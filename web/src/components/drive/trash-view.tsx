@@ -37,7 +37,7 @@ function purgeErrorMessage(e: unknown): string {
       case "live_descendants":
         return "このフォルダの中に、削除した後に作られたファイルがあります。フォルダを元に戻して中を確かめてください。";
       case "inside_deleted_folder":
-        return "このファイルはフォルダごとゴミ箱にあります。フォルダを完全に削除してください。";
+        return "フォルダごとゴミ箱にあります。ゴミ箱に出ているフォルダを完全に削除してください。";
       case "not_in_trash":
         return "ゴミ箱にありません。ほかの人が元に戻した可能性があります。";
       default:
@@ -51,11 +51,12 @@ function purgeErrorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/// 「空にする」の結果の文言。
+/// 「空にする」の結果の文言。残した理由（持ち主か管理者だけが削除できる・中に削除の後で作られたファイルがある）は
+/// API が分けて返さないので、理由を言わない（自分で消せる行なら、行の「完全に削除」で理由が出る）。
 function emptyResultMessage(purged: number, skipped: number): string {
   if (purged === 0 && skipped === 0) return "完全に削除できるものはありませんでした。";
   const head = `${purged} 件を削除しました。`;
-  return skipped > 0 ? `${head}${skipped} 件は持ち主か管理者だけが削除できるため残しました。` : head;
+  return skipped > 0 ? `${head}${skipped} 件は削除できなかったため残しました。` : head;
 }
 
 /// ゴミ箱ビュー。削除の根ノードを新しい順に並べ、各行から復元・完全に削除できる（完全に削除は持ち主か管理者だけ）。
@@ -351,7 +352,9 @@ function PurgeDialog({
           <DialogDescription>
             {shown
               ? isFolder
-                ? `フォルダ「${shown.name}」と、中のファイル ${files} 件を完全に削除します。元に戻せません。`
+                ? files > 0
+                  ? `フォルダ「${shown.name}」と、中のファイル ${files} 件を完全に削除します。元に戻せません。`
+                  : `フォルダ「${shown.name}」を完全に削除します。元に戻せません。`
                 : `「${shown.name}」を完全に削除します。元に戻せません。`
               : null}
           </DialogDescription>
@@ -363,7 +366,10 @@ function PurgeDialog({
               <span>このうち {others} 件は、ほかの人が作ったファイルです。作った人も元に戻せなくなります。</span>
             </li>
           ) : null}
-          <li>ワークフローやチャットの引用など、このファイルを指しているところからは開けなくなります。</li>
+          <li>
+            ワークフローやチャットの引用など、{isFolder ? "中のファイル" : "このファイル"}
+            を指しているところからは開けなくなります。
+          </li>
         </ul>
         {error ? (
           <p role="alert" className="text-sm text-destructive">

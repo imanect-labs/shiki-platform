@@ -9,8 +9,8 @@ import { cleanupQueue, createFolderApi, loginAs, loginViaKeycloak, trashFolderAp
 ///   （応答は route で差し替える）。
 /// - 行には削除した時刻が出る。テナントに保持期間があれば、ページに日数が、行に自動で消える日時が出る
 ///   （一覧の応答に保持期間を差し込む。保持期間の口と期限の式は cargo の trash_http が確かめる）。
-/// - 持ち主でも管理者でもない人（bob）には、共有されたフォルダの「完全に削除」が出ない。「空にする」は自分の
-///   ものだけを消し、残した数を言う。
+/// - 持ち主でも管理者でもない人（bob）には、共有されたフォルダの「完全に削除」が出ない。中が空のフォルダの確かめは
+///   配下の数を言わない。「空にする」は自分のものだけを消し、残した数を言う。
 /// 作ったフォルダは最後にゴミ箱へ移す（完全に削除したものは 404 で何もしない）。`E2E_SHOTS_DIR` があれば撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -126,6 +126,7 @@ test("ゴミ箱: フォルダの持ち主は中のほかの人のファイルも
   await expect(dialog.getByRole("button", { name: "キャンセル" })).toBeFocused();
   await expect(dialog).toContainText(`フォルダ「${folderName}」と、中のファイル 2 件を完全に削除します。元に戻せません。`);
   await expect(dialog).toContainText("このうち 1 件は、ほかの人が作ったファイルです。");
+  await expect(dialog).toContainText("中のファイルを指しているところからは開けなくなります。");
   await settle(page);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/gap108b-purge-dialog-pc.png` });
   await page.keyboard.press("Escape");
@@ -211,10 +212,18 @@ test("ゴミ箱: 持ち主でも管理者でもない人には「完全に削除
   await expect(sharedRow.getByRole("button", { name: `「${sharedName}」を復元` })).toBeVisible();
   await expect(sharedRow.getByRole("button", { name: `「${sharedName}」を完全に削除` })).toHaveCount(0);
   const ownRow = bob.getByRole("listitem").filter({ has: bob.getByText(ownName, { exact: true }) });
-  await expect(ownRow.getByRole("button", { name: `「${ownName}」を完全に削除` })).toBeVisible();
+  const ownPurge = ownRow.getByRole("button", { name: `「${ownName}」を完全に削除` });
+  await expect(ownPurge).toBeVisible();
   // 保持期間が無ければ、日数の案内は出ない。行には削除した時刻が出る。
   await expect(bob.getByText(/自動で完全に削除/)).toHaveCount(0);
   await expect(ownRow).toContainText("フォルダ・削除 ");
+
+  // 中が空のフォルダの確かめは、配下の数を言わない。
+  await ownPurge.click();
+  const purgeDialog = bob.getByRole("dialog", { name: "完全に削除しますか？" });
+  await expect(purgeDialog.getByText(`フォルダ「${ownName}」を完全に削除します。元に戻せません。`, { exact: true })).toBeVisible();
+  await bob.keyboard.press("Escape");
+  await expect(purgeDialog).toBeHidden();
 
   // 空にする: 確かめてから消す。終わったら消した数と残した数を言う。共有されたフォルダは残る。
   const emptyButton = bob.getByRole("button", { name: "ゴミ箱を空にする" });
@@ -226,7 +235,7 @@ test("ゴミ箱: 持ち主でも管理者でもない人には「完全に削除
   await dialog.getByRole("button", { name: "空にする" }).click();
   await expect(dialog).toBeHidden({ timeout: 60_000 });
   const status = bob.getByRole("group", { name: "ゴミ箱の操作" }).getByRole("status");
-  await expect(status).toHaveText(/^\d+ 件を削除しました。[1-9]\d* 件は持ち主か管理者だけが削除できるため残しました。$/);
+  await expect(status).toHaveText(/^\d+ 件を削除しました。[1-9]\d* 件は削除できなかったため残しました。$/);
   await expect(emptyButton).toBeFocused();
   await expect(bob.getByText(ownName, { exact: true })).toHaveCount(0);
   await expect(bob.getByText(sharedName, { exact: true })).toBeVisible();
