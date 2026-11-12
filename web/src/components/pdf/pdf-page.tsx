@@ -11,6 +11,13 @@
 /// テキスト層は pdf.js の `TextLayer`（透明な文字を canvas に重ね、選択・コピー・検索の塗りに使う）。
 /// 検索の文字位置とnative spanを明示対応させる。行座標の無いOCRは段落・表の枠で示す。
 import * as React from "react";
+import {
+  measureFineUnits,
+  type FineUnit,
+  type FineContent,
+  type SelectionPrecision,
+} from "@/lib/pdf-fine-selection";
+import { pdfBlocks } from "@/lib/pdf-excerpts";
 import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
 import {
   syntheticOcrRect,
@@ -76,10 +83,24 @@ export function PdfPage({
   regionSelection?: {
     enabled: boolean;
     selections: PdfExcerpt[];
-    onSelect: (page: number, bbox: PdfRect) => void;
+    precision?: SelectionPrecision;
+    onSelect: (
+      page: number,
+      bbox: PdfRect,
+      replaceId?: string,
+      fine?: FineContent,
+    ) => void;
   };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const selectionPrecision = regionSelection?.precision ?? "area";
+  const fineRequired =
+    regionSelection?.enabled &&
+    (regionSelection.precision === "line" ||
+      regionSelection.precision === "cell" ||
+      regionSelection.selections.some(
+        (s) => s.page === pageNumber && s.precision,
+      ));
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const textRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<Size | null>(null);
@@ -97,6 +118,12 @@ export function PdfPage({
     ocr: Map<number, PdfRect>;
   } | null>(null);
   const highlightKey = React.useId();
+  const [fineUnits, setFineUnits] = React.useState<{
+    viewport: PageViewport;
+    values: FineUnit[];
+    error?: string;
+    cellsError?: string;
+  } | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
   React.useEffect(() => {
@@ -180,12 +207,18 @@ export function PdfPage({
     if (!container || !textLayer || !near || !size) return;
     let active = true;
     let layer: { cancel: () => void } | null = null;
-    Promise.all([
-      pdfjsLib(),
-      pageTextContent(doc, pageNumber),
-      nativePdfText(doc, pageNumber),
-    ])
-      .then(async ([lib, content, native]) => {
+    Promise.resolve()
+      .then(() =>
+        Promise.all([
+          pdfjsLib(),
+          pageTextContent(doc, pageNumber),
+          nativePdfText(doc, pageNumber),
+          pdfBlocks(doc, pageNumber)
+            .then((blocks) => ({ blocks, failed: false }))
+            .catch(() => ({ blocks: [], failed: true })),
+        ]),
+      )
+      .then(async ([lib, content, native, tableResult]) => {
         if (!active) return;
         container.replaceChildren();
         const tl = new lib.TextLayer({
@@ -213,16 +246,48 @@ export function PdfPage({
               return divByItem.get(nativeTextOrigin(item)) ?? null;
             });
           setText({ divs, page: buildPageText(content), ocr });
+          if (wrapRef.current && fineRequired)
+            setFineUnits({
+              viewport: size.viewport,
+              values: measureFineUnits(
+                wrapRef.current,
+                tl.textDivs,
+                native,
+                size.viewport,
+                tableResult.blocks,
+              ),
+              cellsError: tableResult.failed
+                ? "表の文字情報を取得できません。「文字情報を再読み込み」で再取得するか、自由範囲で選択してください。"
+                : undefined,
+            });
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active)
+          setFineUnits({
+            viewport: size.viewport,
+            values: [],
+            error:
+              "文字の位置を取得できません。自由範囲で選択するか、PDFを開き直してください。",
+          });
+      });
     return () => {
       active = false;
       layer?.cancel();
       container.replaceChildren();
       setText(null);
+      setFineUnits(null);
     };
-  }, [doc, pageNumber, size, near, textLayer, textRevision]);
+  }, [
+    doc,
+    pageNumber,
+    size,
+    near,
+    textLayer,
+    textRevision,
+    fineRequired,
+    selectionPrecision,
+  ]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
@@ -354,6 +419,17 @@ export function PdfPage({
             size.rotation === rotation
           }
           selections={regionSelection.selections}
+          precision={regionSelection.precision}
+          units={fineUnits?.viewport === size.viewport ? fineUnits.values : []}
+          unitsReady={fineUnits?.viewport === size.viewport}
+          unitsError={
+            fineUnits?.viewport === size.viewport ? fineUnits.error : undefined
+          }
+          cellsError={
+            fineUnits?.viewport === size.viewport
+              ? fineUnits.cellsError
+              : undefined
+          }
           onSelect={regionSelection.onSelect}
         />
       ) : null}

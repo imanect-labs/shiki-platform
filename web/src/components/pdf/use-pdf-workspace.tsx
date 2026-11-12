@@ -18,7 +18,10 @@ import { PdfExcerptPanel } from "./pdf-excerpt-panel";
 import { PdfUtilities } from "./pdf-utilities";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import { queuePdfAttachments, clearPdfAttachmentsForTarget } from "@/lib/pdf-attachment-handoff";
+import {
+  queuePdfAttachments,
+  clearPdfAttachmentsForTarget,
+} from "@/lib/pdf-attachment-handoff";
 import { uploadNewFile } from "@/lib/storage";
 import type { Attachment } from "@/lib/chat-api";
 import {
@@ -31,6 +34,7 @@ import {
 } from "@/lib/selection-context";
 import {
   excerptContext,
+  PDF_LOCATOR_LIMIT,
   extractRegion,
   resetPdfBlocks,
   resetDocumentBlocks,
@@ -55,6 +59,8 @@ const PdfAssistant = dynamic(
   },
 );
 
+import type { SelectionPrecision, FineContent } from "@/lib/pdf-fine-selection";
+
 type Mode = "read" | "select" | "tools";
 export function usePdfWorkspace({
   id,
@@ -72,8 +78,13 @@ export function usePdfWorkspace({
   jumpTo: (page: number) => void;
 }) {
   const router = useRouter();
+  const [precision, setPrecision] = React.useState<SelectionPrecision>("area");
   const [mode, setMode] = React.useState<Mode>("read");
   const [selections, setSelections] = React.useState<PdfExcerpt[]>([]);
+  const selectionsRef = React.useRef(selections);
+  React.useLayoutEffect(() => {
+    selectionsRef.current = selections;
+  }, [selections]);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [assistantOpen, setAssistantOpen] = React.useState(false);
@@ -83,7 +94,7 @@ export function usePdfWorkspace({
   const [textRevision, setTextRevision] = React.useState(0);
   const generation = React.useRef(0);
   const attachmentGeneration = React.useRef(0);
-  const pendingCount = React.useRef(0);
+  const pendingOperations = React.useRef(new Map<symbol, string | undefined>());
   const replacements = React.useRef(new Map<string, symbol>());
   const invalidate = React.useCallback(() => {
     generation.current++;
@@ -93,6 +104,7 @@ export function usePdfWorkspace({
     page: number;
     bbox: PdfRect;
     id?: string;
+    fine?: FineContent;
   } | null>(null);
   const scopeReady = useStorageScopeReady();
   const authGeneration = React.useSyncExternalStore(
@@ -103,7 +115,7 @@ export function usePdfWorkspace({
   const isMobile = useMediaQuery("(max-width: 767px)");
   React.useEffect(() => {
     invalidate();
-    pendingCount.current = 0;
+    pendingOperations.current.clear();
     lastRegion.current = null;
     replacements.current.clear();
     setSelections([]);
@@ -119,27 +131,48 @@ export function usePdfWorkspace({
     };
   }, [id, version, authGeneration, invalidate]);
   const onSelect = React.useCallback(
-    async (page: number, bbox: PdfRect, replaceId?: string) => {
+    async (
+      page: number,
+      bbox: PdfRect,
+      replaceId?: string,
+      fine?: FineContent,
+    ) => {
       if (!doc) return;
       if (
-        selections.length + pendingCount.current - (replaceId ? 1 : 0) >=
-        20
+        !replaceId &&
+        selections.length +
+          [...pendingOperations.current.values()].filter(
+            (id) => id === undefined,
+          ).length >=
+          20
       ) {
         setError("一度に選べる範囲は20件までです。");
         return;
       }
-      if (replaceId && replacements.current.has(replaceId)) return;
+      attachmentGeneration.current++;
+      setAttaching(false);
       const replacementToken = Symbol();
-      if (replaceId) replacements.current.set(replaceId, replacementToken);
-      const request = { page, bbox, id: replaceId };
+      if (replaceId) {
+        const previous = replacements.current.get(replaceId);
+        if (previous) pendingOperations.current.delete(previous);
+        replacements.current.set(replaceId, replacementToken);
+      }
+      if (replaceId && !fine)
+        setSelections((prev) =>
+          prev.map((s) =>
+            s.id === replaceId ? { ...s, bbox, text: "", tables: [] } : s,
+          ),
+        );
+      const request = { page, bbox, id: replaceId, fine };
       lastRegion.current = request;
       const at = generation.current;
       const scope = storageScopeGeneration();
-      pendingCount.current++;
+      pendingOperations.current.set(replacementToken, replaceId);
       setBusy(true);
       setError("");
       try {
-        const result = await extractRegion(doc, page, bbox);
+        const extracted = await extractRegion(doc, page, bbox);
+        const result = { ...extracted, ...fine, id: replaceId ?? extracted.id };
         if (
           at !== generation.current ||
           scope !== storageScopeGeneration() ||
@@ -147,6 +180,19 @@ export function usePdfWorkspace({
             replacements.current.get(replaceId) !== replacementToken)
         )
           return;
+        if (fine) {
+          const next = [
+            ...selectionsRef.current.filter((s) => s.id !== replaceId),
+            result,
+          ];
+          if (
+            JSON.stringify(excerptContext(id, name, version ?? 0, next).locator)
+              .length > PDF_LOCATOR_LIMIT
+          )
+            throw new Error(
+              "選択範囲が大きすぎます。範囲を小さくしてください。",
+            );
+        }
         setSelections((prev) =>
           replaceId && !prev.some((s) => s.id === replaceId)
             ? prev
@@ -158,9 +204,9 @@ export function usePdfWorkspace({
               ),
         );
         if (lastRegion.current === request)
-          lastRegion.current = { page, bbox, id: result.id };
+          lastRegion.current = { page, bbox, id: result.id, fine };
         if (!result.text) {
-          lastRegion.current = { page, bbox, id: result.id };
+          lastRegion.current = { page, bbox, id: result.id, fine };
           setError(
             "この範囲の文字がまだ取得できません。解析完了後に再取得するか、画像として保存してください。",
           );
@@ -184,12 +230,12 @@ export function usePdfWorkspace({
         )
           replacements.current.delete(replaceId);
         if (at === generation.current) {
-          pendingCount.current--;
-          setBusy(pendingCount.current > 0);
+          pendingOperations.current.delete(replacementToken);
+          setBusy(pendingOperations.current.size > 0);
         }
       }
     },
-    [doc, selections.length],
+    [doc, selections.length, id, name, version],
   );
   const attach = async (destination: "panel" | "new") => {
     if (version == null || !doc) return;
@@ -203,7 +249,7 @@ export function usePdfWorkspace({
     // サーバの切り詰めに任せない。抜粋や出典が欠ける添付は、ユーザーに範囲を減らしてもらう。
     if (
       Array.from(context.excerpt).length > 8000 ||
-      JSON.stringify(context.locator).length > 4096
+      JSON.stringify(context.locator).length > PDF_LOCATOR_LIMIT
     ) {
       setError("添付上限を超えています。範囲を減らしてください。");
       return;
@@ -211,7 +257,10 @@ export function usePdfWorkspace({
     const at = generation.current;
     const scope = storageScopeGeneration();
     const attachmentAt = ++attachmentGeneration.current;
-    const isCurrent = () => at === generation.current && scope === storageScopeGeneration() && attachmentAt === attachmentGeneration.current;
+    const isCurrent = () =>
+      at === generation.current &&
+      scope === storageScopeGeneration() &&
+      attachmentAt === attachmentGeneration.current;
     setAttaching(true);
     setError("");
     try {
@@ -256,12 +305,12 @@ export function usePdfWorkspace({
   };
   const retry = () => {
     if (!doc || !lastRegion.current) return;
-    const { page, bbox, id: replaceId } = lastRegion.current;
+    const { page, bbox, id: replaceId, fine } = lastRegion.current;
     resetPdfBlocks(doc, page);
     resetPageText(doc, page);
     setTextRevision((n) => n + 1);
     // 失敗した領域の再試行。空のカードがあるときは重複させず差し替える。
-    void onSelect(page, bbox, replaceId);
+    void onSelect(page, bbox, replaceId, fine);
   };
   const panel =
     doc &&
@@ -278,7 +327,10 @@ export function usePdfWorkspace({
         onRemove={(key) => {
           attachmentGeneration.current++;
           setAttaching(false);
+          const token = replacements.current.get(key);
+          if (token) pendingOperations.current.delete(token);
           replacements.current.delete(key);
+          setBusy(pendingOperations.current.size > 0);
           if (lastRegion.current?.id === key) {
             lastRegion.current = null;
             setError("");
@@ -289,7 +341,7 @@ export function usePdfWorkspace({
           invalidate();
           replacements.current.clear();
           lastRegion.current = null;
-          pendingCount.current = 0;
+          pendingOperations.current.clear();
           setBusy(false);
           setAttaching(false);
           setSelections([]);
@@ -338,6 +390,36 @@ export function usePdfWorkspace({
           </button>
         ))}
       </div>
+      {mode === "select" && (
+        <div
+          role="group"
+          aria-label="選択の粒度"
+          className="flex rounded-lg border p-0.5 text-[11px]"
+        >
+          {(
+            [
+              ["area", "自由範囲"],
+              ["line", "行"],
+              ["cell", "表セル"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={precision === value}
+              onClick={() => setPrecision(value)}
+              className={cn(
+                "rounded-md px-3 py-1.5",
+                precision === value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <button
           type="button"
@@ -361,7 +443,7 @@ export function usePdfWorkspace({
               ) : (
                 <ScanText className="size-3.5" />
               )}
-              ドラッグで追加 · Escで中止
+              枠をつかんで調整 · Escで中止
             </span>
             <button
               type="button"
@@ -389,6 +471,7 @@ export function usePdfWorkspace({
   return {
     toolbar,
     mode,
+    precision,
     selections,
     onSelect,
     textRevision,

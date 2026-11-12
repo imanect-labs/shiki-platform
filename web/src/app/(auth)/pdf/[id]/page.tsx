@@ -693,6 +693,7 @@ function PdfViewer() {
                           regionSelection={{
                             enabled: workspace.mode === "select",
                             selections: workspace.selections,
+                            precision: workspace.precision,
                             onSelect: workspace.onSelect,
                           }}
                           eager={n === targetPage || n === activePage}
