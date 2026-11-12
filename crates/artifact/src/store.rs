@@ -11,6 +11,7 @@ use serde_json::json;
 use sqlx::types::Json;
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use storage::tuple_commit::{commit_tx_with_tuples, TupleCommitError, TupleKey};
 use uuid::Uuid;
 
 use crate::model::{Artifact, ArtifactKind, ConflictReason};
@@ -178,29 +179,23 @@ impl ArtifactStore {
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
-        tx.commit().await.map_err(map_db)?;
 
-        // 作成者を owner に（FGA）。失敗したら行を補償削除して漏れを残さない。
+        // 作成者を owner に（FGA）してから commit する（storage の作成と同じ順・BUG-134・7p-10）。commit の後に書くと、
+        // その間で呼ぶ側のフューチャが捨てられたとき owner の無い行が残り、誰も読めないのに名前を塞ぎ続ける。区間は
+        // 別のタスクで最後まで走り、書き込みに失敗すれば commit せずに巻き戻し、commit に失敗すれば書いたタプルを外す。
         let id = row.id;
-        let obj = ctx.ns().artifact(&id.to_string());
-        if let Err(e) = self
-            .authz
-            .write_tuple(&ctx.subject(), Relation::Owner, &obj)
+        let owner = TupleKey::new(
+            ctx.subject(),
+            Relation::Owner,
+            ctx.ns().artifact(&id.to_string()),
+        );
+        commit_tx_with_tuples(Arc::clone(&self.authz), tx, vec![owner])
             .await
-        {
-            // 補償削除が失敗すると owner タプルの無い孤立行が残る（誰も操作できず同名再作成も不能）。
-            // 運用検知のためエラーをログに残す（CodeRabbit 指摘）。
-            if let Err(cleanup) =
-                sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND id = $2")
-                    .bind(ctx.tenant_id())
-                    .bind(id)
-                    .execute(&self.db)
-                    .await
-            {
-                tracing::error!(error = %cleanup, artifact_id = %id, "owner タプル書込失敗後の補償削除にも失敗（孤立行が残存）");
-            }
-            return Err(ArtifactError::Internal(format!("owner tuple: {e}")));
-        }
+            .map_err(|e| match e {
+                TupleCommitError::Write(e) => ArtifactError::Internal(format!("owner tuple: {e}")),
+                TupleCommitError::Finish(e) => map_db(e),
+                TupleCommitError::Aborted(reason) => ArtifactError::Internal(reason),
+            })?;
         self.record_audit(
             ctx,
             AuditAction::ArtifactCreate,
@@ -232,6 +227,43 @@ impl ArtifactStore {
         .map_err(map_db)?;
         let id = id.ok_or(ArtifactError::NotFound)?;
         self.get(ctx, id, trace_id).await
+    }
+
+    /// 本人が `since` 以降に作った、消していない同名のアーティファクトを引く（作成の冪等・R1・7p-10）。
+    ///
+    /// 作成が名前の重なり（NameTaken）で断られたとき、それが同じ会話の run の中で本人が作ったものかを確かめるのに
+    /// 使う（`since` は run の作られた時刻）。SQL は (テナント・種類・名前・持ち主＝本人・作成時刻・生存) で 1 行を
+    /// 引き、続けて [`Self::get`] で ReBAC の viewer を確かめる（読めなければ `None`・道具に認可を散らさない）。
+    /// ほかの人の同名・`since` より前に作ったもの・消したものも `None`。
+    pub async fn find_own_created_since(
+        &self,
+        ctx: &AuthContext,
+        kind: ArtifactKind,
+        name: &str,
+        since: DateTime<Utc>,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Artifact>, ArtifactError> {
+        let id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM artifact \
+             WHERE tenant_id = $1 AND kind = $2 AND name = $3 AND owner = $4 \
+               AND created_at >= $5 AND deleted_at IS NULL",
+        )
+        .bind(ctx.tenant_id())
+        .bind(kind.as_str())
+        .bind(name.trim())
+        .bind(&ctx.principal().id)
+        .bind(since)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        match self.get(ctx, id, trace_id).await {
+            Ok(found) => Ok(Some(found)),
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// 自分が owner のアーティファクトの 1 ページ（kind 絞り込み・更新日降順・keyset ページング）。
