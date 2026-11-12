@@ -5,7 +5,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// コンポーザのスラッシュコマンド（issue #387）の E2E。
 ///
 /// 候補は `GET /skills/catalog`（モデルが `skill` ツールで見ているカタログと同一の源）由来で、
-/// **コマンド宣言（`SkillBody.command`）を持つスキルだけ**が並ぶ。ここでは宣言つきスキルを
+/// コマンド宣言（`SkillBody.command`）つきは宣言どおり、無いもの（画面で作ったスキル）はスキル名を
+/// `/` 名にして並ぶ。ここでは宣言つきスキルを
 /// 1 つ作り、補完 → 確定（ピル）→ 解除 → 「+」メニューからの打ち込みまでを通す。
 /// `SHOTS_DIR` を渡すと各状態の PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
@@ -119,4 +120,64 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   expect(body.text).toBe(`/${cmd} auto 市場規模を調べて`);
   // コマンド起動は長ホライズン（通常チャットの max_steps=6 では多段の作法が切れる）。
   expect(body.autonomous).toBe(true);
+});
+
+test("コマンド宣言の無い自作スキルも / と検索から呼べる", async ({ page }) => {
+  await loginViaKeycloak(page);
+
+  // 画面で作るスキルと同じく command を持たない。`/` 名はスキル名（空白は `-`）になる。
+  const name = uniqueName("mine");
+  const token = name.normalize("NFKC").trim().replace(/\s+/g, "-");
+  await page.goto("/");
+  const created = await page.evaluate(async (skillName) => {
+    const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
+    const res = await fetch("/api/skills", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf[1]) } : {}),
+      },
+      body: JSON.stringify({
+        name: skillName,
+        body: { description: "週報を定型で書く自作スキル。", instructions: "# 週報\n定型で書く。" },
+      }),
+    });
+    return { status: res.status, text: await res.text() };
+  }, name);
+  expect(created.status, `skill 作成: ${created.status} ${created.text}`).toBeLessThan(300);
+  const skillId = (JSON.parse(created.text) as { id: string }).id;
+
+  await page.reload();
+  const input = page.getByLabel("メッセージを入力");
+
+  // `/` の補完に出る。
+  await input.fill(`/${token}`);
+  await expect(page.getByTestId("slash-command-option")).toHaveCount(1, { timeout: 10_000 });
+  await input.fill("");
+
+  // 「+」メニューの「スキルを検索」から、説明の語で見つかる（件数に関わらず入口がある）。
+  await page.getByRole("button", { name: "追加メニューを開く" }).click();
+  await page.getByTestId("composer-all-skills").click();
+  const browser = page.getByTestId("skill-browser");
+  await expect(browser).toBeVisible();
+  await browser.getByTestId("skill-search").fill(`${name} 週報`);
+  const hit = browser.getByTestId("skill-browser-option");
+  await expect(hit).toHaveCount(1);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/skill-browser-own-skill.png` });
+  await hit.click();
+  await expect(page.getByTestId("slash-command-pill")).toContainText(`/${token}`);
+
+  // 送ると、この発話にだけその skill がピンされる。
+  const posted = page.waitForRequest(
+    (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+  );
+  await input.fill("今週分をまとめて");
+  await page.getByRole("button", { name: "送信" }).click();
+  const body = JSON.parse((await posted).postData() ?? "{}") as {
+    text?: string;
+    skills?: { artifact_id: string }[];
+  };
+  expect(body.skills?.[0]?.artifact_id).toBe(skillId);
+  expect(body.text).toBe(`/${token} 今週分をまとめて`);
 });

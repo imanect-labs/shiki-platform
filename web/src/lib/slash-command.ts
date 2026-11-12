@@ -62,13 +62,23 @@ export async function fetchSkillCatalog(threadId?: string): Promise<SkillCatalog
   return data.skills ?? [];
 }
 
-/// カタログを補完候補へ展開する。コマンド宣言の無いスキルは候補にしない
-/// （＝コマンドで呼べないものを一覧に出さない）。
+/// コマンド宣言の無いスキルの `/` 名（スキル名の空白を `-` に詰めたもの）。
+///
+/// 宣言の編集欄は UI に無いので、画面で作ったスキルは宣言を持たない。それでも起動は
+/// skill id で発話にだけピンする経路（`POST /threads/{id}/messages` の `skills`）で成り立つため、
+/// 名前から `/` 名を作って候補に出す。空白を残すと `resolveTypedCommand` が本文と区切れない。
+export function fallbackCommandName(skillName: string): string {
+  return skillName.normalize("NFKC").trim().replace(/^\/+/, "").replace(/\s+/g, "-");
+}
+
+/// カタログを補完候補へ展開する。コマンド宣言の無いスキルは、スキル名を `/` 名にした
+/// 引数なしの 1 候補にする（画面で作ったスキルも `/` と検索から呼べるように）。
 export function toSuggestions(items: SkillCatalogItem[]): SlashSuggestion[] {
   const out: SlashSuggestion[] = [];
   for (const item of items) {
-    const cmd = item.command;
-    if (!cmd?.name) continue;
+    const declared = item.command?.name ? item.command : null;
+    const cmd = declared ?? { name: fallbackCommandName(item.name), hint: null, variants: [] };
+    if (!cmd.name) continue;
     // variants が空なら「引数なし」の 1 候補として扱う。
     const variants =
       cmd.variants.length > 0 ? cmd.variants : [{ args: "", summary: item.description }];
