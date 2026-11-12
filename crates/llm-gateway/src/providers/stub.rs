@@ -22,6 +22,11 @@
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
 //! - `echoeffort:` … 受け取った思考の深さ（無ければ `none`）を `effort: <値>` で返す（ノードの思考の深さの解決が
 //!   実際にモデルへ届く値になることの検証用・D-75）。
+//! - `echohistory:` … 受け取ったメッセージの本文とツールの結果を改行でつないで返す（次の回答の文脈に何が渡るかの
+//!   検証用・[`super::stub_triggers::echo_history_call`]・PIT-84）。
+//! - `echotool:<ツール名> <入力 JSON>` … 1 ターン目にそのツールを呼び、結果が返ったらその本文をそのまま回答の本文で
+//!   返す（観測が回答・共有の相手の画面・次の回答の文脈のどこまで届くかの検証用・
+//!   [`super::stub_triggers::echo_tool_call`]・PIT-84）。
 //! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
 //!   「回答: 」を付けない）。
 //! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
@@ -44,8 +49,8 @@ use super::stub_stream::{
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
-    conversation_title_call, echo_effort_call, echo_system_call, fix_workflow_call,
-    generic_tool_call, note_suggest_call, note_tool_call, tool_search_call,
+    conversation_title_call, echo_effort_call, echo_history_call, echo_system_call, echo_tool_call,
+    fix_workflow_call, generic_tool_call, note_suggest_call, note_tool_call, tool_search_call,
 };
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
@@ -283,6 +288,7 @@ fn fixed_reply_call(
         .or_else(|| reasoning_call(req, user_text, prompt_tokens))
         .or_else(|| echo_system_call(req, user_text, prompt_tokens))
         .or_else(|| echo_effort_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_history_call(req, user_text, prompt_tokens))
         .or_else(|| conversation_title_call(user_text, prompt_tokens))
 }
 
@@ -390,6 +396,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     }
     // --- 既存のワークフローを直す `fixwf:`（探す → 読む → 新しい版を保存する・GAP-31）。 ---
     if let Some(s) = fix_workflow_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 観測を写す `echotool:`（呼ぶ → 結果の本文をそのまま返す・PIT-84）。2 ターン目も見るので門の前に置く。 ---
+    if let Some(s) = echo_tool_call(req, &user_text, prompt_tokens) {
         return s;
     }
     // --- 並行 read 駆動 `parallel:`（#386）。 ---

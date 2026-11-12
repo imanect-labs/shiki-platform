@@ -80,6 +80,37 @@ pub(super) fn tool_search_call(
     ))
 }
 
+/// `echohistory:` … 受け取ったメッセージの本文（Text）とツールの結果（ToolResult）を、届いた順に改行でつないで返す
+/// （次の回答の文脈に何が渡るか＝共有の相手が話しかけたときに、前の発話者の道具の結果が入らないことの検証・PIT-84・
+/// D-214）。system・思考・ツールの呼び出しは返さない（system は `echosystem:` で見る）。
+pub(super) fn echo_history_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    user_text.starts_with("echohistory:").then(|| {
+        let parts: Vec<&str> = req
+            .messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                Block::Text { text } | Block::ToolResult { content: text, .. } => {
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        text_stream(&parts.join("\n"), prompt_tokens)
+    })
+}
+
+/// `<ツール名> <入力 JSON>` を読む（入力が無い・読めなければ `{}`）。
+fn tool_and_input(rest: &str) -> (&str, serde_json::Value) {
+    let (name, raw) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
+    let input = serde_json::from_str(raw.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    (name, input)
+}
+
 /// 汎用の決定的呼び出し `calltool:<ツール名> <入力 JSON>`（Task 15.7）。
 ///
 /// LLM が出す入力をそのまま与えて、ツールの提示・実行・観測の経路を実 LLM 無しで通す e2e 用。
@@ -89,11 +120,31 @@ pub(super) fn generic_tool_call(
     user_text: &str,
     prompt_tokens: u64,
 ) -> Option<DeltaStream> {
-    let rest = user_text.strip_prefix("calltool:")?.trim();
-    let (name, raw) = rest.split_once(char::is_whitespace).unwrap_or((rest, "{}"));
-    let input = serde_json::from_str(raw.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    let (name, input) = tool_and_input(user_text.strip_prefix("calltool:")?.trim());
     let t = req.tools.iter().find(|t| t.name == name)?;
     Some(tool_call_stream(t.name.clone(), input, prompt_tokens))
+}
+
+/// `echotool:<ツール名> <入力 JSON>` … 1 ターン目にそのツールを呼び、結果が返ったら、その本文をそのまま回答の本文で
+/// 返す（モデルが観測を回答に写したときに、本人の回答・共有の相手の画面・相手の次の回答の文脈のどこまで届くかの
+/// 検証・PIT-84・D-214）。
+///
+/// 段は最後のメッセージの役割で決める（[`fix_workflow_call`] と同じ）。最後が User ならツールを呼び、提示に無い
+/// ツールなら呼ばない（`None`＝本文の応答へ落ちる）。そうでなければ直前のツールの結果を返す（誤りの結果もそのまま）。
+/// `calltool:` は 2 ターン目に「回答: 〜」を返して観測を写さないので、写す場合はこちらを使う。
+pub(super) fn echo_tool_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let rest = user_text.strip_prefix("echotool:")?.trim();
+    if req.messages.last()?.role == Role::User {
+        let (name, input) = tool_and_input(rest);
+        let t = req.tools.iter().find(|t| t.name == name)?;
+        return Some(tool_call_stream(t.name.clone(), input, prompt_tokens));
+    }
+    let (_, content, _) = last_tool_result(req)?;
+    Some(text_stream(content, prompt_tokens))
 }
 
 /// 既存のワークフローを直す決定的駆動 `fixwf:<語>`（新しい会話から「〜を直して」と頼む・GAP-31 の e2e）。
@@ -568,5 +619,201 @@ mod conversation_title_tests {
         }
         assert_eq!(out.trim(), "経費の締め日は？");
         assert!(conversation_title_call("経費の締め日は？", 1).is_none());
+    }
+}
+
+/// `echotool:`・`echohistory:`（PIT-84・D-214 の結合テストの駆動）と、既存の駆動とぶつからないこと。
+#[cfg(test)]
+mod echo_tests {
+    use futures::StreamExt;
+
+    use super::super::stub::StubProvider;
+    use super::*;
+    use crate::model::{Message, StopReason, StreamDelta, ToolDef};
+    use crate::provider::LlmProvider;
+
+    /// 流れた本文・呼んだツール（名前と入力）・止まった理由。
+    #[derive(Debug, Default)]
+    struct Seen {
+        text: String,
+        calls: Vec<(String, serde_json::Value)>,
+        stop: Option<StopReason>,
+    }
+
+    async fn drain(mut s: DeltaStream) -> Seen {
+        let mut seen = Seen::default();
+        let mut names = std::collections::HashMap::new();
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::TextDelta { text } => seen.text.push_str(&text),
+                StreamDelta::ToolUseStart { id, name } => {
+                    names.insert(id, name);
+                }
+                StreamDelta::ToolUseStop { id, input } => {
+                    seen.calls
+                        .push((names.remove(&id).unwrap_or_default(), input));
+                }
+                StreamDelta::Done { stop_reason, .. } => seen.stop = Some(stop_reason),
+                _ => {}
+            }
+        }
+        seen
+    }
+
+    /// スタブの本体（どの駆動が先に拾うかまで含めて）に流す。
+    async fn stub(req: &GenerateRequest) -> Seen {
+        drain(StubProvider::new().stream(req).await.unwrap()).await
+    }
+
+    fn tools(req: &mut GenerateRequest, names: &[&str]) {
+        for name in names {
+            req.tools
+                .push(ToolDef::new(*name, "d", serde_json::json!({})));
+        }
+    }
+
+    /// 1 ターン目のツールの呼び出しと、その結果（`id` で結ぶ）を足す。
+    fn with_result(req: &mut GenerateRequest, tool: &str, content: &str, is_error: bool) {
+        req.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "c1".into(),
+                name: tool.into(),
+                input: serde_json::json!({}),
+            }],
+        });
+        req.messages.push(Message {
+            role: Role::Tool,
+            content: vec![Block::tool_result("c1", content, is_error)],
+        });
+    }
+
+    /// echotool は 1 ターン目に渡した入力でツールを呼び、結果が返ったらその本文をそのまま返す（改行も保つ）。
+    #[tokio::test]
+    async fn echotool_calls_the_tool_then_returns_its_result() {
+        let text = r#"echotool:try_workflow {"workflow_id":"w1","version":2}"#;
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+        tools(&mut req, &["doc_search", "try_workflow"]);
+        let first = stub(&req).await;
+        assert_eq!(
+            first.calls,
+            vec![(
+                "try_workflow".to_string(),
+                serde_json::json!({ "workflow_id": "w1", "version": 2 })
+            )]
+        );
+        assert_eq!(first.stop, Some(StopReason::ToolUse));
+        assert!(first.text.is_empty(), "{}", first.text);
+
+        with_result(
+            &mut req,
+            "try_workflow",
+            "試運転: 失敗 / run: r\n画面: /workflows/w1",
+            false,
+        );
+        let second = stub(&req).await;
+        assert!(second.calls.is_empty(), "{:?}", second.calls);
+        assert_eq!(second.text, "試運転: 失敗 / run: r\n画面: /workflows/w1");
+        assert_eq!(second.stop, Some(StopReason::EndTurn));
+
+        // 誤りの結果もそのまま返す（回答に写るものを確かめる駆動なので、言い換えない）。
+        let mut failed = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+        tools(&mut failed, &["try_workflow"]);
+        with_result(&mut failed, "try_workflow", "v9 はありません。", true);
+        assert_eq!(stub(&failed).await.text, "v9 はありません。");
+    }
+
+    /// 提示に無いツールは呼ばず、本文の応答へ落ちる（calltool: と同じ）。
+    #[tokio::test]
+    async fn echotool_does_not_call_a_tool_that_is_not_offered() {
+        let text = "echotool:try_workflow {}";
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+        tools(&mut req, &["doc_search"]);
+        assert!(echo_tool_call(&req, text, 1).is_none());
+        let seen = stub(&req).await;
+        assert!(seen.calls.is_empty(), "{:?}", seen.calls);
+        assert_eq!(seen.text, format!("回答: {text}"));
+    }
+
+    /// echohistory は受け取った本文とツールの結果を、届いた順に改行でつないで返す。system・思考・呼び出しは返さない。
+    /// ツールが提示されていても呼ばない。
+    #[tokio::test]
+    async fn echohistory_returns_texts_and_tool_results() {
+        let mut req = GenerateRequest::new(vec![
+            Message::text(Role::User, "前の発話"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    Block::Thinking {
+                        text: "思考の本文".into(),
+                    },
+                    Block::Text {
+                        text: "前の回答".into(),
+                    },
+                ],
+            },
+        ]);
+        req.system = Some("system の本文".into());
+        with_result(&mut req, "doc_search", "結果の本文", false);
+        req.messages.push(Message::text(Role::User, "echohistory:"));
+        tools(&mut req, &["doc_search", "try_workflow"]);
+        let seen = stub(&req).await;
+        assert!(seen.calls.is_empty(), "{:?}", seen.calls);
+        assert_eq!(seen.text, "前の発話\n前の回答\n結果の本文\nechohistory:");
+        for absent in ["system の本文", "思考の本文"] {
+            assert!(!seen.text.contains(absent), "{absent}: {}", seen.text);
+        }
+        assert!(echo_history_call(&req, "前の発話", 1).is_none());
+    }
+
+    /// 新しい接頭辞は、既存の駆動の拾い方を変えない（calltool: の 2 ターン目の門・search: の tool_trigger・
+    /// fixwf: の段・echosystem:）。接頭辞が文の途中にあるだけなら拾わない。
+    #[tokio::test]
+    async fn echo_prefixes_leave_other_drivers_alone() {
+        // calltool: は 2 ターン目に呼び直さず「回答: 〜」で終える（has_tool_result の門）。
+        let call = r#"calltool:try_workflow {"workflow_id":"w1","version":1}"#;
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, call)]);
+        tools(&mut req, &["try_workflow"]);
+        assert_eq!(stub(&req).await.calls.len(), 1);
+        with_result(&mut req, "try_workflow", "観測", false);
+        let after = stub(&req).await;
+        assert!(after.calls.is_empty(), "{:?}", after.calls);
+        assert_eq!(after.text, format!("回答: {call}"));
+
+        // search: は対応するツールを呼ぶ。
+        let mut search = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費")]);
+        tools(&mut search, &["try_workflow", "doc_search"]);
+        let seen = stub(&search).await;
+        assert_eq!(seen.calls.len(), 1);
+        assert_eq!(seen.calls[0].0, "doc_search");
+
+        // fixwf: は list_workflows から始める。
+        let mut fix = GenerateRequest::new(vec![Message::text(Role::User, "fixwf:経費")]);
+        tools(
+            &mut fix,
+            &["list_workflows", "read_workflow", "emit_workflow"],
+        );
+        let seen = stub(&fix).await;
+        assert_eq!(
+            seen.calls,
+            vec![(
+                "list_workflows".to_string(),
+                serde_json::json!({ "query": "経費" })
+            )]
+        );
+
+        // echosystem: は system を返す。
+        let mut system = GenerateRequest::new(vec![Message::text(Role::User, "echosystem:")]);
+        system.system = Some("今日は 2026-11-12".into());
+        assert_eq!(stub(&system).await.text, "system: 今日は 2026-11-12");
+
+        // 接頭辞が文の途中にあるだけなら、どちらも拾わない。
+        for text in ["説明 echotool:try_workflow {}", "説明 echohistory:"] {
+            let mut req = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+            tools(&mut req, &["try_workflow"]);
+            let seen = stub(&req).await;
+            assert!(seen.calls.is_empty(), "{text}: {:?}", seen.calls);
+            assert_eq!(seen.text, format!("回答: {text}"));
+        }
     }
 }
