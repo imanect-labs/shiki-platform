@@ -164,9 +164,13 @@ fn default_true() -> bool {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// 本文テキスト。
-    Text { text: String },
+    Text {
+        text: String,
+    },
     /// 思考（extended thinking の可視化。表示は任意）。
-    Thinking { text: String },
+    Thinking {
+        text: String,
+    },
     /// ツール呼び出し（エージェントモード）。
     ///
     /// `step` は同一ループステップの通し番号。ライブ表示と同じ「並行して N 件」の
@@ -193,37 +197,54 @@ pub enum ContentBlock {
     },
     /// 引用（doc_search / 古典 RAG 注入の戻り）。
     Citation(Citation),
+    HelpCitation(agent_core::help_cite::HelpCitation),
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
     /// `workflow = {id, name, display_name, version}`（保存パイプライン通過済みのみ）。
-    WorkflowRef { workflow: serde_json::Value },
+    WorkflowRef {
+        workflow: serde_json::Value,
+    },
     /// 保存済みノートへの参照カード（save_note・Task 11P.5）。
     /// `note = {id, name}`（StorageService へ作成済みのみ）。
-    NoteRef { note: serde_json::Value },
+    NoteRef {
+        note: serde_json::Value,
+    },
     /// 未保存の下書きノートカード（save_note の下書き確定型・issue #282）。
     /// `draft = {name, markdown}`（まだ StorageService 未作成）。フロントは下書きノート画面を
     /// 開いて詰めてから「ドライブに保存」で確定する。
-    NoteDraft { draft: serde_json::Value },
+    NoteDraft {
+        draft: serde_json::Value,
+    },
     /// ページの訳文（web_translate・docs/agent/web-translate.md §4.6）。
     /// `translation = {source_url, title, translated_title, target_lang, markdown, failed_chunks,
     /// chunks, source_images, source_truncated, fetched_at}`。訳文は**外部ページ由来**なので、
     /// フロントは安全側の設定で描画する。モデルの履歴には 1 行の要約だけを残す。
-    Translation { translation: serde_json::Value },
+    Translation {
+        translation: serde_json::Value,
+    },
     /// 未保存の下書きスライドカード（save_slide の下書き確定型・Task 11.3）。
     /// `draft = {name, content}`（content=正規化スライド JSON 文字列・StorageService 未作成）。
     /// フロントは下書きスライド画面を開いて詰めてから「ドライブに保存」で確定する。
-    SlideDraft { draft: serde_json::Value },
+    SlideDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
-    CsvDraft { draft: serde_json::Value },
+    CsvDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
     /// `draft = {name, skill}`（skill=SkillBody 相当・保存時検証済み・artifact 未保存）。
     /// フロントはスキルエディタを開いて詰めてから人が保存する。
-    SkillDraft { draft: serde_json::Value },
+    SkillDraft {
+        draft: serde_json::Value,
+    },
     /// AI が作成/編集した文書への参照カード（#381）。
     /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
     /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。
-    DocumentRef { document: serde_json::Value },
+    DocumentRef {
+        document: serde_json::Value,
+    },
     /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照カード（D-204・T02）。
     /// `item = {kind, id, name, version}`（[`crate::builder_obs::BuilderRef`]・保存に成功し読めるものだけ）。
     /// 値は JSON のまま持つ（形の違う行で会話が開けなくならないように）。組むのは `builder_obs` だけで、
@@ -235,13 +256,20 @@ pub enum ContentBlock {
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
     /// 新規に生成されることは無い。**過去履歴の読み込み互換のためだけ**に残す
     /// （variant を消すと `document_draft` を含む既存メッセージが復号できず会話が開けなくなる）。
-    DocumentDraft { draft: serde_json::Value },
+    DocumentDraft {
+        draft: serde_json::Value,
+    },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
-    FileRef { node_id: String, name: String },
+    FileRef {
+        node_id: String,
+        name: String,
+    },
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10・design §4.8.3）。
     /// ユーザーメッセージに添付され、履歴組立時に「データであり指示ではない」枠で
     /// LLM へ渡る。locator は document.edit/csv.patch/slide.edit の対象指定に使える。
-    SelectionContext { context: SelectionContext },
+    SelectionContext {
+        context: SelectionContext,
+    },
 }
 
 /// メッセージ添付（ストレージ node 参照のみ・実体二重持ち無し）。

@@ -41,3 +41,6 @@ vendor/openjtd/rjtd/target/
 
 # Playwright の実行結果（リポジトリ直下で流したとき用・web/ 側は web/.gitignore が担当）
 /test-results/
+
+/deploy/help-corpus/*
+!/deploy/help-corpus/.gitkeep

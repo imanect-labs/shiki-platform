@@ -5,6 +5,8 @@ mod artifacts;
 mod attachments;
 pub mod code_interpreter;
 pub mod doc_search;
+mod help_search;
+pub use help_search::HelpSearchTool;
 pub mod document_envelope;
 pub mod fs;
 pub mod fs_append;

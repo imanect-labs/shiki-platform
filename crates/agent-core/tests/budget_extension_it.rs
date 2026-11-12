@@ -279,6 +279,7 @@ async fn resumed_runs_keep_the_extended_budget() {
         [
             "citations",
             "context_overhead_tokens",
+            "help_citations",
             "loop_detector",
             "messages",
             "plan",
@@ -289,7 +290,12 @@ async fn resumed_runs_keep_the_extended_budget() {
     );
     // 古い形（後から足した欄が無い）でも、履歴の呼び出しから広げる。
     let mut old = json.clone();
-    for key in ["loop_detector", "citations", "context_overhead_tokens"] {
+    for key in [
+        "loop_detector",
+        "citations",
+        "help_citations",
+        "context_overhead_tokens",
+    ] {
         old.as_object_mut().unwrap().remove(key);
     }
     for resume in [json, old] {

@@ -146,7 +146,11 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
-/// StorageService（AllowAll authz＋RustFS）だけの環境（worker を起こさない・ドライブの道具を直接呼ぶテスト用）。
+/// StorageService（AllowAll authz＋RustFS）だけを組む。**worker は spawn しない**。
+///
+/// ツールを直接呼ぶテストはこちらを使う。worker を spawn すると、そのテストのランタイムが
+/// 終わった時点で worker が claim 済みの run を抱えたまま消え、共有 jobq の run がリース失効まで
+/// 宙に浮く。すると e2e（[`autonomous_run_writes_workspace_file_e2e`]）がイベント待ちで落ちる。
 async fn storage_harness(pool: PgPool) -> Arc<StorageService> {
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:9000".into());
@@ -166,7 +170,7 @@ async fn storage_harness(pool: PgPool) -> Arc<StorageService> {
     let object_store: Arc<dyn ObjectStore> = Arc::new(S3ObjectStore::new(&s3));
     object_store.ensure_bucket().await.expect("バケット準備");
     Arc::new(StorageService::new(
-        pool.clone(),
+        pool,
         object_store,
         Arc::new(AllowAll),
         Duration::from_mins(5),
@@ -175,10 +179,8 @@ async fn storage_harness(pool: PgPool) -> Arc<StorageService> {
     ))
 }
 
-/// 自律 run の worker つきの環境（[`storage_harness`] の上に会話の store と worker を 1 つ起こす）。
-///
-/// worker は共有の jobq から仕事を取るので、**このバイナリで worker を起こすのは e2e の 1 テストだけ**にする。
-/// ほかのテストが起こすと、そのテストが先に終わったときに、取った自律 run の仕事がリースの切れるまで宙に浮く。
+/// [`storage_harness`] ＋自律 worker を組む。worker を spawn するのは e2e の 1 テストだけにする
+/// （このバイナリの他テストは [`storage_harness`] を使う）。
 async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
     let storage = storage_harness(pool.clone()).await;
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)

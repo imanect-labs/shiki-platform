@@ -30,6 +30,8 @@ pub struct AppConfig {
     /// RAG（インジェスト・パイプライン＋検索・Phase 2）。既定は無効。
     #[serde(default)]
     pub rag: rag::RagConfig,
+    #[serde(default)]
+    pub help: rag::help::HelpConfig,
     /// チャット（生成ワーカー・接続非依存生成・Phase 3）。既定は無効。
     #[serde(default)]
     pub chat: ChatConfig,

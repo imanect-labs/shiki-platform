@@ -659,6 +659,14 @@ services:
       # SHIKI__EGRESS__PROXY_USERNAME: shiki
       # SHIKI__EGRESS__PROXY_PASSWORD_FILE: /run/secrets/egress-proxy-password
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
+      SHIKI__HELP__ENABLED: ${SHIKI__HELP__ENABLED:-true}
+      SHIKI__HELP__DATA_PATH: ${SHIKI__HELP__DATA_PATH:-/opt/shiki/help}
+      SHIKI__HELP__BASE_URL: ${SHIKI__HELP__BASE_URL:-https://shiki.imanect.app}
+      SHIKI__HELP__MAX_QUERY_CHARS: ${SHIKI__HELP__MAX_QUERY_CHARS:-1000}
+      SHIKI__HELP__MAX_TOP_K: ${SHIKI__HELP__MAX_TOP_K:-10}
+      SHIKI__HELP__MAX_RESULT_CHARS: ${SHIKI__HELP__MAX_RESULT_CHARS:-2000}
+      SHIKI__HELP__MAX_CORPUS_BYTES: ${SHIKI__HELP__MAX_CORPUS_BYTES:-67108864}
+      SHIKI__HELP__MAX_CHUNKS: ${SHIKI__HELP__MAX_CHUNKS:-20000}
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
       # コード実行系（code_interpreter / shell / workflow の agent.invoke の道具 code.run）の隔離ティア（admin ポリシー）。

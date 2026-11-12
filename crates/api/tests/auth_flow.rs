@@ -340,6 +340,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             backend: VectorStoreBackend::Qdrant,
         },
         rag: rag::RagConfig::default(),
+        help: rag::help::HelpConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Vllm,
             base_url: None,

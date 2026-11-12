@@ -23,8 +23,8 @@ const CLOSE: char = '⟧';
 /// 番号に置き換わらないよう、括弧を似た別の字に替える）。
 #[must_use]
 pub fn defuse(text: &str) -> std::borrow::Cow<'_, str> {
-    if text.contains('⟦') {
-        std::borrow::Cow::Owned(text.replace('⟦', "〚"))
+    if text.contains('⟦') || text.contains("[H") {
+        std::borrow::Cow::Owned(text.replace('⟦', "〚").replace("[H", "［H"))
     } else {
         std::borrow::Cow::Borrowed(text)
     }

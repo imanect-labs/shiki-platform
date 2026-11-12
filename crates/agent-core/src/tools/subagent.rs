@@ -424,6 +424,8 @@ impl Tool for SubagentTool {
         };
         // 社内文書の引用は UI へ伝播させる（**イベント経路**であり親の LLM コンテキストには
         // 入らないので、隔離の不変条件は保たれる）。
+        out.content = crate::help_cite::relabel_to_placeholders(&out.content, &sink.help_citations);
+        out.help_citations = sink.help_citations;
         out.citations = sink.citations;
         out.subagent_runs = vec![serde_json::json!({
             "objective": objective,

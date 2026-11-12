@@ -36,6 +36,7 @@ pub mod context;
 pub mod context_replay;
 pub mod context_usage;
 pub mod event;
+pub mod help_cite;
 pub mod loop_detect;
 pub mod plan;
 pub mod profile;
@@ -78,3 +79,5 @@ pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。
 pub use sandbox_client::egress_proxy::EgressProxy;
 pub use sandbox_client::{Sandbox, SandboxBackend};
+
+pub use tools::HelpSearchTool;

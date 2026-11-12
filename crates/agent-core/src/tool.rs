@@ -150,6 +150,7 @@ pub struct ToolOutcome {
     pub content: String,
     /// UI へ流す引用（doc_search のみ・他ツールは空）。
     pub citations: Vec<Citation>,
+    pub help_citations: Vec<crate::help_cite::HelpCitation>,
     /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
     pub artifacts: Vec<ArtifactRef>,
     /// 保存済みワークフローへの参照（emit_workflow のみ・Task 10.13）。
@@ -222,6 +223,7 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            help_citations: Vec::new(),
             artifacts: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),
@@ -244,6 +246,7 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            help_citations: Vec::new(),
             artifacts: Vec::new(),
             workflow_refs: Vec::new(),
             note_refs: Vec::new(),

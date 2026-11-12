@@ -71,6 +71,7 @@ pub struct ChatWorker {
     store: ChatStore,
     gateway: LlmGateway,
     search: Option<Arc<SearchService>>,
+    help_search: Option<Arc<rag::help::HelpSearchService>>,
     /// サンドボックス（code_interpreter 用）。未配線なら code_interpreter ツールを提示しない。
     sandbox: Option<Arc<dyn agent_core::Sandbox>>,
     /// 成果物の保存先（code_interpreter が /workspace のファイルを保存する・Task 4.11）。
@@ -161,8 +162,16 @@ impl ChatWorker {
             data: None,
             try_launcher: None,
             try_runs: None,
+            help_search: None,
             config: Arc::new(config),
         }
+    }
+
+    /// 同梱ヘルプがある構成でだけ専用ツールを提示する。
+    #[must_use]
+    pub fn with_help_search(mut self, help: Option<Arc<rag::help::HelpSearchService>>) -> Self {
+        self.help_search = help;
+        self
     }
 
     /// 構造化データのツール（data_query / data_schema / data_record_write）を配線する（Task 15.7）。

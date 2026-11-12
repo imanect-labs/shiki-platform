@@ -543,8 +543,8 @@ pub(crate) async fn wire_chat(
         },
         worker_config,
     )
-    // 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
-    // API・ワークフローと同じ DataStore（クエリのチョークポイント）を共有する。
+    .with_help_search(wire_help(config, search)?)
+    // 構造化データは API・ワークフローと同じチョークポイントを共有する。
     .with_data((**data).clone())
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
     // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
@@ -673,6 +673,26 @@ fn non_empty(v: Option<&str>) -> Option<String> {
     v.map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+}
+
+fn wire_help(
+    config: &AppConfig,
+    search: Option<&Arc<rag::SearchService>>,
+) -> anyhow::Result<Option<Arc<rag::help::HelpSearchService>>> {
+    let help_embedder: Arc<dyn rag::EmbeddingProvider> = match search {
+        Some(search) => search.embedder(),
+        None => Arc::new(rag::HttpEmbeddingProvider::new(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .default_headers(worker_headers(config)?)
+                .build()?,
+            &config.rag.worker_base_url,
+            &config.rag.embedding_model_version,
+        )),
+    };
+    let help_search =
+        rag::help::HelpSearchService::load(config.help.clone(), help_embedder)?.map(Arc::new);
+    Ok(help_search)
 }
 
 #[cfg(test)]

@@ -148,6 +148,9 @@ pub(crate) async fn emit_tool_events(
         content: outcome.content.clone(),
     })
     .await?;
+    for cite in &outcome.help_citations {
+        sink.emit(AgentEvent::HelpCitation(cite.clone())).await?;
+    }
     for cite in &outcome.citations {
         sink.emit(AgentEvent::Citation(cite.clone())).await?;
     }

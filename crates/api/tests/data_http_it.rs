@@ -165,6 +165,7 @@ fn config(db_url: &str) -> AppConfig {
             backend: VectorStoreBackend::Qdrant,
         },
         rag: rag::RagConfig::default(),
+        help: rag::help::HelpConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Stub,
             base_url: None,

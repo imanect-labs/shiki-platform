@@ -58,6 +58,7 @@ pub enum AgentEvent {
     },
     /// 引用（doc_search）。
     Citation(Citation),
+    HelpCitation(crate::help_cite::HelpCitation),
     /// ツールが保存した成果物（code_interpreter）。chat 側で FileRef へ写す。
     Artifact {
         tool_call_id: String,
@@ -65,54 +66,79 @@ pub enum AgentEvent {
     },
     /// 保存済みワークフローへの参照（emit_workflow・Task 10.13）。
     /// **保存パイプライン（V1〜V7）を通過し artifact 化された参照のみ**がここへ乗る。
-    WorkflowRef { workflow: serde_json::Value },
+    WorkflowRef {
+        workflow: serde_json::Value,
+    },
     /// 保存済みノートへの参照（save_note・Task 11P.5）。
     /// **StorageService へ作成済みのノードのみ**がここへ乗る（chat 側で note_ref へ写る）。
-    NoteRef { note: serde_json::Value },
+    NoteRef {
+        note: serde_json::Value,
+    },
     /// 未保存の下書きノート（save_note の下書き確定型・issue #282）。
     /// `{name, markdown}`。**まだ作成していない**下書き本文（chat 側で note_draft へ写り、
     /// フロントが下書きノート画面で詰めてから「ドライブに保存」で確定する）。
-    NoteDraft { draft: serde_json::Value },
+    NoteDraft {
+        draft: serde_json::Value,
+    },
     /// ページの訳文（web_translate・docs/agent/web-translate.md §4.6）。
     /// `{source_url, title, translated_title, target_lang, markdown, failed_chunks, source_images, …}`。
     /// chat 側で translation ブロックへ写る。**訳文はモデルの履歴へ戻さない**。
-    Translation { translation: serde_json::Value },
+    Translation {
+        translation: serde_json::Value,
+    },
     /// 未保存の下書きスライド（save_slide の下書き確定型・Task 11.3）。
     /// `{name, content}`（content=正規化スライド JSON 文字列）。**まだ作成していない**下書き
     /// （chat 側で slide_draft へ写り、フロントが下書きスライド画面で詰めてから確定する）。
-    SlideDraft { draft: serde_json::Value },
+    SlideDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
     /// `{name, csv}`（csv=CSV 本文）。**まだ作成していない**下書き
     /// （chat 側で csv_draft へ写り、フロントが下書き CSV 画面で詰めてから確定する）。
-    CsvDraft { draft: serde_json::Value },
+    CsvDraft {
+        draft: serde_json::Value,
+    },
     /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。`{name, skill}`。
     /// **まだ保存していない**下書き（chat 側で skill_draft へ写り、フロントがスキルエディタで
     /// 詰めてから人が保存する）。
-    SkillDraft { draft: serde_json::Value },
+    SkillDraft {
+        draft: serde_json::Value,
+    },
     /// AI が作成/編集した文書への参照（#381）。`{id, name, kind, version}`。
     /// **StorageService 上に実在するノードのみ**がここへ乗る（chat 側で document_ref へ写り、
     /// 「〜を編集しました（v3）→ 開く」カードになる）。作成系と編集系が共有する。
-    DocumentRef { document: serde_json::Value },
+    DocumentRef {
+        document: serde_json::Value,
+    },
     /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（D-204・T02）。
     /// `item = {kind, id, name, version}`。**保存に成功し、発話ユーザーが読めるものだけ**がここへ乗る
     /// （chat 側で builder_ref へ写り、参照カードになる）。ドライブのノードは [`Self::DocumentRef`]。
-    BuilderRef { item: serde_json::Value },
+    BuilderRef {
+        item: serde_json::Value,
+    },
     /// skill ツールの発動記録（#344 Task 10.11）。`skill = {skill_id, skill_version, name}`。
     /// **発話ユーザー権限で解決に成功した**発動のみが乗る（`generation_event` に append され
     /// replay 可能＝「何をいつ適用したか」の完全な列。message.content へは projection しない —
     /// instructions は ToolResult block として既に履歴に残る）。
-    SkillInvoked { skill: serde_json::Value },
+    SkillInvoked {
+        skill: serde_json::Value,
+    },
     /// サブエージェント委譲の記録（#391）。
     /// `subagent = {objective, boundary, steps, tool_calls, tokens}`。
     ///
     /// **`SkillInvoked` と同型**: `generation_event` へ append して replay/監査に残すが、
     /// `message.content` へは projection しない（親のコンテキストも履歴も汚さない）。子の生の
     /// イベント（取得本文・思考）は親へ一切流れない。
-    SubagentRun { subagent: serde_json::Value },
+    SubagentRun {
+        subagent: serde_json::Value,
+    },
     /// 計画が改訂された（全サブタスク列・revision 付き・Task 5.2）。
     PlanUpdated(Plan),
     /// 単一サブタスクの状態遷移（軽量更新・Task 5.2）。
-    SubtaskUpdated { id: String, status: SubtaskStatus },
+    SubtaskUpdated {
+        id: String,
+        status: SubtaskStatus,
+    },
     /// 予算上限への接近警告（種別・現在値・上限・Task 5.7）。
     BudgetWarning {
         kind: BudgetKind,

@@ -67,13 +67,13 @@ static JA_TOKENIZER: OnceLock<Result<Arc<LTokenizer>, String>> = OnceLock::new()
 
 /// [`JA_TOKENIZER`] を共有する Tantivy トークナイザ。複製は `Arc` の参照を増やすだけ。
 #[derive(Clone)]
-struct SharedJaTokenizer {
+pub(crate) struct SharedJaTokenizer {
     inner: Arc<LTokenizer>,
     token: tantivy::tokenizer::Token,
 }
 
 impl SharedJaTokenizer {
-    fn new() -> Result<Self, RagError> {
+    pub(crate) fn new() -> Result<Self, RagError> {
         let inner = JA_TOKENIZER
             .get_or_init(|| {
                 let dictionary = load_dictionary("embedded://ipadic")

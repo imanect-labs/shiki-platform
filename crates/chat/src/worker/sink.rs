@@ -151,6 +151,9 @@ impl WorkerSink {
                     ok: *ok,
                 });
             }
+            StreamEventKind::HelpCitation(c) => {
+                self.content.push(ContentBlock::HelpCitation(c.clone()));
+            }
             StreamEventKind::Citation(c) => {
                 self.content.push(ContentBlock::Citation(c.clone()));
             }

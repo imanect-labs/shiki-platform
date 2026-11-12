@@ -209,7 +209,7 @@ fn reads_material(name: &str) -> bool {
         return false;
     };
     match tool {
-        ToolName::DocSearch
+        ToolName::HelpSearch | ToolName::DocSearch
         | ToolName::DocRead
         | ToolName::WebSearch
         | ToolName::WebFetch

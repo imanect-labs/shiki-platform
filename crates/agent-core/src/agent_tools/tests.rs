@@ -181,6 +181,7 @@ async fn tool_internal_usage_is_reported_on_every_axis() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -228,6 +229,7 @@ async fn reads_run_in_parallel_and_keep_call_order() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -286,6 +288,7 @@ async fn reads_do_not_block_on_approval() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -338,6 +341,7 @@ async fn unapproved_write_is_rejected_in_place() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -388,6 +392,7 @@ async fn same_host_web_fetch_is_serialized() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -434,6 +439,7 @@ async fn concurrency_limit_is_honoured() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -467,6 +473,7 @@ async fn pre_authorized_write_runs_without_approver() {
         vec![call("1", "fs_write", "w")],
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )
@@ -520,6 +527,7 @@ async fn cancellation_still_reports_completed_reads() {
         calls,
         &mut plan,
         &mut CitationLedger::default(),
+        &mut crate::help_cite::HelpCitationLedger::default(),
         &mut sink,
         &mut detector,
     )

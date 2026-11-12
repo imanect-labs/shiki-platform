@@ -32,6 +32,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      help_corpus_sha:
+        description: 'ヘルプ原稿の12桁SHA（空ならmain）'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -111,7 +116,7 @@ jobs:
           pattern_of() {
             case "$1" in
               shiki-server)
-                echo '^(crates/|vendor/|migrations/|Cargo[.](toml|lock)$|rust-toolchain[.]toml$|[.]cargo/|deploy/Dockerfile$|web/editor-sandbox/|web/package[.]json$|web/pnpm-lock[.]yaml$|[.]github/workflows/images[.]yml$)' ;;
+                echo '^(crates/|vendor/|migrations/|Cargo[.](toml|lock)$|rust-toolchain[.]toml$|[.]cargo/|deploy/Dockerfile$|scripts/help-corpus/|ingestion-worker/|web/editor-sandbox/|web/package[.]json$|web/pnpm-lock[.]yaml$|[.]github/workflows/images[.]yml$)' ;;
               shiki-ingestion-worker)
                 echo '^(ingestion-worker/|[.]github/workflows/images[.]yml$)' ;;
               # web のイメージは gen:api (cargo run を 4 本) の生成物を前提に
@@ -353,6 +358,45 @@ jobs:
             [ -s "$f" ] || { echo "生成物が無い: $f"; exit 1; }
           done
           ls -la web/src/generated/
+
+      - name: ORAS を用意する
+        if: matrix.name == 'shiki-server'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download v1.3.0 --repo oras-project/oras --pattern 'oras_1.3.0_linux_amd64.tar.gz' --dir /tmp/oras
+          gh release download v1.3.0 --repo oras-project/oras --pattern 'oras_1.3.0_checksums.txt' --dir /tmp/oras
+          cd /tmp/oras
+          sha256sum --check --ignore-missing oras_1.3.0_checksums.txt
+          tar -xzf oras_1.3.0_linux_amd64.tar.gz oras
+          sudo install oras /usr/local/bin/oras
+      - name: ヘルプの公開コーパスを digest 固定で取得する
+        if: matrix.name == 'shiki-server'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HELP_SHA: ${{ inputs.help_corpus_sha }}
+        run: |
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          if [ -n "$HELP_SHA" ]; then
+            # SHA を明示したときは取得失敗をビルド失敗にする。
+            bash scripts/help-corpus/pull.sh "sha-$HELP_SHA" /tmp/help-source
+          elif ! bash scripts/help-corpus/pull.sh main /tmp/help-source; then
+            # 既定（:main）が未公開・読取権限なしのときは、ヘルプ無しでビルドを続ける。
+            # server は同梱コーパスが無ければ help_search を提示しない（docs/help-corpus.md）。
+            echo "::warning::ヘルプコーパス（shiki-help-corpus:main）を取得できないため、help_search 無しでビルドします"
+            echo "HELP_CORPUS_SKIP=1" >> "$GITHUB_ENV"
+          fi
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        if: matrix.name == 'shiki-server' && env.HELP_CORPUS_SKIP != '1'
+      - name: ヘルプの文書ベクトルを事前計算する
+        if: matrix.name == 'shiki-server' && env.HELP_CORPUS_SKIP != '1'
+        run: |
+          python3 -m unittest discover -s scripts/help-corpus -v
+          uv run --project ingestion-worker --frozen python scripts/help-corpus/embed.py /tmp/help-source deploy/help-corpus
+          echo "BUILD_ARGS<<HELP_ARGS" >> "$GITHUB_ENV"
+          printf '%s\n' "${BUILD_ARGS:-}" >> "$GITHUB_ENV"
+          echo "HELP_CORPUS_DIGEST=$(cat /tmp/help-source/oci-digest)" >> "$GITHUB_ENV"
+          echo HELP_ARGS >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 

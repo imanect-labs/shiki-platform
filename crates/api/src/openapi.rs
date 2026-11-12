@@ -445,6 +445,7 @@ use utoipa::{
         chat::UiActionValue,
         chat::ContentBlock,
         chat::Citation,
+        agent_core::help_cite::HelpCitation,
         chat::WebSource,
         chat::Attachment,
         chat::SelectionContext,

@@ -298,6 +298,7 @@ fn config(db_url: &str, tenant: &str) -> AppConfig {
             backend: VectorStoreBackend::Qdrant,
         },
         rag: rag::RagConfig::default(),
+        help: rag::help::HelpConfig::default(),
         llm: LlmConfig {
             backend: LlmBackend::Stub,
             ..Default::default()
