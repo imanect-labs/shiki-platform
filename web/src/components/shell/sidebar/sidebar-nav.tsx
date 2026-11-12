@@ -211,12 +211,10 @@ function DesktopNav({ onNavigate }: { onNavigate?: () => void }) {
           icon={APPROVALS_NAV.icon}
           label={APPROVALS_NAV.label}
           badge={approvals}
+          href={APPROVALS_NAV.href}
           active={isActivePath(APPROVALS_NAV.href, pathname)}
           className="col-span-3"
-          onClick={() => {
-            router.push(APPROVALS_NAV.href);
-            onNavigate?.();
-          }}
+          onClick={onNavigate}
         />
       </nav>
     </div>
@@ -295,11 +293,9 @@ function RailNav({ onNavigate }: { onNavigate?: () => void }) {
           label={APPROVALS_NAV.label}
           collapsed
           badge={approvals}
+          href={APPROVALS_NAV.href}
           active={isActivePath(APPROVALS_NAV.href, pathname)}
-          onClick={() => {
-            router.push(APPROVALS_NAV.href);
-            onNavigate?.();
-          }}
+          onClick={onNavigate}
         />
       </nav>
     </div>

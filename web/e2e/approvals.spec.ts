@@ -42,11 +42,12 @@ test("承認待ち: 申請 → 受信箱で承認 → ワークフローが「�
   await page.waitForURL(/\/approvals$/, { timeout: 15_000 });
 
   // サイドバーの「承認」に件数が出る（読み上げのラベルに件数を含める）。100 件以上は「99+」と出る。
+  // ほかのナビと同じくリンクで、中クリック・Ctrl+クリックで新しいタブに開ける（href が受信箱を指す）。
   await page.goto("/approvals");
   const badge = /承認（\d+\+? 件）/;
-  await expect(page.getByRole("link", { name: badge }).or(page.getByRole("button", { name: badge })).first()).toBeVisible({
-    timeout: 15_000,
-  });
+  const approvalsNav = page.getByRole("navigation", { name: "メインナビゲーション" }).getByRole("link", { name: badge });
+  await expect(approvalsNav).toBeVisible({ timeout: 15_000 });
+  await expect(approvalsNav).toHaveAttribute("href", "/approvals");
   const item = page.getByTestId("approval-item").filter({ hasText: s.tableName });
   await expect(item).toBeVisible();
   await expect(item).toContainText("経費申請の承認");
@@ -848,15 +849,17 @@ test("承認の件数のバッジ: 数え切れずに数えた分が 0 件なら
   const MAYBE = "承認（承認待ちがあるかもしれません）";
   await page.goto("/drive");
   const nav = page.getByRole("navigation", { name: "メインナビゲーション" });
-  // PC の広げた表示: 数の代わりに「…」。「0+」は出さない。
-  const wide = nav.getByRole("button", { name: MAYBE, exact: true });
+  // PC の広げた表示: 数の代わりに「…」。「0+」は出さない。ほかのナビと同じくリンク（新しいタブで開ける）。
+  const wide = nav.getByRole("link", { name: MAYBE, exact: true });
   await expect(wide).toBeVisible({ timeout: 15_000 });
+  await expect(wide).toHaveAttribute("href", "/approvals");
   await expect(wide).toHaveText(/^承認…$/);
   await expect(nav).not.toContainText("0+");
   // レール（折りたたみ）: 点を出し、読み上げ・ツールチップにも同じ語。
   await page.getByRole("button", { name: "サイドバーを折りたたむ" }).click();
-  const rail = nav.getByRole("button", { name: MAYBE, exact: true });
+  const rail = nav.getByRole("link", { name: MAYBE, exact: true });
   await expect(rail).toBeVisible();
+  await expect(rail).toHaveAttribute("href", "/approvals");
   await expect(rail.locator("span.rounded-full")).toHaveCount(1);
   await rail.hover();
   await expect(page.getByRole("tooltip")).toHaveText(MAYBE);
@@ -864,9 +867,9 @@ test("承認の件数のバッジ: 数え切れずに数えた分が 0 件なら
   // 1 件以上を数えたうえで打ち切ったら、今までどおり「N+」。
   count = { count: 3, more: true };
   await page.reload();
-  await expect(nav.getByRole("button", { name: "承認（3+ 件）", exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(nav.getByRole("link", { name: "承認（3+ 件）", exact: true })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "サイドバーを開く" }).click();
-  await expect(nav.getByRole("button", { name: "承認（3+ 件）", exact: true })).toHaveText(/^承認3\+$/);
+  await expect(nav.getByRole("link", { name: "承認（3+ 件）", exact: true })).toHaveText(/^承認3\+$/);
 
   // スマホのドロワのナビも同じ。
   count = { count: 0, more: true };
