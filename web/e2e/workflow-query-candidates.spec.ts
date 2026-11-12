@@ -5,7 +5,9 @@ import { cleanupQueue, deleteTableApi, loginViaKeycloak, removeWorkflowApi, stub
 /// 「データを調べる」（data.query）の結果の候補の e2e（BUG-108 の残り）:
 /// 件数（count）と集計の結果（groups）は、件数を数える設定（with_count）と集計（aggregate）を決めたときだけ値が入る。
 /// 決めていないときは、後ろのブロックの「差し込む」の候補に出さない（選ぶと値が無く、実行で失敗していた）。決めれば出る。
-/// 候補を出すかは、カタログの単一定義（OutputField の present_if）で決める。実行はしない（実 LLM を呼ばない）。
+/// 集計を決めると、結果は groups だけになり、見つかったレコード（items）も件数（count）も入らない（with_count を
+/// 決めても入らない）。そのときは items と count を候補に出さない（選ぶと保存で ir.unknown_output_path になる）。
+/// 候補を出すかは、カタログの単一定義（OutputField の present_if・absent_if）で決める。実行はしない（実 LLM を呼ばない）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -86,18 +88,30 @@ test("データを調べる: 件数と集計の結果は、決めたときだけ
   expect(plain).not.toContain("「申請を探す」の groups");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug108-candidates-plain-pc.png` });
 
-  // 件数を数え、集計を決めた版: 件数と集計の結果も出る。
+  // 件数を数える版: 件数も出る（集計の結果は出ない）。
   const put = await page.request.put(`/api/workflows/${id}`, {
     headers: await csrfHeaders(page),
-    data: {
-      expected_version: 1,
-      ir: ir(name, model, table, { limit: 50, with_count: true, aggregate: [{ metric: "count" }] }),
-    },
+    data: { expected_version: 1, ir: ir(name, model, table, { limit: 50, with_count: true }) },
   });
   expect(put.ok(), await put.text()).toBeTruthy();
   const counted = await insertCandidates(page, id);
-  expect(counted).toEqual(
-    expect.arrayContaining(["「申請を探す」の items", "「申請を探す」の count", "「申請を探す」の groups"]),
-  );
+  expect(counted).toEqual(expect.arrayContaining(["「申請を探す」の items", "「申請を探す」の count"]));
+  expect(counted).not.toContain("「申請を探す」の groups");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug108-candidates-counted-pc.png` });
+
+  // 件数を数え、集計も決めた版: 集計の結果だけが出る。集計のときは items も count も入らない（with_count を
+  // 決めても）ので、候補に出さない。
+  const agg = await page.request.put(`/api/workflows/${id}`, {
+    headers: await csrfHeaders(page),
+    data: {
+      expected_version: 2,
+      ir: ir(name, model, table, { limit: 50, with_count: true, aggregate: [{ metric: "count" }] }),
+    },
+  });
+  expect(agg.ok(), await agg.text()).toBeTruthy();
+  const aggregated = await insertCandidates(page, id);
+  expect(aggregated).toContain("「申請を探す」の groups");
+  expect(aggregated).not.toContain("「申請を探す」の items");
+  expect(aggregated).not.toContain("「申請を探す」の count");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug108-candidates-aggregated-pc.png` });
 });
