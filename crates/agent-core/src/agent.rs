@@ -30,7 +30,7 @@ use crate::event::{
 };
 use crate::loop_detect::LoopDetector;
 use crate::plan;
-use crate::profile::{AgentOptions, AgentOutcome};
+use crate::profile::{AgentOptions, AgentOutcome, StepBudget};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
@@ -112,12 +112,19 @@ pub async fn run_agent(
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
     // 剪定閾値はモデルの窓を天井にする（#529）。見積りは各ステップの実測 prompt で補正する。
-    let limits = crate::context::ContextLimits::resolve(
-        opts.context_soft_limit_tokens,
-        opts.context_keep_recent,
-        gateway.context_window_tokens(opts.model.as_deref()),
-        opts.max_tokens,
-    );
+    // 窓から空ける出力の上限は、予算を広げたら広げた値で引き直す（D-204）。
+    let window_tokens = gateway.context_window_tokens(opts.model.as_deref());
+    let resolve_limits = |max_output_tokens: Option<u32>| {
+        crate::context::ContextLimits::resolve(
+            opts.context_soft_limit_tokens,
+            opts.context_keep_recent,
+            window_tokens,
+            max_output_tokens,
+        )
+    };
+    let mut limits = resolve_limits(opts.max_tokens);
+    // 作成系の道具を呼んで予算を広げたか（この呼び出しの中での移り変わりを見るだけ・保存しない・D-204）。
+    let mut extended = false;
     // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
     // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
     // 実測済みなら（0 でも）その値を使う。
@@ -140,12 +147,28 @@ pub async fn run_agent(
         if sink.is_cancelled() {
             break AgentStop::Cancelled;
         }
+        // 作成系の道具を呼んでいれば、広げた予算と 1 応答の上限で回す（毎ステップ履歴から導く・D-204）。
+        let budget = opts.step_budget(&state.messages);
+        if budget.extended && !extended {
+            extended = true;
+            // 元の上限に対して出した警告を引きずらない（広げた上限に近づいたら出し直す）。
+            warned.clear();
+            limits = resolve_limits(budget.max_tokens);
+            tracing::info!(
+                step = state.spent.steps,
+                max_steps = budget.budget.max_steps,
+                max_fresh_tokens = ?budget.budget.max_tokens,
+                max_cost_usd_micros = ?budget.budget.max_cost_usd_micros,
+                max_response_tokens = ?budget.max_tokens,
+                "作成系の道具を呼んだので、予算を 1 回だけ広げた"
+            );
+        }
         // --- 予算ガード（ステップに入る前に判定・Task 5.7）。 ---
-        match opts.budget.check(&state.spent, Instant::now()) {
+        match budget.budget.check(&state.spent, Instant::now()) {
             // 上限で畳む前に、**ツールを外した 1 ターンだけ**回して成果物を書かせる。
             BudgetCheck::Exceeded(kind) => {
                 // 着地の最中に止められたら、予算超過ではなくユーザー停止として返す。
-                if land_on_budget(gateway, run, opts, &mut state, sink).await? {
+                if land_on_budget(gateway, run, opts, budget.max_tokens, &mut state, sink).await? {
                     break AgentStop::Cancelled;
                 }
                 break AgentStop::Budget(kind);
@@ -179,6 +202,7 @@ pub async fn run_agent(
             tool_search.as_ref(),
             run,
             opts,
+            &budget,
             approver,
             &mut state,
             sink,
@@ -247,6 +271,8 @@ async fn land_on_budget(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    // このステップの 1 応答の出力上限（予算を広げていれば広げた値・D-204）。
+    max_tokens: Option<u32>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
 ) -> Result<bool, AgentError> {
@@ -268,7 +294,7 @@ async fn land_on_budget(
             messages: state.messages.clone(),
             tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
             effort: opts.effort,
-            max_tokens: opts.max_tokens,
+            max_tokens,
             temperature: opts.temperature,
             session_id: opts.session_id.clone(),
             response_format: None,
@@ -348,7 +374,7 @@ async fn land_on_budget(
             crate::context_usage::ContextUsage::of_request(
                 gateway,
                 opts.model.as_deref(),
-                opts.max_tokens,
+                max_tokens,
                 opts.system.as_deref(),
                 [],
                 &state.messages,
@@ -375,6 +401,8 @@ async fn run_step(
     tool_search: Option<&crate::tool_search::ToolSearch>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    // このステップの予算と 1 応答の出力上限（予算を広げていれば広げた値・D-204）。
+    budget: &StepBudget<'_>,
     approver: Option<&dyn Approver>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
@@ -387,7 +415,7 @@ async fn run_step(
         messages: state.messages.clone(),
         tools: tool_defs.to_vec(),
         effort: opts.effort,
-        max_tokens: opts.max_tokens,
+        max_tokens: budget.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
@@ -507,7 +535,7 @@ async fn run_step(
         crate::context_usage::ContextUsage::of_request(
             gateway,
             opts.model.as_deref(),
-            opts.max_tokens,
+            budget.max_tokens,
             opts.system.as_deref(),
             llm_gateway::tool_loading::context_tools(tool_defs, &state.messages),
             &state.messages,
@@ -595,7 +623,7 @@ async fn run_step(
     // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
     // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
     if opts.profile.is_autonomous() {
-        append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
+        append_budget_observation(&mut result_blocks, &budget.budget, &state.spent);
     }
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,

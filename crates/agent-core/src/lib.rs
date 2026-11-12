@@ -48,7 +48,7 @@ pub mod workspace;
 
 pub use agent::{run_agent, AgentStop, RunContext};
 pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
-pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
+pub use budget::{Budget, BudgetCheck, BudgetExtension, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
 pub use context_usage::{ContextCategory, ContextCategoryUsage, ContextUsage};

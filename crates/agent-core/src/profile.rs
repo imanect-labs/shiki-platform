@@ -4,12 +4,13 @@
 //! 短ホライズン・安全ツール、自律版は長ホライズン・フルツール・予算・計画・剪定。コアロジックは
 //! 二重化しない（phase-5.md §5.1）。
 
+use std::borrow::Cow;
 use std::time::Instant;
 
 use llm_gateway::Effort;
 
 use crate::approval::ApprovalPolicy;
-use crate::budget::Budget;
+use crate::budget::{Budget, BudgetExtension};
 use crate::checkpoint::Checkpoint;
 use crate::plan::Plan;
 
@@ -71,6 +72,22 @@ pub struct AgentOptions {
     /// 会計の利用元の上書き（`None` はプロファイルとミニアプリの有無から決める）。ワークフローの
     /// agent.invoke は自律版のループでも `Workflow` として数える（BUG-6）。
     pub usage_source: Option<llm_gateway::UsageSource>,
+    /// 作成系の道具を初めて呼んだときに 1 回だけ広げる予算（D-53 の HD-4 (c)・D-204）。
+    ///
+    /// `None`（[`Self::chat`]・[`Self::autonomous`] の既定）は広げない。チャットのワーカーが通常の会話にだけ
+    /// 入れる（サブエージェント・ワークフローの agent.invoke・ミニアプリの AI には効かせない）。広げたかどうかは
+    /// 保存せず、毎ステップ履歴から導く（[`BudgetExtension`]）。
+    pub budget_extension: Option<BudgetExtension>,
+}
+
+/// このステップに当てる予算と 1 応答の出力上限（作成系の道具を呼んでいれば広げた値・D-204）。
+pub(crate) struct StepBudget<'a> {
+    /// 判定に使う予算。
+    pub(crate) budget: Cow<'a, Budget>,
+    /// 生成に渡す 1 応答の出力上限。
+    pub(crate) max_tokens: Option<u32>,
+    /// 広げた値か。
+    pub(crate) extended: bool,
 }
 
 /// tool search の設定（[`crate::tool_search`]）。
@@ -147,6 +164,7 @@ impl AgentOptions {
             session_id: None,
             tool_search: ToolSearchOptions::default(),
             usage_source: None,
+            budget_extension: None,
         }
     }
 
@@ -176,6 +194,30 @@ impl AgentOptions {
             session_id: None,
             tool_search: ToolSearchOptions::default(),
             usage_source: None,
+            budget_extension: None,
+        }
+    }
+
+    /// 履歴 `messages` から、このステップに当てる予算と 1 応答の出力上限を導く（D-204）。
+    ///
+    /// 作成系の道具の呼び出しが履歴にあれば広げた値、無ければ設定どおりの値。広げたことは保存しないので、
+    /// チェックポイントから再開しても同じ履歴から同じ値になる。
+    pub(crate) fn step_budget(&self, messages: &[llm_gateway::Message]) -> StepBudget<'_> {
+        match self
+            .budget_extension
+            .as_ref()
+            .filter(|ext| ext.called(messages))
+        {
+            Some(ext) => StepBudget {
+                budget: Cow::Owned(ext.extend(&self.budget)),
+                max_tokens: ext.extend_response_tokens(self.max_tokens),
+                extended: true,
+            },
+            None => StepBudget {
+                budget: Cow::Borrowed(&self.budget),
+                max_tokens: self.max_tokens,
+                extended: false,
+            },
         }
     }
 }
@@ -198,5 +240,79 @@ impl AgentOutcome {
     #[must_use]
     pub fn plan(&self) -> &Plan {
         &self.checkpoint.plan
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vocab::ToolName;
+    use llm_gateway::{Block, Message, Role};
+
+    fn extension() -> BudgetExtension {
+        BudgetExtension {
+            on_tools: vec![ToolName::EmitWorkflow],
+            max_steps: 24,
+            max_fresh_tokens: 600_000,
+            max_cost_usd_micros: 2_000_000,
+            max_response_tokens: 32_768,
+        }
+    }
+
+    fn called_emit() -> Vec<Message> {
+        vec![
+            Message::text(Role::User, "作って"),
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "c1".into(),
+                    name: "emit_workflow".into(),
+                    input: serde_json::json!({}),
+                }],
+            },
+        ]
+    }
+
+    /// 既定（チャット・自律）は広げない。サブエージェント・ワークフローの agent.invoke・ミニアプリの AI は
+    /// これらの既定から組むので、作成系の道具を呼んでも予算は変わらない（D-204）。
+    #[test]
+    fn profiles_do_not_extend_by_default() {
+        for opts in [
+            AgentOptions::chat(6),
+            AgentOptions::autonomous(50, None, 1_000, 1_000),
+            AgentOptions::default(),
+        ] {
+            assert!(opts.budget_extension.is_none());
+            let step = opts.step_budget(&called_emit());
+            assert!(!step.extended);
+            assert_eq!(step.budget.max_steps, opts.budget.max_steps);
+            assert_eq!(step.max_tokens, opts.max_tokens);
+        }
+    }
+
+    /// 呼び出しが履歴にあれば広げた値、無ければ設定どおりの値（毎ステップ履歴から導く）。
+    #[test]
+    fn step_budget_follows_the_history() {
+        let mut opts = AgentOptions::chat(6);
+        opts.max_tokens = Some(8192);
+        opts.budget.max_tokens = Some(300_000);
+        opts.budget.max_cost_usd_micros = Some(1_000_000);
+        opts.budget_extension = Some(extension());
+        let before = opts.step_budget(&called_emit()[..1]);
+        assert!(!before.extended);
+        assert!(matches!(before.budget, Cow::Borrowed(_)));
+        assert_eq!(
+            (before.budget.max_steps, before.max_tokens),
+            (6, Some(8192))
+        );
+        let after = opts.step_budget(&called_emit());
+        assert!(after.extended);
+        assert_eq!(after.budget.max_steps, 24);
+        assert_eq!(after.budget.max_tokens, Some(600_000));
+        assert_eq!(after.budget.max_cost_usd_micros, Some(2_000_000));
+        assert_eq!(after.max_tokens, Some(32_768));
+        // 設定そのものは書き換えない（保存しない）。
+        assert_eq!(opts.budget.max_steps, 6);
+        assert_eq!(opts.max_tokens, Some(8192));
     }
 }
