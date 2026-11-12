@@ -85,6 +85,25 @@ compose の Keycloak は `--import-realm`（既存 realm は `IGNORE_EXISTING`�
 realm を import 済みの dev DB には反映されない。Keycloak の DB（compose の postgres の `keycloak`
 DB）を作り直すか、管理コンソールの「Realm settings → User profile」で同じ設定を入れること。
 
+## 利用者の id（`sub`）とユーザーフェデレーション（D-205）
+
+shiki-server はアクセストークンの `sub` を、そのまま OpenFGA の利用者の id（`user:<tenant>|<sub>`）にする。`sub` に
+`:`・`#`・`|`・制御文字・空白を含む人は、ログイン・セッションの更新・アプリのゲートウェイで断る
+（`crates/authz/src/ident.rs` の `validate_user_id`）。ログインはログイン画面に「このアカウントは使えません。管理者に
+連絡してください。」を出し、ゲートウェイは 401 を返す。これらは OpenFGA の id の区切りの文字で、`:`・`#` を含む人は
+組織の member にならず、`|` を含む人は member にはなっても定期の照合で外れないため。
+
+- Keycloak の既定では `sub` は利用者の UUID なので、断られる人はいない。IdP 連携（Identity providers）で入る人も、
+  Keycloak に取り込まれて UUID になる。
+- **ユーザーフェデレーション（LDAP・Active Directory）では「Import users」を有効にする**（既定で有効）。管理コンソールの
+  「User federation → 対象のプロバイダー → Synchronization settings → Import users」。無効にすると Keycloak は利用者を
+  取り込まず、`sub` が `f:<プロバイダーの id>:<外部の id>` になって `:` で断られる。
+  - 後から有効にすると、その人は次のログインで取り込まれ、新しい UUID の `sub` になる（shiki では新しい利用者になる）。
+  - 有効かどうかは、管理 API の `GET /admin/realms/<realm>/components?type=org.keycloak.storage.UserStorageProvider`
+    の `config.importEnabled` で確かめられる（`["false"]` のプロバイダーの人が断られる）。
+- 定期の照合は、id が識別子に使えない人を飛ばし、回ごとに 1 行「id が識別子に使えない人を飛ばしました」を warn に
+  出す。この決まりより前にログインした人の OpenFGA のタプルは自動では外れないので、手で外す。
+
 ## ミニアプリのクライアント（`app-<アプリの id>-b1` / `-b2`・BUG-172）
 
 コードのミニアプリ（B1・B2）のクライアントは、この realm の JSON には無い。インストールのときに shiki-server が
