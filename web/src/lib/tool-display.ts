@@ -515,6 +515,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: quoted("query"),
   },
+  "drive.copy": {
+    icon: Files,
+    category: "write",
+    lead: objectOf("ファイル"),
+    verb: "複製",
+    suru: true,
+    nodeIdKey: "node_id",
+  },
   "drive.move": {
     icon: FolderInput,
     category: "write",
