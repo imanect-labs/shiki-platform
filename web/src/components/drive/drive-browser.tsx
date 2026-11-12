@@ -701,7 +701,7 @@ export function DriveBrowser() {
         open={dialog === "delete"}
         onOpenChange={(o) => (o ? null : closeDialog())}
         title={activeNode ? `「${activeNode.name}」をゴミ箱へ移動` : "削除"}
-        description="ゴミ箱からはいつでも復元できます。"
+        description="ゴミ箱から復元できます。"
         confirmLabel="ゴミ箱へ移動"
         destructive
         onConfirm={async () => {
