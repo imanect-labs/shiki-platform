@@ -5,8 +5,10 @@
 ///
 /// 中身は下見の口（`GET /workflows/try-preview`）を承認する人本人の権限で読む。起きること（`effects`）はサーバーが
 /// IR から導いたもので、ここに対応表を持たない（ブロックの名前は生成したカタログから引く）。表示のための読み取りで、
-/// 実行してよいかは起動の入口が改めて確かめる。フォルダ・ファイルの名前はサーバーが引かないので、ここで本人の権限で
-/// 引く（読めなければ名前を出さない）。
+/// 実行してよいかは起動の入口が承認の後に改めて確かめる。そのため、試運転できるか（`can_try`）は読んだ時点のもので、
+/// 画面に戻ってきたとき（focus・visibilitychange）に読み直す。閲覧のみでも「実行されない」と言い切らず、実データの
+/// 注意は常に出す（承認までに編集できるようになれば実行される）。フォルダ・ファイルの名前はサーバーが引かないので、
+/// ここで本人の権限で引く（読めなければ名前を出さない）。
 
 import {
   Bell,
@@ -16,6 +18,7 @@ import {
   Globe,
   Loader2,
   RotateCw,
+  ShieldCheck,
   Sparkles,
   Table2,
   Terminal,
@@ -32,6 +35,7 @@ import { breadcrumb } from "@/lib/storage";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { blockDisplayName } from "@/lib/workflow-block-name";
 import { fetchTryPreview, type TryPreview } from "@/lib/workflow-api";
+import { scopeLabel } from "@/lib/workflow-scopes";
 
 type Schemas = components["schemas"];
 
@@ -41,6 +45,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const LIST_LIMIT = 6;
 /// 入力の値 1 つを出す長さの上限。
 const VALUE_CHARS = 160;
+/// 画面に戻ってきたときに読み直す間隔の下限（ミリ秒）。
+const RELOAD_GAP_MS = 1_000;
 
 /// 道具が受ける入力（`crates/chat/src/workflow_try_tool`）。`input`・`trigger` は object か JSON の文字列。
 type TryInput = {
@@ -52,11 +58,19 @@ type TryInput = {
   rerun?: unknown;
 };
 
-/// 版の読み方は道具と同じ（整数か "2"・"v2"・1 以上）。道具が受けて、ここで読めない書き方は無い（逆はあっても、
-/// 道具が断るので「実行される」とは言わない側にずれる）。
+/// 版の読み方は道具（`TryRequest::parse`）と同じ: JSON の整数か、前後の空白と頭の v・V を除いて十進の整数として読める
+/// 文字列（"2"・"v2"・"+2"）で、1 以上。"0x2"・"1e0"・"2.0"・"v 2" は道具が断るので、ここも読まない。
+///
+/// JSON の 2.0 は JS では 2 と区別できないので、ここは読めて道具が断ることがある。ほかにも、ここで読めて道具が断る
+/// 書き方（予定の日時の読めない文字列など）は残る。そのときはカードが「試運転します」と出しても実行されない
+/// （fail-closed）。逆に、道具が受けてここで読めない書き方は作らない（「実行されません」と言って実行されないように）。
 function versionOf(v: unknown): number | null {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v.trim().replace(/^[vV]+/, "")) : NaN;
-  return Number.isInteger(n) && n >= 1 ? n : null;
+  if (typeof v === "number") return Number.isSafeInteger(v) && v >= 1 ? v : null;
+  if (typeof v !== "string") return null;
+  const s = v.trim().replace(/^[vV]+/, "");
+  if (!/^\+?\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
 }
 
 /// object か JSON の文字列の object を読む（道具の `accept_object_args` と同じ受け方）。読めなければ null。
@@ -124,19 +138,33 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
   const trigger = p.trigger === undefined || p.trigger === null ? null : objectOf(p.trigger);
   const scheduledAt = typeof p.scheduled_at === "string" && p.scheduled_at.trim() ? p.scheduled_at.trim() : null;
   const rerun = p.rerun === true;
-  // 道具が起動を断る入力（ワークフロー・版が無い）は、口を読まずにそう言う。id かどうかは道具と同じ読み方をする口に
-  // 任せる（ここで UUID の書き方を決め打ちすると、道具が受ける書き方を「実行されません」と言い得る）。
+  // 道具が起動を断る入力（ワークフロー・版が無い・入力・きっかけ・予定の日時が読めない形）は、口を読まずにそう言う。
+  // 読み方は道具（`TryRequest::parse`・`accept_object_args`）と同じ: 入力・きっかけは省く・null・object・object に
+  // なる JSON の文字列を受け、予定の日時は省く・null・文字列を受ける。id かどうかは道具と同じ読み方をする口に任せる
+  // （ここで UUID の書き方を決め打ちすると、道具が受ける書き方を「実行されません」と言い得る）。
   const missingArg: string | null = !workflowId
     ? "試運転するワークフローが指定されていないため、承認しても実行されません。"
     : version === null
-      ? "試運転する版が指定されていないため、承認しても実行されません。"
-      : null;
+      ? p.version === undefined || p.version === null
+        ? "試運転する版が指定されていないため、承認しても実行されません。"
+        : "試運転する版が正しく指定されていないため、承認しても実行されません。"
+      : p.input != null && runInput === null
+        ? "入力が読めない形で渡されているため、承認しても実行されません。"
+        : p.trigger != null && trigger === null
+          ? "きっかけの内容が読めない形で渡されているため、承認しても実行されません。"
+          : p.scheduled_at != null && typeof p.scheduled_at !== "string"
+            ? "予定の日時が読めない形で渡されているため、承認しても実行されません。"
+            : null;
 
   const [state, setState] = React.useState<State>({ kind: "loading" });
   const [attempt, setAttempt] = React.useState(0);
+  /// 最後に読みに行った時刻（focus と visibilitychange は続けて来るので、続けて読み直さない）。
+  const loadedAt = React.useRef(0);
+  const fetchable = !missingArg;
   React.useEffect(() => {
-    if (version === null || !workflowId) return;
+    if (!fetchable || version === null || !workflowId) return;
     let active = true;
+    loadedAt.current = Date.now();
     void (async () => {
       try {
         const preview = await fetchTryPreview(workflowId, version);
@@ -155,7 +183,25 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
     return () => {
       active = false;
     };
-  }, [workflowId, version, attempt]);
+  }, [fetchable, workflowId, version, attempt]);
+
+  // 承認するかを決めるのは画面に戻ってきた後なので、戻ってきたら読み直す（開いている間に共有の権限が変わると、
+  // 試運転できるかが変わる・起動の入口は承認の時点の権限で決める）。読み直す間は今の表示を残す。
+  React.useEffect(() => {
+    if (!fetchable) return;
+    const reload = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - loadedAt.current < RELOAD_GAP_MS) return;
+      loadedAt.current = Date.now();
+      setAttempt((n) => n + 1);
+    };
+    window.addEventListener("focus", reload);
+    document.addEventListener("visibilitychange", reload);
+    return () => {
+      window.removeEventListener("focus", reload);
+      document.removeEventListener("visibilitychange", reload);
+    };
+  }, [fetchable]);
 
   const blocked =
     missingArg ??
@@ -192,10 +238,11 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
   if (state.kind === "missing") {
     return (
       <div className="mb-2 space-y-2 text-[13px]" data-testid="try-workflow-summary" data-state="missing">
+        {/* 口はワークフローが無い・見えない・版が無いを同じ 404 にする（在否を明かさない）ので、言い分けない。 */}
         <Notice tone="danger" icon={CircleAlert}>
-          ワークフローを読めませんでした。
+          ワークフローの v{version} を読めませんでした。
           <span className="mt-0.5 block text-[12px] font-normal text-muted-foreground">
-            無いか、見る権限がありません。送る内容（JSON）を確かめてから決めてください。
+            このワークフローか、その版が無いか、見る権限がありません。送る内容（JSON）を確かめてから決めてください。
           </span>
         </Notice>
       </div>
@@ -229,8 +276,8 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
   if (state.kind !== "ready") return null;
   const { preview, places } = state;
   const person = (id: string, mine: boolean) => (mine ? "自分" : (cachedUserName(id) ?? id));
+  // 読めない入力・きっかけは上の `blocked` で返している。
   const inputEntries = Object.entries(runInput ?? {});
-  const hasTrigger = p.trigger !== undefined && p.trigger !== null;
   return (
     <div className="mb-2 space-y-2.5 text-[13px]" data-testid="try-workflow-summary" data-state="ready">
       {preview.can_try ? (
@@ -238,9 +285,13 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
           ワークフロー「<b>{preview.name}</b>」の v{preview.version} を試運転します。
         </p>
       ) : (
-        // 閲覧のみは起動の入口が断る。決め手なので先頭で言う（下は何を頼まれたかの記録として残す）。
+        // 閲覧のみは起動の入口が断る。決め手なので先頭で言う（下は何を頼まれたかの記録として残す）。入口は承認の時点の
+        // 権限で決めるので、「実行されない」とは言い切らない（承認までに編集できるようになれば実行される）。
         <Notice tone="danger" icon={CircleAlert} testId="try-workflow-view-only">
-          閲覧のみのワークフローは試運転できません。承認しても実行されません。
+          今は閲覧のみのため、試運転できません。却下してください。
+          <span className="mt-0.5 block text-[12px] font-normal text-muted-foreground">
+            承認するまでに編集できるようになった場合は、承認すると実行されます。
+          </span>
         </Notice>
       )}
       <dl className="divide-y rounded-lg border bg-card/60 text-[12px]">
@@ -272,9 +323,7 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
       </dl>
 
       <Section title="入力">
-        {runInput === null ? (
-          <p className="text-[12px] text-muted-foreground">入力を読めませんでした（送る内容（JSON）で確かめてください）。</p>
-        ) : inputEntries.length === 0 ? (
+        {inputEntries.length === 0 ? (
           <p className="text-[12px] text-muted-foreground">なし</p>
         ) : (
           <dl className="divide-y rounded-lg border bg-card/60 text-[12px]">
@@ -285,13 +334,11 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
             ))}
           </dl>
         )}
-        {hasTrigger || scheduledAt ? (
+        {trigger || scheduledAt ? (
           <dl className="mt-1.5 divide-y rounded-lg border bg-card/60 text-[12px]">
-            {hasTrigger ? (
+            {trigger ? (
               <Row label="きっかけ">
-                <span className="font-medium text-foreground">
-                  {trigger ? valueText(trigger) : "読めない内容（送る内容（JSON）で確かめてください）"}
-                </span>
+                <span className="font-medium text-foreground">{valueText(trigger)}</span>
               </Row>
             ) : null}
             {scheduledAt ? (
@@ -310,14 +357,13 @@ export function TryWorkflowSummary({ input }: { input: unknown }) {
         <Effects preview={preview} places={places} />
       </Section>
 
-      {preview.can_try ? (
-        <Notice tone="warn" icon={TriangleAlert} testId="try-workflow-real-data">
-          結果は実データとして残ります。
-          <span className="mt-0.5 block text-[12px] font-normal text-foreground/70">
-            試運転でも、書き込み・送信・レコードの作成は本当に行われます。
-          </span>
-        </Notice>
-      ) : null}
+      {/* 閲覧のみでも出す（承認までに編集できるようになれば、承認すると実行される）。 */}
+      <Notice tone="warn" icon={TriangleAlert} testId="try-workflow-real-data">
+        結果は実データとして残ります。
+        <span className="mt-0.5 block text-[12px] font-normal text-foreground/70">
+          試運転でも、書き込み・送信・レコードの作成は本当に行われます。
+        </span>
+      </Notice>
     </div>
   );
 }
@@ -339,6 +385,14 @@ const COMPUTE_LABEL: Record<Schemas["ComputeKind"], string> = {
   agent_code: "AI がコードを書いて実行する",
   skill: "スキルを使う",
 };
+
+/// スキルの参照（`skill:<名前>@<版>`・保存のときの検証で形が決まる）は、エディタと同じ「名前（v版）」で出す。
+const SKILL_REF_RE = /^skill:([^@]+)@(.+)$/;
+
+function computeText(c: Schemas["ComputeEffect"]): string {
+  const m = c.kind === "skill" && c.skill ? SKILL_REF_RE.exec(c.skill) : null;
+  return m ? `スキル「${m[1]}」（v${m[2]}）を使う` : COMPUTE_LABEL[c.kind];
+}
 
 function writeLine(w: Schemas["WriteEffect"], i: number, places: Map<string, string | null>): Line {
   const noun = TARGET_NOUN[w.target];
@@ -395,11 +449,20 @@ function Effects({ preview, places }: { preview: TryPreview; places: Map<string,
       .join("・");
     return { key: `o${i}`, icon: Globe, main: <b>{where}</b>, sub };
   });
-  const compute: Line[] = e.compute.map((c, i) => ({
-    key: `c${i}`,
-    icon: Terminal,
-    main: c.kind === "skill" && c.skill ? `スキル「${c.skill}」を使う` : COMPUTE_LABEL[c.kind],
-  }));
+  const compute: Line[] = e.compute.map((c, i) => ({ key: `c${i}`, icon: Terminal, main: computeText(c) }));
+  // スクリプト・スキルの中の操作（`Shiki.*` の書き込み・送信など）は上の一覧に出ないので、使ってよい操作の天井
+  // （宣言スコープ）を出す。スキルは、さらにスキルの宣言で狭まる。
+  const hasScript = e.compute.some((c) => c.kind === "script");
+  const hasSkill = e.compute.some((c) => c.kind === "skill");
+  const scopes: Line[] =
+    hasScript || hasSkill
+      ? e.declared_scopes.map((s) => ({ key: `d${s}`, icon: ShieldCheck, main: scopeLabel(s) }))
+      : [];
+  const scopesNote = hasScript
+    ? hasSkill
+      ? "スクリプトとスキルは、あなたの権限で次の操作を行えます（スキルは、この中でスキルが決めた範囲だけ）。書く先や送り先は、中身で決まります。"
+      : "スクリプトは、あなたの権限で次の操作を行えます。書く先や送り先は、スクリプトの中身で決まります。"
+    : "スキルは、あなたの権限で、次の操作のうちスキルが決めた範囲を行えます。書く先や送り先は、スキルの中身で決まります。";
   const starts: Line[] = e.starts.map((s, i) => {
     const found = s.workflow_name ? preview.starts.find((t) => t.name === s.workflow_name) : undefined;
     return {
@@ -431,10 +494,12 @@ function Effects({ preview, places }: { preview: TryPreview; places: Map<string,
     icon: CircleAlert,
     main: blockDisplayName({ type: o.node_type, label: null }),
   }));
-  const groups: { title: string; lines: Line[] }[] = [
+  // 中でできることは天井なので、上限で切らずに全部出す（`all`）。
+  const groups: { title: string; lines: Line[]; note?: string; testId?: string; all?: boolean }[] = [
     { title: "書き込む先", lines: writes },
     { title: "外への送信", lines: outbound },
     { title: "コード・スキルの実行", lines: compute },
+    { title: "スクリプト・スキルの中でできること", lines: scopes, note: scopesNote, testId: "try-workflow-scopes", all: true },
     { title: "起動するワークフロー", lines: starts },
     { title: "使う AI のモデル（費用がかかります）", lines: models },
     { title: "人へのお知らせ", lines: notices },
@@ -446,10 +511,11 @@ function Effects({ preview, places }: { preview: TryPreview; places: Map<string,
   return (
     <div className="space-y-1.5" data-testid="try-workflow-effects">
       {groups.map((g) => (
-        <div key={g.title}>
+        <div key={g.title} data-testid={g.testId}>
           <p className="text-[11px] font-medium text-muted-foreground">{g.title}</p>
+          {g.note ? <p className="text-[11px] text-muted-foreground">{g.note}</p> : null}
           <ul className="mt-0.5 space-y-0.5">
-            {g.lines.slice(0, LIST_LIMIT).map((l) => (
+            {(g.all ? g.lines : g.lines.slice(0, LIST_LIMIT)).map((l) => (
               <li key={l.key} className="flex items-start gap-1.5 text-[12px]">
                 <l.icon className="mt-[2px] size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
@@ -458,7 +524,7 @@ function Effects({ preview, places }: { preview: TryPreview; places: Map<string,
                 </span>
               </li>
             ))}
-            {g.lines.length > LIST_LIMIT ? (
+            {!g.all && g.lines.length > LIST_LIMIT ? (
               <li className="pl-5 text-[12px] text-muted-foreground">ほか {g.lines.length - LIST_LIMIT} 件</li>
             ) : null}
           </ul>
