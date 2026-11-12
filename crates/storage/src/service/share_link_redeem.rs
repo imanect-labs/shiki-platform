@@ -285,13 +285,31 @@ impl StorageService {
     }
 
     /// `lock_node` 取得後にリンクを再読みし、redeem を許してよいかを確定する（#376）。
-    /// active でない／パスワードハッシュが差し替わった／行が破損している場合は `None`（一律 403）。
+    /// ノードが無い（完全に削除された）／active でない／パスワードハッシュが差し替わった／行が破損している場合は
+    /// `None`（一律 403）。
+    ///
+    /// 先にノードの行を `FOR KEY SHARE` で Tx の終わりまで押さえ、完全削除（node の行を `FOR UPDATE` で押さえて
+    /// 消す・`purge`）と直列にする。完全削除が先なら行が無くて断り、redeem が先なら完全削除はこの commit
+    /// （台帳の行とタプルを書いた後）を待ってから、台帳の行を消してタプルを片付ける（消したノードに via_link の
+    /// タプルと台帳の行を残さない）。名前の変更・内容の更新（`FOR UPDATE` を取らない UPDATE）とは待ち合わない。
+    /// ロックの順は share_link: の advisory lock → node → 監査のチェーン（完全削除は share_link: を取らない）。
     async fn reverify_redeem_locked(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         ctx: &AuthContext,
         c: &RedeemCandidate,
     ) -> Result<Option<LockedLink>, StorageError> {
+        let node: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM node WHERE id = $1 AND tenant_id = $2 AND org = $3 FOR KEY SHARE",
+        )
+        .bind(c.node_id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if node.is_none() {
+            return Ok(None);
+        }
         let row: Option<LockedRow> = sqlx::query_as(
             "SELECT kind, audience, role, expires_at, password_hash FROM node_share_link \
              WHERE link_id = $1 AND tenant_id = $2 AND org = $3 \

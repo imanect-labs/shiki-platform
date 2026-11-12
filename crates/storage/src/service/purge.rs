@@ -369,6 +369,8 @@ impl StorageService {
         ids: &[Uuid],
     ) -> Result<(), StorageError> {
         // 共有リンクの台帳（外部キーは無い・0055）。redeem で書いた per-user のタプルは、ノードのタプルの片付けで外れる。
+        // redeem はノードの行を FOR KEY SHARE で押さえるので（`share_link_redeem`）、押さえた後にここで消す間に新しい
+        // 台帳の行は入らない。
         sqlx::query("DELETE FROM node_share_link_grant WHERE tenant_id = $1 AND node_id = ANY($2)")
             .bind(ctx.tenant_id())
             .bind(ids)
