@@ -159,8 +159,15 @@ test("コマンド宣言の無い自作スキルも / と「スキルを検索�
   await expect(option).not.toContainText(`/${uniq}`);
   await input.fill("");
 
-  // 「+」の「スキルを検索」は入力欄の先頭に `/` を入れて補完を開く。書きかけの本文は残る。
+  // 「+」の「スキルを検索」は入力欄の先頭に `/` を入れて補完を開く。書きかけの本文は残り、
+  // Esc でやめると入れた `/` 行だけが外れる。
   await input.fill("今週分をまとめて");
+  await page.getByRole("button", { name: "追加メニューを開く" }).click();
+  await page.getByTestId("composer-search-skills").click();
+  await expect(page.getByTestId("slash-command-menu")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
+  await expect(input).toHaveText("今週分をまとめて");
   await page.getByRole("button", { name: "追加メニューを開く" }).click();
   await page.getByTestId("composer-search-skills").click();
   await expect(page.getByTestId("slash-command-menu")).toBeVisible();

@@ -108,10 +108,16 @@ export function toSuggestions(items: SkillCatalogItem[]): SlashSuggestion[] {
   return out;
 }
 
-/// 候補・ピルの表示名。コマンド宣言つきは `/<token>`、無いものはスキル名
-/// （`/` を付けない＝打ち込んで呼べるコマンドではないことを見た目でも区別する）。
+/// 候補・ピルの表示名。コマンド宣言つきは `/<token>`、無いものはスキル名から先頭の `/` を除いたもの
+/// （スキル名は自由文字列なので、`/deep-research auto` のような名前で別コマンドを装わせない。
+/// 区別は表示側の「スキル」バッジも担う）。
 export function commandLabel(c: { token: string; skillName: string }): string {
-  return c.token ? `/${c.token}` : c.skillName;
+  return c.token ? `/${c.token}` : undeclaredName(c.skillName);
+}
+
+/// 宣言の無いスキルの表示名（先頭の `/` と空白を除く。空になったら「スキル」）。
+function undeclaredName(skillName: string): string {
+  return skillName.replace(/^[\s/／]+/, "") || "スキル";
 }
 
 const norm = (s: string) => s.normalize("NFKC").toLowerCase();
@@ -119,13 +125,17 @@ const norm = (s: string) => s.normalize("NFKC").toLowerCase();
 /// 入力欄の先頭がコマンド入力中かを判定し、絞り込み済みの候補を返す。
 ///
 /// 補完を出すのは**先頭が `/` のときだけ**（文中の `/` は URL・パスなので拾わない）。
-/// 絞り込むのは **1 行目だけ**（「スキルを検索」は書きかけの本文を 2 行目以降に残して `/` を入れる）。
+/// `firstLineOnly` のときは **1 行目だけ**で絞る（「スキルを検索」は書きかけの本文を 2 行目以降に
+/// 残して `/` を入れる）。
 /// コマンド宣言つきは token の前方一致、宣言の無いものはスキル名の部分一致で拾う。
 export function matchSuggestions(
   value: string,
   suggestions: SlashSuggestion[],
+  firstLineOnly = false,
 ): SlashSuggestion[] | null {
   if (!value.startsWith("/")) return null;
+  // 通常は改行が入ったら本文の一部（コマンドではない）。
+  if (!firstLineOnly && value.includes("\n")) return null;
   const typed = value.slice(1).split("\n", 1)[0];
   const lower = typed.toLowerCase();
   const name = norm(typed).trim();
@@ -173,7 +183,7 @@ export function composeText(command: ActiveCommand | null, body: string): string
   const text = body.trim();
   if (!command) return text;
   // 宣言の無いスキルはリテラルを付けない（起動は skill のピンが担う）。本文が空ならスキル名を送る。
-  if (!command.token) return text || command.skillName;
+  if (!command.token) return text || undeclaredName(command.skillName);
   return text ? `/${command.token} ${text}` : `/${command.token}`;
 }
 

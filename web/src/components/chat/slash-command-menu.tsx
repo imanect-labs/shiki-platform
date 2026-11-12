@@ -16,6 +16,7 @@ import { Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { commandLabel, type SlashSuggestion } from "@/lib/slash-command";
+import { UndeclaredBadge } from "./skill-browser";
 
 /// listbox / option の DOM id（textarea の aria-controls / aria-activedescendant と対にする）。
 export const SLASH_LISTBOX_ID = "slash-command-listbox";
@@ -83,7 +84,9 @@ export function SlashCommandMenu({
               <span className="truncate text-sm font-medium text-foreground">{commandLabel(s)}</span>
               {s.token ? (
                 <span className="shrink-0 text-[11px] text-muted-foreground">{s.skillName}</span>
-              ) : null}
+              ) : (
+                <UndeclaredBadge />
+              )}
             </span>
             <span className="mt-0.5 block line-clamp-2 text-[12px] leading-relaxed text-muted-foreground">
               {s.summary}

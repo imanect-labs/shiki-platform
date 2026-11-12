@@ -50,6 +50,16 @@ export function useRankedSkills(skills: SlashSuggestion[], open: boolean): Slash
   }, [skills, recent]);
 }
 
+/// コマンド宣言の無いスキルの印（`/コマンド` ではなくスキル名で並んでいることを示し、
+/// 名前で別のコマンドを装わせない）。
+export function UndeclaredBadge() {
+  return (
+    <span className="shrink-0 rounded border border-border px-1 text-[10.5px] leading-4 text-muted-foreground">
+      スキル
+    </span>
+  );
+}
+
 /// スキル 1 行（`/コマンド`・スキル名・説明）。
 export function SkillRow({
   skill,
@@ -76,7 +86,9 @@ export function SkillRow({
           {/* コマンドにはどのスキルかを添える（同じコマンド名を別スキルが宣言できるため）。 */}
           {skill.token ? (
             <span className="shrink-0 truncate text-[11.5px] text-muted-foreground">{skill.skillName}</span>
-          ) : null}
+          ) : (
+            <UndeclaredBadge />
+          )}
         </span>
         <span className="mt-0.5 block line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">
           {skill.summary}

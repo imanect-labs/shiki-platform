@@ -310,13 +310,17 @@ const ScopedComposer = React.memo(function ScopedComposer({
 
   // 「スキルを検索」で開いた補完の最中か。確定済みのピルがあっても補完を出し、選べば差し替え、
   // やめればピルはそのまま残る（検索を始めただけで選んでいたスキルを失わない）。
-  const [searchingSkill, setSearchingSkill] = React.useState(false);
+  // "inserted" は `/` 行をこちらで入れた（やめる・選ばずに送るときは外す）、"typed" は既に `/` で
+  // 始まっていた本文をそのまま検索語にした（外さない）。
+  const [searchingSkill, setSearchingSkill] = React.useState<false | "inserted" | "typed">(false);
   React.useEffect(() => {
     if (searchingSkill && !value.startsWith("/")) setSearchingSkill(false);
   }, [searchingSkill, value]);
   // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
   const slashHits =
-    (command && !searchingSkill) || slashDismissed ? null : matchSuggestions(value, suggestions);
+    (command && !searchingSkill) || slashDismissed
+      ? null
+      : matchSuggestions(value, suggestions, searchingSkill !== false);
   const slashOpen = (slashHits?.length ?? 0) > 0;
   const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
 
@@ -340,23 +344,33 @@ const ScopedComposer = React.memo(function ScopedComposer({
     setSearchingSkill(false);
   };
 
+  /// 「スキルを検索」の 1 行目（`/` と検索語）を外した残り＝書きかけの本文。
+  const dropSearchLine = (v: string) => {
+    const nl = v.indexOf("\n");
+    return nl < 0 ? "" : v.slice(nl + 1).replace(/^\n+/, "");
+  };
+
   /// 「スキルを検索」: 入力欄の先頭に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
   /// （探す手段を `/` の補完 1 つに揃える）。書きかけの本文は 2 行目以降に**見えたまま**残す
   /// （別に退避すると、選ばずに送る・画面を離れる経路で本文を失う）。補完は 1 行目だけで絞る。
   const startSkillSearch = () => {
     const body = value.trim() ? value : "";
-    setSearchingSkill(true);
+    setSearchingSkill(body.startsWith("/") ? "typed" : "inserted");
     setSlashDismissed(false);
     setSlashIndex(0);
+    // 既に `/` で始まっている（検索中・打ちかけのコマンド）なら行を足さず、その 1 行目で探す
+    // （足すと、選んだあとに古い `/…` 行が本文の先頭に上がってコマンドとして送られる）。
     // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
-    setValue(body ? `/\n\n${body}` : "/");
+    if (!body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
     // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の直後へ置く。
     requestAnimationFrame(() => {
       const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
       if (!el) return;
       el.focus({ preventScroll: true });
       if (el instanceof HTMLTextAreaElement) {
-        el.setSelectionRange(1, 1);
+        const end = el.value.indexOf("\n");
+        const pos = end < 0 ? el.value.length : end;
+        el.setSelectionRange(pos, pos);
         return;
       }
       // Markdown 入力（contenteditable）: 先頭のブロックの末尾へ。
@@ -371,9 +385,11 @@ const ScopedComposer = React.memo(function ScopedComposer({
     if (disabled || uploading) return;
     // 補完で確定していなくても、既知のコマンドが直接打たれていれば拾う（#387・Codex P2）。
     // 拾わないと skill のピン処理を通らず、コマンドがただのテキストとして流れる。
-    const typed = command ? null : resolveTypedCommand(value, suggestions);
+    // 「スキルを検索」の途中で（選ばずに）送るときは、入れた `/` 行を本文に含めない。
+    const current = searchingSkill === "inserted" ? dropSearchLine(value) : value;
+    const typed = command || searchingSkill === "inserted" ? null : resolveTypedCommand(current, suggestions);
     const active = command ?? (typed ? toActiveCommand(typed.suggestion) : null);
-    const body = typed ? typed.rest : value;
+    const body = typed ? typed.rest : current;
     const text = composeText(active, body);
     if (!text) return;
     // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
@@ -404,6 +420,13 @@ const ScopedComposer = React.memo(function ScopedComposer({
       return;
     }
     if (!slashOpen) {
+      // 「スキルを検索」で一致が無いまま Esc: 入れた `/` 行を外して本文に戻す。
+      if (e.key === "Escape" && searchingSkill === "inserted") {
+        e.preventDefault();
+        setValue(dropSearchLine(value));
+        setSearchingSkill(false);
+        return;
+      }
       // `/` を打ち直したら再び候補を出す。
       if (e.key !== "Escape") setSlashDismissed(false);
       return;
@@ -423,6 +446,12 @@ const ScopedComposer = React.memo(function ScopedComposer({
       if (activeSlash) pickSuggestion(activeSlash);
     } else if (e.key === "Escape") {
       e.preventDefault();
+      if (searchingSkill) {
+        // 検索をやめる: 入れた `/` 行を外して本文だけに戻す（ピルはそのまま）。
+        if (searchingSkill === "inserted") setValue(dropSearchLine(value));
+        setSearchingSkill(false);
+        return;
+      }
       setSlashDismissed(true);
     }
   };
