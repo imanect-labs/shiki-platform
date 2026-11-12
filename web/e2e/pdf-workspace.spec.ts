@@ -1980,6 +1980,17 @@ test("セル選択の矩形化とPDF読み込みは上限を展開前に確認�
   expect(() => fineContent(units, [0, 0, 10, 10], "cell")).toThrow(
     "大きすぎます",
   );
+  const sparse = [0, 600].map((row) => ({
+    kind: "cell" as const,
+    row,
+    column: 0,
+    table: 0,
+    text: "x",
+    bbox: [0, 0, 10, 10] as [number, number, number, number],
+  }));
+  expect(() => fineContent(sparse, [0, 0, 10, 10], "cell")).toThrow(
+    "大きすぎます",
+  );
 });
 
 test("削除ページへの内部リンクから本文を出力へコピーしない", async () => {
@@ -2427,4 +2438,151 @@ test("書式が異なるABセルを、OCR由来の別列AとBへ割り当てな�
   await page.getByRole("button", { name: "自由範囲", exact: true }).click();
   await dragRegion(page, 1, [20 / 400, 70 / 400, 390 / 400, 130 / 400]);
   await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+});
+
+test("ページ並べ替えで中間Pagesから継承した寸法・回転・文字リソースを保つ", async () => {
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([240, 360]);
+  p.drawText("Inherited text");
+  const second = pdf.addPage([100, 150]);
+  const root = pdf.catalog.Pages();
+  const child = pdf.context.obj({
+    Type: PDFName.of("Pages"),
+    Parent: pdf.catalog.get(PDFName.of("Pages")),
+    Kids: [p.ref],
+    Count: 1,
+    Resources: p.node.Resources(),
+    MediaBox: [0, 0, 240, 360],
+    CropBox: [10, 20, 220, 340],
+    Rotate: 90,
+  });
+  const childRef = pdf.context.register(child);
+  p.node.set(PDFName.of("Parent"), childRef);
+  for (const name of ["Resources", "MediaBox", "CropBox", "Rotate"])
+    p.node.delete(PDFName.of(name));
+  root.set(PDFName.of("Kids"), pdf.context.obj([childRef, second.ref]));
+  const bytes = await pdf.save();
+  const out = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 2,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [1, 0],
+    ),
+  );
+  const kept = out.getPage(1);
+  expect(kept.getSize()).toEqual({ width: 240, height: 360 });
+  expect(kept.getCropBox()).toEqual({ x: 10, y: 20, width: 210, height: 320 });
+  expect(kept.getRotation().angle).toBe(90);
+  expect(kept.node.Resources()!.has(PDFName.of("Font"))).toBe(true);
+});
+
+test("メッシュShadingストリームの参照する色空間をページ削除後も保つ", async () => {
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([200, 200]);
+  pdf.addPage([200, 200]);
+  const shading = pdf.context.register(
+    pdf.context.flateStream(new Uint8Array(), {
+      ShadingType: 4,
+      ColorSpace: PDFName.of("CS1"),
+      BitsPerCoordinate: 8,
+      BitsPerComponent: 8,
+      BitsPerFlag: 8,
+      Decode: [0, 200, 0, 200, 0, 1, 0, 1, 0, 1],
+    }),
+  );
+  p.node.set(
+    PDFName.of("Resources"),
+    pdf.context.obj({
+      ColorSpace: { CS1: PDFName.of("DeviceRGB") },
+      Pattern: {
+        P1: { Type: PDFName.of("Pattern"), PatternType: 2, Shading: shading },
+      },
+    }),
+  );
+  p.node.set(
+    PDFName.of("Contents"),
+    pdf.context.register(
+      pdf.context.flateStream("/Pattern cs /P1 scn 0 0 100 100 re f"),
+    ),
+  );
+  const bytes = await pdf.save();
+  const out = await PDFDocument.load(
+    await organizePdf(
+      {
+        numPages: 2,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy,
+      [0],
+    ),
+  );
+  const { PDFDict } = await import("pdf-lib");
+  expect(
+    out
+      .getPage(0)
+      .node.Resources()!
+      .lookup(PDFName.of("ColorSpace"), PDFDict)
+      .has(PDFName.of("CS1")),
+  ).toBe(true);
+});
+
+test("セル座標を丸め、出典の上限を選択時に確認する", () => {
+  const units = Array.from({ length: 50 }, (_, i) => ({
+    kind: "cell" as const,
+    row: Math.floor(i / 5),
+    column: i % 5,
+    table: 0,
+    text: "x",
+    bbox: [1.123456789, 2.987654321, 3.123456789, 4.987654321] as [
+      number,
+      number,
+      number,
+      number,
+    ],
+  }));
+  const result = fineContent(units, [0, 0, 10, 10], "cell")!;
+  expect(result.cells![0].bbox).toEqual([1.12, 2.99, 3.12, 4.99]);
+  const context = excerptContext(id, "cells.pdf", 1, [
+    { ...result, id: "c", page: 1, bbox: [0, 0, 10, 10], blockOrdinals: [0] },
+  ]);
+  expect(JSON.stringify(context.locator).length).toBeLessThanOrEqual(4096);
+  const many = Array.from({ length: 100 }, (_, i) => ({
+    ...units[0],
+    row: Math.floor(i / 10),
+    column: i % 10,
+  }));
+  expect(() => fineContent(many, [0, 0, 10, 10], "cell")).toThrow(
+    "大きすぎます",
+  );
+});
+
+test("結合したPDFにフォームの保存済み表示値を残す", async ({ page }) => {
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([200, 200]);
+  const field = pdf.getForm().createTextField("invoice.amount");
+  field.setText("123");
+  field.addToPage(p, { x: 20, y: 100, width: 100, height: 30 });
+  const other = await PDFDocument.create();
+  other.addPage([200, 200]);
+  const inputs = await Promise.all(
+    [pdf, other].map(async (d) => {
+      const bytes = await d.save();
+      return {
+        numPages: 1,
+        getData: async () => bytes,
+      } as unknown as PDFDocumentProxy;
+    }),
+  );
+  const merged = await mergePdfs(inputs);
+  const output = await PDFDocument.load(merged);
+  expect(output.getForm().getFields()).toHaveLength(0);
+  await setup(page, false, true);
+  await page.route("**/fixture.pdf", (r) =>
+    r.fulfill({ contentType: "application/pdf", body: Buffer.from(merged) }),
+  );
+  await page.reload();
+  await expect(page.locator('[data-page="1"] .pdf-text-layer')).toContainText(
+    "123",
+  );
 });

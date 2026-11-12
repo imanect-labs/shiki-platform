@@ -1,6 +1,7 @@
 import {
   decodePDFRawStream,
   PDFArray,
+  PDFContentStream,
   PDFDict,
   PDFDocument,
   PDFName,
@@ -66,22 +67,26 @@ export function prunePageResources(source: PDFDocument, indices: number[]) {
     return d instanceof PDFDict ? d : undefined;
   };
   const used = new Map<PDFDict, Map<string, Set<PDFName>>>();
-  const work: { streams: PDFRawStream[]; resources: PDFDict }[] = [];
+  type ContentStream = PDFRawStream | PDFContentStream;
+  const work: { streams: ContentStream[]; resources: PDFDict }[] = [];
   const visited = new Map<PDFObject, Set<PDFDict>>();
-  const decoded = new Map<PDFRawStream, Uint8Array>();
+  const decoded = new Map<ContentStream, Uint8Array>();
+  const isContentStream = (
+    item: PDFObject | undefined,
+  ): item is ContentStream =>
+    item instanceof PDFRawStream || item instanceof PDFContentStream;
   let budget = 50 * 1024 * 1024;
   const queue = (value: PDFObject | undefined, resources: PDFDict) => {
     const item = resolve(value);
-    if (!(item instanceof PDFRawStream) && !(item instanceof PDFArray)) return;
+    if (!isContentStream(item) && !(item instanceof PDFArray)) return;
     if (
       item instanceof PDFRawStream &&
       item.dict.get(PDFName.of("Subtype")) === PDFName.of("Image")
     )
       return;
-    const scope =
-      item instanceof PDFRawStream
-        ? (dict(item.dict.get(PDFName.of("Resources"))) ?? resources)
-        : resources;
+    const scope = isContentStream(item)
+      ? (dict(item.dict.get(PDFName.of("Resources"))) ?? resources)
+      : resources;
     let seen = visited.get(item);
     if (!seen) {
       seen = new Set();
@@ -89,12 +94,12 @@ export function prunePageResources(source: PDFDocument, indices: number[]) {
     }
     if (seen.has(scope)) return;
     seen.add(scope);
-    const streams: PDFRawStream[] = [];
-    if (item instanceof PDFRawStream) streams.push(item);
+    const streams: ContentStream[] = [];
+    if (isContentStream(item)) streams.push(item);
     else
       for (const value of item.asArray()) {
         const stream = resolve(value);
-        if (!(stream instanceof PDFRawStream)) throw unsupported();
+        if (!isContentStream(stream)) throw unsupported();
         streams.push(stream);
       }
     work.push({ streams, resources: scope });
@@ -157,7 +162,9 @@ export function prunePageResources(source: PDFDocument, indices: number[]) {
     }
     if (object instanceof PDFDict) {
       color(object.get(PDFName.of("ColorSpace")));
-      const shading = dict(object.get(PDFName.of("Shading")));
+      const rawShading = resolve(object.get(PDFName.of("Shading")));
+      const shading =
+        rawShading instanceof PDFRawStream ? rawShading.dict : dict(rawShading);
       if (shading) color(shading.get(PDFName.of("ColorSpace")));
     }
 
@@ -205,10 +212,13 @@ export function prunePageResources(source: PDFDocument, indices: number[]) {
     for (const stream of streams) {
       let bytes = decoded.get(stream);
       if (!bytes) {
-        const raw = decodePDFRawStream(stream).getBytes(
-          Math.min(budget, 10 * 1024 * 1024) + 1,
-        );
-        bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+        const raw =
+          stream instanceof PDFRawStream
+            ? decodePDFRawStream(stream).getBytes(
+                Math.min(budget, 10 * 1024 * 1024) + 1,
+              )
+            : stream.getUnencodedContents();
+        bytes = Uint8Array.from(raw);
         decoded.set(stream, bytes);
       }
       length += bytes.length;

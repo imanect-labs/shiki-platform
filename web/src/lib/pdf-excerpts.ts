@@ -8,6 +8,7 @@ import type { SelectionContext } from "@/lib/selection-context";
 import { boxToViewport, viewportDimensions } from "@/lib/pdf-geometry";
 
 export type PdfRect = [number, number, number, number];
+export const PDF_LOCATOR_LIMIT = 4096;
 export type PdfExcerpt = {
   precision?: "line" | "cell";
   cells?: { row: number; column: number; bbox: PdfRect }[];

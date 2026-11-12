@@ -11,7 +11,12 @@
 /// テキスト層は pdf.js の `TextLayer`（透明な文字を canvas に重ね、選択・コピー・検索の塗りに使う）。
 /// 検索の文字位置とnative spanを明示対応させる。行座標の無いOCRは段落・表の枠で示す。
 import * as React from "react";
-import { measureFineUnits, type FineUnit, type FineContent, type SelectionPrecision } from "@/lib/pdf-fine-selection";
+import {
+  measureFineUnits,
+  type FineUnit,
+  type FineContent,
+  type SelectionPrecision,
+} from "@/lib/pdf-fine-selection";
 import { pdfBlocks } from "@/lib/pdf-excerpts";
 import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
 import {
@@ -79,10 +84,18 @@ export function PdfPage({
     enabled: boolean;
     selections: PdfExcerpt[];
     precision?: SelectionPrecision;
-    onSelect: (page: number, bbox: PdfRect, replaceId?: string, fine?: FineContent) => void;
+    onSelect: (
+      page: number,
+      bbox: PdfRect,
+      replaceId?: string,
+      fine?: FineContent,
+    ) => void;
   };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const finePrecision = regionSelection?.enabled
+    ? regionSelection.precision
+    : undefined;
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const textRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<Size | null>(null);
@@ -100,7 +113,10 @@ export function PdfPage({
     ocr: Map<number, PdfRect>;
   } | null>(null);
   const highlightKey = React.useId();
-  const [fineUnits, setFineUnits] = React.useState<{viewport:PageViewport;values:FineUnit[]} | null>(null);
+  const [fineUnits, setFineUnits] = React.useState<{
+    viewport: PageViewport;
+    values: FineUnit[];
+  } | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
   React.useEffect(() => {
@@ -218,7 +234,20 @@ export function PdfPage({
               return divByItem.get(nativeTextOrigin(item)) ?? null;
             });
           setText({ divs, page: buildPageText(content), ocr });
-          if (wrapRef.current) setFineUnits({viewport:size.viewport,values:measureFineUnits(wrapRef.current,tl.textDivs,native,size.viewport,blocks)});
+          if (
+            wrapRef.current &&
+            (finePrecision === "line" || finePrecision === "cell")
+          )
+            setFineUnits({
+              viewport: size.viewport,
+              values: measureFineUnits(
+                wrapRef.current,
+                tl.textDivs,
+                native,
+                size.viewport,
+                blocks,
+              ),
+            });
         }
       })
       .catch(() => undefined);
@@ -229,7 +258,7 @@ export function PdfPage({
       setText(null);
       setFineUnits(null);
     };
-  }, [doc, pageNumber, size, near, textLayer, textRevision]);
+  }, [doc, pageNumber, size, near, textLayer, textRevision, finePrecision]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
@@ -362,7 +391,7 @@ export function PdfPage({
           }
           selections={regionSelection.selections}
           precision={regionSelection.precision}
-          units={fineUnits?.viewport===size.viewport?fineUnits.values:[]}
+          units={fineUnits?.viewport === size.viewport ? fineUnits.values : []}
           onSelect={regionSelection.onSelect}
         />
       ) : null}

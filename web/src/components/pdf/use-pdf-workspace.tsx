@@ -34,6 +34,7 @@ import {
 } from "@/lib/selection-context";
 import {
   excerptContext,
+  PDF_LOCATOR_LIMIT,
   extractRegion,
   resetPdfBlocks,
   resetDocumentBlocks,
@@ -80,6 +81,8 @@ export function usePdfWorkspace({
   const [precision, setPrecision] = React.useState<SelectionPrecision>("area");
   const [mode, setMode] = React.useState<Mode>("read");
   const [selections, setSelections] = React.useState<PdfExcerpt[]>([]);
+  const selectionsRef = React.useRef(selections);
+  selectionsRef.current = selections;
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [assistantOpen, setAssistantOpen] = React.useState(false);
@@ -175,6 +178,19 @@ export function usePdfWorkspace({
             replacements.current.get(replaceId) !== replacementToken)
         )
           return;
+        if (fine) {
+          const next = [
+            ...selectionsRef.current.filter((s) => s.id !== replaceId),
+            result,
+          ];
+          if (
+            JSON.stringify(excerptContext(id, name, version ?? 0, next).locator)
+              .length > PDF_LOCATOR_LIMIT
+          )
+            throw new Error(
+              "選択範囲が大きすぎます。範囲を小さくしてください。",
+            );
+        }
         setSelections((prev) =>
           replaceId && !prev.some((s) => s.id === replaceId)
             ? prev
@@ -217,7 +233,7 @@ export function usePdfWorkspace({
         }
       }
     },
-    [doc, selections.length],
+    [doc, selections.length, id, name, version],
   );
   const attach = async (destination: "panel" | "new") => {
     if (version == null || !doc) return;
@@ -231,7 +247,7 @@ export function usePdfWorkspace({
     // サーバの切り詰めに任せない。抜粋や出典が欠ける添付は、ユーザーに範囲を減らしてもらう。
     if (
       Array.from(context.excerpt).length > 8000 ||
-      JSON.stringify(context.locator).length > 4096
+      JSON.stringify(context.locator).length > PDF_LOCATOR_LIMIT
     ) {
       setError("添付上限を超えています。範囲を減らしてください。");
       return;

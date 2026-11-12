@@ -6,6 +6,7 @@ import {
   blockRect,
   nativeRect,
   tableRows,
+  PDF_LOCATOR_LIMIT,
   type PdfRect,
 } from "./pdf-excerpts";
 import { viewportDimensions } from "./pdf-geometry";
@@ -297,10 +298,17 @@ export function fineContent(
   for (const u of found) grid[u.row - minRow][u.column! - minCol] = u.text;
   const escape = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, "<br>");
   const markdown = `| ${Array.from({ length: width }, (_, i) => `列${minCol + i + 1}`).join(" | ")} |\n| ${Array(width).fill("---").join(" | ")} |\n${grid.map((row) => `| ${row.map(escape).join(" | ")} |`).join("\n")}`;
+  const cells = found.map((u) => ({
+    row: u.row,
+    column: u.column!,
+    bbox: u.bbox.map((v) => Math.round(v * 100) / 100) as PdfRect,
+  }));
+  // ページ・版・外枠などの出典メタデータにも余裕を残す。全抜粋の合計は選択確定時に検査する。
+  if (JSON.stringify(cells).length > PDF_LOCATOR_LIMIT - 512) throw tooLarge();
   return {
     precision,
     text: grid.map((r) => r.join("\t")).join("\n"),
     tables: [markdown],
-    cells: found.map((u) => ({ row: u.row, column: u.column!, bbox: u.bbox })),
+    cells,
   };
 }

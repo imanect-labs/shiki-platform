@@ -24,11 +24,17 @@ export function moveBefore<T>(items: T[], from: T, to: T): T[] {
 export async function organizePdf(doc: PDFDocumentProxy, order: number[]) {
   assertPdfSource(doc);
   validatePageOrder(order, doc.numPages);
-  const { PDFDocument } = await import("pdf-lib");
+  const { PDFDocument, PDFName } = await import("pdf-lib");
   const source = await PDFDocument.load(await doc.getData());
   let output = source;
   if (order.length === doc.numPages) {
     const pages = [...source.getPages()];
+    for (const page of pages)
+      for (const name of ["Resources", "MediaBox", "CropBox", "Rotate"]) {
+        const key = PDFName.of(name);
+        const value = page.node.getInheritableAttribute(key);
+        if (value) page.node.set(key, value);
+      }
     for (let i = pages.length - 1; i >= 0; i--) source.removePage(i);
     for (const index of order) source.addPage(pages[index]);
   } else {
@@ -58,6 +64,8 @@ export async function mergePdfs(docs: PDFDocumentProxy[]) {
     if (total > 100 * 1024 * 1024)
       throw new Error("一度に結合できるPDFは合計100MBまでです。");
     const source = await PDFDocument.load(bytes);
+    // フォーム階層は結合しない。保存済みの外観をページ描画へ固定して値を残す。
+    source.getForm().flatten({ updateFieldAppearances: false });
     for (const page of await copyKeptPages(
       source,
       output,
