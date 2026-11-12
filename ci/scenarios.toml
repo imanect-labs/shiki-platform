@@ -66,6 +66,7 @@ e2e = [
     "ai-workflow.spec.ts",
     "artifacts-owned-paging.spec.ts",
     "chat-ai-edit-revert.spec.ts",
+    "chat-builder-ref.spec.ts",
     "chat-approval-banner.spec.ts",
     "chat-mobile.spec.ts",
     "chat-answer-export.spec.ts",
