@@ -17,6 +17,7 @@
 use super::*;
 use crate::audit::AuditAction;
 use crate::content_address::sha256_hex;
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 
 /// [`write_file_at`](StorageService::write_file_at) の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,56 +350,23 @@ impl StorageService {
 
     /// FGA tuple（新規のみ）を書いてから commit する。commit 失敗時は書いた tuple を revoke する。
     ///
-    /// 新規作成時のみ FGA tuple（owner＋parent）を書く（write_file_core と同じ順序・補償）。
-    /// 更新は既存ノードの tuple を流用するため触らない。
+    /// 新規作成時のみ FGA tuple（owner＋parent）を書く（write_file_core と同じ順序・補償・区間は別のタスクで
+    /// 最後まで走る・tuple_commit・BUG-134）。更新は既存ノードの tuple を流用するため触らない（commit だけ）。
     async fn commit_write_at(
         &self,
-        tx: sqlx::Transaction<'_, sqlx::Postgres>,
+        tx: sqlx::Transaction<'static, sqlx::Postgres>,
         ctx: &AuthContext,
         parent_id: Uuid,
         node: &Node,
         created: bool,
     ) -> Result<WriteAtOutcome, StorageError> {
-        let file_obj = ctx.ns().file(&node.id.to_string());
-        if created {
-            self.authz
-                .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                .await
-                .map_err(StorageError::Authz)?;
-            if let Err(e) = self
-                .authz
-                .write_tuple(
-                    &Subject::object(&ctx.ns().folder(&parent_id.to_string())),
-                    Relation::Parent,
-                    &file_obj,
-                )
-                .await
-            {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                    .await;
-                return Err(StorageError::Authz(e));
-            }
-        }
-        // commit 失敗時は（新規で）書いた tuple を revoke して FGA を作成前へ戻す。
-        if let Err(e) = tx.commit().await {
-            if created {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                    .await;
-                let _ = self
-                    .authz
-                    .delete_tuple(
-                        &Subject::object(&ctx.ns().folder(&parent_id.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await;
-            }
-            return Err(StorageError::from(e));
-        }
+        let tuples = if created {
+            let file_obj = ctx.ns().file(&node.id.to_string());
+            node_creation_tuples(ctx, Some(parent_id), &file_obj)
+        } else {
+            Vec::new()
+        };
+        commit_tx_with_tuples(self.authz.clone(), tx, tuples).await?;
 
         Ok(WriteAtOutcome {
             node_id: node.id,

@@ -6,7 +6,8 @@
 //! - 認可（配置先 editor@folder / member@org、読み取りは viewer@file）を必ず通す。
 //! - content-addressing（sha256 キー・blob dedup・refcount＝node_version 行数）。
 //! - 監査・書込イベント（RAG 増分索引トリガ）を同一 txn で原子的に記録する。
-//! - FGA tuple は commit 前に書き、失敗時は revoke して DB/FGA の不整合を残さない。
+//! - FGA tuple は commit 前に書き、失敗時は revoke して DB/FGA の不整合を残さない（区間は別のタスクで
+//!   最後まで走る・[`crate::tuple_commit`]）。
 //!
 //! `service.rs`（親）が持つ struct/フィールド/自由関数を `use super::*` で参照する。
 
@@ -17,6 +18,7 @@ use crate::audit::AuditAction;
 
 use crate::content_address::sha256_hex;
 use crate::naming::{numbered_name, OnNameTaken};
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 use serde_json::Value;
 use sqlx::Connection as _;
 
@@ -373,49 +375,15 @@ impl StorageService {
             .await?;
         }
 
-        // DB 側が確定したので FGA tuple を書く（commit 前）。
+        // DB 側が確定したので owner・parent の FGA tuple を書いてから commit する。区間は別のタスクで
+        // 最後まで走り、呼ぶ側が捨てられても DB に無いノードのタプルを残さない（補償の決まりは tuple_commit・BUG-134）。
         let file_obj = ctx.ns().file(&node.id.to_string());
-        // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
-        self.authz
-            .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-            .await
-            .map_err(StorageError::Authz)?;
-        // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
-        if let Some(p) = parent_id {
-            if let Err(e) = self
-                .authz
-                .write_tuple(
-                    &Subject::object(&ctx.ns().folder(&p.to_string())),
-                    Relation::Parent,
-                    &file_obj,
-                )
-                .await
-            {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                    .await;
-                return Err(StorageError::Authz(e));
-            }
-        }
-        // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
-        if let Err(e) = tx.commit().await {
-            let _ = self
-                .authz
-                .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                .await;
-            if let Some(p) = parent_id {
-                let _ = self
-                    .authz
-                    .delete_tuple(
-                        &Subject::object(&ctx.ns().folder(&p.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await;
-            }
-            return Err(StorageError::from(e));
-        }
+        commit_tx_with_tuples(
+            self.authz.clone(),
+            tx,
+            node_creation_tuples(ctx, parent_id, &file_obj),
+        )
+        .await?;
         Ok(WriteCoreOut::Written(Box::new(node)))
     }
 

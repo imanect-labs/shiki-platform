@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 
 impl StorageService {
     /// finalize: staging を読み戻して内容ハッシュを検証し、content-addressed に昇格してノード化する。
@@ -148,7 +149,7 @@ impl StorageService {
             }
             // 新規作成: blob upsert + node + FGA tuple + 版記録 + イベント + pending 削除 + 監査。
             // FGA tuple は **commit 前**に書き、parent 失敗・commit 失敗のどちらでも書けた tuple を
-            // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない。
+            // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない（tuple_commit）。
             None => {
                 async {
                     let mut tx = self.db.begin().await?;
@@ -232,49 +233,15 @@ impl StorageService {
                         trace_id,
                     )
                     .await?;
-                    // DB 側が確定したので FGA tuple を書く（commit 前）。
+                    // DB 側が確定したので owner・parent の FGA tuple を書いてから commit する。区間は別の
+                    // タスクで最後まで走る（補償の決まりは tuple_commit・BUG-134）。
                     let file_obj = ctx.ns().file(&node.id.to_string());
-                    // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
-                    self.authz
-                        .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                        .await
-                        .map_err(StorageError::Authz)?;
-                    // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
-                    if let Some(p) = pending.parent_id {
-                        if let Err(e) = self
-                            .authz
-                            .write_tuple(
-                                &Subject::object(&ctx.ns().folder(&p.to_string())),
-                                Relation::Parent,
-                                &file_obj,
-                            )
-                            .await
-                        {
-                            let _ = self
-                                .authz
-                                .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                                .await;
-                            return Err(StorageError::Authz(e));
-                        }
-                    }
-                    // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
-                    if let Err(e) = tx.commit().await {
-                        let _ = self
-                            .authz
-                            .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                            .await;
-                        if let Some(p) = pending.parent_id {
-                            let _ = self
-                                .authz
-                                .delete_tuple(
-                                    &Subject::object(&ctx.ns().folder(&p.to_string())),
-                                    Relation::Parent,
-                                    &file_obj,
-                                )
-                                .await;
-                        }
-                        return Err(StorageError::from(e));
-                    }
+                    commit_tx_with_tuples(
+                        self.authz.clone(),
+                        tx,
+                        node_creation_tuples(ctx, pending.parent_id, &file_obj),
+                    )
+                    .await?;
                     Ok(node)
                 }
                 .await
