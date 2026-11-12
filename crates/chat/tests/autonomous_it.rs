@@ -745,3 +745,58 @@ async fn drive_copy_uses_open_note_and_slide_state() {
         hub.leave(&open).await;
     }
 }
+
+/// 巨大なノートは共同編集ドキュメントをロードする前に拒否する。
+#[tokio::test]
+async fn drive_copy_rejects_large_note_before_collab_join() {
+    use agent_core::Tool;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("copy-size-{}", uuid::Uuid::new_v4());
+    let ctx = ctx(&tenant);
+    let (_, storage) = workspace_harness(pool.clone()).await;
+    let node = storage
+        .write_file_internal(
+            &ctx,
+            None,
+            "large.md",
+            b"# Small fixture",
+            "text/markdown",
+            None,
+        )
+        .await
+        .unwrap();
+    // 巨大blobを確保せず、サイズ宣言が上限超のケースを再現する。
+    sqlx::query("UPDATE node SET size_bytes = $3 WHERE tenant_id = $1 AND id = $2")
+        .bind(&tenant)
+        .bind(node.id)
+        .bind(51_i64 * 1024 * 1024)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let hub = Arc::new(collab::CollabHub::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+        storage.clone(),
+    ));
+    let tool = chat::drive_copy_tool::DriveCopyTool::new(storage, uuid::Uuid::new_v4())
+        .with_collab(Some(hub));
+    let result = tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":node.id,"new_name":"copy.md"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    assert!(result.content.contains("サイズ上限"));
+    let loaded: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM collab_doc WHERE tenant_id = $1 AND node_id = $2)",
+    )
+    .bind(&tenant)
+    .bind(node.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!loaded, "拒否前に共同編集状態をロードしない");
+}
