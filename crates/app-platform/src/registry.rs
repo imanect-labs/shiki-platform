@@ -7,7 +7,7 @@
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgExecutor, PgPool, Postgres, Transaction};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -57,43 +57,31 @@ impl Registry {
     ///
     /// artifact 本体（不変バージョン）は呼び出し側が既に作成済みで、その id/version と
     /// digest を受け取る。authz は artifact 側の owner タプルで担保される（レジストリ行
-    /// 自体はテナントスコープの公開台帳）。
+    /// 自体はテナントスコープの公開台帳）。監査を同じ Tx に載せるときは [`Self::publish_on`]（コードアプリ・GAP-69a）。
     pub async fn publish(
         &self,
         ctx: &AuthContext,
         entry: NewRegistryEntry<'_>,
     ) -> Result<RegistryEntry, AppPlatformError> {
-        let row: RegistryEntry = sqlx::query_as(
-            "INSERT INTO registry_entry \
-             (tenant_id, org, artifact_kind, name, version, artifact_id, artifact_version, \
-              manifest_digest, publisher, trust_tier, signature) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-             RETURNING id, artifact_kind, name, version, artifact_id, artifact_version, \
-                       manifest_digest, publisher, trust_tier, yanked, created_at",
-        )
-        .bind(ctx.tenant_id())
-        .bind(ctx.org())
-        .bind(entry.artifact_kind)
-        .bind(entry.name)
-        .bind(entry.version)
-        .bind(entry.artifact_id)
-        .bind(entry.artifact_version)
-        .bind(entry.manifest_digest)
-        .bind(&ctx.principal().id)
-        .bind(entry.trust_tier)
-        .bind(entry.signature)
-        .fetch_one(&self.db)
-        .await
-        .map_err(|e| match &e {
-            sqlx::Error::Database(db) if db.is_unique_violation() => {
-                AppPlatformError::Conflict(format!(
-                    "{}@{} は既に publish 済みです（不変）",
-                    entry.name, entry.version
-                ))
-            }
-            _ => map_db(e),
-        })?;
-        Ok(row)
+        insert_entry(&self.db, ctx, &entry).await
+    }
+
+    /// 呼び出し側の Tx の中で不変 publish する（同一 name+version は 409）。
+    ///
+    /// 登録と監査（`app.registry.publish`・チェーンにつなぐ）を 1 つの Tx で書き、どちらかだけが残らないようにする
+    /// （[`crate::MiniAppCodeStore::publish`]・GAP-69a）。Tx は [`Self::begin`] で開く。
+    pub(crate) async fn publish_on(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        entry: NewRegistryEntry<'_>,
+    ) -> Result<RegistryEntry, AppPlatformError> {
+        insert_entry(conn, ctx, &entry).await
+    }
+
+    /// レジストリの DB の Tx を開く（[`Self::publish_on`] と監査を同じ Tx で書く）。
+    pub(crate) async fn begin(&self) -> Result<Transaction<'static, Postgres>, AppPlatformError> {
+        self.db.begin().await.map_err(map_db)
     }
 
     /// name の最新（未 yank）エントリを引く（インストール時の解決）。
@@ -238,4 +226,42 @@ impl Registry {
         }
         Ok(())
     }
+}
+
+/// registry_entry へ 1 行を書く（[`Registry::publish`]・[`Registry::publish_on`] の本体・同一 name+version は 409）。
+async fn insert_entry<'e>(
+    exec: impl PgExecutor<'e>,
+    ctx: &AuthContext,
+    entry: &NewRegistryEntry<'_>,
+) -> Result<RegistryEntry, AppPlatformError> {
+    sqlx::query_as(
+        "INSERT INTO registry_entry \
+         (tenant_id, org, artifact_kind, name, version, artifact_id, artifact_version, \
+          manifest_digest, publisher, trust_tier, signature) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+         RETURNING id, artifact_kind, name, version, artifact_id, artifact_version, \
+                   manifest_digest, publisher, trust_tier, yanked, created_at",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(entry.artifact_kind)
+    .bind(entry.name)
+    .bind(entry.version)
+    .bind(entry.artifact_id)
+    .bind(entry.artifact_version)
+    .bind(entry.manifest_digest)
+    .bind(&ctx.principal().id)
+    .bind(entry.trust_tier)
+    .bind(entry.signature)
+    .fetch_one(exec)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            AppPlatformError::Conflict(format!(
+                "{}@{} は既に publish 済みです（不変）",
+                entry.name, entry.version
+            ))
+        }
+        _ => map_db(e),
+    })
 }
