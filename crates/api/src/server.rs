@@ -637,6 +637,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || put(routes::admin::set_tenant_audit_retention),
         ),
+        // ゴミ箱の保持期間（既定は無効・日数を過ぎたものを自動で完全に削除する・GAP-108c・D-202）。
+        r(
+            "/admin/tenants/{tenant_id}/trash-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_trash_retention),
+        ),
     ];
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());

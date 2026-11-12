@@ -81,7 +81,9 @@ pub(crate) async fn wire_storage(
         );
     } else {
         tracing::warn!(
-            "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）"
+            "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）。\
+             同じ周に相乗りしている、ゴミ箱の保持期間を過ぎたものの完全削除（GAP-108c）と、\
+             完全削除の片付け（OpenFGA のタプル・本体の削除・GAP-108）も回りません"
         );
     }
     // 監査ログの保持期間（#831）。期限（テナントごと・既定 365 日）を過ぎた行を日次で消し、
