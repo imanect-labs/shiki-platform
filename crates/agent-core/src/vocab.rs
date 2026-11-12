@@ -147,6 +147,8 @@ vocab_enum! {
         DriveFind => "drive.find",
         /// ドライブのファイル・フォルダの移動・名前変更（種別を問わない・承認ゲート対象・#942）。
         DriveMove => "drive.move",
+        /// 元を残してファイルを新規作成する（承認必須）。
+        DriveCopy => "drive.copy",
     }
 }
 
@@ -248,6 +250,7 @@ impl ToolName {
             | Self::DataRecordWrite
             | Self::DriveFind
             | Self::DriveMove
+            | Self::DriveCopy
             // 翻訳を頼まれたときだけ使う（skill `translate` が名指しするので遅延でも 1 手で載る）。
             | Self::WebTranslate => ToolLoading::Deferred,
         }
@@ -315,6 +318,9 @@ impl ToolName {
             }
             Self::DriveMove => {
                 "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
+            }
+            Self::DriveCopy => {
+                "drive file copy duplicate clone ドライブ ファイル コピー 複製 複写"
             }
             Self::WebTranslate => {
                 "translate translation web page url website language english japanese 翻訳 訳す 和訳 英訳 ページ サイト 記事"

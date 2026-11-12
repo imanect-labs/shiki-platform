@@ -40,6 +40,43 @@ fn write_summary(node: &Node) -> Value {
 }
 
 impl StorageService {
+    /// 確定済みの内部書込を復元する。現在そのファイルを読める主体にだけ結果を返す。
+    /// コピー元や保存先の可変状態には依存せず、テナントと操作digestを照合する。
+    pub async fn replay_internal_file_write(
+        &self,
+        ctx: &AuthContext,
+        key: &str,
+        digest: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Node>, StorageError> {
+        let mut tx = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
+        let receipt: Option<(String, Option<Value>)> = sqlx::query_as(
+            "SELECT op_digest, result_summary FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2",
+        )
+        .bind(ctx.tenant_id())
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let Some((saved_digest, summary)) = receipt else {
+            return Ok(None);
+        };
+        if saved_digest != digest {
+            return Err(StorageError::Conflict);
+        }
+        let file_id = summary
+            .as_ref()
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str)
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .ok_or_else(|| StorageError::Integrity("内部書込の確定結果が不正です".into()))?;
+        let node = self.get_metadata(ctx, file_id, trace_id).await?;
+        if node.kind != NodeKind::File {
+            return Err(StorageError::NotFound);
+        }
+        Ok(Some(node))
+    }
+
     /// バイト列を新規ファイルとして保存する（内部書き込み・presigned 経路と同一不変条件）。
     ///
     /// finalize の新規作成経路（`finalize.rs`）を「バイトを既に所持している」前提で写した実装。

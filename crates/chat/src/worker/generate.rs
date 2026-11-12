@@ -35,7 +35,7 @@ pub(super) struct ThreadHistory {
 }
 
 impl ChatWorker {
-    /// 生成対象までの枝のメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
+    /// 生成対象までの枝のメッセージを LLM 履歴へ写す（有界の画像添付を含む・短ホライズン）。
     pub(super) async fn build_history(
         &self,
         ctx: &AuthContext,
@@ -65,6 +65,18 @@ impl ChatWorker {
             }
         }
         let mut out = Vec::new();
+        let image_store = self
+            .storage
+            .as_ref()
+            .map(|storage| crate::attachments::StorageAttachmentStore::new(storage.clone()));
+        let mut images = super::history_images::load_images(
+            ctx,
+            &msgs,
+            image_store
+                .as_ref()
+                .map(|s| s as &dyn agent_core::AttachmentStore),
+        )
+        .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
         for (i, m) in msgs.into_iter().enumerate() {
@@ -103,7 +115,11 @@ impl ChatWorker {
             if text.trim().is_empty() {
                 continue;
             }
-            out.push(LlmMessage::text(role, text));
+            let mut message = LlmMessage::text(role, text);
+            if let Some(blocks) = images.remove(&m.id) {
+                message.content.extend(blocks);
+            }
+            out.push(message);
         }
         Ok(ThreadHistory {
             messages: out,
@@ -343,16 +359,7 @@ impl ChatWorker {
         );
 
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
-        let resume = match restore_checkpoint(run) {
-            Some(envelope) => {
-                // takeover 前のイベントログ（チェックポイント境界まで）から content projection を
-                // 再構築する（続きだけを生成するため、これ無しでは finalize 時に前半のテキスト/
-                // ツール結果が消える。境界より後＝中断ステップの途中イベントは再生成されるので除く）。
-                sink.seed_from_log(envelope.event_seq).await?;
-                Some(envelope.checkpoint)
-            }
-            None => None,
-        };
+        let resume = resume_with_images(run, sink, &history).await?;
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(
@@ -457,5 +464,21 @@ impl ChatWorker {
             system,
         ));
         Ok((workspace, system))
+    }
+}
+
+/// 再開時の投影と、現在の権限で読み直した画像を復元する。
+async fn resume_with_images(
+    run: &ClaimedRun,
+    sink: &mut WorkerSink,
+    history: &[LlmMessage],
+) -> Result<Option<agent_core::Checkpoint>, ChatError> {
+    match restore_checkpoint(run) {
+        Some(mut envelope) => {
+            sink.seed_from_log(envelope.event_seq).await?;
+            super::history_images::refresh_checkpoint_images(&mut envelope.checkpoint, history);
+            Ok(Some(envelope.checkpoint))
+        }
+        None => Ok(None),
     }
 }

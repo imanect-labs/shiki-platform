@@ -46,7 +46,8 @@ pub use config::{
 };
 pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
 pub use model::{
-    Block, Effort, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef, Usage,
+    Block, Effort, GenerateRequest, ImageData, Message, Role, StopReason, StreamDelta, ToolDef,
+    Usage,
 };
 pub use provider::{DeltaStream, LlmError, LlmProvider};
 pub use tenant::{
