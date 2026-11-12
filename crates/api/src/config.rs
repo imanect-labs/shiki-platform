@@ -318,6 +318,8 @@ mod decision_tests;
 mod egress;
 mod miniapp;
 #[cfg(test)]
+mod prompt_cache_tests;
+#[cfg(test)]
 mod tests;
 
 pub use auth::{AuthConfig, SessionConfig, Tenancy};

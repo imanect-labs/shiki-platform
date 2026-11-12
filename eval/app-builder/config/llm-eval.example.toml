@@ -42,6 +42,10 @@ prompt_price_micros_per_mtok = 100000
 completion_price_micros_per_mtok = 500000
 cache_read_price_micros_per_mtok = 10000
 cache_write_price_micros_per_mtok = 125000
+# prompt caching（要求のトップレベルの自動キャッシュ・5 分）を使う。キャッシュの単価（上の 2 行）が要る。
+# この欄を知らない前の版のサーバーは黙って無視するので、有効にした版とそれより前の版では、完了したタスクあたりの
+# 費用を比べない。
+prompt_cache = true
 # 100K トークンを超えるプロンプトは単価が 5 倍になるので、窓を 100K に抑える。
 context_window_tokens = 100000
 processed_abroad = true

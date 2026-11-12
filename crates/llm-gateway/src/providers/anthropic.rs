@@ -34,6 +34,8 @@ pub struct AnthropicProvider {
     default_model: String,
     identity: IdentityHeaders,
     timeouts: LlmTimeouts,
+    /// prompt caching を使うモデル（実 ID・カタログの `prompt_cache`・T00）。
+    prompt_cache_models: HashSet<String>,
 }
 
 impl AnthropicProvider {
@@ -50,7 +52,16 @@ impl AnthropicProvider {
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
             timeouts: LlmTimeouts::default(),
+            prompt_cache_models: HashSet::new(),
         }
+    }
+
+    /// prompt caching（要求のトップレベルの `cache_control`・5 分）を付けるモデル（実 ID）を指定する。
+    /// ここに無いモデルの要求は変えない（自動キャッシュを受けない送り先へ送っても 400 にならないように）。
+    #[must_use]
+    pub fn with_prompt_cache_models(mut self, models: impl IntoIterator<Item = String>) -> Self {
+        self.prompt_cache_models = models.into_iter().collect();
+        self
     }
 
     /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
@@ -99,6 +110,10 @@ impl AnthropicProvider {
         });
         if let Some(sys) = &req.system {
             body["system"] = json!(sys);
+        }
+        // 自動キャッシュ: API が最後のキャッシュできるブロックに区切りを置く（system は文字列のまま）。
+        if self.prompt_cache_models.contains(&model) {
+            body["cache_control"] = json!({ "type": "ephemeral" });
         }
         let tools: Vec<&ToolDef> = if native {
             req.tools.iter().collect()
@@ -861,3 +876,8 @@ mod tests {
         }
     }
 }
+
+// prompt caching（T00）の単体（このファイルを太らせないよう分ける）。
+#[cfg(test)]
+#[path = "anthropic_cache_tests.rs"]
+mod cache_tests;

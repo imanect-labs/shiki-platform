@@ -411,6 +411,7 @@ impl LlmConfig {
                     completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
                     cache_read_price_micros_per_mtok: m.cache_read_price_micros_per_mtok,
                     cache_write_price_micros_per_mtok: m.cache_write_price_micros_per_mtok,
+                    prompt_cache: m.prompt_cache,
                     context_window_tokens: m.context_window_tokens,
                     provider: m.provider.clone(),
                     display_name: m.display_name.clone(),
@@ -464,6 +465,8 @@ pub(crate) fn chatgpt_model_id(slug: &str) -> String {
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。
+// 真偽の項目は独立した設定の値そのもの（[`llm_gateway::ModelEntry`] と同じ・状態機械ではない）。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmModelEntry {
     pub id: String,
@@ -479,6 +482,10 @@ pub struct LlmModelEntry {
     /// キャッシュ書き込みの単価（省略はプロンプト単価・#581）。
     #[serde(default)]
     pub cache_write_price_micros_per_mtok: Option<u64>,
+    /// Anthropic の prompt caching を使う（[`llm_gateway::ModelEntry::prompt_cache`]・既定 false）。
+    /// Anthropic へ振る chat モデルでだけ書け、キャッシュの単価を 2 つとも書く（構築時に確かめる）。
+    #[serde(default)]
+    pub prompt_cache: bool,
     /// コンテキスト窓トークン数（未設定ならエージェントの剪定は固定閾値のまま・#529）。
     #[serde(default)]
     pub context_window_tokens: Option<u32>,

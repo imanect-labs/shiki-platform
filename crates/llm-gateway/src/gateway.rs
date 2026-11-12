@@ -190,6 +190,7 @@ impl LlmGateway {
                 m.provider_id()
             )));
         }
+        config.check_prompt_cache()?;
         let deciders = decide::build_deciders(&config, &providers, &http)?;
         let user_providers = user_provider_gate::build_user_providers(&config, &providers)?;
         Ok(LlmGateway {
@@ -683,6 +684,7 @@ fn build_provider(
                 AnthropicProvider::new(http, base, key, default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
                     .with_session_header(pc.session_header.as_deref())?
+                    .with_prompt_cache_models(catalog.prompt_cache_models(id))
                     .with_timeouts(timeouts),
             ))
         }
