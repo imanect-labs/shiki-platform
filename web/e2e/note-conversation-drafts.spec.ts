@@ -244,6 +244,12 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   const handle = page.getByRole("separator", { name: "アシスタントの幅を変更" });
   const before = (await sheet.boundingBox())!.width;
 
+  // パネルは上部バーまで貫通し、⋯ はパネルの左隣に来る（開いている間は ✨ トグルを隠す）。
+  expect((await sheet.boundingBox())!.y).toBeLessThan(24);
+  const menu = (await page.getByTestId("chrome-menu").boundingBox())!;
+  expect(menu.x + menu.width).toBeLessThanOrEqual((await sheet.boundingBox())!.x);
+  await expect(page.getByTestId("note-ask-ai")).toBeHidden();
+
   // 左へドラッグすると広がり、本文はパネルの下に潜らない。
   const hb = (await handle.boundingBox())!;
   await page.mouse.move(hb.x + hb.width / 2, hb.y + 200);
