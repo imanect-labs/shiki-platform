@@ -166,6 +166,8 @@ mod labels;
 mod move_rename;
 mod node_scan;
 mod proposal;
+mod purge;
+mod purge_empty;
 mod purge_pending;
 mod read;
 mod reindex;
@@ -187,6 +189,10 @@ mod workspace_io;
 
 pub use labels::{NodeLabel, MAX_NODE_LABELS};
 pub use node_scan::{named_scan_sql, NODE_SCAN_MAX_CHECKS};
+pub use purge::{PurgeOutcome, PurgeReport};
+pub use purge_empty::{
+    EmptyTrashOutcome, TrashEntry, TrashPage, EMPTY_TRASH_MAX_NODES, EMPTY_TRASH_MAX_ROOTS,
+};
 pub use purge_pending::PurgeSweep;
 pub use restore::RevertOutcome;
 pub use shared_list::{shared_scan_sql, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};

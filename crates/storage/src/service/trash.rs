@@ -111,7 +111,7 @@ impl StorageService {
         Ok(())
     }
 
-    /// 論理削除（ゴミ箱）。blob refcount を減らす。
+    /// 論理削除（ゴミ箱）。blob refcount は減らさない（減らすのは完全削除 `purge` だけ）。
     pub async fn soft_delete_file(
         &self,
         ctx: &AuthContext,
@@ -152,7 +152,7 @@ impl StorageService {
         };
         // 論理削除（ゴミ箱）では blob refcount を**減らさない**。復元可能な間は実体を参照し続ける
         // ため、ここで減らすと将来の refcount GC が復元可能ファイルの本体を消し得る（LbvQZ）。
-        // 減算は永続削除（ゴミ箱の完全削除・将来実装）でのみ行う。
+        // 減算は完全削除（`purge::purge_locked`）でのみ行う。
         audit::record_on(
             &mut tx,
             ctx,
