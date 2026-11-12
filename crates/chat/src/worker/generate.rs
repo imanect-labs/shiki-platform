@@ -11,7 +11,7 @@ use authz::AuthContext;
 use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
-use super::approval_policy::restore_checkpoint;
+use super::approval_policy::resume_state;
 use super::history::{
     fold_skill_snapshot, message_preview, message_text_with, skill_snapshot_name, SkillViews,
 };
@@ -330,17 +330,10 @@ impl ChatWorker {
             &super::opts::today_note(run.created_at, self.config.timezone),
         );
 
-        // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
-        let resume = match restore_checkpoint(run) {
-            Some(envelope) => {
-                // takeover 前のイベントログ（チェックポイント境界まで）から content projection を
-                // 再構築する（続きだけを生成するため、これ無しでは finalize 時に前半のテキスト/
-                // ツール結果が消える。境界より後＝中断ステップの途中イベントは再生成されるので除く）。
-                sink.seed_from_log(envelope.event_seq).await?;
-                Some(envelope.checkpoint)
-            }
-            None => None,
-        };
+        // 作成系の道具の初回の呼び出しで予算を 1 回だけ広げる（通常の会話だけ・HD-4 (c)・D-204）。
+        super::builder_tools::extend_on_builder_tools(&mut opts, &self.config.app_builder, &tools);
+        // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する（自律・作成系・R1）。
+        let resume = resume_state(run, sink).await?;
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(

@@ -8,6 +8,8 @@
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
 mod approval_policy;
+/// 作成系の道具と、予算の拡張・チェックポイントの保存の条件（T03・D-204・R1）。
+mod builder_tools;
 /// 古典 RAG 注入経路（generate.rs から分割）。
 mod classic;
 /// ワーカーの設定と依存束（mod.rs から分割・行数規約）。
@@ -52,7 +54,7 @@ use uuid::Uuid;
 use crate::model::{ContentBlock, RunStatus, StreamEventKind};
 use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
-pub use config::{TryWaitLimits, WorkerConfig, WorkerDeps};
+pub use config::{AppBuilderConfig, TryWaitLimits, WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
 pub use yui::with_yui_guide;
 
@@ -395,8 +397,8 @@ impl ChatWorker {
                 .await;
         }
 
-        // resume する run は、チェックポイント境界より後に残る**破棄 attempt のイベント**を
-        // 先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
+        // resume する run（自律 run と、作成系の道具を呼んでチェックポイントを書いた通常の会話）は、
+        // チェックポイント境界より後に残る**破棄 attempt のイベント**を先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
         // 新 attempt の行になる。削除に失敗したまま続行すると、以後の checkpoint の event_seq が
         // 破棄行を包含し、次の takeover の seed（projection 再構築）へ部分出力が混入して
         // message.content の真実まで壊れるため、**続行せず Err で job retry へ回す**。
@@ -442,6 +444,9 @@ impl ChatWorker {
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
         // 自律 run はステップ境界のチェックポイントを durable run 行へ永続化する（resume・#351）。
+        // 通常の会話は、作成系の道具（emit_workflow・try_workflow など）を呼んだステップの終わりから保存を
+        // 始める（sink が呼び出しを見て立てる・R1）。チェックポイントから再開した run は、最初から保存する
+        // （再開の後に作成系の道具を呼ばなくても、次の境界の状態を失わない）。
         let mut worker_sink = WorkerSink::new(
             self.store.clone(),
             &run.tenant_id,
@@ -449,7 +454,7 @@ impl ChatWorker {
             fencing,
             cancel.clone(),
         )
-        .with_checkpoints(run.autonomous);
+        .with_checkpoints(run.autonomous || run.checkpoint.is_some());
 
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
         // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。

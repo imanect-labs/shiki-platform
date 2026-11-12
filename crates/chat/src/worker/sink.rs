@@ -39,7 +39,10 @@ pub(crate) struct WorkerSink {
     content: Vec<ContentBlock>,
     /// リース喪失（fencing 不一致）を検知したか。
     lost_lease: bool,
-    /// ステップ境界のチェックポイントを durable run 行へ永続化するか（自律 run のみ・#351）。
+    /// ステップ境界のチェックポイントを durable run 行へ永続化するか（#351）。
+    ///
+    /// 自律 run と再開した run は最初から。通常の会話は、作成系の道具（[`super::builder_tools::CHECKPOINT_ON`]）の
+    /// 呼び出しを受けた時点で立てる（R1）。立てたら run の終わりまで下ろさない。
     persist_checkpoints: bool,
     /// この sink が追記した最新の `generation_event` seq（チェックポイント封筒の境界）。
     last_seq: i64,
@@ -66,7 +69,7 @@ impl WorkerSink {
         }
     }
 
-    /// チェックポイント永続化を有効化する（自律 run・#351）。
+    /// チェックポイント永続化を最初から有効化する（自律 run・再開した run・#351）。
     #[must_use]
     pub(crate) fn with_checkpoints(mut self, enabled: bool) -> Self {
         self.persist_checkpoints = enabled;
@@ -272,6 +275,15 @@ impl EventSink for WorkerSink {
             Err(e) => return Err(AgentError::Sink(e.to_string())),
         }
         self.accumulate(&kind);
+        // 作成系の道具の呼び出しを受けたら、このステップの終わりからチェックポイントを保存する（R1）。
+        // 429 などで run を頭からやり直すと、作成や試運転が二重に走るため。
+        if let AgentEvent::ToolCall { name, .. } = &event {
+            if !self.persist_checkpoints && super::builder_tools::starts_checkpoints(name) {
+                tracing::info!(run_id = %self.run_id, tool = %name,
+                    "作成系の道具を呼んだので、ステップ境界のチェックポイントの保存を始める");
+                self.persist_checkpoints = true;
+            }
+        }
         Ok(())
     }
 
@@ -279,7 +291,7 @@ impl EventSink for WorkerSink {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// ステップ境界のチェックポイントを durable run 行へ保存する（自律 run のみ・#351）。
+    /// ステップ境界のチェックポイントを durable run 行へ保存する（保存を有効にした run だけ・#351）。
     ///
     /// fencing 不一致はリース喪失としてループを止める（ゾンビ書込防止）。一時的な DB エラーは
     /// warn のみで続行する（best-effort: 次の境界で再保存され、resume は一つ前の境界へ戻るだけ。
