@@ -620,6 +620,51 @@ pub struct ChatConfig {
     /// rootfs の numpy/pandas 同梱はビルド（rootfs-requirements.txt・--require-hashes）が保証する。
     #[serde(default)]
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
+    /// 作成系の道具（emit_workflow など）を使う会話の予算（`chat.app_builder.*`・D-53 の HD-4・T03）。
+    #[serde(default)]
+    pub app_builder: AppBuilderChatConfig,
+}
+
+/// 作成系の道具を使う会話の予算（`chat.app_builder.*`・環境変数は `SHIKI__CHAT__APP_BUILDER__MAX_STEPS` など）。
+///
+/// 通常の会話は、作成系の道具を初めて呼んだときに、手数・トークン・費用・1 応答の上限をこの値まで 1 回だけ
+/// 広げる（D-204）。どれも未指定は `chat::WorkerConfig` の既定（24 手・新規ぶん 60 万トークン・$2・1 応答 32768・
+/// effort medium）。項目の名前は `chat.*` の同じ意味の項目に揃える（`max_tokens` は 1 応答、`budget_*` は累積）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppBuilderChatConfig {
+    /// 最大ステップ（1 未満は 1 にする）。
+    #[serde(default)]
+    pub max_steps: Option<usize>,
+    /// 累積トークン上限（新規ぶん）。
+    #[serde(default)]
+    pub budget_max_tokens: Option<u64>,
+    /// 累積コスト上限（マイクロ USD）。
+    #[serde(default)]
+    pub budget_max_cost_usd_micros: Option<i64>,
+    /// 1 応答の最大トークン（adaptive thinking も含む）。
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    /// 作成用の会話の思考強度（組織が指定していなければ当てる・T09 で使う）。
+    #[serde(default)]
+    pub effort: Option<llm_gateway::Effort>,
+}
+
+impl AppBuilderChatConfig {
+    /// ワーカーの設定へ写す（未指定の項目は `chat::WorkerConfig` の既定）。
+    #[must_use]
+    pub fn resolve(&self) -> chat::worker::AppBuilderConfig {
+        let base = chat::WorkerConfig::default().app_builder;
+        chat::worker::AppBuilderConfig {
+            max_steps: self.max_steps.unwrap_or(base.max_steps).max(1),
+            max_fresh_tokens: self.budget_max_tokens.unwrap_or(base.max_fresh_tokens),
+            max_cost_usd_micros: self
+                .budget_max_cost_usd_micros
+                .unwrap_or(base.max_cost_usd_micros),
+            max_response_tokens: self.max_tokens.unwrap_or(base.max_response_tokens),
+            effort: self.effort.unwrap_or(base.effort),
+        }
+    }
 }
 
 /// CSV クエリサービス（tabular・Task 11P.7）の設定。
@@ -721,6 +766,7 @@ impl Default for ChatConfig {
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,
+            app_builder: AppBuilderChatConfig::default(),
         }
     }
 }

@@ -309,6 +309,8 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
 }
 
+#[cfg(test)]
+mod app_builder_tests;
 mod auth;
 mod backends;
 #[cfg(test)]

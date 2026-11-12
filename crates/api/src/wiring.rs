@@ -454,6 +454,8 @@ pub(crate) async fn wire_chat(
             .unwrap_or_else(|| chat::WorkerConfig::default().sandbox_backend),
         // web_fetch は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
         egress_proxy: egress_proxy.cloned(),
+        // 作成系の道具を使う会話の予算（未指定の項目は WorkerConfig の既定・D-53 の HD-4・T03）。
+        app_builder: config.chat.app_builder.resolve(),
         // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
         ..chat::WorkerConfig::default()
     };
