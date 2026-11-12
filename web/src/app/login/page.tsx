@@ -24,11 +24,15 @@ function safeNext(value: string | null): string {
 ///   OIDC ラウンドトリップを跨いで保持するため login() が sessionStorage に控える。
 /// - `?error=` が付いている、または短時間に何度自動で送っても未ログインのまま戻ってくる場合は
 ///   自動では送らず、失敗メッセージと再試行ボタンを出す（ループ防止・claimAutoLogin）。
+/// - `?error=account_unusable`（BFF の callback が、ID に使えない文字を含むアカウントを断った・D-205）は、
+///   管理者への連絡を促すだけで再試行ボタンを出さない（送り直しても同じ理由で断られるため）。
 function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const next = safeNext(searchParams.get("next"));
-  const hasError = searchParams.get("error") !== null;
+  const error = searchParams.get("error");
+  const hasError = error !== null;
+  const accountUnusable = error === "account_unusable";
 
   const [status, setStatus] = React.useState<"checking" | "redirecting" | "failed">("checking");
 
@@ -72,12 +76,22 @@ function LoginInner() {
               role="alert"
               className="mt-4 rounded-lg bg-destructive/10 px-3 py-2 text-center text-sm text-destructive"
             >
-              ログインに失敗しました。もう一度お試しください。
+              {accountUnusable ? (
+                // 文の途中で折り返さないよう、1 文ずつ行を分ける。
+                <>
+                  <span className="block">このアカウントは使えません。</span>
+                  <span className="block">管理者に連絡してください。</span>
+                </>
+              ) : (
+                "ログインに失敗しました。もう一度お試しください。"
+              )}
             </p>
-            <Button className="mt-6 w-full" onClick={retry}>
-              <LogIn className="size-4" aria-hidden />
-              もう一度ログイン
-            </Button>
+            {accountUnusable ? null : (
+              <Button className="mt-6 w-full" onClick={retry}>
+                <LogIn className="size-4" aria-hidden />
+                もう一度ログイン
+              </Button>
+            )}
           </div>
         ) : (
           <div

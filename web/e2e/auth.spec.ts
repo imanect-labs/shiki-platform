@@ -118,3 +118,24 @@ test("ログイン済みで /login に来たらアプリへリダイレクトす
   await page.goto("/login");
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
 });
+
+test("ID に使えない文字を含むアカウントで戻されたら、管理者への連絡を促し、送り直さない", async ({ page }) => {
+  // BFF の callback は、sub に ID の区切りの文字を含むアカウント（D-205）を /login?error=account_unusable へ戻す。
+  // 送り直しても同じ理由で断られるので、自動で Keycloak へ送らず、再試行のボタンも出さない。
+  await page.goto("/login?error=account_unusable");
+  // Next.js のルートの読み上げ（role=alert）と取り違えないよう、文言で絞る。
+  const alert = page.getByRole("alert").filter({ hasText: "このアカウントは使えません" });
+  await expect(alert).toHaveText("このアカウントは使えません。管理者に連絡してください。");
+  await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "もう一度ログイン" })).toHaveCount(0);
+  // 表示が出た時点で（未ログインと分かった後）、Keycloak へ送られずに /login のまま。
+  expect(new URL(page.url()).pathname).toBe("/login");
+  const shots = process.env.E2E_SHOTS_DIR;
+  if (shots) {
+    await page.screenshot({ path: `${shots}/login-account-unusable.png` });
+    await page.setViewportSize({ width: 375, height: 700 });
+    await page.screenshot({ path: `${shots}/login-account-unusable-375.png` });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({ path: `${shots}/login-account-unusable-375-dark.png` });
+  }
+});
