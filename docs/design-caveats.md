@@ -1713,8 +1713,9 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
   の内訳）、失敗の分類と参照番号、run の id と費用、起動できなかったときの入力の契約と実行の前に止める設定の誤りの文（ブロック
   の id と path つき）、名前で呼んだときに解決した id と最新の版も載る（`list_workflows`・`read_workflow` の tool_result にも IR
   が載る前例がある）。tool_result の本文そのものは、保存済みの画面でも生成中の配信でも run の実行者のほかには空にし（成否
-  だけを残す・#386・`crates/chat/src/store/message_view.rs`）、前のターンの tool_result は次の回答の履歴に入らない
-  （`crates/chat/src/worker/history.rs`。先頭への畳み込みは 1 回の生成の中だけ）。漏れるのは、本人のモデルが観測を読んで
+  だけを残す・#386・`crates/chat/src/store/message_view.rs`）、前のターンの tool_result は、直近 3 ターンの
+  作業記録の抜粋（結果 300 字・`crates/chat/src/worker/history_work_log.rs`・#1196）としてだけ次の回答に戻り、共有の相手が
+  いる会話では成否だけになる。漏れるのは、本人のモデルが観測を読んで
   書いたもの（回答の本文・思考・後の道具の引数・自律のワークスペース・分岐の写し）で、共有の相手がそのデータを読めない人でも、
   会話を通して読める（本人の ReBAC を越える）。会話のボタンから起動したワークフローの結果は、押した本人にだけ見せると決めた
   のに、試運転の観測は違う扱いになっている。`data_query` の行も同じく tool_result に残る（今の前例）。試運転の観測からは、返す値の節の全体と副作用の
@@ -1736,9 +1737,11 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
     ワークスペース・run の画面）は #1201、分岐の写しは #1200。
 - **残る限界**（(b) で塞がないもの）: ①共有の前（または、全部入りの観測を受けてから回答を書き終えるまで）に全部入りから
   書いた本文は、後から加わった相手にも見え、相手が話しかけたときの文脈にも入る。全部入りの観測は作ったレコードの id と
-  消し方を最後の回答に書かせるので、必ず起きる ②共有を外してから問い直しまでの 1 秒に届いた分は、外された相手の開いた
+  消し方を最後の回答に書かせるので、必ず起きる。共有していない会話の次の回答は前の 3 ターンの結果の抜粋からも書くので、
+  共有の前に書いた本文と、生成の途中で共有された回の本文に出うる ②共有を外してから問い直しまでの 1 秒に届いた分は、外された相手の開いた
   配信に流れうる（イベントが届かない間は問い直さない。実行者本人の配信は問い直さない）③チェックポイントから引き継いだ
-  生成（429 などのやり直しを含む）は旗を持ち越さず、その時点のタプルで判定し直す ④自律モードで見える場所のフォルダを
+  生成（429 などのやり直しを含む）は旗を持ち越さず、その時点のタプルで判定し直す。チェックポイントの履歴（前のターンの
+  作業記録を含む）は、最初の試行のときの判定のまま持ち越す ④自律モードで見える場所のフォルダを
   ワークスペースにした会話は、会話を共有していなくても、フォルダを見られる人に作業メモが見える ⑤費用は文に出さないが
   会話の予算に積むので、予算の警告（`BudgetWarning` の `used`・`limit`）の合計値に含まれ、共有の相手の配信にも載る。
 - **受け入れ条件**: 共有の相手の画面（`get_thread`・`get_messages`）と配信、相手が話しかけた次の回答の文脈、DB の会話の行の
@@ -1747,5 +1750,7 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
   （`private_thread_keeps_full_observation`）。判定の時点と run の無い道（`audience_is_judged_at_each_render`・
   `shared_refusals_hide_ir`）、後から共有したとき（`later_share_keeps_earlier_tool_results_off_the_partner`・既知の限界は
   `later_share_known_limit_earlier_answer_text_stays_visible`）、共有を外した相手の配信の打ち切り
-  （`viewer_stream_it.rs` の `unshare_thread_stops_the_partners_open_stream` ほか）。絞った形にどの欄の目印も出ないことは
-  単体テスト（`workflow_try_tool/shared_tests.rs`）。
+  （`viewer_stream_it.rs` の `unshare_thread_stops_the_partners_open_stream` ほか）、共有の相手が読む経路
+  （`get_message_path`）と相手の分岐（`fork_thread`）にも出ないこと（同じ 2 つの試験の中）。共有の相手がいる会話の作業記録に
+  結果の本文が載らないこと（`history_work_log` の `shared_threads_keep_results_out_of_the_log` と、`later_share` の
+  `echohistory:` の確かめ）。絞った形にどの欄の目印も出ないことは単体テスト（`workflow_try_tool/shared_tests.rs`）。
