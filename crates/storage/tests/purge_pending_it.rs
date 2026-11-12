@@ -301,11 +301,14 @@ async fn pending_exists(c: &Ctx, tenant: &str, id: Uuid) -> bool {
 }
 
 /// 自分の行が片付くまで掃除を回す（別のテストの掃除が先に取っていれば、それが終わるのを待つ）。
+///
+/// 1 回の掃除には上限の時間を置く。書き込みが blob のロックを取ってから node の行を待つ（ロックの順が
+/// node → blob でない）と、テストが押さえた行の後ろで掃除が blob のロックを待ち続けて止まるので、止まらずに落とす。
 async fn sweep_until_gone(c: &Ctx, tenant: &str, id: Uuid) {
     for _ in 0..200 {
-        c.service
-            .sweep_purge_pending()
+        tokio::time::timeout(Duration::from_secs(60), c.service.sweep_purge_pending())
             .await
+            .expect("掃除が blob のロックで止まった（書き込みのロックの順が node → blob になっていない）")
             .expect("掃除が DB に届くこと");
         if !pending_exists(c, tenant, id).await {
             return;
