@@ -44,6 +44,9 @@ struct SlowAuthz {
     /// 会話への check を失敗させる（OpenFGA が読めないときの再現）。
     thread_check_fails: AtomicBool,
     batches: AtomicUsize,
+    /// 往復中の batch_check の数と、その最大（往復を並行させているかを実時間に頼らず見る）。
+    batches_in_flight: AtomicUsize,
+    max_batches_in_flight: AtomicUsize,
     /// 問われたファイルの延べ数（batch_check の問数の合計）。
     batch_items: AtomicUsize,
     deny: Mutex<Vec<String>>,
@@ -93,7 +96,11 @@ impl AuthzClient for SlowAuthz {
         self.batches.fetch_add(1, Ordering::SeqCst);
         self.batch_items.fetch_add(items.len(), Ordering::SeqCst);
         self.consistencies.lock().unwrap().push(c);
+        let in_flight = self.batches_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_batches_in_flight
+            .fetch_max(in_flight, Ordering::SeqCst);
         tokio::time::sleep(ROUND_TRIP).await;
+        self.batches_in_flight.fetch_sub(1, Ordering::SeqCst);
         if self
             .fail_next
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
@@ -541,15 +548,16 @@ async fn many_documents_are_checked_in_parallel_round_trips() {
         }
     }
     let elapsed = started.elapsed();
+    let max_in_flight = authz.max_batches_in_flight.load(Ordering::SeqCst);
     eprintln!(
-        "文書 300 種の送り直し: {elapsed:?}（batch_check {} 回）",
+        "文書 300 種の送り直し: {elapsed:?}（batch_check {} 回・同時に最大 {max_in_flight} 往復）",
         authz.batches.load(Ordering::SeqCst)
     );
     assert_eq!(n, 301);
-    // 直列なら 6 往復（180 ms 以上）。並行なら 1〜2 往復ぶんで済む。
+    // 直列なら往復は同時に 1 つまで。実時間で見ると、機械が混んだときに DB の読みの遅れで揺れる。
     assert!(
-        elapsed < ROUND_TRIP * 4,
-        "往復を直列に重ねない: {elapsed:?}"
+        max_in_flight >= 2,
+        "往復を直列に重ねない: 同時に最大 {max_in_flight} 往復"
     );
     assert_not_rechecked(&authz);
 }
