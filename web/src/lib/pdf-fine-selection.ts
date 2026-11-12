@@ -154,7 +154,7 @@ export function measureFineUnits(
     const counts = new Map<string, number>();
     for (const c of candidates)
       counts.set(c.needle, (counts.get(c.needle) ?? 0) + 1);
-    const claimed: { start: number; end: number }[] = [];
+    const located: { start: number; end: number; unit: FineUnit }[] = [];
     for (const cell of [...candidates].sort(
       (a, b) => b.needle.length - a.needle.length,
     )) {
@@ -162,26 +162,10 @@ export function measureFineUnits(
       if (counts.get(cell.needle) !== 1) continue;
       const start = text.indexOf(cell.needle),
         end = start + cell.needle.length;
-      if (
-        start < 0 ||
-        text.indexOf(cell.needle, start + 1) >= 0 ||
-        claimed.some((r) => start < r.end && end > r.start)
-      )
-        continue;
+      if (start < 0 || text.indexOf(cell.needle, start + 1) >= 0) continue;
       const matches = segments.filter(
         (s) => s.end > s.start && s.start < end && s.end > start,
       );
-      // 別セルの完全な文字列を含む候補は曖昧。離れたA+BをOCRセルABへまとめない。
-      if (
-        matches.length > 1 &&
-        candidates.some(
-          (other) =>
-            other !== cell &&
-            other.needle !== cell.needle &&
-            matches.some((s) => compact(s.p.item.str) === other.needle),
-        )
-      )
-        continue;
       if (!matches.length) continue;
       if (
         matches.some((part, i) => {
@@ -225,16 +209,36 @@ export function measureFineUnits(
           ),
         ),
       );
-      units.push({
-        kind: "cell",
-        text: cell.value,
-        row: cell.row,
-        column: cell.column,
-        table: block.ordinal,
-        bbox,
+      located.push({
+        start,
+        end,
+        unit: {
+          kind: "cell",
+          text: cell.value,
+          row: cell.row,
+          column: cell.column,
+          table: block.ordinal,
+          bbox,
+        },
       });
-      claimed.push({ start, end });
     }
+
+    // 同じ文字位置を複数セルへ対応させられる場合は、競合する候補をまとめて除外する。
+    const ordered = located.sort((a, b) => a.start - b.start || b.end - a.end);
+    let group: typeof located = [];
+    let end = -1;
+    const finish = () => {
+      if (group.length === 1) units.push(group[0].unit);
+      group = [];
+    };
+    for (const candidate of ordered) {
+      if (candidate.start >= end) {
+        finish();
+        end = candidate.end;
+      } else end = Math.max(end, candidate.end);
+      group.push(candidate);
+    }
+    finish();
   }
   return units.sort(
     (a, b) =>

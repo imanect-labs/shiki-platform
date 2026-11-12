@@ -37,7 +37,11 @@ import { boxToViewport, viewportDimensions } from "../src/lib/pdf-geometry";
 import { editRegion, pdfRect, screenRect } from "../src/lib/pdf-region-edit";
 import { fineContent } from "../src/lib/pdf-fine-selection";
 import { checkPdfBudget, readPdfResponse } from "../src/lib/pdf-input";
-import { organizePdf, validatePageOrder } from "../src/lib/pdf-page-tools";
+import {
+  mergePdfs,
+  organizePdf,
+  validatePageOrder,
+} from "../src/lib/pdf-page-tools";
 import { parsePageRange } from "../src/lib/pdf-page-tools";
 import { readFile } from "node:fs/promises";
 
@@ -2117,6 +2121,50 @@ test("残すページへの内部リンクを保存後の実ページ参照へ�
   expect(dest.get(0).toString()).toBe(result.getPage(1).ref.toString());
 });
 
+test("結合する各PDFの内部リンクを実際の出力ページへ向け直す", async () => {
+  const docs: PDFDocumentProxy[] = [];
+  for (let i = 0; i < 2; i++) {
+    const pdf = await PDFDocument.create();
+    const first = pdf.addPage([200, 200]);
+    const second = pdf.addPage([200, 200]);
+    const annotation = pdf.context.obj({
+      Type: PDFName.of("Annot"),
+      Subtype: PDFName.of("Link"),
+      Rect: [0, 0, 100, 100],
+      ...(i === 0
+        ? { Dest: [second.ref, PDFName.of("Fit")] }
+        : { A: { S: PDFName.of("GoTo"), D: [second.ref, PDFName.of("Fit")] } }),
+    });
+    first.node.set(
+      PDFName.of("Annots"),
+      pdf.context.obj([pdf.context.register(annotation)]),
+    );
+    const bytes = await pdf.save();
+    docs.push({
+      numPages: 2,
+      getData: async () => bytes,
+    } as unknown as PDFDocumentProxy);
+  }
+  const result = await PDFDocument.load(await mergePdfs(docs));
+  const { PDFArray, PDFDict } = await import("pdf-lib");
+  expect(result.getPageCount()).toBe(4);
+  for (let i = 0; i < 2; i++) {
+    const annots = result
+      .getPage(i * 2)
+      .node.lookup(PDFName.of("Annots"), PDFArray);
+    const link = annots.lookup(0, PDFDict);
+    const dest =
+      i === 0
+        ? link.lookup(PDFName.of("Dest"), PDFArray)
+        : link
+            .lookup(PDFName.of("A"), PDFDict)
+            .lookup(PDFName.of("D"), PDFArray);
+    expect(dest.get(0).toString()).toBe(
+      result.getPage(i * 2 + 1).ref.toString(),
+    );
+  }
+});
+
 test("大量の同一Contents参照でも引数展開による保存失敗を起こさない", async () => {
   const pdf = await PDFDocument.create();
   const kept = pdf.addPage([200, 200]);
@@ -2333,4 +2381,50 @@ test("既定の色空間を保持し、残したページの色を変えない",
     .lookup(PDFName.of("ColorSpace"), PDFDict);
   expect(spaces.has(PDFName.of("DefaultRGB"))).toBe(true);
   expect(spaces.has(PDFName.of("DefaultGray"))).toBe(true);
+});
+
+test("書式が異なるABセルを、OCR由来の別列AとBへ割り当てない", async ({
+  page,
+}) => {
+  await setup(page);
+  const pdf = await PDFDocument.create();
+  const p = pdf.addPage([400, 400]);
+  const regular = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  p.drawText("A", { x: 30, y: 300, size: 12, font: regular });
+  p.drawText("B", {
+    x: 30 + regular.widthOfTextAtSize("A", 12),
+    y: 300,
+    size: 12,
+    font: bold,
+  });
+  const bytes = Buffer.from(await pdf.save());
+  await page.route("**/fixture.pdf", (route) =>
+    route.fulfill({ contentType: "application/pdf", body: bytes }),
+  );
+  await page.route(`**/api/files/${id}/versions/1/blocks*`, (route) =>
+    route.fulfill({
+      json: {
+        blocks: [
+          {
+            ordinal: 0,
+            type: "table",
+            page: 1,
+            text: "| AB | A | B |\n| --- | --- | --- |",
+            prov: [
+              { page: 1, bbox: [20, 320, 390, 280], origin: "bottom_left" },
+            ],
+          },
+        ],
+        next_from: null,
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await expect(page.getByTestId("pdf-fine-unit")).toHaveCount(0);
+  await page.getByRole("button", { name: "自由範囲", exact: true }).click();
+  await dragRegion(page, 1, [20 / 400, 70 / 400, 390 / 400, 130 / 400]);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
 });

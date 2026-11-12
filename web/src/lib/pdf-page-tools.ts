@@ -49,6 +49,7 @@ export async function mergePdfs(docs: PDFDocumentProxy[]) {
     throw new Error("一度に結合できるのは合計1,000ページまでです。");
   const { PDFDocument } = await import("pdf-lib");
   const output = await PDFDocument.create();
+  const { copyKeptPages } = await import("./pdf-page-copy");
   let total = 0;
   for (const doc of docs) {
     docs.forEach(assertPdfSource);
@@ -57,7 +58,11 @@ export async function mergePdfs(docs: PDFDocumentProxy[]) {
     if (total > 100 * 1024 * 1024)
       throw new Error("一度に結合できるPDFは合計100MBまでです。");
     const source = await PDFDocument.load(bytes);
-    for (const page of await output.copyPages(source, source.getPageIndices()))
+    for (const page of await copyKeptPages(
+      source,
+      output,
+      source.getPageIndices(),
+    ))
       output.addPage(page);
   }
   const bytes = await output.save();
