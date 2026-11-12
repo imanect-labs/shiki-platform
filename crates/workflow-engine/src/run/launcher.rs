@@ -252,8 +252,10 @@ impl WorkflowRunLauncher {
     ///
     /// 承認カードで見せた版と実行する版を一致させるため、版は呼び出し側が必ず渡す（最新版を引かない・R5）。順は次のとおり。
     ///
-    /// 1. 本人の viewer 権限で版の IR を読む（[`WorkflowStore::get_version`]）。見えない・無い・版が無いは
-    ///    [`LauncherError::Ir`]（呼び出し側は存在を秘匿して「見つからない」に写す）。
+    /// 1. 本人の viewer 権限でワークフローを引き（ArtifactStore の `get`）、版の IR を読む（[`WorkflowStore::get_version`]）。
+    ///    見えない・無い・ワークフローでない（汎用の artifact の口で作った別の種類・保存の検証を通っていない）・版が無いは
+    ///    どれも [`LauncherError::Ir`]（呼び出し側は存在を秘匿して「見つからない」に写す）。種類を見るのは入口が pub で、
+    ///    道具の `resolve_ref` を通らない呼び出し側でも同じに断るため。
     /// 2. editor の relation を確かめる（ArtifactStore の `require_relation`・HigherConsistency）。足りなければ
     ///    `workflow.try_run` の deny を監査に残し、[`LauncherError::ReadOnly`]。viewer で読めた後なので、閲覧のみと
     ///    答えても存在は漏れない。判定は既存の Editor の relation だけで、OpenFGA の schema は変えない。
@@ -271,6 +273,16 @@ impl WorkflowRunLauncher {
         trial: RunTrial<'_>,
         trace_id: Option<&str>,
     ) -> Result<Option<Uuid>, LauncherError> {
+        // 種類を確かめる（無い・見えないは get が NotFound・Forbidden で返す。どれも Ir）。
+        let meta = self
+            .workflows
+            .artifacts
+            .get(ctx, workflow_id, trace_id)
+            .await
+            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        if meta.kind != artifact::ArtifactKind::Workflow {
+            return Err(LauncherError::Ir("not found".into()));
+        }
         let (version, ir) = self
             .workflows
             .get_version(ctx, workflow_id, version, trace_id)

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use artifact::{ArtifactRole, ArtifactStore};
+use artifact::{ArtifactKind, ArtifactRole, ArtifactStore, NewArtifact};
 use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Principal, PrincipalKind};
 use serde_json::{json, Value};
@@ -279,6 +279,37 @@ async fn editors_body(env: Arc<Env>) {
         assert!(matches!(err, LauncherError::Ir(_)), "{err:?}");
     }
     assert_eq!(env.runs_of(wf).await, 3, "断ったものは run を作らない");
+
+    // ワークフローでない種類（汎用の artifact の口で作った・本文は IR の形）は、持ち主でも見つからない（Ir）。入口が
+    // pub なので、道具の resolve_ref を通らない呼び出し側でも同じに断る。見えない人も同じ Ir。
+    let other_ir = ask_ir("保存の検証を通っていない", None);
+    let other = env
+        .artifacts
+        .create(
+            &env.alice,
+            NewArtifact {
+                kind: ArtifactKind::Skill,
+                name: format!("not-a-workflow-{}", Uuid::new_v4().simple()),
+                body: other_ir,
+            },
+            None,
+        )
+        .await
+        .expect("別の種類を作る")
+        .id;
+    for ctx in [&env.alice, &env.bob] {
+        let err = start(ctx, other, 1).await.unwrap_err();
+        assert!(matches!(err, LauncherError::Ir(_)), "{err:?}");
+    }
+    let made: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(other)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(made, 0, "ワークフローでないものは run を作らない");
 
     // deny は viewer の 1 回だけ（見えない人は viewer の確かめで止まり、試運転の語彙では残らない）。
     let denies: Vec<AuditRow> = sqlx::query_as(
