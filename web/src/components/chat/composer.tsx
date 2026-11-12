@@ -70,6 +70,12 @@ type Uploading = { name: string; fraction: number; preview?: string };
 /// 入力欄の添付。端末から選んだ画像は、アップロード後も object URL でサムネイルを出す（送信時に外す）。
 type ComposerAttachment = Attachment & { preview?: string };
 
+/// 「スキルを検索」の 1 行目（`/` と検索語）を外した残り＝書きかけの本文。
+function dropSearchLine(v: string): string {
+  const nl = v.indexOf("\n");
+  return nl < 0 ? "" : v.slice(nl + 1).replace(/^\n+/, "");
+}
+
 /// 補完候補を確定済みコマンドへ写す。
 function toActiveCommand(s: SlashSuggestion): ActiveCommand {
   return {
@@ -261,17 +267,23 @@ const ScopedComposer = React.memo(function ScopedComposer({
   React.useEffect(() => {
     if (desiredFormat !== inputFormat && value === "") setInputFormat(desiredFormat);
   }, [desiredFormat, inputFormat, value]);
-  const latestValue = React.useRef(value);
+  // "inserted" は `/` 行をこちらで入れた（やめる・選ばずに送るときは外す）、"typed" は既に `/` で
+  // 始まっていた本文をそのまま検索語にした（外さない）。
+  const [searchingSkill, setSearchingSkill] = React.useState<false | "inserted" | "typed">(false);
+  // 書きかけとして保存するのは本文だけ（「スキルを検索」で入れた `/` 行は保存しない。復元後は
+  // 検索中の状態が無いので、残すと `/` 行が本文として送られる）。
+  const draftValue = searchingSkill === "inserted" ? dropSearchLine(value) : value;
+  const latestValue = React.useRef(draftValue);
   // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
   React.useEffect(() => {
-    latestValue.current = value;
-  }, [value]);
+    latestValue.current = draftValue;
+  }, [draftValue]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
-    const t = window.setTimeout(() => saveDraft(draftKey, value, generation), DRAFT_SAVE_DELAY_MS);
+    const t = window.setTimeout(() => saveDraft(draftKey, draftValue, generation), DRAFT_SAVE_DELAY_MS);
     return () => window.clearTimeout(t);
-  }, [draftKey, draftRestored, value]);
+  }, [draftKey, draftRestored, draftValue]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
@@ -310,9 +322,6 @@ const ScopedComposer = React.memo(function ScopedComposer({
 
   // 「スキルを検索」で開いた補完の最中か。確定済みのピルがあっても補完を出し、選べば差し替え、
   // やめればピルはそのまま残る（検索を始めただけで選んでいたスキルを失わない）。
-  // "inserted" は `/` 行をこちらで入れた（やめる・選ばずに送るときは外す）、"typed" は既に `/` で
-  // 始まっていた本文をそのまま検索語にした（外さない）。
-  const [searchingSkill, setSearchingSkill] = React.useState<false | "inserted" | "typed">(false);
   React.useEffect(() => {
     if (searchingSkill && !value.startsWith("/")) setSearchingSkill(false);
   }, [searchingSkill, value]);
@@ -342,12 +351,6 @@ const ScopedComposer = React.memo(function ScopedComposer({
     setValue(value.startsWith("/") && nl >= 0 ? value.slice(nl + 1).replace(/^\n+/, "") : "");
     setSlashIndex(0);
     setSearchingSkill(false);
-  };
-
-  /// 「スキルを検索」の 1 行目（`/` と検索語）を外した残り＝書きかけの本文。
-  const dropSearchLine = (v: string) => {
-    const nl = v.indexOf("\n");
-    return nl < 0 ? "" : v.slice(nl + 1).replace(/^\n+/, "");
   };
 
   /// 「スキルを検索」: 入力欄の先頭に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
@@ -450,6 +453,8 @@ const ScopedComposer = React.memo(function ScopedComposer({
       if (searchingSkill) {
         // 検索をやめる: 入れた `/` 行を外して本文だけに戻す（ピルはそのまま）。
         if (searchingSkill === "inserted") setValue(dropSearchLine(value));
+        // 自分で打った `/…` を検索語にしていたときは本文を残し、補完だけを閉じる。
+        else setSlashDismissed(true);
         setSearchingSkill(false);
         return;
       }
