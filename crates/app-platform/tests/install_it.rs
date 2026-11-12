@@ -1443,7 +1443,7 @@ async fn installable_registry_hides_yanked_and_deleted_apps() {
             .await
             .unwrap()
             .expect("entry");
-        registry.yank(&c, yanked.id).await.expect("yank");
+        assert!(h.installs.yank(&c, yanked.id, None).await.expect("yank"));
         h.artifacts.delete(&c, deleted, None).await.expect("delete");
 
         let installable = registry

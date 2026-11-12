@@ -266,22 +266,6 @@ impl Registry {
         Ok(updated.rows_affected() == 1)
     }
 
-    /// 認可と監査を通らずにコードアプリのエントリを取り下げる（**テストの準備だけ**・`tests/install_it.rs` が使う）。
-    ///
-    /// 取り下げの口は [`crate::InstallService::yank`]（アプリの持ち主か組織の管理者だけ・監査をチェーンにつなぐ・
-    /// D-203）。`install_it.rs` をそちらに替えたら消す（GAP-69b）。絞り込みは [`Self::yank_on`] と同じ（テナント・
-    /// 組織・`mini_app_code`）で、取り下げる行が無ければ（もう取り下げていても）NotFound。
-    #[doc(hidden)]
-    pub async fn yank(&self, ctx: &AuthContext, id: Uuid) -> Result<(), AppPlatformError> {
-        let mut tx = self.begin().await?;
-        let changed = self.yank_on(&mut tx, ctx, "mini_app_code", id).await?;
-        tx.commit().await.map_err(map_db)?;
-        if !changed {
-            return Err(AppPlatformError::NotFound);
-        }
-        Ok(())
-    }
-
     /// インストールした版のうち、取り下げたもの（インストール済みの一覧に添える・GAP-69b）。
     ///
     /// `installed` は (アプリの id, マニフェストの名前, 版) の組。インストールが解決したのと同じ登録（テナントの中の
