@@ -11,9 +11,14 @@
 //!    封筒の中身だけを切り、閉じタグは必ず付ける。
 //! 4. **封筒の後ろ**: こちらの値と案内（失敗の分類と参照番号・作ったレコードの id・画面の道・やり直し方・片付け）。
 //!
-//! 観測は会話の tool_result として残り、共有した会話では共有の相手も読める（data_query と同じ前例）。そのため入れるの
-//! は直すのに要るものだけにする（返す値の節の全体・副作用の一覧は入れない。返す値は `workflow.reply` の step の出力の
+//! この全部入りの形は、会話に話した人のほかの相手がいないときだけ返す。相手がいる会話では、状態・件数・画面の道だけの
+//! 形（[`super::shared`]・PIT-84・D-214）を返す。観測は会話の tool_result として残る（本文は run を起こした本人の
+//! 画面にだけ出し、ほかの閲覧者には成否だけを見せる・前のターンの tool_result は次の回答の文脈に入らない）。入れるのは
+//! 直すのに要るものだけにする（返す値の節の全体・副作用の一覧は入れない。返す値は `workflow.reply` の step の出力の
 //! 先頭に出る・副作用は承認カードが見せる）。
+//!
+//! 状態の案内（[`state_guidance`]）と先頭の行の前半（[`head_core`]）は、状態の値だけを受ける純関数にして、共有の側と
+//! 分け合う。
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -425,8 +430,8 @@ fn not_waited_label(status: RunStatus, waiting: Option<WaitingFor>) -> Option<&'
 }
 
 /// 状態ごとの次の手。`state` は run の状態（要約が読めなければ `None`）、`end` は待つのをやめた理由（前回の結果は
-/// `None`）。失敗したときは `on_failed` を返す（全部入りは [`FAILED_FULL`]）。文はどれも状態の値だけで決まり、
-/// IR や run の中身は入らない。
+/// `None`）。失敗したときは `on_failed` を返す（全部入りは [`FAILED_FULL`]・共有の相手がいる会話は
+/// `shared::FAILED_SHARED`）。文はどれも状態の値だけで決まり、IR や run の中身は入らない。
 pub(super) fn state_guidance(
     state: Option<(RunStatus, Option<WaitingFor>)>,
     end: Option<WaitEnd>,
