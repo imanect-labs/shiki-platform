@@ -413,24 +413,30 @@ fn user_message(req: &AgentInvokeReq) -> Message {
     }
 }
 
-/// 最後の assistant の本文（道具を呼ぶ前の途中の文は含めない）。
+/// 回答の本文。最後の assistant が道具を呼んでいなければ（最終回答か、上限での着地の生成）その本文を返す。
+///
+/// 最後の assistant が道具を呼んでいれば空を返し、それより前には遡らない。道具を呼ぶ前の
+/// 途中の文（計画の 1〜3 文など）を回答として出力に載せないため。空なら呼び出し側が
+/// 上限・未完の失敗に落とす。
 fn final_text(messages: &[Message]) -> String {
-    messages
+    let Some(last) = messages.iter().rev().find(|m| m.role == Role::Assistant) else {
+        return String::new();
+    };
+    if last
+        .content
         .iter()
-        .rev()
-        .filter(|m| m.role == Role::Assistant)
-        .map(|m| {
-            m.content
-                .iter()
-                .filter_map(|b| match b {
-                    Block::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("")
+        .any(|b| matches!(b, Block::ToolUse { .. }))
+    {
+        return String::new();
+    }
+    last.content
+        .iter()
+        .filter_map(|b| match b {
+            Block::Text { text } => Some(text.as_str()),
+            _ => None,
         })
-        .find(|t| !t.trim().is_empty())
-        .unwrap_or_default()
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 /// 本文を上限（バイト）で切る（切ったら true）。
@@ -518,6 +524,50 @@ mod tests {
         ];
         assert_eq!(final_text(&messages), "答え");
         assert_eq!(final_text(&messages[..1]), "");
+    }
+
+    /// 道具を呼ぶ前の計画の文は、時間や出力の上限で次の手が本文なしに止まっても回答にしない。
+    #[test]
+    fn final_text_skips_the_plan_before_a_tool_call() {
+        let plan_and_call = Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Text {
+                    text: "調べます".into(),
+                },
+                Block::ToolUse {
+                    id: "c1".into(),
+                    name: "rag_search".into(),
+                    input: json!({ "query": "q" }),
+                },
+            ],
+        };
+        let call_only = Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "c2".into(),
+                name: "rag_search".into(),
+                input: json!({ "query": "q2" }),
+            }],
+        };
+        let user = Message::text(Role::User, "依頼");
+        let result = Message::text(Role::Tool, "結果");
+        let after_call = [user.clone(), plan_and_call.clone(), result.clone()];
+        assert_eq!(final_text(&after_call), "");
+        let second_call = [
+            user.clone(),
+            plan_and_call.clone(),
+            result.clone(),
+            call_only,
+        ];
+        assert_eq!(final_text(&second_call), "");
+        let answered = [
+            user,
+            plan_and_call,
+            result,
+            Message::text(Role::Assistant, "答え"),
+        ];
+        assert_eq!(final_text(&answered), "答え");
     }
 
     #[test]
