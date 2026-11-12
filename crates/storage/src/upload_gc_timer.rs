@@ -6,6 +6,10 @@
 //!
 //! 1 周で TTL sweep → 孤児 sweep の順に回す。TTL sweep が行を消してから孤児 sweep が走ると、
 //! 同じ周でオブジェクトの取り残しまで回収できる（TTL sweep の delete_batch が失敗した場合）。
+//!
+//! 同じ周の最後に、完全削除の片付け待ち（`storage_purge_pending`・GAP-108）も片付ける
+//! （[`StorageService::sweep_purge_pending`]）。api の配線と設定は増やさず、このタイマに相乗りする。
+//! `upload_gc.enabled=false` の環境では片付けが残るが、DB の行はもう無いので利用者に見えるものは増えない。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,6 +71,22 @@ pub fn spawn_upload_gc_timer(
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "孤児オブジェクトの削除に失敗しました");
+                    failed = true;
+                }
+            }
+
+            // 行ごとの失敗は行に残して次の周に回す（ここでは数を記録するだけ）。DB に届かないときだけ待ちを延ばす。
+            match service.sweep_purge_pending().await {
+                Ok(r) if r.done > 0 || r.failed > 0 => {
+                    tracing::info!(
+                        done = r.done,
+                        failed = r.failed,
+                        "完全削除の片付け待ちを片付けました（GAP-108）"
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "完全削除の片付け待ちを片付けられませんでした");
                     failed = true;
                 }
             }
