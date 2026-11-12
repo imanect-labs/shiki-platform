@@ -59,6 +59,8 @@ pub struct RunDigest {
     pub records: Vec<DigestRecord>,
     /// [`MAX_DIGEST_RECORDS`] を超えて載せなかったレコードの件数（実行履歴で確かめる）。
     pub records_omitted: i64,
+    /// run が終わった時刻（終わっていなければ `None`・試運転の費用を run の実行の範囲で数える）。
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 要素でない step 1 つ。
@@ -155,7 +157,7 @@ pub struct DigestRecord {
     pub change: RecordChange,
 }
 
-/// run の行（状態・待ち・版・失敗の code）。
+/// run の行（状態・待ち・版・失敗の code・終わった時刻）。
 type RunRow = (
     Uuid,
     String,
@@ -164,6 +166,7 @@ type RunRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<chrono::DateTime<chrono::Utc>>,
 );
 
 /// 要素でない step の行。
@@ -202,7 +205,7 @@ impl RunStore {
         // tenant-sql: allow(OWN_RUN 定数（format! で差し込み）が tenant_id を付ける)
         let row: Option<RunRow> = sqlx::query_as(&format!(
             "SELECT r.workflow_id, r.status, {WAITING_FOR}, r.version, r.fail_reason, \
-                    {FAILURE_CODE_COLUMNS} \
+                    {FAILURE_CODE_COLUMNS}, r.finished_at \
              FROM workflow_run r WHERE r.run_id = $2 AND {OWN_RUN}"
         ))
         .bind(tenant_id)
@@ -212,7 +215,16 @@ impl RunStore {
         .fetch_optional(self.db())
         .await
         .map_err(map_db)?;
-        let Some((workflow_id, status, waiting, version, fail_reason, step_code, item_code)) = row
+        let Some((
+            workflow_id,
+            status,
+            waiting,
+            version,
+            fail_reason,
+            step_code,
+            item_code,
+            finished_at,
+        )) = row
         else {
             return Ok(None);
         };
@@ -238,6 +250,7 @@ impl RunStore {
             map_counts,
             records,
             records_omitted,
+            finished_at,
         }))
     }
 

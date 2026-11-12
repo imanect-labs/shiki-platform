@@ -15,8 +15,9 @@
 //!   状態を返す。
 //! - **観測**（[`observe`]）: 作成者や外の相手が書いた文字は `<run_output>` の封筒の中にだけ置く（PIT-56）。
 //! - **費用**: run の trace（`run_id.simple()`）の LLM の利用量を集計し、台帳に報告した分との差分だけを
-//!   [`ToolOutcome::usage`] に入れる（親の予算に積む・合流や前回の結果で同じ費用を二重に積まない）。`workflow.start`
-//!   の子の run（別の trace）と、待つのをやめた後の分は入らない。
+//!   [`ToolOutcome::usage`] に入れる（親の予算に積む・合流や前回の結果で同じ費用を二重に積まない）。集計は予約の時刻
+//!   から、終わった run なら終わった時刻の少し後まで（[`USAGE_TAIL`]）に閉じる（前回の結果を返すたびに、その後の
+//!   組織の利用量を読まない）。`workflow.start` の子の run（別の trace）と、待つのをやめた後の分は入らない。
 //! - `is_error` は起動できなかったとき（見つからない・閲覧のみ・入力・実行の前に止める設定・上限・起動されなかった）
 //!   だけ。run が失敗しても観測としては成功で、失敗の中身を返す。
 
@@ -34,7 +35,7 @@ use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
-use workflow_engine::run::LauncherError;
+use workflow_engine::run::{LauncherError, RunDigest};
 use workflow_engine::{
     RunOutcomeReader, RunStore, RunTrial, WorkflowIr, WorkflowRunLauncher, WorkflowStore,
     WorkflowStoreError,
@@ -49,6 +50,10 @@ use wait::Waiter;
 
 /// 会話の 1 回の生成（chat の run）で新しく起動できる試運転の数。
 pub const MAX_TRIALS_PER_ANSWER: i64 = 5;
+
+/// 終わった run の費用を、終わった時刻からどれだけ後まで数えるか（利用量の行は呼び出しの終わりに書くので、取り消しと
+/// 重なった呼び出しの分も入るよう少し余裕を持たせる）。
+const USAGE_TAIL: chrono::Duration = chrono::Duration::minutes(5);
 
 /// 試運転の入力（`input`・object の引数の受け口は道具で共通・GAP-130）。
 const INPUT_ARG: ObjectArg = ObjectArg {
@@ -576,7 +581,7 @@ impl TryWorkflowTool {
                 None
             }
         };
-        let (cost, usage) = self.cost(ctx, row, run_id).await;
+        let (cost, usage) = self.cost(ctx, row, run_id, digest.as_ref()).await;
         let content = observe::render(&Observed {
             origin,
             end,
@@ -599,12 +604,18 @@ impl TryWorkflowTool {
         ctx: &AuthContext,
         row: &TrialRow,
         run_id: Uuid,
+        digest: Option<&RunDigest>,
     ) -> (RunCost, Option<ToolUsage>) {
-        // 予約は run を作る前なので、予約の時刻から数えれば run の分はすべて入る（trace は run ごとに一意）。
+        // 予約は run を作る前なので、予約の時刻から数えれば run の分はすべて入る（trace は run ごとに一意）。終わった
+        // run は終わった時刻の少し後までで閉じる（前回の結果を何日も後に返すときに、その間の組織の利用量を読まない）。
         let since = row.created_at - chrono::Duration::minutes(1);
+        let until = digest
+            .filter(|d| d.status.is_terminal())
+            .and_then(|d| d.finished_at)
+            .map(|at| at + USAGE_TAIL);
         let total = match self
             .usage
-            .trace_usage(ctx, &run_id.simple().to_string(), since)
+            .trace_usage(ctx, &run_id.simple().to_string(), since, until)
             .await
         {
             Ok(t) => t,

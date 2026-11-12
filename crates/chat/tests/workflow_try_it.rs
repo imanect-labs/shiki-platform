@@ -909,6 +909,35 @@ async fn usage_is_reported_once_and_output_stays_enveloped() {
         let head = &done.content[..end];
         assert!(done.content.starts_with("試運転（前回の結果）: 成功 / run: "), "{}", done.content);
         assert!(head.contains(&run_id.to_string()), "{head}");
+
+        // 終わった run の費用は、終わった時刻の少し後（5 分）までで閉じる（前回の結果を後で返すときに、その間の組織の
+        // 利用量を読まない）。終わった直後の行は数え、1 時間後の行は数えない。
+        sqlx::query("UPDATE workflow_run SET finished_at = now() WHERE tenant_id = $1 AND run_id = $2")
+            .bind(&env.tenant)
+            .bind(run_id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        for (key, tokens, cost, after) in [("tail", 2_i64, 7_i64, "1 minute"), ("late", 1000, 1000, "1 hour")] {
+            sqlx::query(&format!(
+                "INSERT INTO llm_usage (tenant_id, org, idempotency_key, provider, model, \
+                   prompt_tokens, completion_tokens, cost_usd_micros, trace_id, created_at) \
+                 VALUES ($1, 'acme', $2, 'stub', 'm', $3, 0, $4, $5, now() + interval '{after}')"
+            ))
+            .bind(&env.tenant)
+            .bind(key)
+            .bind(tokens)
+            .bind(cost)
+            .bind(run_id.simple().to_string())
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        }
+        let closed = call(&tool, &env.alice, json!({ "workflow_id": wf.to_string(), "version": 1 }))
+            .await;
+        let tail = closed.usage.expect("終わった直後の分は積む");
+        assert_eq!((tail.tokens, tail.cost_usd_micros), (2, 7), "{}", closed.content);
+        assert!(closed.content.contains("費用: 137 トークン"), "{}", closed.content);
     })
     .await;
 }

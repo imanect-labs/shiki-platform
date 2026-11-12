@@ -88,6 +88,7 @@ fn digest(run_id: Uuid, status: RunStatus, waiting_for: Option<WaitingFor>) -> R
             change: RecordChange::Created,
         }],
         records_omitted: 0,
+        finished_at: None,
     }
 }
 

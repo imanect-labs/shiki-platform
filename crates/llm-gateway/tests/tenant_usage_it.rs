@@ -620,8 +620,8 @@ async fn user_provider_rules_intersect_org_settings_and_constrain_auto() {
     ));
 }
 
-/// 試運転の費用（`trace_usage`）は、呼ぶ人のテナント・組織・トレースの、`since` 以降の行だけを数える（設計 §4.3 R13・
-/// PIT-45）。
+/// 試運転の費用（`trace_usage`）は、呼ぶ人のテナント・組織・トレースの、`since` から `until` までの行だけを数える
+/// （設計 §4.3 R13・PIT-45）。`until` が無ければ今まで。
 #[tokio::test]
 async fn trace_usage_counts_only_the_callers_trace_since() {
     use llm_gateway::accounting::{TraceUsage, UsageRecord, UsageRecorder};
@@ -668,6 +668,8 @@ async fn trace_usage_counts_only_the_callers_trace_since() {
         ),
         (&acme, rec("a4", None, (100, 100), 100)),
         (&acme, rec("old", Some(trace.as_str()), (100, 100), 100)),
+        // `until` を渡したときだけ数えない: 終わった後の行。
+        (&acme, rec("late", Some(trace.as_str()), (1000, 0), 1000)),
     ];
     for (ctx, r) in &rows {
         recorder.record(ctx, r).await.expect("record");
@@ -680,9 +682,24 @@ async fn trace_usage_counts_only_the_callers_trace_since() {
     .execute(&pool)
     .await
     .expect("age");
-    let got = recorder.trace_usage(&acme, &trace, since).await;
+    sqlx::query(
+        "UPDATE llm_usage SET created_at = now() + interval '1 hour' \
+         WHERE tenant_id = $1 AND idempotency_key = 'late'",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .expect("late");
+    let until = Some(Utc::now() + Duration::minutes(5));
+    let got = recorder.trace_usage(&acme, &trace, since, until).await;
+    let open = recorder.trace_usage(&acme, &trace, since, None).await;
     let none = recorder
-        .trace_usage(&acme, &uuid::Uuid::new_v4().simple().to_string(), since)
+        .trace_usage(
+            &acme,
+            &uuid::Uuid::new_v4().simple().to_string(),
+            since,
+            None,
+        )
         .await;
     for t in [&tenant, &other_tenant] {
         sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
@@ -699,6 +716,16 @@ async fn trace_usage_counts_only_the_callers_trace_since() {
             completion_tokens: 7,
             cost_usd_micros: 10,
         }
+    );
+    assert_eq!(
+        open.expect("usage"),
+        TraceUsage {
+            calls: 3,
+            prompt_tokens: 1011,
+            completion_tokens: 7,
+            cost_usd_micros: 1010,
+        },
+        "until が無ければ終わった後の行も数える"
     );
     assert_eq!(none.expect("usage"), TraceUsage::default());
 }

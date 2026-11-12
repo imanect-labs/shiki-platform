@@ -121,29 +121,35 @@ impl UsageRecorder {
         .await
     }
 
-    /// 1 つのトレースの、`since` 以降の LLM 利用量の合計（会話の AI の試運転の費用・設計 §4.3 R13）。
+    /// 1 つのトレースの、`since` から `until` までの LLM 利用量の合計（会話の AI の試運転の費用・設計 §4.3 R13）。
     ///
     /// 呼ぶ人のテナントと組織の行だけを数える（組織はテナントの中の隔離の境界・PIT-45）。ワークフローの run の
-    /// trace_id は run_id の 32 桁の 16 進（`run_id.simple()`・ワーカーと `workflow_run.trace_id` の規約）。`since` は
-    /// 索引（`llm_usage_tenant_idx`・tenant_id・org・created_at）で走査を絞るための下限で、run を作った時刻を渡す。
+    /// trace_id は run_id の 32 桁の 16 進（`run_id.simple()`・ワーカーと `workflow_run.trace_id` の規約）。trace_id の
+    /// 索引は無いので、`since` と `until` で索引（`llm_usage_tenant_idx`・tenant_id・org・created_at）の範囲を絞る。
+    /// `since` には run を作った時刻を、`until` には終わった run なら終わった時刻（と少しの余裕）を渡す（`None` は今まで・
+    /// まだ動いている run）。終わった run の前回の結果を何日も後に返すときに、その間の組織の利用量を読まない。
     pub async fn trace_usage(
         &self,
         ctx: &AuthContext,
         trace_id: &str,
         since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
     ) -> Result<TraceUsage, sqlx::Error> {
+        // `until` は COALESCE で包む（`$5 IS NULL OR …` だと汎用の計画で索引の上限に使えない）。
         sqlx::query_as(
             "SELECT COUNT(*)::bigint AS calls, \
                     COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
                     COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
              FROM llm_usage \
-             WHERE tenant_id = $1 AND org = $2 AND created_at >= $3 AND trace_id = $4",
+             WHERE tenant_id = $1 AND org = $2 AND created_at >= $3 \
+               AND created_at <= COALESCE($5::timestamptz, 'infinity'::timestamptz) AND trace_id = $4",
         )
         .bind(ctx.tenant_id())
         .bind(ctx.org())
         .bind(since)
         .bind(trace_id)
+        .bind(until)
         .fetch_one(&self.db)
         .await
     }
