@@ -224,6 +224,9 @@ pub(super) fn message_text_with(
             // 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）
             // が共有する参照ブロック。version も載せて「どの版まで進んだか」を観測させる。
             ContentBlock::DocumentRef { document } => parts.push(document_ref_text(document)),
+            // 作ったテーブル・ビュー・アプリ・ワークフロー（D-204）。続きの依頼で id と版を引けるようにする。
+            ContentBlock::BuilderRef { item } => parts
+                .extend(crate::builder_obs::BuilderRef::from_value(item).map(|r| r.history_line())),
             // レガシー下書き Word（#381 で廃止）。過去履歴では名前だけ観測させる
             // （下書きストアも画面も無いため「直すには同名で save_document」は誤誘導になる）。
             ContentBlock::DocumentDraft { draft } => {
@@ -422,6 +425,23 @@ mod tests {
         origin_document_tools, tools_in_use, SkillViews,
     };
     use crate::model::ContentBlock;
+
+    /// 作ったものの参照カードは、種類・名前・id・版の 1 行で次のターンに残る（形の違う値は残さない・D-204）。
+    #[test]
+    fn builder_ref_leaves_one_line() {
+        use crate::builder_obs::{BuilderKind, BuilderRef};
+        let id = uuid::Uuid::nil();
+        let item = BuilderRef::new(BuilderKind::DataView, id, "今月の売上", 2).to_value();
+        let broken = serde_json::json!({ "kind": "data_view" });
+        let text = message_text(&[
+            ContentBlock::BuilderRef { item },
+            ContentBlock::BuilderRef { item: broken },
+        ]);
+        assert_eq!(
+            text,
+            format!("[作成済み保存ビュー: 今月の売上（id: {id}, v2）]")
+        );
+    }
 
     /// 移動した文書は「編集済み」と言わず、移動先を添える（#942）。
     #[test]

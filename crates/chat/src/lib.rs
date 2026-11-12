@@ -28,6 +28,8 @@ pub mod approver;
 pub mod artifacts;
 pub mod attachments;
 pub mod autonomous;
+/// 作る道具（テーブル・ビュー・アプリ・ワークフロー）の参照カードと観測の共通部品（T02・D-204）。
+pub mod builder_obs;
 pub mod csv_tool;
 pub mod custom_instructions;
 pub mod data_tool;

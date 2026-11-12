@@ -70,6 +70,12 @@ pub enum StreamEventKind {
     SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。`document = {id, name, kind, version}`。
     DocumentRef { document: serde_json::Value },
+    /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照カード（D-204・T02）。
+    /// `item = {kind, id, name, version}`（[`crate::builder_obs::BuilderRef`]・組むのは `builder_obs` だけ）。
+    BuilderRef {
+        #[schema(value_type = crate::builder_obs::BuilderRef)]
+        item: serde_json::Value,
+    },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
     /// 新規に発火しない。`generation_event` の replay 互換のためだけに残す。
     DocumentDraft { draft: serde_json::Value },
@@ -149,6 +155,7 @@ impl StreamEventKind {
             StreamEventKind::CsvDraft { .. } => "csv_draft",
             StreamEventKind::SkillDraft { .. } => "skill_draft",
             StreamEventKind::DocumentRef { .. } => "document_ref",
+            StreamEventKind::BuilderRef { .. } => "builder_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
             StreamEventKind::SubagentRun { .. } => "subagent_run",

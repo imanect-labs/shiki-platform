@@ -204,6 +204,11 @@ impl WorkerSink {
                     document: document.clone(),
                 });
             }
+            // 作ったテーブル・ビュー・アプリ・ワークフローへの参照（D-204）。カードと次のターンの文脈に残す。
+            StreamEventKind::BuilderRef { item } => {
+                self.content
+                    .push(ContentBlock::BuilderRef { item: item.clone() });
+            }
             // レガシー（#381 で廃止）。新規発火は無いが replay 経路の網羅性のため残す。
             StreamEventKind::DocumentDraft { draft } => {
                 self.content.push(ContentBlock::DocumentDraft {
@@ -309,6 +314,90 @@ impl EventSink for WorkerSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 道具が組んだ参照カード（D-204）は SSE の builder_ref になり、そのまま content の builder_ref ブロックに残る。
+    #[tokio::test]
+    async fn builder_ref_event_maps_to_sse_and_projection() {
+        let item = crate::builder_obs::BuilderRef::new(
+            crate::builder_obs::BuilderKind::DataTable,
+            Uuid::new_v4(),
+            "顧客",
+            1,
+        )
+        .to_value();
+        let kind = to_stream_kind(&AgentEvent::BuilderRef { item: item.clone() });
+        assert_eq!(kind.tag(), "builder_ref");
+        // DB に触れない sink（projection だけを見る）。
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://shiki@127.0.0.1:1/none")
+            .unwrap();
+        let store = ChatStore::connect(pool, Arc::new(NoAuthz), None)
+            .await
+            .unwrap();
+        let mut sink = WorkerSink::new(store, "t", Uuid::new_v4(), 1, Arc::default());
+        sink.accumulate(&kind);
+        assert_eq!(sink.content(), [ContentBlock::BuilderRef { item }]);
+    }
+
+    /// 問われない認可（projection のテストは認可を呼ばない）。
+    struct NoAuthz;
+
+    #[async_trait::async_trait]
+    impl authz::AuthzClient for NoAuthz {
+        async fn check(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+            _: authz::Consistency,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn write_tuple(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn delete_tuple(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn read_tuples(
+            &self,
+            _: &authz::FgaObject,
+            _: Option<authz::Relation>,
+        ) -> Result<Vec<authz::ReadTupleKey>, authz::AuthzError> {
+            Ok(vec![])
+        }
+        async fn list_objects(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: authz::ObjectType,
+        ) -> Result<Vec<String>, authz::AuthzError> {
+            Ok(vec![])
+        }
+        async fn delete_object_tuples(
+            &self,
+            _: &authz::FgaObject,
+        ) -> Result<u32, authz::AuthzError> {
+            Ok(0)
+        }
+        async fn read_subject_objects(
+            &self,
+            _: &authz::Subject,
+            _: authz::ObjectType,
+        ) -> Result<Vec<String>, authz::AuthzError> {
+            Ok(vec![])
+        }
+    }
 
     #[test]
     fn artifact_event_maps_to_file_ref() {
