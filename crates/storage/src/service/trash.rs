@@ -34,6 +34,24 @@ impl StorageService {
         .await?;
 
         let mut tx = self.db.begin().await?;
+        // 先に別の文で、配下（自身含む・生存分）を id の昇順に押さえる（PIT-16 の move と同じ順）。1 つの UPDATE の
+        // 中で closure の配下を引くだけだと、その文の snapshot より後に commit した子（並行して作られたファイル・
+        // 移されたノード）に印が付かず、削除したフォルダの下に生きたノードが残る。READ COMMITTED は文ごとに
+        // snapshot を取り直すので、ロックを待った後の UPDATE は、並行の作成が commit した子も含めて印を付ける。
+        // 作成は親と祖先を FOR SHARE で押さえる（upload::lock_parent_for_create）ので、ここで待ち合う。
+        // FOR UPDATE ではなく FOR NO KEY UPDATE にするのは、作成の closure の挿入が外部キーで祖先に取る
+        // FOR KEY SHARE と衝突させないため（衝突させると、親だけを押さえる作成とデッドロックになる）。
+        sqlx::query(
+            "SELECT id FROM node \
+             WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+               AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $3) \
+             ORDER BY id FOR NO KEY UPDATE OF node",
+        )
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(folder_id)
+        .fetch_all(&mut *tx)
+        .await?;
         // サブツリー（自身含む）の生存ノードをまとめて論理削除する。version も進めて、各書込
         // イベントの冪等キー (node_id, version) が move/delete/restore 間で衝突しないようにする。
         let affected: Vec<(Uuid, i64)> = sqlx::query_as(
