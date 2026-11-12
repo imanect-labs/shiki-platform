@@ -1,15 +1,61 @@
-//! 起動の入口の誤りを観測に写す（[`super::TryWorkflowTool`]・API の実行の口と同じ分け方）。
+//! 起動の入口の誤りを観測に写す（[`super::TryWorkflowTool`]・API の実行の口と同じ分け方）。内部の誤りの後は、
+//! 予約で決めた id の run の有無を確かめてから予約を消す（[`TryWorkflowTool::after_run_error`]）。
 //!
 //! 入力の誤りと実行の前に止める設定の理由の文は、作成者が書いた文字（input_schema の項目・ブロックの id・path）を
 //! 含む。共有の相手がいる会話（PIT-84・D-214）では理由の文を返さず、件数と固定の案内だけにする
 //! （[`super::shared::launch_refused`]）。
 
+use authz::AuthContext;
 use uuid::Uuid;
 use workflow_engine::run::LauncherError;
+use workflow_engine::WorkflowIr;
 
 use agent_core::ToolOutcome;
 
-use super::{not_found, observe, shared};
+use super::{not_found, observe, shared, Origin, TryWorkflowTool};
+use crate::store::{TrialRow, STALE_RESERVATION_SECS};
+
+impl TryWorkflowTool {
+    /// 起動の内部の誤り（[`LauncherError::Run`]）の後始末。run の commit を送った後に応答だけが失われると、誤りが
+    /// 返っても予約で決めた id の run は動いている。そこで予約を消すと、次の呼び出しが同じ入力で 2 本目を立てる。
+    /// run があれば起動したものとして台帳に付け直して観測を返し、無ければ予約を消す。有無を確かめられなければ行を
+    /// 残し、古い予約の片付け（`settle_stale`・予約で決めた id の run の有無で付け直すか消す）に任せる。
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn after_run_error(
+        &self,
+        ctx: &AuthContext,
+        ir: &WorkflowIr,
+        row: &TrialRow,
+        workflow_id: Uuid,
+        version: i64,
+        hash: &str,
+        error: &LauncherError,
+        trace_id: Option<&str>,
+    ) -> ToolOutcome {
+        let run_id = row.planned_run_id;
+        match self.outcomes.live_states(ctx, &[run_id]).await {
+            Ok(states) if states.contains_key(&run_id) => {
+                tracing::warn!(%run_id, %error, "起動の誤りが返ったが、予約の id の run はできている");
+                self.record_start(ctx, row, workflow_id, version, run_id, hash, trace_id)
+                    .await;
+                self.follow(ctx, ir, row, workflow_id, version, run_id, Origin::Started)
+                    .await
+            }
+            Ok(_) => {
+                self.release(ctx, row).await;
+                launch_error(error, workflow_id, version, false)
+            }
+            Err(e) => {
+                tracing::warn!(%run_id, %error, check = %e, "起動の誤りの後に run の有無を確かめられない（予約は残す）");
+                ToolOutcome::error(format!(
+                    "試運転を起動できたかを確かめられませんでした（一時的な問題）。少し後に同じ引数でもう一度呼んで\
+                     ください。起動していれば結果を返し、{STALE_RESERVATION_SECS} 秒たっても起動していなければ、新しく\
+                     起動し直します。"
+                ))
+            }
+        }
+    }
+}
 
 /// 起動の入口の誤りを観測に写す（見つからない・閲覧のみ・入力・実行の前に止める設定・内部の誤り）。`shared` は会話に
 /// 共有の相手がいるか（入力と止める設定のときだけ文が変わる）。

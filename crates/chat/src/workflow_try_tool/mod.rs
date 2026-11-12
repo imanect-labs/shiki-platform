@@ -505,6 +505,19 @@ impl Tool for TryWorkflowTool {
                      設定です（policies.on_trigger_overflow: skip）。前の実行が終わってから試してください。",
                 ))
             }
+            // 内部の誤りは、run の commit の応答だけが失われたこともある（予約を消す前に run の有無を確かめる）。
+            Err(e @ LauncherError::Run(_)) => Ok(self
+                .after_run_error(
+                    ctx,
+                    &ir,
+                    &row,
+                    workflow_id,
+                    req.version,
+                    &hash,
+                    &e,
+                    trace_id,
+                )
+                .await),
             Err(e) => {
                 self.release(ctx, &row).await;
                 // 文が共有の相手で変わるのは入力と止める設定だけ（ほかは固定の文なので判定しない）。

@@ -352,6 +352,79 @@ async fn launching_reservations_are_joined_then_expire() {
     .await;
 }
 
+/// 起動の内部の誤り（`LauncherError::Run`）でも、予約で決めた id の run ができていれば（run の commit の応答だけが
+/// 失われた）予約を消さずに付け直して観測を返し、次の呼び出しも同じ run に合流する（同じ入力で 2 本目を立てない）。
+/// run が無い誤りなら予約を消す。テストごとの DB なので、誤りは DB のトリガで起こす。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn launch_errors_keep_the_reservation_when_the_run_exists() {
+    run(|env| async move {
+        let wf = env.create_shared(&ask_ir(None)).await;
+        let (_, slot) = slot_of(4, ParkLimits::standard());
+        let opts = ToolOpts::waiting(Duration::from_millis(200));
+        let conv = env.conversation(&env.alice).await;
+        let tool = env.tool(conv, &slot, &opts);
+        let args = json!({ "workflow_id": wf.to_string(), "version": 1 });
+
+        // 予約の行ができたら、その id の run を先に作る（commit は通ったのに応答が失われたのを模す: 起動の入口の INSERT は
+        // 主キーの重なりで誤りになり、run は予約の id で残っている）。
+        sqlx::raw_sql(
+            "CREATE FUNCTION test_precreate_run() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               INSERT INTO workflow_run (tenant_id, run_id, org, workflow_id, version, trigger_kind, principal) \
+               VALUES (NEW.tenant_id, NEW.planned_run_id, NEW.org, NEW.workflow_id, NEW.version, 'interactive', \
+                       NEW.invoked_by); \
+               RETURN NEW; END $$; \
+             CREATE TRIGGER test_precreate_run AFTER INSERT ON workflow_trial_run \
+               FOR EACH ROW EXECUTE FUNCTION test_precreate_run();",
+        )
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        let lost = call(&tool, &env.alice, args.clone()).await;
+        assert!(!lost.is_error, "{}", lost.content);
+        // 先に作った run は queued のまま（ワーカーを起こさない）。
+        assert!(
+            lost.content.starts_with("試運転: 順番待ち"),
+            "{}",
+            lost.content
+        );
+        assert_eq!(env.runs_of(wf).await, 1);
+        assert_eq!(env.ledger_of(wf).await, 1, "予約は消さない");
+        let first = env.last_run(wf).await.expect("台帳に run を付け直す");
+        let joined = call(&tool, &env.alice, args.clone()).await;
+        assert!(
+            joined.content.starts_with("試運転（実行中のものに合流）"),
+            "{}",
+            joined.content
+        );
+        assert_eq!(env.runs_of(wf).await, 1, "同じ入力で 2 本目を立てない");
+
+        // run の無い誤り（起動の入口の INSERT を断る）: 予約を消して「起動できませんでした」を返す。
+        env.set_run(first, "succeeded").await;
+        sqlx::raw_sql(
+            "DROP TRIGGER test_precreate_run ON workflow_trial_run; \
+             CREATE FUNCTION test_refuse_run() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+               RAISE EXCEPTION 'test: run を作らせない'; END $$; \
+             CREATE TRIGGER test_refuse_run BEFORE INSERT ON workflow_run \
+               FOR EACH ROW EXECUTE FUNCTION test_refuse_run();",
+        )
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        let mut rerun = args;
+        rerun["rerun"] = json!(true);
+        let refused = call(&tool, &env.alice, rerun).await;
+        assert!(refused.is_error, "{}", refused.content);
+        assert!(
+            refused.content.contains("試運転を起動できませんでした"),
+            "{}",
+            refused.content
+        );
+        assert_eq!(env.runs_of(wf).await, 1);
+        assert_eq!(env.ledger_of(wf).await, 1, "run の無い予約は消える");
+    })
+    .await;
+}
+
 /// 台帳の行は、会話と生成の run を (tenant_id, id) の複合の外部キーで指す（0080・#815 と同じ）。別のテナントの行から
 /// 会話や生成の run を指せない。会話を消すと行も消える。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
