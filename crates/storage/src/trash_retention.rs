@@ -385,6 +385,12 @@ async fn due_roots(
 /// 押さえた根（`ctx` のテナント・組織）が、`now` でまだ期限を過ぎているか（完全削除の Tx の中で、根と配下を
 /// 押さえた後に呼ぶ）。過ぎていれば日数と削除した時刻を返す。テナントが active でない・日数が null に戻った・
 /// 削除し直して期限がまだ来ていない・システム領域（#392・ゴミ箱に出さない）のときは `None`。
+///
+/// テナントの行を `FOR KEY SHARE` で完全削除の Tx の終わりまで押さえる。設定の変更
+/// （[`TrashRetention::set_retention_days`]・`FOR UPDATE`）と待ち合い、変更が先に commit すれば新しい値で確かめ
+/// 直して（READ COMMITTED の再評価）`None` になり、完全削除が先なら変更はその commit の後になる（保持期間を
+/// 止めた後に、古い日数での完全削除が確定しない）。ロックの順は node → tenant → blob → 監査のチェーンで、
+/// tenant → 監査のチェーンの設定の変更とは逆にならない。
 pub(crate) async fn due_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -397,7 +403,8 @@ pub(crate) async fn due_on(
          WHERE n.tenant_id = $1 AND n.org = $2 AND n.id = $3 AND n.deleted_at IS NOT NULL \
            AND n.system = false AND t.status = 'active' AND t.trash_retention_days IS NOT NULL \
            AND greatest(n.deleted_at, t.trash_retention_since) \
-               + make_interval(days => t.trash_retention_days) <= $4",
+               + make_interval(days => t.trash_retention_days) <= $4 \
+         FOR KEY SHARE OF t",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
