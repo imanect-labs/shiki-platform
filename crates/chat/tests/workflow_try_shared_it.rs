@@ -13,6 +13,8 @@
 //!   run が無い道の断りの文（名前・無い版・入力と止める設定の誤り・起動されなかった）。
 //! - 後から共有した会話: 共有の前に保存した tool_result は相手に届かない（保証）。共有の前に全部入りから書いた回答の
 //!   本文は相手にも見える（既知の限界）。
+//! - 会話の分岐（#1166）: 相手が読む経路（`get_message_path`）と、相手が分岐した新しい会話の画面と DB の行に目印が
+//!   無い（分岐は呼び出し者に見えるとおりの内容を写す）。本人の分岐は、新しい会話でツール結果の本文が空になる（#1200）。
 
 #![allow(
     clippy::pedantic,
@@ -240,6 +242,37 @@ async fn chat_rows_text(env: &Env, thread_id: Uuid) -> String {
     .unwrap()
 }
 
+/// `who` が会話の `leaf` までの経路を読み（`get_message_path`）、そこから分岐した新しい会話の画面（`get_messages`）と
+/// DB の行の全文に、目印が無いこと。`seen` は経路と分岐に必ず写る文字（空振りでないことの確かめ）。
+async fn assert_fork_is_clean(
+    env: &Env,
+    who: &AuthContext,
+    thread_id: Uuid,
+    leaf: Uuid,
+    seen: &str,
+) {
+    let path = env
+        .chat
+        .get_message_path(who, thread_id, leaf, None)
+        .await
+        .unwrap();
+    let path = serde_json::to_string(&path).unwrap();
+    assert!(path.contains(seen), "経路を読めている: {path}");
+    assert_clean("分岐の元の経路", &path);
+    let forked = env
+        .chat
+        .fork_thread(who, thread_id, leaf, None)
+        .await
+        .unwrap();
+    let theirs = env.chat.get_messages(who, forked.id, None).await.unwrap();
+    let theirs = serde_json::to_string(&theirs).unwrap();
+    assert!(theirs.contains(seen), "分岐した会話に写っている: {theirs}");
+    assert_clean("分岐した会話の画面", &theirs);
+    let rows = chat_rows_text(env, forked.id).await;
+    assert!(rows.contains(seen), "分岐した会話の行を読めている");
+    assert_clean("分岐した会話の DB の行", &rows);
+}
+
 /// 会話のメッセージのうち、tool_result の (本文, 成否) と、本文（text）をつないだもの。
 fn results_and_text(messages: &[chat::Message]) -> (Vec<(String, bool)>, String) {
     let mut results = Vec::new();
@@ -360,6 +393,35 @@ async fn shared_partner_screen_and_next_answer_context_never_see_trial_details()
         let rows = chat_rows_text(&env, thread).await;
         assert!(rows.contains(&run_id.to_string()), "行を読めている");
         assert_clean("DB の会話の行", &rows);
+
+        // 会話の分岐の経路（#1166）。相手（dave・会話の editor）が読む経路と、相手が分岐した新しい会話（画面と DB の
+        // 行の全文）のどちらにも目印が無い。分岐は呼び出し者に見えるとおりの内容を写す。
+        assert_fork_is_clean(
+            &env,
+            &env.dave,
+            thread,
+            next.assistant_message_id,
+            &run_id.to_string(),
+        )
+        .await;
+        // 対照: alice 本人が自分の会話を分岐すると、新しい会話の画面ではツール結果の本文が空で返る。写した行には
+        // 生成の run が無く（実行者の無い行）、本人とも確定できないので伏せ字になる（#1200 の今の挙動）。
+        let own_fork = env
+            .chat
+            .fork_thread(&env.alice, thread, posted.assistant_message_id, None)
+            .await
+            .unwrap();
+        let own = env
+            .chat
+            .get_messages(&env.alice, own_fork.id, None)
+            .await
+            .unwrap();
+        let (results, text) = results_and_text(&own);
+        assert_eq!(results, vec![(String::new(), true)], "#1200");
+        assert!(
+            text.contains(&run_id.to_string()),
+            "回答の本文は写る: {text}"
+        );
         for h in handles {
             h.abort();
         }
@@ -722,7 +784,8 @@ async fn later_share_keeps_earlier_tool_results_off_the_partner() {
             StreamEventKind::ToolResult { content, ok: true, .. } if content.is_empty()
         )));
         assert_clean("dave への配信", &serde_json::to_string(&events).unwrap());
-        // dave が話しかけた次の回答の文脈にも入らない（前のターンの tool_result は履歴に入らない）。
+        // dave が話しかけた次の回答の文脈にも入らない（前のターンの結果は作業記録（#1196）でも、共有の相手がいる会話
+        // では本文を戻さない）。
         let next = env.post(&env.dave, thread, "echohistory:").await;
         wait_done(&env.pool, next.run_id).await;
         let context = env.answer_text(next.assistant_message_id).await;
@@ -731,6 +794,22 @@ async fn later_share_keeps_earlier_tool_results_off_the_partner() {
             "履歴が渡っている: {context}"
         );
         assert_clean("dave の次の回答の文脈", &context);
+        // dave が共有の前の回答から分岐しても、全部入りの tool_result（元の会話の行にはある）は写らない。
+        assert!(
+            chat_rows_text(&env, thread)
+                .await
+                .to_lowercase()
+                .contains("out-secret"),
+            "元の会話の行には全部入りがある（空振りでない）"
+        );
+        assert_fork_is_clean(
+            &env,
+            &env.dave,
+            thread,
+            first.assistant_message_id,
+            "calltool:try_workflow",
+        )
+        .await;
         // alice 本人が話しかけても、共有の後は前のターンの結果の本文を作業記録（#1196）で戻さない
         // （戻すと、モデルが共有の前の全部入りを本文に写して dave に見える）。呼び出しは残る。
         let own = env.post(&env.alice, thread, "echohistory:").await;
