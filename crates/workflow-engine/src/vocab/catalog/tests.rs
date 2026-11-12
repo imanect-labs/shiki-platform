@@ -227,15 +227,29 @@ fn fields_that_depend_on_params_say_where() {
     );
     assert_eq!(present_if(NodeType::DataQuery, "items"), "");
     assert_eq!(present_if(NodeType::LlmInvoke, "data"), "/output_schema");
+    // 集計（aggregate）を書くと、data は items も count も返さない（`query::run` の集計の枝・7o の指摘）。
+    let absent_if = |nt: NodeType, name: &str| {
+        catalog
+            .iter()
+            .find(|e| e.node_type == nt)
+            .and_then(|e| e.output_fields.iter().find(|f| f.name == name))
+            .map(|f| f.absent_if)
+            .unwrap()
+    };
+    assert_eq!(absent_if(NodeType::DataQuery, "items"), "/query/aggregate");
+    assert_eq!(absent_if(NodeType::DataQuery, "count"), "/query/aggregate");
+    assert_eq!(absent_if(NodeType::DataQuery, "groups"), "");
     for e in &catalog {
         for f in e.output_fields {
-            if !f.present_if.is_empty() {
-                assert!(
-                    f.present_if.starts_with('/') && f.optional,
-                    "{}: {}",
-                    e.node_type.as_str(),
-                    f.name
-                );
+            for at in [f.present_if, f.absent_if] {
+                if !at.is_empty() {
+                    assert!(
+                        at.starts_with('/') && f.optional,
+                        "{}: {}",
+                        e.node_type.as_str(),
+                        f.name
+                    );
+                }
             }
         }
     }
@@ -293,6 +307,7 @@ fn present_in_follows_the_present_if_contract() {
         optional: true,
         note: "",
         present_if: at,
+        absent_if: "",
     };
     let params = serde_json::json!({ "a": 1, "z": 0, "t": "x", "e": "", "f": false, "n": null,
         "l": [1], "el": [], "o": { "k": 1 }, "eo": {}, "nested": { "x": [0] },
@@ -338,6 +353,78 @@ fn present_in_follows_the_present_if_contract() {
         groups.present_in(&with(serde_json::json!({ "$from": "input" }))),
         None
     );
+}
+
+/// 設定で消える項目（`absent_if`）の判定。場所に値があれば入らない（present_if の結果にかかわらず）。場所に値が
+/// 無ければ present_if の結果のまま。場所が値式なら、present_if が入らないと決めていない限り決まらない（`None`）。
+#[test]
+fn present_in_follows_the_absent_if_contract() {
+    let field = |present_if: &'static str, absent_if: &'static str| OutputField {
+        name: "x",
+        ty: "unknown",
+        optional: true,
+        note: "",
+        present_if,
+        absent_if,
+    };
+    let params = serde_json::json!({ "on": true, "off": false, "el": [],
+        "q": { "$from": "input", "path": "/q" } });
+    for (present_if, absent_if, want) in [
+        ("", "/on", Some(false)),
+        ("", "/off", Some(true)),
+        ("", "/el", Some(true)),
+        ("", "/missing", Some(true)),
+        ("", "/q", None),
+        ("/on", "/on", Some(false)),
+        ("/on", "/off", Some(true)),
+        ("/off", "/off", Some(false)),
+        ("/off", "/q", Some(false)),
+        ("/on", "/q", None),
+        ("/q", "/on", Some(false)),
+        ("/q", "/off", None),
+    ] {
+        let f = field(present_if, absent_if);
+        assert_eq!(
+            f.present_in(&params),
+            want,
+            "present_if={present_if} absent_if={absent_if}"
+        );
+        // absent_in は、absent_if の場所に値があると決まるときだけ真。
+        assert_eq!(
+            f.absent_in(&params),
+            absent_if == "/on",
+            "present_if={present_if} absent_if={absent_if}"
+        );
+    }
+    assert!(!field("", "").absent_in(&params));
+    // カタログの data.query: 集計を書くと items と count は入らない（with_count を書いても）。
+    let fields = NodeType::DataQuery.output_fields();
+    let get = |n: &str| fields.iter().find(|f| f.name == n).unwrap();
+    let with = |query: serde_json::Value| serde_json::json!({ "table": "t", "query": query });
+    let agg = serde_json::json!([{ "metric": "count" }]);
+    for (query, items, count, groups) in [
+        (serde_json::json!({}), true, false, false),
+        (serde_json::json!({ "with_count": true }), true, true, false),
+        (
+            serde_json::json!({ "with_count": true, "aggregate": [] }),
+            true,
+            true,
+            false,
+        ),
+        (serde_json::json!({ "aggregate": agg }), false, false, true),
+        (
+            serde_json::json!({ "with_count": true, "aggregate": agg }),
+            false,
+            false,
+            true,
+        ),
+    ] {
+        let p = with(query.clone());
+        assert_eq!(get("items").present_in(&p), Some(items), "{query}");
+        assert_eq!(get("count").present_in(&p), Some(count), "{query}");
+        assert_eq!(get("groups").present_in(&p), Some(groups), "{query}");
+        assert_eq!(get("next_cursor").present_in(&p), Some(true), "{query}");
+    }
 }
 
 /// 直列化した値の最上位のキー（順は問わない）。

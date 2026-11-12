@@ -21,8 +21,15 @@ optional: boolean,
  */
 note: string, 
 /**
- * この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、設定に
- * かかわらず入る）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
+ * この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、この条件は
+ * 無い）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
  * これで出し分ける（選んでも値が無く実行で失敗する候補を出さない・BUG-108）。
  */
-present_if: string, };
+present_if: string, 
+/**
+ * この項目は、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときは入らない（空なら、この条件は
+ * 無い）。「値がある」の約束は [`Self::present_if`] と同じで、画面は値の候補をこれでも出し分ける。両方あれば、
+ * present_if の場所に値があり、absent_if の場所に値が無いときだけ入る（data.query の items と count は、集計
+ * （aggregate）を書くと入らない）。
+ */
+absent_if: string, };

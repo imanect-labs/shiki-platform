@@ -53,6 +53,7 @@ macro_rules! field {
             optional: false,
             note: "",
             present_if: "",
+            absent_if: "",
         }
     };
     ($name:literal, $ty:literal, $note:literal) => {
@@ -62,6 +63,7 @@ macro_rules! field {
             optional: false,
             note: $note,
             present_if: "",
+            absent_if: "",
         }
     };
 }
@@ -73,6 +75,7 @@ macro_rules! opt {
             optional: true,
             note: "",
             present_if: "",
+            absent_if: "",
         }
     };
     ($name:literal, $ty:literal, $note:literal) => {
@@ -82,6 +85,7 @@ macro_rules! opt {
             optional: true,
             note: $note,
             present_if: "",
+            absent_if: "",
         }
     };
     // 設定のこの場所に値があるときだけ入る項目（[`OutputField::present_if`]）。
@@ -92,6 +96,29 @@ macro_rules! opt {
             optional: true,
             note: $note,
             present_if: $at,
+            absent_if: "",
+        }
+    };
+    // 設定のこの場所に値があるときは入らない項目（[`OutputField::absent_if`]）。
+    ($name:literal, $ty:literal, $note:literal, absent_if = $not:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: true,
+            note: $note,
+            present_if: "",
+            absent_if: $not,
+        }
+    };
+    // 両方の決まりを持つ項目（present_if の場所に値があり、absent_if の場所に値が無いときだけ入る）。
+    ($name:literal, $ty:literal, $note:literal, present_if = $at:literal, absent_if = $not:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: true,
+            note: $note,
+            present_if: $at,
+            absent_if: $not,
         }
     };
 }
@@ -355,9 +382,12 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
         N::DataQuery => Fields(
             "",
             &[
+                // 集計を書くと、data は items を返さない（groups だけ・`query::run` の集計の枝）。
                 opt!(
                     "items",
-                    "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
+                    "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>",
+                    "aggregate を書いていないとき",
+                    absent_if = "/query/aggregate"
                 ),
                 // 集計の 1 行は data の `AggregateGroup` をそのまま出す（ノードで詰め替えない・GAP-132）。まとめた列の
                 // 値は文字（数の列も）、件数は整数。行の形を言わないと、AI が `/item/<列>`・`/item/count` と書いて
@@ -370,11 +400,13 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                     present_if = "/query/aggregate"
                 ),
                 opt!("next_cursor", "string"),
+                // 集計の枝は件数を数える前に返るので、with_count を書いても count は入らない（`query::run`）。
                 opt!(
                     "count",
                     "{ exact: number } | { at_least: number }",
-                    "with_count のとき",
-                    present_if = "/query/with_count"
+                    "with_count のとき。aggregate を書いたときは入らない（件数は aggregate に {\"metric\":\"count\"} を書き、groups の value で読む）",
+                    present_if = "/query/with_count",
+                    absent_if = "/query/aggregate"
                 ),
             ],
             "",

@@ -180,50 +180,80 @@ pub struct OutputField {
     pub optional: bool,
     /// 補足（いつ入るか・何が入るか。空なら無し・表記は型の後ろの（…））。
     pub note: &'static str,
-    /// この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、設定に
-    /// かかわらず入る）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
+    /// この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、この条件は
+    /// 無い）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
     /// これで出し分ける（選んでも値が無く実行で失敗する候補を出さない・BUG-108）。
     pub present_if: &'static str,
+    /// この項目は、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときは入らない（空なら、この条件は
+    /// 無い）。「値がある」の約束は [`Self::present_if`] と同じで、画面は値の候補をこれでも出し分ける。両方あれば、
+    /// present_if の場所に値があり、absent_if の場所に値が無いときだけ入る（data.query の items と count は、集計
+    /// （aggregate）を書くと入らない）。
+    pub absent_if: &'static str,
 }
 
 impl OutputField {
-    /// この項目が、ブロックの設定（`params`）のもとで出力に入るか（[`Self::present_if`] の約束・GAP-112）。
+    /// この項目が、ブロックの設定（`params`）のもとで出力に入るか（[`Self::present_if`]・[`Self::absent_if`] の約束・
+    /// GAP-112）。
     ///
-    /// `Some(true)` は入る（`present_if` が空なら設定にかかわらず入る）、`Some(false)` は入らない（場所に値が無い・
-    /// `null`・`false`・空の文字・空のリスト・空のオブジェクト）。`None` は設定からは決まらない（場所か、そこへ至る
-    /// 途中に `$from`・`$template` の値式があり、実行の値で決まる）。画面の値の候補（web の `value-refs.ts` の
-    /// `hasParamAt`）と同じ約束で、保存時の照合（`ir.unknown_output_path`）と評価の ir_lint が使う。
+    /// `Some(true)` は入る（`present_if` が空なら、`absent_if` の場所に値が無い限り入る）、`Some(false)` は入らない
+    /// （`present_if` の場所に値が無いか、`absent_if` の場所に値がある）。「値が無い」は、場所が無い・`null`・`false`・
+    /// 空の文字・空のリスト・空のオブジェクト。`None` は設定からは決まらない（場所か、そこへ至る途中に `$from`・
+    /// `$template` の値式があり、実行の値で決まる）。画面の値の候補（web の `value-refs.ts` の `hasParamAt`）と同じ
+    /// 約束で、保存時の照合（`ir.unknown_output_path`）と評価の ir_lint が使う。
     #[must_use]
     pub fn present_in(&self, params: &serde_json::Value) -> Option<bool> {
-        use serde_json::Value;
-        let at = self.present_if;
-        if at.is_empty() {
-            return Some(true);
-        }
-        let is_expr = |v: &Value| {
-            v.as_object()
-                .is_some_and(|m| m.contains_key("$from") || m.contains_key("$template"))
+        let present = if self.present_if.is_empty() {
+            Some(true)
+        } else {
+            value_at(params, self.present_if)
         };
-        // 根から場所まで、JSON Pointer の接頭辞ごとの値（途中が値式なら、その先は実行の値で決まる）。
-        let prefixes = std::iter::once("")
-            .chain(at.match_indices('/').skip(1).map(|(i, _)| &at[..i]))
-            .chain(std::iter::once(at));
-        let mut last = params;
-        for p in prefixes {
-            match params.pointer(p) {
-                None => return Some(false),
-                Some(v) if is_expr(v) => return None,
-                Some(v) => last = v,
-            }
+        let absent = if self.absent_if.is_empty() {
+            Some(false)
+        } else {
+            value_at(params, self.absent_if)
+        };
+        match (present, absent) {
+            (Some(false), _) | (_, Some(true)) => Some(false),
+            (Some(true), Some(false)) => Some(true),
+            _ => None,
         }
-        Some(match last {
-            Value::Null | Value::Bool(false) => false,
-            Value::String(s) => !s.is_empty(),
-            Value::Array(a) => !a.is_empty(),
-            Value::Object(m) => !m.is_empty(),
-            Value::Bool(true) | Value::Number(_) => true,
-        })
     }
+
+    /// [`Self::absent_if`] の場所に値があり、設定のためにこの項目が入らないと決まるか（保存時の照合が、入らない
+    /// わけを言い分けるのに使う）。
+    #[must_use]
+    pub fn absent_in(&self, params: &serde_json::Value) -> bool {
+        !self.absent_if.is_empty() && value_at(params, self.absent_if) == Some(true)
+    }
+}
+
+/// `params` の JSON Pointer `at` の場所に値があるか（[`OutputField::present_if`] の約束）。`None` は、場所か、そこへ
+/// 至る途中が値式（`$from`・`$template`）で、実行の値で決まる。
+fn value_at(params: &serde_json::Value, at: &str) -> Option<bool> {
+    use serde_json::Value;
+    let is_expr = |v: &Value| {
+        v.as_object()
+            .is_some_and(|m| m.contains_key("$from") || m.contains_key("$template"))
+    };
+    // 根から場所まで、JSON Pointer の接頭辞ごとの値（途中が値式なら、その先は実行の値で決まる）。
+    let prefixes = std::iter::once("")
+        .chain(at.match_indices('/').skip(1).map(|(i, _)| &at[..i]))
+        .chain(std::iter::once(at));
+    let mut last = params;
+    for p in prefixes {
+        match params.pointer(p) {
+            None => return Some(false),
+            Some(v) if is_expr(v) => return None,
+            Some(v) => last = v,
+        }
+    }
+    Some(match last {
+        Value::Null | Value::Bool(false) => false,
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(m) => !m.is_empty(),
+        Value::Bool(true) | Value::Number(_) => true,
+    })
 }
 
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
