@@ -160,8 +160,10 @@ audit_actions! {
     AppImport = "app.import", "アプリを取り込み", App;
     AppInstall = "app.install", "アプリをインストール", App;
     AppInstallSignature = "app.install.signature", "アプリの署名を検証", App;
+    AppRegistryPublish = "app.registry.publish", "アプリをレジストリに公開", App;
     AppTableRolesUpdate = "app.table_roles.update", "アプリのテーブルを使える部署・グループを変更", App;
     AppUninstall = "app.uninstall", "アプリをアンインストール", App;
+    AppYank = "app.yank", "アプリの公開を取り下げ", App;
     ArtifactAccessCheck = "artifact.access_check", "使う人の権限を確かめる", Share;
     AuditRetentionPurge = "audit.retention.purge", "保持期間を過ぎた監査ログを削除", Audit;
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
@@ -216,6 +218,7 @@ audit_actions! {
     FileDelete = "file.delete", "ファイルを削除", File;
     FileDownloadUrlIssue = "file.download_url.issue", "ダウンロード URL を発行", File;
     FileMetadataRead = "file.metadata.read", "ファイル情報を参照", File;
+    FilePurge = "file.purge", "ファイルを完全に削除", File;
     FileReadInternal = "file.read.internal", "ファイルを読む（内部）", File;
     FileReindex = "file.reindex", "ファイルを検索に取り込み直す", File;
     FileResolveWorkspace = "file.resolve.workspace", "作業フォルダのファイルを解決", File;
@@ -236,6 +239,7 @@ audit_actions! {
     FolderChildrenList = "folder.children.list", "フォルダの中身の一覧", Folder;
     FolderCreate = "folder.create", "フォルダを作成", Folder;
     FolderDelete = "folder.delete", "フォルダを削除", Folder;
+    FolderPurge = "folder.purge", "フォルダを完全に削除", Folder;
     FolderRestore = "folder.restore", "フォルダを復元", Folder;
     FolderUpdate = "folder.update", "フォルダを移動・名前変更", Folder;
     GatewayCall = "gateway.call", "公開 API を呼び出し", Gateway;
@@ -272,8 +276,12 @@ audit_actions! {
     OrgAuditVerify = "org_audit.verify", "監査ログのチェーンを検証", Audit;
     OrgAuditViewerGrant = "org_audit.viewer.grant", "監査閲覧者を付与", Audit;
     OrgAuditViewerRevoke = "org_audit.viewer.revoke", "監査閲覧者を剥奪", Audit;
+    OrgMemberGrant = "org.member.grant", "組織のメンバーに追加", Admin;
+    OrgMemberRevoke = "org.member.revoke", "組織のメンバーから外す", Admin;
     RagDocRead = "rag.doc_read", "文書を読む（AI）", Search;
     RagSearch = "rag.search", "文書を検索（AI）", Search;
+    RoleMemberGrant = "role.member.grant", "部署・ロールのメンバーに追加", Admin;
+    RoleMemberRevoke = "role.member.revoke", "部署・ロールのメンバーから外す", Admin;
     SecretBindingUpdate = "secret.binding.update", "シークレットの紐付けを変更", Secret;
     SecretCreate = "secret.create", "シークレットを作成", Secret;
     SecretDelete = "secret.delete", "シークレットを削除", Secret;
@@ -291,12 +299,14 @@ audit_actions! {
     SkillPublish = "skill.publish", "スキルを公開", App;
     SkillPublishSignature = "skill.publish.signature", "公開するスキルの署名を検証", App;
     SkillUninstall = "skill.uninstall", "スキルをアンインストール", App;
+    StorageTrashRetentionPurge = "storage.trash_retention.purge", "保持期間を過ぎたごみ箱の中身を完全に削除", System;
     StorageUploadGcExpire = "storage.upload_gc.expire", "未完了のアップロードを破棄", System;
     StorageUploadGcOrphanDelete = "storage.upload_gc.orphan_delete", "孤立したアップロードを削除", System;
     TenantProvision = "tenant.provision", "テナントを作成", Admin;
     TenantAuditRetentionSet = "tenant.audit_retention.set", "監査ログの保持期間を変更", Admin;
     TenantPurge = "tenant.purge", "テナントを撤去", Admin;
     TenantRetenant = "tenant.retenant", "テナント ID を変更", Admin;
+    TenantTrashRetentionSet = "tenant.trash_retention.set", "ごみ箱の保持期間を変更", Admin;
     ThreadCreate = "thread.create", "スレッドを作成", Chat;
     ThreadDelete = "thread.delete", "スレッドを削除", Chat;
     ThreadFeedback = "thread.feedback", "回答を評価", Chat;
@@ -318,6 +328,7 @@ audit_actions! {
     ThreadUiAction = "thread.ui_action", "画面部品の操作を受け付け", Chat;
     ThreadUnshare = "thread.unshare", "スレッドの共有を解除", Share;
     ThreadYuiSaveAsApp = "thread.yui_save_as_app", "図をアプリとして保存", Chat;
+    TrashEmpty = "trash.empty", "ごみ箱を空にする", File;
     TrashList = "trash.list", "ごみ箱の一覧", File;
     UiActionInvoke = "ui_action.invoke", "画面部品の操作を実行", Agent;
     WorkflowApprovalDecide = "workflow.approval.decide", "承認待ちを判断", Workflow;
