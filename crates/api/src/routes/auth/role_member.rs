@@ -5,8 +5,10 @@
 //! 定期の照合（[`crate::membership_reconcile`]・D-136・D-140）が同じ手順と同じ決め方を使う（写しを作らない）。
 //! どれを外すかの候補は呼ぶ側が決める（ログインの同期は今の直接タプルのすべて、照合はログインの同期が記録したもの）。
 //!
-//! 付け外しは、システムを主体にした監査に 1 回の同期の付与・剥奪をそれぞれ 1 行で残す（[`super::membership_audit`]・
-//! GAP-78）。付けたことを記録できなければ付けたタプルを外し、外したことを記録できなくても外したものは戻さない。
+//! 付け外しは、システムを主体にした監査に、1 回の同期の付与・剥奪をロールを持つ組織（[`role_owner_org`]）ごとに 1 行ずつ
+//! 残す（[`super::membership_audit`]・GAP-78）。付けたことを記録できなければ付けたタプルを外し、外したことを記録できなく
+//! ても外したものは戻さない。付ける書き込みが誤りで返ったとき（応答が切れても適用されていることがある）は、今の直接
+//! タプルを読み直し、あれば付けたものとして記録し、読めなければ外す（記録の無い付与を残さない）。
 
 use authz::{AuthContext, AuthzClient, GroupLayout, Namespace, ObjectType, Relation, Subject};
 
@@ -97,14 +99,40 @@ pub(crate) async fn current_roles(
     }
 }
 
+/// ロールを持つ組織（監査の行の org の列）。
+///
+/// 部署のロールの id は所属グループのテナントからの相対パス（`<org>/<dept>`・[`desired_roles`]）なので、先頭の
+/// セグメントの組織が持ち主になる（識別子にできる名前のときだけ）。接頭辞の無いロール（属性 `roles` のロール）は
+/// `user_org`（利用者の組織・`AuthContext` と同じ規則）。持ち主を台帳（`directory_role.org`）から引かないのは、台帳の
+/// 組織が最後に付けた人の組織で書き換わるため。
+pub(crate) fn role_owner_org<'a>(role: &'a str, user_org: &'a str) -> &'a str {
+    match role.split_once('/') {
+        Some((org, _)) if authz::validate_local_id(org).is_ok() => org,
+        _ => user_org,
+    }
+}
+
+/// `roles` を、ロールを持つ組織（[`role_owner_org`]）ごとに束ねる（組織は初めて出た順・組織の中はもとの順）。
+pub(crate) fn roles_by_owner(roles: &[String], user_org: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for role in roles {
+        let owner = role_owner_org(role, user_org);
+        match out.iter_mut().find(|(org, _)| org == owner) {
+            Some((_, group)) => group.push(role.clone()),
+            None => out.push((owner.to_string(), vec![role.clone()])),
+        }
+    }
+    out
+}
+
 /// `stale` のロールの member を外し、実際に外したロールを返す（無いものは no-op・失敗は次の同期に任せる）。
 ///
-/// 外したロールは、外してから 1 行にまとめて監査に残す（`org` は利用者の組織・記録できなくても戻さない・
-/// [`MembershipAudit::roles_revoked`]）。
+/// 外したロールは、外してからロールを持つ組織（[`role_owner_org`]・接頭辞の無いロールは `user_org`）ごとに 1 行に
+/// まとめて監査に残す（記録できなくても戻さない・[`MembershipAudit::roles_revoked`]）。
 pub(crate) async fn revoke_roles(
     authz: &dyn AuthzClient,
     audit: &MembershipAudit<'_>,
-    org: &str,
+    user_org: &str,
     subject: &Subject,
     ns: &Namespace<'_>,
     stale: &[String],
@@ -125,8 +153,8 @@ pub(crate) async fn revoke_roles(
             }
         }
     }
-    if !revoked.is_empty() {
-        audit.roles_revoked(org, &revoked).await;
+    for (owner, roles) in roles_by_owner(&revoked, user_org) {
+        audit.roles_revoked(&owner, &roles).await;
     }
     revoked
 }
@@ -143,7 +171,7 @@ pub(crate) async fn revoke_roles(
 /// 再付与）で自己回復する。一過性の IdP 不調そのものは、現在集合の READ が失敗した時のみ剥奪をスキップする上の
 /// ガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は正当な「ロール無し」として扱う。
 ///
-/// 付け外しは `audit` で監査に残す（org の列は `ctx.org()`）。
+/// 付け外しは `audit` で監査に残す（org の列はロールを持つ組織・接頭辞の無いロールは `ctx.org()`・[`role_owner_org`]）。
 pub(crate) async fn sync_roles(
     authz: &dyn AuthzClient,
     directory: &storage::DirectoryStore,
@@ -152,9 +180,9 @@ pub(crate) async fn sync_roles(
     desired: &[String],
 ) -> bool {
     let (subject, ns) = (ctx.subject(), ctx.ns());
-    let current: Vec<String> = current_roles(authz, &subject, &ns)
-        .await
-        .unwrap_or_default();
+    let current = current_roles(authz, &subject, &ns).await;
+    let known = current.is_some();
+    let current = current.unwrap_or_default();
     let stale: Vec<String> = current
         .iter()
         .filter(|c| !desired.contains(*c))
@@ -163,7 +191,7 @@ pub(crate) async fn sync_roles(
     let revoked = !revoke_roles(authz, audit, ctx.org(), &subject, &ns, &stale)
         .await
         .is_empty();
-    let granted = grant_roles(authz, directory, audit, ctx, desired, &current).await;
+    let granted = grant_roles(authz, directory, audit, ctx, desired, &current, known).await;
     revoked || granted
 }
 
@@ -176,8 +204,12 @@ pub(crate) async fn sync_roles(
 /// - 今タプルが無いロールは、台帳を先に書いてからタプルを足す（#91 M-4）。タプルを先に書くと、台帳の書き込みに
 ///   失敗したとき「タプルはあるが台帳に無いロール」ができ、撤去の列挙から漏れる。台帳を書けなければタプルを
 ///   足さない（次の同期で試し直す）。
-/// - 実際に書いたロール（`write_tuple` が `true`）だけを、1 行にまとめて監査に残す。記録できなければ、書いたタプルを
-///   外す（記録の無い付与を残さない・次の同期で付け直して記録する）。台帳の行は残す（タプルを外すときと同じ）。
+/// - 実際に書いたロール（`write_tuple` が `true`）だけを、ロールを持つ組織ごとに 1 行にまとめて監査に残す。記録できな
+///   ければ、その組織のぶんの書いたタプルを外す（記録の無い付与を残さない・次の同期で付け直して記録する）。台帳の行は
+///   残す（タプルを外すときと同じ）。
+/// - `write_tuple` が誤りで返ったロールは、適用されたかが分からない（応答が切れても書けていることがある）。
+///   [`settle_unknown_writes`] で確かめ、あれば書いたロールとして記録する（次の同期では `current` に入って記録されない
+///   ので、ここで記録しないと記録の無い付与が残り続ける）。`current_known` は `current` を読めたか。
 async fn grant_roles(
     authz: &dyn AuthzClient,
     directory: &storage::DirectoryStore,
@@ -185,6 +217,7 @@ async fn grant_roles(
     ctx: &AuthContext,
     desired: &[String],
     current: &[String],
+    current_known: bool,
 ) -> bool {
     let (tenant_id, org) = (ctx.tenant_id(), ctx.org());
     let held: Vec<String> = desired
@@ -207,6 +240,7 @@ async fn grant_roles(
     let (subject, ns) = (ctx.subject(), ctx.ns());
     let mut granted = false;
     let mut written: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
     for role_id in desired.iter().filter(|d| !current.contains(*d)) {
         if let Err(e) = directory
             .upsert_role(role_id, tenant_id, org, role_id)
@@ -226,38 +260,82 @@ async fn grant_roles(
                 }
             }
             Err(e) => {
-                tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
+                tracing::warn!(role = %role_id, error = %e, "role 付与が誤りで返った（適用されたかを確かめる・login は継続）");
+                unknown.push(role_id.clone());
             }
         }
     }
+    let applied = settle_unknown_writes(authz, &subject, &ns, &unknown, current_known).await;
+    granted |= !applied.is_empty();
+    written.extend(applied);
     record_granted(authz, audit, org, &subject, &ns, &written).await;
     granted
 }
 
-/// 書いたロール（`written`）を 1 行にまとめて監査に残す（`org` は利用者の組織）。記録できなければ、書いたタプルを外す
-/// （記録の無い付与を残さない・次の同期で付け直して記録する）。
-async fn record_granted(
+/// 書き込みが誤りで返ったロール（`unknown`）が実際に書けているかを、今の直接タプルを読み直して確かめ、書けていたロールを
+/// 返す（`tuple_commit.rs` の決まり (a) と同じく、誤りでも適用されていることがあるものとして扱う）。
+///
+/// 読み直せなければ、書けていたかもしれないタプルを外す（冪等・記録の無い付与を残さない・権限が減る向きで、次の同期で
+/// 付け直して記録する）。ただし同期の初めに今のタプルを読めなかったとき（`current_known` が偽）は、もともとあった
+/// ロールを外しかねないので外さない。
+async fn settle_unknown_writes(
     authz: &dyn AuthzClient,
-    audit: &MembershipAudit<'_>,
-    org: &str,
     subject: &Subject,
     ns: &Namespace<'_>,
-    written: &[String],
-) {
-    if written.is_empty() {
-        return;
+    unknown: &[String],
+    current_known: bool,
+) -> Vec<String> {
+    if unknown.is_empty() {
+        return Vec::new();
     }
-    let Err(e) = audit.roles_granted(org, written).await else {
-        return;
-    };
-    tracing::error!(roles = ?written, error = %e, "ロールの member を付けたことを監査に残せません（付けたタプルを外す）");
-    for role in written {
+    if let Some(held) = current_roles(authz, subject, ns).await {
+        return unknown
+            .iter()
+            .filter(|role| held.contains(*role))
+            .cloned()
+            .collect();
+    }
+    if !current_known {
+        tracing::warn!(roles = ?unknown,
+            "誤りで返った role 付与を確かめられず、もとの集合も分からないので外さない");
+        return Vec::new();
+    }
+    for role in unknown {
         if let Err(e) = authz
             .delete_tuple(subject, Relation::Member, &ns.role(role))
             .await
         {
             tracing::error!(%role, error = %e,
-                "監査に残せなかったロールの member を外せません（記録の無い付与が残っている・手で確かめる）");
+                "誤りで返った role 付与を確かめられず、外すこともできません（記録の無い付与が残っているかもしれない）");
+        }
+    }
+    Vec::new()
+}
+
+/// 書いたロール（`written`）を、ロールを持つ組織（[`role_owner_org`]・接頭辞の無いロールは `user_org`）ごとに 1 行に
+/// まとめて監査に残す。記録できなかった組織のぶんは、書いたタプルを外す（記録の無い付与を残さない・次の同期で付け直して
+/// 記録する）。
+async fn record_granted(
+    authz: &dyn AuthzClient,
+    audit: &MembershipAudit<'_>,
+    user_org: &str,
+    subject: &Subject,
+    ns: &Namespace<'_>,
+    written: &[String],
+) {
+    for (owner, roles) in roles_by_owner(written, user_org) {
+        let Err(e) = audit.roles_granted(&owner, &roles).await else {
+            continue;
+        };
+        tracing::error!(org = %owner, ?roles, error = %e, "ロールの member を付けたことを監査に残せません（付けたタプルを外す）");
+        for role in &roles {
+            if let Err(e) = authz
+                .delete_tuple(subject, Relation::Member, &ns.role(role))
+                .await
+            {
+                tracing::error!(%role, error = %e,
+                    "監査に残せなかったロールの member を外せません（記録の無い付与が残っている・手で確かめる）");
+            }
         }
     }
 }

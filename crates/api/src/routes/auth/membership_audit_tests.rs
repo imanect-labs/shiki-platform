@@ -46,7 +46,7 @@ use crate::membership_reconcile::{reconcile_page, ReconcileDeps, ReconcileReport
 
 /// 偽の記録係が受けた 1 行。
 #[derive(Debug, Clone, PartialEq)]
-struct Row {
+pub(super) struct Row {
     actor: String,
     tenant: String,
     org: String,
@@ -59,16 +59,16 @@ struct Row {
 
 /// 受けた行をメモリに持つ偽の記録係（`fail` の間は記録に失敗する）。
 #[derive(Default)]
-struct Rows {
+pub(super) struct Rows {
     rows: Mutex<Vec<Row>>,
     fail: AtomicBool,
 }
 
 impl Rows {
-    fn take(&self) -> Vec<Row> {
+    pub(super) fn take(&self) -> Vec<Row> {
         std::mem::take(&mut *self.rows.lock().unwrap())
     }
-    fn fail(&self, on: bool) {
+    pub(super) fn fail(&self, on: bool) {
         self.fail.store(on, Ordering::SeqCst);
     }
 }
@@ -94,7 +94,13 @@ impl AuditSink for Rows {
 }
 
 /// あるべき行（利用者は `u1`）。
-fn row(tenant: &str, actor: &str, org: &str, action: &'static str, metadata: Value) -> Row {
+pub(super) fn row(
+    tenant: &str,
+    actor: &str,
+    org: &str,
+    action: &'static str,
+    metadata: Value,
+) -> Row {
     Row {
         actor: actor.into(),
         tenant: tenant.into(),
@@ -108,14 +114,30 @@ fn row(tenant: &str, actor: &str, org: &str, action: &'static str, metadata: Val
 }
 
 /// 直接タプルをメモリに持つ認可（check は直接タプルの有無・read は relation を問わず返す）。
+///
+/// `write_err` を `Some(applied)` にすると、書き込みは誤りを返す（`applied` なら誤りでもタプルは足す・応答が切れた
+/// 書き込みを模す）。`fail_after_write_err` の間は、書き込みが誤りを返した直後の check・read を 1 回だけ失敗させる。
 #[derive(Default)]
-struct Tuples {
+pub(super) struct Tuples {
     rows: Mutex<Vec<(String, Relation, String)>>,
-    fail_read: AtomicBool,
+    pub(super) fail_read: AtomicBool,
+    pub(super) write_err: Mutex<Option<bool>>,
+    pub(super) fail_after_write_err: AtomicBool,
+    armed: AtomicBool,
 }
 
 impl Tuples {
-    fn has(&self, s: &Subject, r: Relation, o: &FgaObject) -> bool {
+    /// 書き込みが誤りを返した直後の 1 回の check・read を失敗させるか（[`Tuples::fail_after_write_err`]）。
+    fn fail_armed(&self) -> Result<(), AuthzError> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            return Err(AuthzError::Unexpected {
+                status: 500,
+                body: "after write".into(),
+            });
+        }
+        Ok(())
+    }
+    pub(super) fn has(&self, s: &Subject, r: Relation, o: &FgaObject) -> bool {
         self.rows
             .lock()
             .unwrap()
@@ -133,6 +155,7 @@ impl AuthzClient for Tuples {
         o: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
+        self.fail_armed()?;
         Ok(self.has(s, r, o))
     }
     async fn write_tuple(
@@ -141,14 +164,24 @@ impl AuthzClient for Tuples {
         r: Relation,
         o: &FgaObject,
     ) -> Result<bool, AuthzError> {
-        if self.has(s, r, o) {
-            return Ok(false);
+        let write_err = *self.write_err.lock().unwrap();
+        let fresh = !self.has(s, r, o);
+        if fresh && write_err != Some(false) {
+            self.rows
+                .lock()
+                .unwrap()
+                .push((s.as_str().into(), r, o.as_str().into()));
         }
-        self.rows
-            .lock()
-            .unwrap()
-            .push((s.as_str().into(), r, o.as_str().into()));
-        Ok(true)
+        if write_err.is_some() {
+            if self.fail_after_write_err.load(Ordering::SeqCst) {
+                self.armed.store(true, Ordering::SeqCst);
+            }
+            return Err(AuthzError::Unexpected {
+                status: 504,
+                body: "write timed out".into(),
+            });
+        }
+        Ok(fresh)
     }
     async fn delete_tuple(
         &self,
@@ -184,6 +217,7 @@ impl AuthzClient for Tuples {
         s: &Subject,
         ty: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
+        self.fail_armed()?;
         if self.fail_read.load(Ordering::SeqCst) {
             return Err(AuthzError::Unexpected {
                 status: 500,
@@ -202,7 +236,7 @@ impl AuthzClient for Tuples {
     }
 }
 
-fn user(tenant: &str, groups: &[&str]) -> Principal {
+pub(super) fn user(tenant: &str, groups: &[&str]) -> Principal {
     Principal {
         kind: PrincipalKind::User,
         id: "u1".into(),
@@ -213,7 +247,7 @@ fn user(tenant: &str, groups: &[&str]) -> Principal {
     }
 }
 
-fn v(items: &[&str]) -> Vec<String> {
+pub(super) fn v(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
 }
 
@@ -385,7 +419,7 @@ async fn reconcile_records_under_its_own_actor_and_counts_failures() {
                 json!({ "source": "reconcile", "roles": ["acme/eng", "sales"] })
             ),
         ],
-        "ロールは 1 回で 1 行（org の列は利用者の組織）・実際に外したロールだけ"
+        "ロールは持ち主の組織ごとに 1 行（acme の部署と、接頭辞の無いロールは利用者の組織 acme）・実際に外したロールだけ"
     );
     assert_eq!(audit.failed(), 0);
 
@@ -416,7 +450,7 @@ async fn reconcile_records_under_its_own_actor_and_counts_failures() {
     assert!(fga.has(&me, Relation::Member, &ns.organization("acme")));
 }
 
-async fn test_pool(db_url: &str) -> sqlx::PgPool {
+pub(super) async fn test_pool(db_url: &str) -> sqlx::PgPool {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(3)
         .connect(db_url)
@@ -671,8 +705,14 @@ async fn login_and_reconcile_rows_are_chained_and_found_by_user() {
         let mut seen = Vec::new();
         for (org, expected) in [
             (
+                // 部署の行の組織は、部署を持つ組織（利用者の組織の既定ではない）。
                 "acme",
                 vec![
+                    (
+                        RECONCILE_ACTOR,
+                        "role.member.revoke",
+                        json!({ "source": "reconcile", "roles": ["acme/eng"] }),
+                    ),
                     (
                         RECONCILE_ACTOR,
                         "org.member.revoke",
@@ -691,15 +731,6 @@ async fn login_and_reconcile_rows_are_chained_and_found_by_user() {
                     RECONCILE_ACTOR,
                     "org.member.revoke",
                     json!({ "source": "reconcile", "org": "old" }),
-                )],
-            ),
-            (
-                // 部署の行の組織は、所属グループから決まる利用者の組織（グループが無いので既定の組織）。
-                "default",
-                vec![(
-                    RECONCILE_ACTOR,
-                    "role.member.revoke",
-                    json!({ "source": "reconcile", "roles": ["acme/eng"] }),
                 )],
             ),
         ] {

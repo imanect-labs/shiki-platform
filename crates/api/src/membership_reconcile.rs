@@ -17,7 +17,7 @@
 //! # 監査
 //!
 //! 外したものは、主体を `system:membership-reconcile` にした監査に残す（組織は 1 つにつき 1 行、ロールは 1 人 1 回で
-//! 1 行・[`crate::routes::auth::membership_audit`]・GAP-78）。外してから記録し、記録できなくても外したものは戻さない
+//! ロールを持つ組織ごとに 1 行・[`crate::routes::auth::membership_audit`]・GAP-78）。外してから記録し、記録できなくても外したものは戻さない
 //! （error のログに残し、[`ReconcileReport::audit_failed`] に数える）。
 //!
 //! # 外さないとき（fail-safe）
@@ -450,8 +450,8 @@ async fn reconcile_user(
         stale_roles.retain(|role| !desired.contains(role));
     }
 
-    // 3. 外す（ログインの同期と同じ手順）。外したものは監査に残す（ロールの行の組織はログインの同期と同じ・
-    //    `AuthContext` と同じ規則）。
+    // 3. 外す（ログインの同期と同じ手順）。外したものは監査に残す（ロールの行の組織はログインの同期と同じく、ロールを
+    //    持つ組織。接頭辞の無いロールだけ `AuthContext` と同じ規則の利用者の組織・role_member::role_owner_org）。
     let audit = MembershipAudit::new(sink, MembershipSource::Reconcile, &tenant, &entry.user_id);
     let user_org = org_of_groups(&groups, tenant_id, layout);
     let keep = org_member::orgs_kept_by_reconcile(&groups, tenant_id, layout);

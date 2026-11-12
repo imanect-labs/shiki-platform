@@ -22,6 +22,8 @@
 //!   収束する。
 //! - 付け外しは、システムを主体にした監査に組織ごとに 1 行ずつ残す（[`super::membership_audit`]・GAP-78）。付けたことを
 //!   記録できなければ付けたタプルを外し、外したことを記録できなくても外したものは戻さない（どちらも権限が減る向き）。
+//!   付ける書き込みが誤りで返ったとき（応答が切れても適用されていることがある）は確かめ直し、あれば付けたものとして
+//!   記録し、確かめられなければ外す（記録の無い付与を残さない）。
 
 use authz::{
     AuthzClient, Consistency, GroupLayout, Namespace, ObjectType, Principal, PrincipalKind,
@@ -110,6 +112,8 @@ pub(crate) async fn sync_org_member(
 /// 決まった組織の member を、無ければ書く（書いて監査に残せたら `true`）。
 ///
 /// 書いたことを監査に残せなければ、書いたタプルを外して `false`（記録の無い付与を残さない・次の同期で付け直して記録する）。
+/// 書き込みが誤りで返ったら、適用されたかを [`settle_unknown_write`] で確かめる（あれば書いたものとして記録する。次の同期
+/// では check が真になって記録しないので、ここで記録しないと記録の無い付与が残り続ける）。
 async fn grant(
     authz: &dyn AuthzClient,
     audit: &MembershipAudit<'_>,
@@ -127,27 +131,63 @@ async fn grant(
             Consistency::HigherConsistency,
         )
         .await;
-    let wrote = match present {
+    match present {
         Ok(true) => return false,
-        Ok(false) => authz.write_tuple(subject, Relation::Member, &object).await,
-        Err(e) => Err(e),
-    };
-    match wrote {
-        Ok(false) => false,
-        Ok(true) => {
-            if let Err(e) = audit.org_granted(org).await {
-                tracing::error!(%org, error = %e, "組織の member を付けたことを監査に残せません（付けたタプルを外す）");
-                if let Err(e) = authz.delete_tuple(subject, Relation::Member, &object).await {
-                    tracing::error!(%org, error = %e,
-                        "監査に残せなかった組織の member を外せません（記録の無い付与が残っている・手で確かめる）");
-                }
-                return false;
-            }
-            tracing::info!(%org, "所属グループから組織の member を付けた");
-            true
-        }
+        Ok(false) => {}
         Err(e) => {
-            tracing::warn!(%org, error = %e, "組織の member を付けられません（次のログイン・更新で付け直す）");
+            tracing::warn!(%org, error = %e, "組織の member を確かめられません（次のログイン・更新で付け直す）");
+            return false;
+        }
+    }
+    let wrote = match authz.write_tuple(subject, Relation::Member, &object).await {
+        Ok(wrote) => wrote,
+        Err(e) => {
+            tracing::warn!(%org, error = %e, "組織の member の書き込みが誤りで返った（適用されたかを確かめる）");
+            settle_unknown_write(authz, subject, &object, org).await
+        }
+    };
+    if !wrote {
+        return false;
+    }
+    if let Err(e) = audit.org_granted(org).await {
+        tracing::error!(%org, error = %e, "組織の member を付けたことを監査に残せません（付けたタプルを外す）");
+        if let Err(e) = authz.delete_tuple(subject, Relation::Member, &object).await {
+            tracing::error!(%org, error = %e,
+                "監査に残せなかった組織の member を外せません（記録の無い付与が残っている・手で確かめる）");
+        }
+        return false;
+    }
+    tracing::info!(%org, "所属グループから組織の member を付けた");
+    true
+}
+
+/// 書き込みが誤りで返った組織の member が実際に書けているかを、強い整合の check で確かめる（書けていれば `true`・
+/// `tuple_commit.rs` の決まり (a) と同じく、誤りでも適用されていることがあるものとして扱う）。
+///
+/// 確かめられなければ、書けていたかもしれないタプルを外して `false`（冪等・直前の check で無かったので、ほかの経路が
+/// 頼るタプルを消すことはまず無い。権限が減る向きで、次の同期で付け直して記録する）。
+async fn settle_unknown_write(
+    authz: &dyn AuthzClient,
+    subject: &Subject,
+    object: &authz::FgaObject,
+    org: &str,
+) -> bool {
+    match authz
+        .check(
+            subject,
+            Relation::Member,
+            object,
+            Consistency::HigherConsistency,
+        )
+        .await
+    {
+        Ok(present) => present,
+        Err(e) => {
+            tracing::warn!(%org, error = %e, "組織の member を確かめ直せません（書けていたかもしれないので外す）");
+            if let Err(e) = authz.delete_tuple(subject, Relation::Member, object).await {
+                tracing::error!(%org, error = %e,
+                    "確かめられなかった組織の member を外せません（記録の無い付与が残っているかもしれない）");
+            }
             false
         }
     }

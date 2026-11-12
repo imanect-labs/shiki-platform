@@ -17,6 +17,8 @@ pub(crate) mod membership_audit;
 #[cfg(test)]
 mod membership_audit_tests;
 #[cfg(test)]
+mod membership_owner_tests;
+#[cfg(test)]
 mod membership_reconcile_tests;
 pub(crate) mod org_member;
 #[cfg(test)]

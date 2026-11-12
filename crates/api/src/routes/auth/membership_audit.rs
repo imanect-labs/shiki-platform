@@ -8,12 +8,15 @@
 //! # 行の形
 //!
 //! - `object_type = "user"`・`object_id = <sub>`（監査の画面の対象の絞り込みで、人ごとに引ける）。
-//! - org の列: 組織の付け外しは member を変えた組織。ロールの付け外しは、`AuthContext` と同じ規則で決まる利用者の組織
-//!   （ログインの同期は `ctx.org()`、照合は所属グループから決めた組織）。
+//! - org の列: 組織の付け外しは member を変えた組織。ロールの付け外しは、ロールを持つ組織
+//!   （[`super::role_member::role_owner_org`]）。部署のロール（`<org>/<dept>`）はその部署の組織で、接頭辞の無いロール
+//!   （属性 `roles` のロール）だけが、`AuthContext` と同じ規則で決まる利用者の組織（ログインの同期は `ctx.org()`、照合は
+//!   所属グループから決めた組織）。監査は組織ごとに引き、部署の台帳も組織の中に閉じているので、ほかの組織の部署の
+//!   付け外しをその組織の監査に書かない。
 //! - metadata: 組織は `{source, org}`、ロールは `{source, roles: […]}`。`source` は `login`・`session_refresh`・
 //!   `reconcile`。所属グループの一覧は入れない。
-//! - 組織は 1 つにつき 1 行、ロールは 1 回の同期の付与・剥奪をそれぞれ 1 行にまとめる。変えたときだけ記録する（間引きも
-//!   要約もしない）。
+//! - 組織は 1 つにつき 1 行、ロールは 1 回の同期の付与・剥奪を、ロールを持つ組織ごとにそれぞれ 1 行にまとめる。変えた
+//!   ときだけ記録する（間引きも要約もしない）。
 //! - 権限そのものの変更なので、ハッシュチェーンにつなぐ（共有・監査閲覧者の付与と同じ・
 //!   [`storage::audit::AuditRecorder::record_chained`]）。
 //!
@@ -151,7 +154,7 @@ impl<'a> MembershipAudit<'a> {
         }
     }
 
-    /// 付けたロールを 1 行で記録する（`org` は利用者の組織）。記録できなければ誤りを返す（呼ぶ側が付けたタプルを外す）。
+    /// 付けたロールを 1 行で記録する（`org` はロールを持つ組織・[`super::role_member::role_owner_org`]）。記録できなければ誤りを返す（呼ぶ側が付けたタプルを外す）。
     pub(crate) async fn roles_granted(
         &self,
         org: &str,
@@ -165,7 +168,7 @@ impl<'a> MembershipAudit<'a> {
         .await
     }
 
-    /// 外したロールを 1 行で記録する（`org` は利用者の組織）。記録できなくても外したものは戻さない。
+    /// 外したロールを 1 行で記録する（`org` はロールを持つ組織・[`super::role_member::role_owner_org`]）。記録できなくても外したものは戻さない。
     pub(crate) async fn roles_revoked(&self, org: &str, roles: &[String]) {
         if let Err(e) = self
             .write(
