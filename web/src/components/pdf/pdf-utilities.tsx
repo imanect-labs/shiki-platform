@@ -83,9 +83,9 @@ export function PdfUtilities({
         <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           PDF TOOLS
         </div>
-        <h2 className="text-base font-semibold">必要な形に、整える</h2>
+        <h2 className="text-base font-semibold">PDFユーティリティ</h2>
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          ページを選んで、新しい PDF として保存。原本はそのまま残ります。
+          ページの編集やPDFの結合ができます。編集結果は別のPDFとして保存します。
         </p>
       </div>
       <div className="flex-1 space-y-6 overflow-auto p-5">
@@ -93,7 +93,7 @@ export function PdfUtilities({
           {(
             [
               ["organize", LayoutGrid, "ページを整理", "並べ替え・削除"],
-              ["merge", Files, "PDFを結合", "複数の資料をひとつに"],
+              ["merge", Files, "PDFを結合", "複数のPDFを結合"],
             ] as const
           ).map(([key, Icon, label, sub]) => (
             <button
@@ -115,13 +115,13 @@ export function PdfUtilities({
                 key: "extract",
                 icon: Scissors,
                 label: "ページを抽出",
-                sub: "必要なページだけ",
+                sub: "指定したページを保存",
               },
               {
                 key: "rotate",
                 icon: RotateCw,
                 label: "ページを回転",
-                sub: "向きを整える",
+                sub: "ページの向きを変更",
               },
             ] as const
           ).map(({ key, icon: Icon, label, sub }) => (
