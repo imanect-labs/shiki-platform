@@ -151,6 +151,9 @@ pub struct ReconcileReport {
     pub revoked_roles: usize,
     /// 外したことを監査に残せなかった行の数（外したものは戻さない・GAP-78）。
     pub audit_failed: usize,
+    /// id（sub か tenant_id）が識別子に使えず、照合しなかった人（D-205・GAP-77）。入口で断っているので新しくは
+    /// 増えない。この変更より前にログインした人で、OpenFGA に残るタプルは手で外す。
+    pub skipped_invalid_id: usize,
     /// 最後まで読んで頭に戻った。
     pub wrapped: bool,
 }
@@ -196,6 +199,7 @@ pub fn spawn(mut deps: ReconcileDeps, config: &MembershipReconcileConfig) {
                     revoked_orgs = r.revoked_orgs,
                     revoked_roles = r.revoked_roles,
                     audit_failed = r.audit_failed,
+                    skipped_invalid_id = r.skipped_invalid_id,
                     "組織の member と部署を Keycloak の所属グループと照合しました"
                 ),
                 Ok(Some(r)) => tracing::debug!(
@@ -254,6 +258,14 @@ async fn run_locked(deps: &ReconcileDeps) -> Result<Option<ReconcileReport>, Rec
         let mut kc = admin.session().await?;
         done = reconcile_page(deps, &mut kc, &page, &mut report).await?;
     }
+    if report.skipped_invalid_id > 0 {
+        // 回ごとに 1 行（人ごとには出さない）。入口で断っているので、この人たちはログインもアプリのゲートウェイも
+        // 使えない。残ったタプルは運用者が外す（D-205）。
+        tracing::warn!(
+            skipped = report.skipped_invalid_id,
+            "照合: id が識別子に使えない人を飛ばしました（入口で断っている人・OpenFGA に残るタプルは手で外す）"
+        );
+    }
     match cursor_move(page.len(), batch, done) {
         CursorMove::Rewind => {
             // 行は消さない（最後に照合を始めた時刻を残す）。位置だけを外す。
@@ -305,7 +317,13 @@ pub(crate) async fn reconcile_page(
     page: &[DirectoryEntry],
     report: &mut ReconcileReport,
 ) -> Result<usize, ReconcileError> {
-    let recorded = deps.directory.recorded_roles_of(page).await?;
+    // id が識別子に使えない人（[`usable_tenant`]・入口で断る人）は、ロールの記録も OpenFGA も Keycloak も読まない。
+    let usable: Vec<DirectoryEntry> = page
+        .iter()
+        .filter(|entry| usable_tenant(entry).is_some())
+        .cloned()
+        .collect();
+    let recorded = deps.directory.recorded_roles_of(&usable).await?;
     let layout = group_layout(&deps.auth);
     // 外したものの監査（ハッシュチェーンにつなぐ・GAP-78）。
     let sink = AuditRecorder::new(deps.db.clone());
@@ -315,6 +333,7 @@ pub(crate) async fn reconcile_page(
         let roles = recorded.get(entry).map_or(&[][..], Vec::as_slice);
         match reconcile_user(deps, &sink, kc, entry, roles, layout).await {
             UserOutcome::Untouched => {}
+            UserOutcome::InvalidId => report.skipped_invalid_id += 1,
             UserOutcome::Checked {
                 orgs,
                 roles,
@@ -359,6 +378,8 @@ pub(crate) async fn reconcile_page(
 enum UserOutcome {
     /// 照合するタプルが無い（Keycloak を読んでいない）。
     Untouched,
+    /// id が識別子に使えない（[`usable_tenant`]・OpenFGA も Keycloak も読んでいない）。
+    InvalidId,
     /// 照合した（外した組織・部署の数と、監査に残せなかった行の数）。
     Checked {
         orgs: usize,
@@ -380,12 +401,9 @@ async fn reconcile_user(
     recorded_roles: &[String],
     layout: GroupLayout,
 ) -> UserOutcome {
-    let Ok(tenant) = TenantId::parse(entry.tenant_id.as_str()) else {
-        return UserOutcome::Untouched;
+    let Some(tenant) = usable_tenant(entry) else {
+        return UserOutcome::InvalidId;
     };
-    if authz::validate_local_id(&entry.user_id).is_err() {
-        return UserOutcome::Untouched;
-    }
     let tenant_id = tenant.as_str();
     let authz = &*deps.authz;
     let ns = Namespace::for_tenant(tenant_id);
@@ -452,6 +470,16 @@ async fn reconcile_user(
         roles: revoked_roles.len(),
         audit_failed: audit.failed(),
     }
+}
+
+/// ディレクトリの 1 人の tenant_id と id が識別子に使えれば、そのテナントを返す（使えなければ `None`）。
+///
+/// id はログインとセッションの更新の入口と同じ [`authz::validate_user_id`] で確かめる（D-205）。入口で断る人を
+/// ここで照合すると、`|` を含む人（OpenFGA は受け付ける）の `<tenant>|` の後ろを local id として扱えない。
+fn usable_tenant(entry: &DirectoryEntry) -> Option<TenantId> {
+    let tenant = TenantId::parse(entry.tenant_id.as_str()).ok()?;
+    authz::validate_user_id(&entry.user_id).ok()?;
+    Some(tenant)
 }
 
 /// ロールを外した後: 写し（AI 活用分析の部署集計）から消し、構造化データの購読へ知らせる（ログインの同期と同じ）。
@@ -544,11 +572,17 @@ async fn save_cursor(db: &PgPool, last: &DirectoryEntry) -> Result<(), sqlx::Err
     Ok(())
 }
 
+// 識別子に使えない id の人を数えて飛ばす試し（OpenFGA・Keycloak・DB に触れないことを含む・D-205）。
+#[cfg(test)]
+#[path = "membership_reconcile_skip_tests.rs"]
+mod skip_tests;
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{cursor_move, CursorMove, MembershipReconcileConfig};
+    use super::{cursor_move, usable_tenant, CursorMove, MembershipReconcileConfig};
+    use storage::DirectoryEntry;
 
     #[test]
     fn config_defaults_to_every_minute_500_users() {
@@ -561,6 +595,32 @@ mod tests {
                 .unwrap();
         assert!(!c.enabled);
         assert_eq!((c.interval_secs, c.batch_size), (60, 50));
+    }
+
+    #[test]
+    fn users_whose_ids_cannot_be_identifiers_are_not_reconciled() {
+        let entry = |tenant_id: &str, user_id: &str| DirectoryEntry {
+            tenant_id: tenant_id.into(),
+            user_id: user_id.into(),
+        };
+        assert_eq!(
+            usable_tenant(&entry("acme", "0b6f3a52-8f1e-4c1a-9d1e-2f7a2c1b9e10"))
+                .map(|t| t.to_string()),
+            Some("acme".to_string())
+        );
+        // 入口（ログイン・セッションの更新・アプリのゲートウェイ）が断る sub と、使えない tenant_id は照合しない（D-205）。
+        for (tenant_id, user_id) in [
+            ("acme", "f:ldap:bob"),
+            ("acme", "a#b"),
+            ("acme", "a|b"),
+            ("acme", "a b"),
+            ("ac|me", "alice"),
+        ] {
+            assert!(
+                usable_tenant(&entry(tenant_id, user_id)).is_none(),
+                "{tenant_id:?} {user_id:?}"
+            );
+        }
     }
 
     #[test]
