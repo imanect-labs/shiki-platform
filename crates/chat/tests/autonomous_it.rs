@@ -146,8 +146,12 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
     LlmGateway::build(pool, reqwest::Client::new(), config).expect("gateway")
 }
 
-/// StorageService（AllowAll authz＋RustFS）＋自律 worker を組む共通ハーネス。
-async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
+/// StorageService（AllowAll authz＋RustFS）だけを組む。**worker は spawn しない**。
+///
+/// ツールを直接呼ぶテストはこちらを使う。worker を spawn すると、そのテストのランタイムが
+/// 終わった時点で worker が claim 済みの run を抱えたまま消え、共有 jobq の run がリース失効まで
+/// 宙に浮く。すると e2e（[`autonomous_run_writes_workspace_file_e2e`]）がイベント待ちで落ちる。
+async fn storage_harness(pool: PgPool) -> Arc<StorageService> {
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
         .unwrap_or_else(|_| "http://localhost:9000".into());
     let s3 = S3Config {
@@ -165,14 +169,20 @@ async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
     };
     let object_store: Arc<dyn ObjectStore> = Arc::new(S3ObjectStore::new(&s3));
     object_store.ensure_bucket().await.expect("バケット準備");
-    let storage = Arc::new(StorageService::new(
-        pool.clone(),
+    Arc::new(StorageService::new(
+        pool,
         object_store,
         Arc::new(AllowAll),
         Duration::from_mins(5),
         Duration::from_mins(15),
         5 * 1024 * 1024 * 1024,
-    ));
+    ))
+}
+
+/// [`storage_harness`] ＋自律 worker を組む。worker を spawn するのは e2e の 1 テストだけにする
+/// （このバイナリの他テストは [`storage_harness`] を使う）。
+async fn workspace_harness(pool: PgPool) -> (ChatStore, Arc<StorageService>) {
+    let storage = storage_harness(pool.clone()).await;
     let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
         .await
         .unwrap();
@@ -493,7 +503,7 @@ async fn drive_copy_preserves_source_and_tenant_boundary() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("copy-{}", uuid::Uuid::new_v4());
     let ctx = ctx(&tenant);
-    let (_, storage) = workspace_harness(pool.clone()).await;
+    let storage = storage_harness(pool.clone()).await;
     let source = storage
         .write_file_internal(&ctx, None, "source.csv", b"a,b\n1,2\n", "text/csv", None)
         .await
@@ -624,7 +634,7 @@ async fn drive_copy_replays_after_source_changes() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("copy-replay-{}", uuid::Uuid::new_v4());
     let ctx = ctx(&tenant);
-    let (_, storage) = workspace_harness(pool).await;
+    let storage = storage_harness(pool).await;
     let source = storage
         .write_file_internal(&ctx, None, "original.txt", b"original", "text/plain", None)
         .await
@@ -682,7 +692,7 @@ async fn drive_copy_uses_open_note_and_slide_state() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("copy-live-{}", uuid::Uuid::new_v4());
     let ctx = ctx(&tenant);
-    let (_, storage) = workspace_harness(pool.clone()).await;
+    let storage = storage_harness(pool.clone()).await;
     let hub = Arc::new(collab::CollabHub::new(
         pool,
         Arc::new(AllowAll),
@@ -753,7 +763,7 @@ async fn drive_copy_rejects_large_note_before_collab_join() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("copy-size-{}", uuid::Uuid::new_v4());
     let ctx = ctx(&tenant);
-    let (_, storage) = workspace_harness(pool.clone()).await;
+    let storage = storage_harness(pool.clone()).await;
     let node = storage
         .write_file_internal(
             &ctx,
