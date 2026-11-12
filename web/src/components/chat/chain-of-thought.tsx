@@ -36,7 +36,7 @@ export function ChainOfThought({
   // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。押した後の開閉は、確定で
   // 行が作り直されても保つ。
   const [open, setOpen] = useRememberedOpen(memoryKey && `${memoryKey}:thinking`, null);
-  const expandByDefault = usePreferences().prefs.expand_reasoning;
+  const { expand_reasoning: expandByDefault, activity_detail } = usePreferences().prefs;
   const [showDetail, setShowDetail] = useRememberedOpen(memoryKey && `${memoryKey}:detail`);
 
   const hasThinking = thinking.trim().length > 0;
@@ -124,6 +124,7 @@ export function ChainOfThought({
         citations={citations}
         waitingLabel={waitingLabel}
         memoryKey={memoryKey && `${memoryKey}:tools`}
+        simple={activity_detail === "simple"}
       />
     </div>
   );

@@ -11,6 +11,7 @@ import {
   updatePreferences,
   usePreferences,
   type DefaultModelChoice,
+  type ActivityDetail,
   type UserPreferences,
 } from "@/lib/preferences";
 import { useModKeyLabel } from "@/hooks/use-mod-key";
@@ -280,6 +281,24 @@ export function ChatSettingsView() {
       </SettingsSection>
 
       <SettingsSection title="回答の表示">
+        <SettingsRow
+          label="操作ログの表示"
+          htmlFor="pref-activity-detail"
+          description="AI が裏で行った操作（検索・SQL の実行・ツールの使用など）をチャットにどこまで出すか。シンプルでは「調べています」のような進み具合だけを出し、押すと失敗を含む個々の操作を確認できます。エージェントのタスクごとの操作は右側のパネルでも確認できます。"
+        >
+          <Select
+            value={prefs.activity_detail}
+            onValueChange={(v) => save({ activity_detail: v as ActivityDetail })}
+          >
+            <SelectTrigger id="pref-activity-detail" className="h-9 w-full sm:w-56" aria-label="操作ログの表示">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="simple">シンプル</SelectItem>
+              <SelectItem value="detailed">詳細（個々の操作を表示）</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <SettingsRow
           label="思考過程を開いて表示"
           htmlFor="pref-reasoning"

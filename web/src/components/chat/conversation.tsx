@@ -122,7 +122,8 @@ import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
-import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import { ApprovalCard, BudgetBanner } from "./agent-progress";
+import { TaskInlineLine, TaskPanelAside, TaskPanelSheet, type TaskActivities } from "./task-panel";
 import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
@@ -157,6 +158,8 @@ type StreamState = {
   documentRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
+  /// ツール呼び出し（この出現のキー）→ 呼び出した時点で進行中だったサブタスク id（タスクパネルの詳細）。
+  taskTools: Record<string, string>;
   approval: ApprovalRequest | null;
   budget: { kind: string; used: number; limit: number } | null;
   runId: string | null;
@@ -209,6 +212,7 @@ const EMPTY_STREAM: StreamState = {
   skillDrafts: [],
   documentRefs: [],
   plan: [],
+  taskTools: {},
   approval: null,
   budget: null,
   assistantMessageId: null,
@@ -258,6 +262,7 @@ export function Conversation({
   // 出典パネルを右カラムで出せる幅か（サイドバー＋本文＋パネルが並ぶ幅）。
   const wide = useMediaQuery("(min-width: 1200px)");
   const sourceAside = !isPanel && wide;
+  const narrow = !useMediaQuery("(min-width: 768px)");
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   // 表示中の枝の本当の末尾（サーバ上の id）。描画からは落とす空の回答（生成の失敗・停止）も含める。
   // 送信時の「続ける先」（after）に使う: 描画の末尾（直前の発話）を渡すと、空の回答の兄弟として
@@ -315,6 +320,43 @@ export function Conversation({
   const [contextOpen, setContextOpen] = React.useState(false);
   const openContext = React.useCallback(() => setContextOpen(true), []);
   // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
+  // エージェントのタスク（計画）。計画が届いたら右のパネルを開く（上のバーのボタンで開閉）。
+  // 生成が終わっても次の計画が届くまでは直近の計画を残す（上のバーから見返せるように）。
+  const livePlan = stream?.plan;
+  const liveTools = stream?.tools;
+  const liveTaskTools = stream?.taskTools;
+  const [latestPlan, setLatestPlan] = React.useState<PlanSubtask[]>([]);
+  const [latestActivities, setLatestActivities] = React.useState<TaskActivities>({});
+  React.useEffect(() => {
+    if (!livePlan || livePlan.length === 0) return;
+    setLatestPlan(livePlan);
+    const acts: TaskActivities = {};
+    for (const t of liveTools ?? []) {
+      const id = liveTaskTools?.[t.key];
+      if (id) (acts[id] ??= []).push(t);
+    }
+    setLatestActivities(acts);
+  }, [livePlan, liveTools, liveTaskTools]);
+  // null は「まだ利用者が開閉していない」（開いておく）。
+  const [taskPanelChoice, setTaskPanelChoice] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    setLatestPlan([]);
+    setLatestActivities({});
+    setTaskPanelChoice(null);
+  }, [threadId]);
+  const hasPlan = latestPlan.length > 0;
+  const taskPanelOpen = hasPlan && (taskPanelChoice ?? !isPanel);
+  const toggleTaskPanel = React.useCallback(() => setTaskPanelChoice(!taskPanelOpen), [taskPanelOpen]);
+  const openTaskPanel = React.useCallback(() => setTaskPanelChoice(true), []);
+  const planDone = latestPlan.filter((t) => t.status === "done").length;
+  const headerPlan = React.useMemo(
+    () =>
+      hasPlan
+        ? { done: planDone, total: latestPlan.length, shown: taskPanelOpen, onToggle: toggleTaskPanel }
+        : null,
+    [hasPlan, planDone, latestPlan.length, taskPanelOpen, toggleTaskPanel],
+  );
+  const taskAside = !isPanel && wide;
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
   const canExport = messages.some(
@@ -460,9 +502,11 @@ export function Conversation({
           const text = paragraphBreak(s.text);
           // この出現の一意キー（呼び出し ID はループで再利用され得る）。
           const key = newId();
+          const doing = s.plan.find((t) => t.status === "doing")?.id;
           return {
             ...s,
             text,
+            ...(doing ? { taskTools: { ...s.taskTools, [key]: doing } } : {}),
             segments: appendStreamTool(s.segments, key),
             tools: [
               ...s.tools,
@@ -1090,6 +1134,7 @@ export function Conversation({
               contextUsage={contextUsage}
               onOpenContext={openContext}
               onExport={canExport ? openExport : undefined}
+              plan={headerPlan}
             />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
@@ -1173,6 +1218,8 @@ export function Conversation({
                       onApproval={decideApproval}
                       approvalRef={setApprovalCard}
                       threadId={threadId}
+                      planInline={isPanel}
+                      onOpenTasks={openTaskPanel}
                     />
                   </div>
                 ) : null}
@@ -1295,7 +1342,23 @@ export function Conversation({
         </div>
         {/* 出典パネル: 広い画面のチャットページは右カラム、それ以外（狭い画面・分割ビュー）はシート。 */}
         {sourceAside ? <SourcePanelAside /> : null}
+        {taskAside && taskPanelOpen ? (
+          <TaskPanelAside
+            tasks={latestPlan}
+            activities={latestActivities}
+            onClose={() => setTaskPanelChoice(false)}
+          />
+        ) : null}
       </div>
+      {!taskAside && hasPlan ? (
+        <TaskPanelSheet
+          tasks={latestPlan}
+          activities={latestActivities}
+          open={taskPanelOpen}
+          onOpenChange={setTaskPanelChoice}
+          side={narrow ? "bottom" : "right"}
+        />
+      ) : null}
       {!sourceAside ? <SourcePanelSheet /> : null}
       </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
@@ -1825,11 +1888,16 @@ function StreamingRow({
   onApproval,
   approvalRef,
   threadId,
+  planInline,
+  onOpenTasks,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
   approvalRef: (el: HTMLDivElement | null) => void;
   threadId: string;
+  /// 回答内にタスクの 1 行を出すか（上のバーが無い分割ビュー。押すとタスクのシートを開く）。
+  planInline: boolean;
+  onOpenTasks: () => void;
 }) {
   const restoring = stream.restoreUntil !== null;
   const showLoader =
@@ -1857,7 +1925,9 @@ function StreamingRow({
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
           <HelpSources citations={stream.helpCitations} />
-          {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
+          {planInline && stream.plan.length > 0 ? (
+            <TaskInlineLine tasks={stream.plan} onOpen={onOpenTasks} />
+          ) : null}
           {/* 本文と操作のまとまりを起きた順に並べ、生成中の表示は末尾に置く（往復する回答で
               「いま何をしているか」が先頭に取り残されない）。 */}
           {restoring ? (

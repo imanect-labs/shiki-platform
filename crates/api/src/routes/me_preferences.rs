@@ -5,7 +5,9 @@
 //! （`llm_gateway::Effort` は OpenAPI のスキーマを持たないため）。変更は監査に残す。
 
 use axum::{extract::State, Json};
-use chat::preferences::{DefaultModel, InputFormat, SubmitKey, TimeFormat, UserPreferences};
+use chat::preferences::{
+    ActivityDetail, DefaultModel, InputFormat, SubmitKey, TimeFormat, UserPreferences,
+};
 use chat::{AutonomousMode, ChatError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -53,6 +55,9 @@ pub struct UserPreferencesBody {
     /// 日時の表示形式（既定 `absolute`）。
     #[serde(default)]
     pub time_format: TimeFormat,
+    /// チャットに出す操作ログの粒度（既定 `simple`）。
+    #[serde(default)]
+    pub activity_detail: ActivityDetail,
 }
 
 /// `GET/PUT /me/preferences` のレスポンス。
@@ -76,6 +81,7 @@ impl From<UserPreferences> for UserPreferencesBody {
             default_autonomous_mode: p.default_autonomous_mode,
             expand_reasoning: p.expand_reasoning,
             time_format: p.time_format,
+            activity_detail: p.activity_detail,
         }
     }
 }
@@ -93,6 +99,7 @@ impl From<UserPreferencesBody> for UserPreferences {
             default_autonomous_mode: b.default_autonomous_mode,
             expand_reasoning: b.expand_reasoning,
             time_format: b.time_format,
+            activity_detail: b.activity_detail,
         }
     }
 }

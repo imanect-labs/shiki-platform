@@ -1,94 +1,17 @@
 "use client";
 
 /**
- * 自律エージェントの進捗 UI（Phase 5 / Task 5.11）:
- * - 計画（サブタスク）パネル
+ * 自律エージェントの進捗 UI（Phase 5 / Task 5.11。計画は task-panel.tsx）:
  * - 承認ダイアログ（破壊系/egress/高コスト操作の human-in-the-loop）
  * - 予算警告バナー
  * チャットの content blocks レンダリングと同じ器に差し込む（既存 UI を再利用）。
  */
 
 import type * as React from "react";
-import { CheckCircle2, Circle, Loader2, PauseCircle } from "lucide-react";
-
-import { cn } from "@/lib/utils";
 
 import { DataWriteSummary } from "./data-approval-summary";
 import { DriveMoveSummary } from "./drive-move-approval-summary";
-import type { ApprovalRequest, PlanSubtask } from "@/lib/chat-api";
-
-/// 状態はドットではなくアイコンで示す（色だけに頼らず、形でも区別できるように）。
-const STATUS_META: Record<
-  string,
-  { label: string; icon: React.ComponentType<{ className?: string }>; iconClass: string; text: string }
-> = {
-  todo: { label: "未着手", icon: Circle, iconClass: "text-muted-foreground/50", text: "text-foreground/70" },
-  doing: { label: "進行中", icon: Loader2, iconClass: "animate-spin text-primary", text: "text-foreground" },
-  done: {
-    label: "完了",
-    icon: CheckCircle2,
-    iconClass: "text-emerald-600 dark:text-emerald-400",
-    text: "text-foreground/50 line-through",
-  },
-  blocked: {
-    label: "保留",
-    icon: PauseCircle,
-    iconClass: "text-amber-600 dark:text-amber-400",
-    text: "text-amber-600 dark:text-amber-400",
-  },
-};
-
-/// 計画ステップの 1 行（ライブの計画パネルで使う）。
-/// プラン UI を二重化しないための共有点（#387）。
-export function PlanStepRow({
-  title,
-  status = "todo",
-  description,
-}: {
-  title: string;
-  status?: string;
-  description?: string | null;
-}) {
-  const meta = STATUS_META[status] ?? STATUS_META.todo;
-  const Icon = meta.icon;
-  return (
-    <li className="flex items-start gap-2 text-[13px]">
-      <Icon className={cn("mt-[3px] size-3.5 shrink-0", meta.iconClass)} aria-hidden />
-      <span className="sr-only">{meta.label}: </span>
-      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-        <span className={meta.text} data-testid="plan-step-title">
-          {title}
-        </span>
-        {description ? (
-          <span className="mt-0.5 block text-[12px] leading-relaxed text-muted-foreground">
-            {description}
-          </span>
-        ) : null}
-      </span>
-    </li>
-  );
-}
-
-/** 計画（サブタスク列）のチェックリスト。 */
-export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
-  if (subtasks.length === 0) return null;
-  const done = subtasks.filter((s) => s.status === "done").length;
-  return (
-    <div className="rounded-xl border border-border bg-card/60 p-3" data-testid="plan-panel">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-[13px] font-semibold text-foreground/80">計画</span>
-        <span className="text-[12px] tabular-nums text-muted-foreground" data-testid="plan-progress">
-          {done}/{subtasks.length}
-        </span>
-      </div>
-      <ol className="space-y-1.5">
-        {subtasks.map((s) => (
-          <PlanStepRow key={s.id} title={s.title} status={s.status} />
-        ))}
-      </ol>
-    </div>
-  );
-}
+import type { ApprovalRequest } from "@/lib/chat-api";
 
 /** 予算警告バナー（上限接近）。 */
 export function BudgetBanner({ kind, used, limit }: { kind: string; used: number; limit: number }) {
