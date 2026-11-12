@@ -17,7 +17,6 @@ import {
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { NavItem } from "./nav-item";
-import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
 /// スマホのドロワのナビ 1 マス（アイコン上・ラベル下）。
@@ -205,7 +204,15 @@ export function SidebarNav({
         aria-label="メインナビゲーション"
         className={cn("flex flex-col gap-0.5", collapsed ? "pt-1" : "pt-1.5")}
       >
-        <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
+        {/* ドライブの区画（ホーム／最近使った…）は子メニューにせず、ドライブ画面上端のタブで切り替える。 */}
+        <NavItem
+          icon={DRIVE_ICON}
+          label="ドライブ"
+          href={DRIVE_ROOT}
+          collapsed={collapsed}
+          active={isActivePath(DRIVE_ROOT, pathname)}
+          onClick={onNavigate}
+        />
         <NavItem
           icon={SKILLS_NAV.icon}
           label={SKILLS_NAV.label}
