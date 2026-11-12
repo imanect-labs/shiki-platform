@@ -14,6 +14,7 @@ use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use super::anthropic_events::EventReader;
+use super::anthropic_headers::{self, RateLimitHeaders};
 use super::identity::IdentityHeaders;
 use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
@@ -290,6 +291,7 @@ impl LlmProvider for AnthropicProvider {
         )
         .await?;
         let status = resp.status();
+        anthropic_headers::record(status, resp.headers());
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
             if status.is_client_error() {
@@ -385,9 +387,10 @@ async fn send_waiting_out_rate_limit(
         let (Some(wait), Some(again)) = (wait, again) else {
             return Ok(resp);
         };
+        let limits = RateLimitHeaders(resp.headers()).to_string();
         let body = clock.error_text(resp).await?;
         retries += 1;
-        tracing::warn!(?wait, retries, body = %body, "anthropic が 429 で待ちを指示した（待って送り直す）");
+        tracing::warn!(?wait, retries, rate_limit = %limits, body = %body, "anthropic が 429 で待ちを指示した（待って送り直す）");
         tokio::time::sleep(wait).await;
         builder = again;
     }

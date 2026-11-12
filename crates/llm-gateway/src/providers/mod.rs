@@ -3,6 +3,8 @@
 pub mod anthropic;
 /// Anthropic の SSE の読み取り（anthropic.rs から分割・BUG-214）。
 mod anthropic_events;
+/// Anthropic のレート制限のヘッダをログに記録する（T00）。
+mod anthropic_headers;
 /// 識別ヘッダ（User-Agent・会話 ID）の共通処理。
 mod identity;
 /// chat モデルに決定を真似させる決定器（FEAT-1）。
