@@ -243,7 +243,9 @@ impl StorageService {
     ///
     /// ロックの順は **node → blob → 監査のチェーン**。node の行を押さえる書き込みは、この関数より前に押さえる
     /// （[`lock_parent_for_create`] / [`lock_file_for_content`]）。完全削除も同じ順で取るので、順が逆の書き込みと
-    /// 重なってデッドロックにならない。
+    /// 重なってデッドロックにならない。完全削除は blob を advisory lock ではなく行ロック（sha256 の昇順・
+    /// `FOR UPDATE`）で押さえるので、ここの upsert はその行ロックを待つ。完全削除が行を消して commit していれば、
+    /// upsert は行を作り直し（`created`）、本体を確かめ直す。
     #[allow(clippy::too_many_arguments)] // blob 行の identity + メタ一式 + 本体の出どころ。
     pub(crate) async fn bump_blob(
         &self,
@@ -423,7 +425,8 @@ pub(crate) enum BlobBody<'a> {
 ///
 /// キーは `hashtextextended('blob:' || '<tenant_id>|<org>|<sha256>', 0)`（64bit・`blob:` 接頭辞で
 /// `audit_chain:`・`share_link:` のキーと分ける）。[`StorageService::bump_blob`] と完全削除の片付けが同じキーで
-/// 直列化する。
+/// 直列化する。完全削除の本体（多くの blob を 1 つの Tx で押さえる）は、共有ロック表を使い切らないよう、これでは
+/// なく blob の行ロックを使う（`purge::release_blobs`）。1 つの Tx で多くの本体にこれを取らない。
 pub(crate) async fn lock_blob(
     conn: &mut PgConnection,
     tenant_id: &str,

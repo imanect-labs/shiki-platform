@@ -14,8 +14,12 @@
 //! 「データを先に閉じる」）。その場で片付けきれなかった分と失敗した分は、掃除（`purge_pending`）がやり直す。
 //! 検索の索引（`rag_chunk`・`doc_block`・ベクタ・全文）は、ファイルごとの delete のイベントで索引の側が消す。
 //!
-//! ロックの順は **node（id の昇順・FOR UPDATE）→ blob（sha256 の昇順・[`lock_blob`]）→ 監査のチェーン**
-//! （書き込みと同じ・`upload::bump_blob`）。
+//! ロックの順は **node（id の昇順・FOR UPDATE）→ blob の行（sha256 の昇順・FOR UPDATE）→ 監査のチェーン**
+//! （書き込みと同じ順・`upload::bump_blob`）。blob は advisory lock ではなく行ロックで押さえる。行ロックは行に
+//! 載り、共有ロック表を使わないので、異なる本体が何万ある根でも 1 つの Tx で消せる（advisory lock を本体ごとに
+//! 取ると、表の大きさ `max_locks_per_transaction × 接続の数` を超えた根は `out of shared memory` で二度と消せない）。
+//! 書き込みの `bump_blob` は advisory lock の後に行を upsert するので、その upsert がこの行ロックを待つ。片付け
+//! （`cleanup_one`・`purge_pending`）は 1 行ずつ advisory lock（[`lock_blob`]）を取り、`bump_blob` と直列になる。
 //!
 //! 保持期間を過ぎたものの自動の完全削除（GAP-108c・D-202・`crate::trash_retention`）も、同じ本体
 //! （[`StorageService::purge_for_retention`]）で消す。主体はシステム（`system:trash-retention`）で、権限の check は
@@ -288,7 +292,7 @@ impl StorageService {
         // 4. 行を消す（外部キーのある子の表から。collab_doc・collab_update は node から連鎖して消える）。
         self.delete_node_rows(&mut tx, ctx, &ids).await?;
 
-        // 5. blob の参照数を減らす。ロックは sha256 の昇順（node の後・監査のチェーンの前）。
+        // 5. blob の参照数を減らす。blob の行は sha256 の昇順に押さえる（node の後・監査のチェーンの前）。
         let (mut objects, freed_bytes) = release_blobs(&mut tx, ctx, &versions).await?;
 
         // 6. ファイルごとに delete のイベントを出す。version は消した行の version + 1（論理削除のときの delete と、
@@ -557,8 +561,11 @@ async fn lock_subtree(
 /// 消した版の数だけ blob の参照数を減らし、参照が 0 になった行を消して本体を片付け待ちに入れる。
 /// 片付け待ちの行と、空いたバイト数の合計を返す。
 ///
-/// 先に blob をすべて [`lock_blob`] で押さえる（`versions` は sha256 の昇順・node の後・監査のチェーンの前）。
-/// 押さえた後の減算・削除・片付け待ちへの追加は、それぞれ 1 文でまとめて行う（大きなフォルダで往復を増やさない）。
+/// 先に blob の行をすべて 1 文で、sha256 の昇順に `FOR UPDATE` で押さえる（node の後・監査のチェーンの前）。
+/// advisory lock（[`lock_blob`]）は使わない（本体の数だけ共有ロック表を使い、大きな根で表を使い切る）。
+/// 書き込みの `bump_blob` の upsert はこの行ロックを待ち、ここが行を消して commit すれば行を作り直して
+/// （`created`）本体を確かめ直す。押さえた後の減算・削除・片付け待ちへの追加も、それぞれ 1 文でまとめて行う
+/// （大きなフォルダで往復を増やさない）。
 /// 参照数が消す版の数より少ないのは、決まり（refcount = node_version の行数）が崩れている。ほかの参照の本体を
 /// 消しうるので、何も消さずに止める（Tx は落とす）。
 async fn release_blobs(
@@ -569,10 +576,17 @@ async fn release_blobs(
     if versions.is_empty() {
         return Ok((Vec::new(), 0));
     }
-    for (sha256, _) in versions {
-        lock_blob(&mut *conn, ctx.tenant_id(), ctx.org(), sha256).await?;
-    }
     let shas: Vec<&str> = versions.iter().map(|(s, _)| s.as_str()).collect();
+    // ORDER BY の後で行を押さえる（LockRows は Sort の上）ので、押さえる順は sha256 の昇順にそろう。
+    sqlx::query(
+        "SELECT sha256 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = ANY($3) \
+         ORDER BY sha256 FOR UPDATE",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(&shas)
+    .execute(&mut *conn)
+    .await?;
     let counts: Vec<i64> = versions.iter().map(|(_, c)| *c).collect();
     let left: Vec<(String, i64, i64)> = sqlx::query_as(
         "UPDATE blob b SET refcount = b.refcount - v.n \
