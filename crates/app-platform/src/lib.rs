@@ -49,6 +49,13 @@ pub use trusted_key::{TrustedKey, TrustedKeyStore};
 pub use usage::{AppUsage, AppUsageStore};
 pub use validate::validate_manifest;
 
+/// 公開を取り下げた版をインストールしようとしたときの文言（利用者に見せる・GAP-69b）。
+///
+/// [`InstallService::install`] と [`SkillInstallService::install`] は、取り下げた版にこの文言の
+/// [`AppPlatformError::Conflict`] を返す。api はこの文言の 409 だけを、`yanked` の code と文言つきで返す（ほかの 409 の
+/// 文言は内部の詳細を含みうるので返さない）。文言はここだけに書く。
+pub const YANKED_VERSION: &str = "この版は公開が取り下げられたため、インストールできません。";
+
 /// ミニアプリ基盤のエラー。
 #[derive(Debug, thiserror::Error)]
 pub enum AppPlatformError {

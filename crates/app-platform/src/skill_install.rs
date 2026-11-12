@@ -221,9 +221,7 @@ impl SkillInstallService {
         }
         .ok_or(AppPlatformError::NotFound)?;
         if entry.yanked {
-            return Err(AppPlatformError::Conflict(
-                "このバージョンは yank されています".into(),
-            ));
+            return Err(AppPlatformError::Conflict(crate::YANKED_VERSION.into()));
         }
 
         // ② 信頼ティア検証（first-party=署名必須／in-house=viewer 必須／その他=拒否）。

@@ -52,6 +52,8 @@ pub enum ConflictCode {
     /// アプリのインストール・アンインストールで、同じテナントのほかの組織にこのアプリの有効なインストールがある
     /// （`message` に理由と直し方・BUG-212）。
     InstalledInOtherOrg,
+    /// アプリ・スキルのインストールで、その版の公開が取り下げられている（`message` に理由・GAP-69b）。
+    Yanked,
     /// その他の競合（取込 ID の再利用・並行のスキーマ切替など）。
     Conflict,
 }
@@ -67,7 +69,8 @@ pub struct ConflictBody {
     pub current_rev: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
-    /// 利用者に見せてよい文言（`unique_violation`〔読める列なら表示名つき・値は含まない〕と `installed_in_other_org`）。
+    /// 利用者に見せてよい文言（`unique_violation`〔読める列なら表示名つき・値は含まない〕と `installed_in_other_org`・
+    /// `yanked`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// 索引の準備の進捗（0〜1・不明なら null）。`index_preparing` のときだけ項目を持つ。

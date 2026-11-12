@@ -151,9 +151,7 @@ impl InstallService {
             .await?
             .ok_or(AppPlatformError::NotFound)?;
         if entry.yanked {
-            return Err(AppPlatformError::Conflict(
-                "このバージョンは yank されています".into(),
-            ));
+            return Err(AppPlatformError::Conflict(crate::YANKED_VERSION.into()));
         }
         let app_id = entry.artifact_id;
 

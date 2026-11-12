@@ -345,12 +345,20 @@ impl From<app_platform::AppPlatformError> for ApiError {
             E::NotFound => ApiError::NotFound,
             E::Forbidden => ApiError::Forbidden,
             E::Invalid(msg) => ApiError::BadRequest(msg),
-            // ほかの組織のインストール（BUG-212）だけは、理由と直し方を返す。ほかの 409 の文言は内部の詳細を含みうる。
+            // ほかの組織のインストール（BUG-212）と取り下げた版は、理由を返す。ほかの 409 の文言は内部の詳細を含みうる。
             E::Conflict(msg) if msg == app_gateway::INSTALLED_IN_OTHER_ORG => {
                 use crate::error_body::{to_body, ConflictBody, ConflictCode};
                 ApiError::ConflictJson(to_body(&ConflictBody {
                     message: Some(msg),
                     ..ConflictBody::new(ConflictCode::InstalledInOtherOrg)
+                }))
+            }
+            // 取り下げた版のインストール（GAP-69b）も、理由を返す（画面が一覧を読み直す手がかり）。
+            E::Conflict(msg) if msg == app_platform::YANKED_VERSION => {
+                use crate::error_body::{to_body, ConflictBody, ConflictCode};
+                ApiError::ConflictJson(to_body(&ConflictBody {
+                    message: Some(msg),
+                    ..ConflictBody::new(ConflictCode::Yanked)
                 }))
             }
             E::Conflict(_) => ApiError::Conflict,
@@ -505,6 +513,33 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["code"], "conflict");
         assert!(body.get("detail").is_none(), "理由の文言は返さない: {body}");
+    }
+
+    /// アプリ基盤の 409 は、ほかの組織のインストールと取り下げた版だけ code と文言を返し、ほかは汎用の 409（GAP-69b）。
+    #[tokio::test]
+    async fn app_platform_conflicts_return_only_known_messages() {
+        use app_platform::AppPlatformError as E;
+        let (status, body) = body_json(ApiError::from(E::Conflict(
+            app_platform::YANKED_VERSION.into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "yanked", "{body}");
+        assert_eq!(body["message"], app_platform::YANKED_VERSION, "{body}");
+        let (_, body) = body_json(ApiError::from(E::Conflict(
+            app_gateway::INSTALLED_IN_OTHER_ORG.into(),
+        )))
+        .await;
+        assert_eq!(body["code"], "installed_in_other_org", "{body}");
+        let (status, body) = body_json(ApiError::from(E::Conflict(
+            "テーブル名 'x' は既に存在します".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            !body.to_string().contains("テーブル名"),
+            "内部の文言を返さない: {body}"
+        );
     }
 
     /// data の 400 は構造化（code・安全な文言・列の参照名）。理由を構造化していない誤りは汎用の文言で、
