@@ -17,21 +17,8 @@ export type AppTableRolesChange = components["schemas"]["AppTableRolesChange"];
 /// 自動実行（event・cron）の関数の直近の失敗（アプリの持ち主にだけ返る・GAP-60）。
 export type AppFunctionFailure = components["schemas"]["AppFunctionFailure"];
 
-export type RegistryEntry = {
-  id: string;
-  artifact_kind: string;
-  name: string;
-  version: string;
-  artifact_id: string;
-  artifact_version: number;
-  manifest_digest: string;
-  publisher: string;
-  trust_tier: string;
-  yanked: boolean;
-  created_at: string;
-  /// 呼ぶ人がこの公開を取り下げられるか（アプリの持ち主か組織の管理者・GAP-69b）。前の版のサーバーは返さない。
-  can_yank?: boolean;
-};
+/// レジストリの登録と、呼ぶ人がこの公開を取り下げられるか（`can_yank`・アプリの持ち主か組織の管理者・GAP-69b）。
+export type RegistryEntry = components["schemas"]["RegistryListItem"];
 
 export type AppInstallation = {
   id: string;
@@ -65,22 +52,30 @@ export type AppInstallation = {
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
+    let code: string | undefined;
     try {
       // 構造化した誤り（409 の installed_in_other_org など）は、利用者に見せる文言を message に載せる。
-      const body = (await res.json()) as { error?: string; message?: string; title?: string; detail?: string };
+      const body = (await res.json()) as {
+        error?: string;
+        message?: string;
+        title?: string;
+        detail?: string;
+        code?: string;
+      };
       message = body.error ?? body.message ?? body.detail ?? body.title ?? message;
+      code = body.code;
     } catch {
       // 本文なし（204 等）はステータスのみ。
     }
-    // 呼び出し側が 403（変えられない人）を見分けられるよう、状態を添える。
-    throw Object.assign(new Error(message), { status: res.status });
+    // 呼び出し側が 403（変えられない人）や 409 の種類（取り下げた版の `yanked` など）を見分けられるよう、状態と code を添える。
+    throw Object.assign(new Error(message), { status: res.status, code });
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
 
 export async function listRegistry(): Promise<RegistryEntry[]> {
   const res = await apiFetch("/apps/registry");
-  const body = await ok<{ items: RegistryEntry[] }>(res);
+  const body = await ok<components["schemas"]["RegistryListResponse"]>(res);
   return body.items;
 }
 

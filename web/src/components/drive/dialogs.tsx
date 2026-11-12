@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useRestoreFocus } from "@/hooks/use-restore-focus";
 import { breadcrumb, listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { NodeIcon } from "./primitives";
@@ -163,7 +164,9 @@ export function TextPromptDialog({
   );
 }
 
-/// 汎用の確認ダイアログ（削除など）。
+/// 汎用の確認ダイアログ（削除など）。失敗はダイアログの中に出して読み上げる。閉じたら、開いたときにフォーカスが
+/// あった要素（開いたボタン）へフォーカスを戻す（Trigger を使わずに開くので、Radix に任せるとページの先頭に落ちる・
+/// `useRestoreFocus`・#1207）。
 export function ConfirmDialog({
   open,
   onOpenChange,
@@ -183,6 +186,7 @@ export function ConfirmDialog({
 }) {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const focus = useRestoreFocus();
 
   React.useEffect(() => {
     if (open) {
@@ -206,12 +210,16 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md" {...focus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {error ? (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             キャンセル

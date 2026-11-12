@@ -192,6 +192,11 @@ export function InstalledAppsSection() {
         title: "インストールに失敗しました",
         description: e instanceof Error ? e.message : String(e),
       });
+      // 同意の画面を開いている間に公開が取り下げられた（GAP-69b）。同意しても入れられないので閉じ、一覧から外す。
+      if ((e as { code?: string } | null)?.code === "yanked") {
+        setConsent(null);
+        reload();
+      }
     } finally {
       setPending(null);
     }
@@ -309,7 +314,7 @@ export function InstalledAppsSection() {
                 >
                   <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
                   <div className="min-w-0">
-                    <p className="font-medium text-foreground">この版は公開を取り下げました</p>
+                    <p className="font-medium text-foreground">この版は公開が取り下げられました</p>
                     <p className="mt-0.5 text-muted-foreground">
                       このまま使えますが、新しくインストールすることはできません。
                     </p>
@@ -395,34 +400,34 @@ export function InstalledAppsSection() {
           </h3>
           <ul className="grid gap-2 sm:grid-cols-2" aria-label="インストールできるアプリ">
             {installable.map((entry) => (
-              <li
-                key={entry.id}
-                className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2.5"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium" title={entry.name}>
-                    {entry.name}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    v{entry.version}・{entry.trust_tier === "first_party" ? "署名済み" : "社内"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
-                  {entry.can_yank ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => askYank(entry)}
-                      aria-label={`「${entry.name}」v${entry.version} の公開を取り下げる`}
-                    >
-                      <EyeOff className="size-4" aria-hidden />
-                      取り下げ
+              // 行の幅（スマホと、2 列の狭い列）が足りないときは、ボタンを名前の下に回す（ボタンを横にはみ出させない）。
+              <li key={entry.id} className="@container rounded-lg border px-3 py-2.5">
+                <div className="flex flex-col gap-2 @[22rem]:flex-row @[22rem]:items-center @[22rem]:justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium" title={entry.name}>
+                      {entry.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      v{entry.version}・{entry.trust_tier === "first_party" ? "署名済み" : "社内"}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                    {entry.can_yank ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => askYank(entry)}
+                        aria-label={`「${entry.name}」v${entry.version} の公開を取り下げる`}
+                      >
+                        <EyeOff className="size-4" aria-hidden />
+                        公開を取り下げ
+                      </Button>
+                    ) : null}
+                    <Button size="sm" variant="outline" onClick={() => void openConsent(entry)}>
+                      <Download className="size-4" aria-hidden />
+                      インストール
                     </Button>
-                  ) : null}
-                  <Button size="sm" variant="outline" onClick={() => void openConsent(entry)}>
-                    <Download className="size-4" aria-hidden />
-                    インストール
-                  </Button>
+                  </div>
                 </div>
               </li>
             ))}

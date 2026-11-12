@@ -6,9 +6,10 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 /// インストールの `submitter_roles`）。テーブルを持つアプリだけに欄が出て、選んだ部署がインストールの要求に載る。
 /// 画面かサーバーの処理を持つアプリには、アプリのトークンで何が渡るかを言う（使う人と契約の ID。所属グループは
 /// 載らない・D-130）。
-/// 2 本目は、公開の取り下げ（GAP-69b）: 持ち主に「取り下げ」が出て、確かめのダイアログ・失敗の表示・キーボードで
-/// 閉じる・開くができ、取り下げると一覧から消えて新しくはインストールできない。入れてあるアプリのカードからも取り下げ
-/// られ、取り下げた後もアプリはカードに残り、取り下げたことを出す。
+/// 2 本目は、公開の取り下げ（GAP-69b）: 持ち主に「公開を取り下げ」が出て、確かめのダイアログ・失敗の表示（読み上げる）・
+/// キーボードで閉じる・開くができ（閉じたら開いたボタンへフォーカスが戻る・#1207）、取り下げると一覧から消えて新しくは
+/// インストールできない。同意の画面を開いている間に取り下げられたら、理由を出して同意の画面を閉じ、一覧から外す。
+/// 入れてあるアプリのカードからも取り下げられ、取り下げた後もアプリはカードに残り、取り下げられたことを出す。
 /// PC（1440px）とスマホ（390px）で見る。`E2E_SHOTS_DIR` があれば画面を撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -161,12 +162,15 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
   await loginViaKeycloak(page);
   const listed = uniqueName("e2e-取り下げ");
   const running = uniqueName("e2e-入れたアプリ");
+  const stale = uniqueName("e2e-開いている間に取り下げ");
   let a: { appId: string; entryId: string } | null = null;
   let b: { appId: string; entryId: string } | null = null;
+  let c: { appId: string; entryId: string } | null = null;
   let installed = false;
   try {
     a = await publishApp(page, listed);
     b = await publishApp(page, running);
+    c = await publishApp(page, stale);
     await apiJson(page, "post", "/apps/installations", { name: running, version: "1.0.0", granted_scopes: ["data.read"] });
     installed = true;
 
@@ -178,8 +182,8 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
     await expect(yankA).toBeVisible();
     const dialog = page.getByRole("dialog");
 
-    // キーボードで開いて閉じる。開いたら、取り消せない操作なので先に「キャンセル」へフォーカスが来る。
-    // （閉じた後に開いたボタンへフォーカスが戻らないのは、共有の確認ダイアログ〔アンインストールと同じ〕の既存の挙動。）
+    // キーボードで開いて閉じる。開いたら、取り消せない操作なので先に「キャンセル」へフォーカスが来る。閉じたら、
+    // 開いたボタンへフォーカスが戻る（#1207）。
     await yankA.focus();
     await page.keyboard.press("Enter");
     await expect(dialog.getByRole("heading", { name: "公開を取り下げますか？" })).toBeVisible();
@@ -191,11 +195,22 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await expect(row).toBeVisible();
+    await expect(yankA).toBeFocused();
+    // 「キャンセル」で閉じても戻る。
+    await page.keyboard.press("Enter");
+    await dialog.getByRole("button", { name: "キャンセル" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(yankA).toBeFocused();
 
-    // スマホ: 行の「取り下げ」と「インストール」が横にはみ出さない。
+    // スマホ: 行の「公開を取り下げ」と「インストール」が横にはみ出さない（幅が足りなければ名前の下に回る）。
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(yankA).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    // 文書の幅は広がらなくても、行が中身に押されて画面の外へ伸び、ボタンが切れたことがある（7p レビュー）。
+    for (const target of [row, yankA, row.getByRole("button", { name: "インストール" })]) {
+      const box = await target.boundingBox();
+      expect(box && box.x >= -1 && box.x + box.width <= 390 + 1, "行とボタンが画面の幅に収まる").toBe(true);
+    }
     if (SHOTS) {
       await row.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `${SHOTS}/yank-row-phone.png` });
@@ -208,7 +223,8 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
     );
     await yankA.click();
     await dialog.getByRole("button", { name: "取り下げる" }).click();
-    await expect(dialog).toContainText("取り下げられるのは、アプリの持ち主と組織の管理者だけです。");
+    // 失敗は読み上げる（role=alert）。
+    await expect(dialog.getByRole("alert")).toHaveText("取り下げられるのは、アプリの持ち主と組織の管理者だけです。");
     await expect(dialog.getByRole("button", { name: "取り下げる" })).toBeEnabled();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-failed-pc.png` });
     await page.unroute(`**/api/apps/registry/${a.entryId}/yank`);
@@ -223,6 +239,18 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
       data: JSON.stringify({ name: listed, version: "1.0.0", granted_scopes: ["data.read"] }),
     });
     expect(refused.status(), await refused.text()).toBe(409);
+    expect(((await refused.json()) as { code?: string }).code).toBe("yanked");
+
+    // 同意の画面を開いている間に公開が取り下げられた: 理由を出し、同意の画面を閉じて一覧から外す。
+    const staleRow = registryRows.filter({ hasText: stale });
+    await staleRow.getByRole("button", { name: "インストール" }).click();
+    await expect(dialog.getByRole("heading", { name: `${stale} v1.0.0 をインストール` })).toBeVisible();
+    await apiJson(page, "post", `/apps/registry/${c.entryId}/yank`, {});
+    await dialog.getByRole("button", { name: "同意してインストール" }).click();
+    await expect(page.getByText("この版は公開が取り下げられたため、インストールできません。").first()).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-stale-install-pc.png` });
+    await expect(dialog).toBeHidden();
+    await expect(staleRow).toHaveCount(0);
 
     // 入れてあるアプリのカードからも取り下げられる。取り下げた後もカードは残り、そう出す。
     const card = page.getByRole("list", { name: "インストール済みのアプリ" }).getByRole("listitem").filter({ hasText: running });
@@ -231,7 +259,7 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
     await dialog.getByRole("button", { name: "取り下げる" }).click();
     await expect(dialog).toBeHidden();
     const note = card.getByTestId("app-yanked");
-    await expect(note).toContainText("この版は公開を取り下げました");
+    await expect(note).toContainText("この版は公開が取り下げられました");
     await expect(note).toContainText("このまま使えますが、新しくインストールすることはできません。");
     await expect(card.getByRole("button", { name: /公開を取り下げる/ })).toHaveCount(0);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/yank-installed-pc.png`, fullPage: true });
@@ -251,6 +279,7 @@ test("コードアプリの公開を取り下げると、一覧から消えて�
       },
       () => yankAndDelete(page, a),
       () => yankAndDelete(page, b),
+      () => yankAndDelete(page, c),
     );
   }
 });
