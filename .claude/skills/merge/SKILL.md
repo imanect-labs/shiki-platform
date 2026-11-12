@@ -139,8 +139,16 @@ gh api repos/{owner}/{repo}/rules/branches/main --jq '[.[] | select(.type == "me
 
    開いたままなら、マージした PR を書いた完了コメントを付けてクローズする（`--reason completed`）。
 
-2. **キューなしでマージしたなら、main の push run（全量テスト）の結果まで見る。** 落ちたら `selection-gap` の Issue を確認し、
-   この PR が原因なら直す PR を出す（`gh run list --branch main --event push --limit 3`）。
+2. **キューなしでマージしたなら、main の push run（全量テスト）の結果まで見る。** 対象は**この PR の merge commit の run** に
+   限る（最新の数件を見るだけだと、別の push の run を取り違える）。merge commit の SHA は `queue-wait.sh` の出力
+   （`merge commit <sha>`）にある:
+
+   ```bash
+   gh run list --workflow ci.yml --commit <merge-sha> --event push --json databaseId,status,conclusion
+   gh run watch <run-id> --exit-status        # 一覧に出るまで少し待つことがある
+   ```
+
+   落ちたら `selection-gap` の Issue を確認し、この PR が原因なら直す PR を出す。
 
 3. ローカルを最新化する（次のタスクは `origin/main` から切る）:
 
