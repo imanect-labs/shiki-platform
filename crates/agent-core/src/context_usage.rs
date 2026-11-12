@@ -102,6 +102,7 @@ pub fn estimate<'a>(
     for b in messages.iter().flat_map(|m| m.content.iter()) {
         match b {
             Block::Text { text } | Block::Thinking { text } => est[2] += text_tokens(text) as u64,
+            Block::Image { .. } => est[2] += 4096,
             Block::ToolUse { id, name, input } => {
                 names.insert(id, name);
                 est[2] += (text_tokens(name) + text_tokens(&input.to_string())) as u64;
@@ -254,7 +255,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::CsvWrite
         | ToolName::DataSchema
         | ToolName::DataRecordWrite
-        | ToolName::DriveMove => false,
+        | ToolName::DriveMove
+        | ToolName::DriveCopy => false,
     }
 }
 

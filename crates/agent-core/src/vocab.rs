@@ -145,6 +145,8 @@ vocab_enum! {
         DriveFind => "drive.find",
         /// ドライブのファイル・フォルダの移動・名前変更（種別を問わない・承認ゲート対象・#942）。
         DriveMove => "drive.move",
+        /// ファイルを複製する（承認必須）。
+        DriveCopy => "drive.copy",
     }
 }
 
@@ -245,7 +247,8 @@ impl ToolName {
             | Self::CsvWrite
             | Self::DataRecordWrite
             | Self::DriveFind
-            | Self::DriveMove => ToolLoading::Deferred,
+            | Self::DriveMove
+            | Self::DriveCopy => ToolLoading::Deferred,
         }
     }
 
@@ -312,6 +315,7 @@ impl ToolName {
             Self::DriveMove => {
                 "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
             }
+            Self::DriveCopy => { "drive file copy duplicate clone ドライブ ファイル コピー 複製 複写" }
             Self::Skill
             | Self::SkillSearch
             | Self::DocSearch

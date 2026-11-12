@@ -5384,6 +5384,7 @@ name = "shiki-chat"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "chrono-tz",
  "futures",

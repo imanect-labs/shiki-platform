@@ -399,7 +399,7 @@ flowchart LR
     読み込んだ定義を `tools` 末尾へ追記して写す。遅延にできる定義が閾値未満の run・
     `SHIKI__CHAT__TOOL_SEARCH=false` では全定義を提示する。開いている文書・会話で使ったツール・
     skill の `allowed_tools`・会話の添付の種別ごとの読み取りツールは常時ロードに回す。
-    - **添付の読み取り（#962）**: 添付は履歴に名前と node_id しか載らず、常時ロードの `doc_read` は
+    - **添付の読み取り（#962）**: 対応する画像添付は投稿者の権限と枚数・サイズ上限を確認して画像ブロックとして送る（詳細は `docs/agent/image-attachments.md`）。その他の添付は履歴に名前と node_id を載せる。常時ロードの `doc_read` は
       索引の無いファイル（大きな CSV・取り込み中など）を読めない。拡張子から原本を直接読むツール
       （csv → `csv.query`・xlsx/ods/docx/odt → `office.read`・md → `document.read`・slide → `slide.read`。
       引数はどれも `node_id`）を引き、常時ロードにしたうえで、system に添付ごとの読み方を載せる。

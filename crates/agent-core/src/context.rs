@@ -40,6 +40,8 @@ pub fn estimate_prompt_tokens(messages: &[Message]) -> usize {
         .flat_map(|m| m.content.iter())
         .map(|b| match b {
             Block::Text { text } | Block::Thinking { text } => text_tokens(text),
+            // base64の文字数は画像トークン数ではない。実測usageで補正するまでの保守的な概算。
+            Block::Image { .. } => 4096,
             Block::ToolResult { content, .. } => text_tokens(content),
             Block::ToolUse { name, input, .. } => {
                 text_tokens(name) + text_tokens(&input.to_string())
@@ -84,6 +86,7 @@ pub(crate) fn text_tokens(s: &str) -> usize {
 fn block_bytes(b: &Block) -> usize {
     match b {
         Block::Text { text } | Block::Thinking { text } => text.len(),
+        Block::Image { .. } => 4096 * 4,
         Block::ToolResult { content, .. } => content.len(),
         Block::ToolUse { name, input, .. } => name.len() + input.to_string().len(),
         // 暗号化された推論もプロバイダ側では入力トークンとして数えられる。
@@ -357,6 +360,21 @@ impl ContextGauge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_bytes_are_not_counted_as_base64_text() {
+        let messages = [Message {
+            role: Role::User,
+            content: vec![Block::Image {
+                media_type: "image/png".into(),
+                source_id: "file".into(),
+                data: llm_gateway::ImageData("x".repeat(4 * 1024 * 1024).into()),
+            }],
+        }];
+        assert_eq!(estimate_tokens(&messages), 4096);
+        assert_eq!(estimate_prompt_tokens(&messages), 4096);
+    }
+
     use llm_gateway::Block;
 
     fn tool_result(content: &str, is_error: bool) -> Message {

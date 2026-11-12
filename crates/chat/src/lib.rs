@@ -34,6 +34,7 @@ mod data_tool_sql;
 pub mod doc_read_tool;
 pub mod document_ref;
 pub mod document_tool;
+pub mod drive_copy_tool;
 pub mod drive_tool;
 pub mod error;
 pub(crate) mod file_reader;

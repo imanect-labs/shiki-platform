@@ -391,6 +391,19 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(Node, Vec<u8>), StorageError> {
+        self.read_file_internal_bounded(ctx, file_id, self.max_upload_size, trace_id)
+            .await
+    }
+
+    /// 呼び出し側の上限を、取得する版のメタデータで確認してから読み込む。
+    pub async fn read_file_internal_bounded(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        max_bytes: i64,
+        trace_id: Option<&str>,
+    ) -> Result<(Node, Vec<u8>), StorageError> {
+        let limit = max_bytes.min(self.max_upload_size);
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -404,10 +417,9 @@ impl StorageService {
             trace_id,
         )
         .await?;
-        if node.size_bytes.unwrap_or(0) > self.max_upload_size {
+        if node.size_bytes.unwrap_or(0) > limit {
             return Err(StorageError::Invalid(format!(
-                "size が内部読み取りの上限を超えています（最大 {} バイト）",
-                self.max_upload_size
+                "size が内部読み取りの上限を超えています（最大 {limit} バイト）"
             )));
         }
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;

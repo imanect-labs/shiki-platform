@@ -156,7 +156,15 @@ fn to_openai_messages(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -
         })],
         Role::User => vec![json!({
             "role": "user",
-            "content": join_text(&m.content),
+            "content": if m.content.iter().any(|b| matches!(b, Block::Image { .. })) {
+                json!(m.content.iter().filter_map(|b| match b {
+                    Block::Text { text } => Some(json!({"type":"text", "text":text})),
+                    Block::Image { media_type, data, .. } => Some(json!({
+                        "type":"image_url", "image_url":{"url":format!("data:{media_type};base64,{}", data.0)}
+                    })),
+                    _ => None,
+                }).collect::<Vec<_>>())
+            } else { json!(join_text(&m.content)) },
         })],
         Role::Assistant => {
             let text = join_text(&m.content);
@@ -598,6 +606,29 @@ fn cut_short(completed: bool, stray: &str) -> Option<LlmError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_image_is_sent_as_data_url() {
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                Block::Text {
+                    text: "describe".into(),
+                },
+                Block::Image {
+                    media_type: "image/png".into(),
+                    source_id: "file".into(),
+                    data: crate::ImageData("YWJj".into()),
+                },
+            ],
+        };
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let wire = to_openai_messages(&message, &names, &HashSet::new());
+        assert_eq!(wire[0]["content"][0]["text"], "describe");
+        assert_eq!(
+            wire[0]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,YWJj"
+        );
+    }
     use super::*;
 
     #[test]

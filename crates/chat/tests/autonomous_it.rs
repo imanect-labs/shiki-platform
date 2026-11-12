@@ -485,3 +485,106 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         "削除済みフォルダの選択は NotFound: {rejected:?}"
     );
 }
+
+/// コピーは元の版を変えずに新規ファイルを作り、テナント境界と衝突を保つ。
+#[tokio::test]
+async fn drive_copy_preserves_source_and_tenant_boundary() {
+    use agent_core::Tool;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("copy-{}", uuid::Uuid::new_v4());
+    let ctx = ctx(&tenant);
+    let (_, storage) = workspace_harness(pool.clone()).await;
+    let source = storage
+        .write_file_internal(&ctx, None, "source.csv", b"a,b\n1,2\n", "text/csv", None)
+        .await
+        .unwrap();
+    let folder = storage
+        .create_folder(&ctx, None, "copies", None)
+        .await
+        .unwrap();
+    let run_id = uuid::Uuid::new_v4();
+    let tool = chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), run_id);
+    assert!(tool.requires_confirmation());
+    let input = serde_json::json!({"node_id":source.id,"new_name":"copy.csv","destination_folder_id":folder.id});
+    let copied = tool.call(&ctx, input.clone(), None).await.unwrap();
+    assert!(!copied.is_error, "{}", copied.content);
+    assert_eq!(copied.artifacts.len(), 1);
+    let id = uuid::Uuid::parse_str(&copied.artifacts[0].node_id).unwrap();
+    assert_ne!(id, source.id);
+    let (node, bytes) = storage.read_file_internal(&ctx, id, None).await.unwrap();
+    assert_eq!(node.parent_id, Some(folder.id));
+    assert_eq!(node.version, 1);
+    assert_eq!(bytes, b"a,b\n1,2\n");
+    let (unchanged, bytes) = storage
+        .read_file_internal(&ctx, source.id, None)
+        .await
+        .unwrap();
+    assert_eq!(unchanged.version, source.version);
+    assert_eq!(bytes, b"a,b\n1,2\n");
+    let resumed = chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), run_id);
+    let replay = resumed.call(&ctx, input.clone(), None).await.unwrap();
+    assert!(!replay.is_error);
+    assert_eq!(replay.artifacts[0].node_id, id.to_string());
+    let different_run =
+        chat::drive_copy_tool::DriveCopyTool::new(storage.clone(), uuid::Uuid::new_v4());
+    assert!(
+        different_run
+            .call(&ctx, input.clone(), None)
+            .await
+            .unwrap()
+            .is_error
+    );
+    let foreign = super_context(&format!("other-{tenant}"));
+    let hidden = tool.call(&foreign, input, None).await.unwrap();
+    assert!(hidden.is_error);
+    assert!(hidden.content.contains("アクセスできません"));
+    assert!(tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":source.id,"new_name":"bad.png"}),
+            None
+        )
+        .await
+        .is_err());
+    assert!(tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":source.id,"new_name":""}),
+            None
+        )
+        .await
+        .is_err());
+    assert!(tool.call(&ctx, serde_json::json!({"node_id":source.id,"new_name":"copy.csv","destination_folder_id":"bad"}), None).await.is_err());
+    let root = tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":id,"new_name":"root.csv","destination_folder_id":"root"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!root.is_error);
+    let same_folder = tool
+        .call(
+            &ctx,
+            serde_json::json!({"node_id":id,"new_name":"sibling.csv"}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!same_folder.is_error);
+    let sibling_id = uuid::Uuid::parse_str(&same_folder.artifacts[0].node_id).unwrap();
+    assert_eq!(
+        storage
+            .get_metadata(&ctx, sibling_id, None)
+            .await
+            .unwrap()
+            .parent_id,
+        Some(folder.id)
+    );
+}
+
+// テスト内のctx変数とコンテキスト生成関数を区別する。
+fn super_context(tenant: &str) -> AuthContext {
+    ctx(tenant)
+}
