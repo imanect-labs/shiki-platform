@@ -35,6 +35,11 @@ impl DriveCopyTool {
         node: &storage::Node,
         trace_id: Option<&str>,
     ) -> Result<Vec<u8>, StorageError> {
+        if node.size_bytes.unwrap_or(0) > 50 * 1024 * 1024 {
+            return Err(StorageError::Invalid(
+                "複製のサイズ上限を超えています。".into(),
+            ));
+        }
         let live = if let Some(hub) = &self.collab {
             if collab::note::is_note_file(&node.name) {
                 Some(hub.read_note_markdown(ctx, node).await)
@@ -56,10 +61,17 @@ impl DriveCopyTool {
             })?
             .into_bytes()
         } else {
-            self.storage
+            let (read_node, bytes) = self
+                .storage
                 .read_file_internal_bounded(ctx, node.id, 50 * 1024 * 1024, trace_id)
-                .await?
-                .1
+                .await?;
+            // 内容更新・移動・改名は版を進める。古いMIME/配置先と新しい内容を混ぜない。
+            if read_node.version != node.version {
+                return Err(StorageError::Invalid(
+                    "元ファイルが更新されました。再試行してください。".into(),
+                ));
+            }
+            bytes
         };
         if bytes.len() > 50 * 1024 * 1024 {
             return Err(StorageError::Invalid(
