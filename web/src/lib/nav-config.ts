@@ -27,11 +27,11 @@ export type NavLeaf = {
   icon: LucideIcon;
 };
 
-/// Drive アコーディオン配下の子。`backend` が false の項目は本 issue 時点で
+/// ドライブの区画（本文上端のタブ・DriveTabs）。`backend` が false の項目は本 issue 時点で
 /// API が無く、ページは「作り込んだ空状態」を表示する（フェイクデータを置かない）。
 export type DriveChild = NavLeaf & { backend: boolean };
 
-/// Drive のルート（親）。クリックでホームへ遷移し、アコーディオンを開く。
+/// ドライブのルート。サイドバーの「ドライブ」はここ（ホーム）へ遷移する。
 export const DRIVE_ROOT = "/drive";
 
 export const DRIVE_CHILDREN: DriveChild[] = [

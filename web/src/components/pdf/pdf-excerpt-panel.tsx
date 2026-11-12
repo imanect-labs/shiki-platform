@@ -74,7 +74,7 @@ export function PdfExcerptPanel({
         </div>
         <h2 className="text-base font-semibold">選択した抜粋</h2>
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          ドラッグで追加。段落・表のまとまりで抽出します。
+          内容を確認して、チャットへ添付できます。
         </p>
       </div>
       <div
@@ -116,7 +116,7 @@ export function PdfExcerptPanel({
                 <ArrowUpRight className="size-3" />
               </button>
               <span className="ml-auto text-[10px] text-muted-foreground">
-                {s.tables.length ? "表を含む" : "テキスト"}
+                {s.precision === "line" ? "行" : s.precision === "cell" ? "表セル" : s.tables.length ? "表を含む" : "テキスト"}
               </span>
               <button
                 type="button"

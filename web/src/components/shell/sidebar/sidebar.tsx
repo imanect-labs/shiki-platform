@@ -94,7 +94,7 @@ export function SidebarContent({
         </div>
       )}
 
-      {/* 上部固定ナビ（新しいチャット＋検索＋ドライブ） */}
+      {/* 上部固定ナビ（新しいチャット＋検索＋メインナビ） */}
       <div className="shrink-0">
         <SidebarNav collapsed={collapsed} mobile={mobile} onNavigate={onNavigate} />
       </div>
