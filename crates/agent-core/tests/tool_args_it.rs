@@ -320,8 +320,8 @@ async fn run_with(
 }
 
 /// 引数の JSON が読めない呼び出しは、3 つのアダプタのどれでもツールを動かさない（BUG-225）。応答が出力の上限で
-/// 止まったときは打ち切りとして止まり、それ以外は生成の失敗になる（`{}` にして読むだけのツールを既定の値で
-/// 動かしたり、副作用のあるツールへ壊れた呼び出しを届けたりしない）。
+/// 止まったときは切れた呼び出しとして書き直させ、切れ続ければ打ち切りとして止まる。それ以外は生成の失敗になる
+/// （`{}` にして読むだけのツールを既定の値で動かしたり、副作用のあるツールへ壊れた呼び出しを届けたりしない）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unreadable_tool_arguments_never_reach_a_tool() {
     let Some(pool) = setup().await else { return };
@@ -359,10 +359,11 @@ async fn unreadable_tool_arguments_never_reach_a_tool() {
         .unwrap();
 }
 
-/// 前の手順にツールの結果がある形でも、出力の上限で切れた書きかけの呼び出しは、空の応答として催促せず、空の
-/// assistant も履歴に積まずに打ち切りで止まる（もう一度生成させない・BUG-225 の後の空の応答の催促）。
+/// 前の手順にツールの結果がある形でも、出力の上限で切れた書きかけの呼び出し（アダプタは渡さず、始まりだけが届く）は、
+/// 空の応答として催促しない。ツールを動かさずに「引数の途中で切れた」と結果を返して書き直させ（#1196・D-216）、
+/// 切れ続ければ書き直しの回数の上限（3 回）で打ち切りとして止まる。空の assistant は履歴に積まない。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_call_cut_by_the_output_limit_after_a_tool_result_stops_without_a_nudge() {
+async fn a_call_cut_by_the_output_limit_is_closed_and_retried_without_a_nudge() {
     use llm_gateway::Block;
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
@@ -402,12 +403,47 @@ async fn a_call_cut_by_the_output_limit_after_a_tool_result_stops_without_a_nudg
         assert_eq!((r.reads, r.writes), (0, 0), "{kind:?}: {:?}", r.out);
         assert_eq!(r.out.as_ref().ok(), Some(&AgentStop::Truncated), "{kind:?}");
         assert_eq!(
-            r.requests, 1,
-            "{kind:?}: 空の応答として催促し、もう一度生成させた"
+            r.requests, 4,
+            "{kind:?}: 最初の 1 回と、書き直させた 3 回だけ生成する"
         );
-        assert_eq!(
-            r.messages, history,
-            "{kind:?}: 催促の文か空の assistant を履歴に積んだ"
+        assert_eq!(r.messages[..history.len()], history[..], "{kind:?}");
+        let added = &r.messages[history.len()..];
+        // 空の応答の催促はしない。空の assistant も積まない。
+        assert!(
+            !added.iter().flat_map(|m| &m.content).any(
+                |b| matches!(b, Block::ToolResult { content, .. } if content.contains("本文が空"))
+            ),
+            "{kind:?}: {added:?}"
         );
+        assert!(
+            added
+                .iter()
+                .filter(|m| m.role == LlmRole::Assistant)
+                .all(|m| !m.content.is_empty()),
+            "{kind:?}: {added:?}"
+        );
+        // 切れた 2 つの呼び出しに、書き直させる回数（3 回）だけ「切れた」と返している（実行はしていない）。
+        let cut_results = added
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter(|b| {
+                matches!(b, Block::ToolResult { tool_use_id, content, is_error: true, .. }
+                    if (tool_use_id == "c1" || tool_use_id == "c2")
+                        && content.contains("引数の途中で切れた"))
+            })
+            .count();
+        assert_eq!(cut_results, 6, "{kind:?}: {added:?}");
+        // 画面のツールカードは、最後に打ち切ったものも含めて、すべて失敗の結果で閉じる。
+        let calls = r
+            .events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCall { .. }))
+            .count();
+        let closed = r
+            .events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolResult { ok: false, .. }))
+            .count();
+        assert_eq!((calls, closed), (8, 8), "{kind:?}: {:?}", r.events);
     }
 }

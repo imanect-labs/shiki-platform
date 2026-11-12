@@ -455,6 +455,8 @@ async fn run_step(
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
+    // 始まり（`ToolUseStart`）の届いた呼び出しを届いた順に（引数の届かなかった呼び出しを拾う・BUG-225）。
+    let mut started: Vec<(String, String)> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     // assistant メッセージのブロックを**届いた順**に積む（推論アイテムは直後の本文・ツール呼び出しと
     // 対で送り返す必要があり、並べ替えると Responses が拒否する・#542）。本文は直前のブロックが本文なら
@@ -485,6 +487,7 @@ async fn run_step(
                 sink.emit(AgentEvent::Thinking(text)).await?;
             }
             StreamDelta::ToolUseStart { id, name } => {
+                started.push((id.clone(), name.clone()));
                 pending_names.insert(id, name);
             }
             StreamDelta::ToolUseInputDelta { .. } => {}
@@ -519,6 +522,33 @@ async fn run_step(
                 usage = u;
             }
         }
+    }
+
+    // 出力の上限で止まった応答で、始まりだけ届いて引数の届かなかった呼び出し（＝引数の途中で切れた呼び出し）。
+    // アダプタは読めない引数の呼び出しを渡さない（BUG-225・D-156 (d)）ので、ここで拾わないと、モデルには何も
+    // 返らず、作成系の道具の呼び出しで 1 応答の上限が広がることもない（D-204・D-216）。実行はしない。
+    // 履歴には `{}` の呼び出しとして積み、次のツール結果で「切れた」と閉じる（画面のツールカードも同じ）。
+    let cut: Vec<(String, String)> = if final_stop == StopReason::MaxTokens {
+        started
+            .into_iter()
+            .filter(|(id, _)| !calls.iter().any(|c| &c.id == id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for (id, name) in &cut {
+        sink.emit(AgentEvent::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            input: serde_json::json!({}),
+            step: u32::try_from(step).unwrap_or(u32::MAX),
+        })
+        .await?;
+        ordered.push(Block::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: serde_json::json!({}),
+        });
     }
 
     // 会計＋Langfuse 計装（attempt/ステップ単位）＋予算の累積更新（Task 5.7）。
@@ -573,10 +603,10 @@ async fn run_step(
     // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
     // 積まない（content が空のメッセージを拒否するプロバイダがある）。
     //
-    // ただし出力の上限で切れた応答は催促しない。書きかけのツール呼び出しは渡されない（BUG-225）ので本文も
-    // 呼び出しも無く見えるが、空で返したのではない。「本文として書いて」と促すと誤った指示になり、同じ大きさの
-    // 呼び出しでまた切れる。空の assistant も積まずに打ち切りで止める。
-    if text_acc.is_empty() && calls.is_empty() {
+    // ただし出力の上限で切れた応答は催促しない。思考だけで上限を使い切った応答は空で返したのではなく、
+    // 「本文として書いて」と促すと誤った指示になる。空の assistant も積まずに打ち切りで止める。
+    // 引数の途中で切れた呼び出し（`cut`）がある応答は、下で「切れた」と返して書き直させる。
+    if text_acc.is_empty() && calls.is_empty() && cut.is_empty() {
         if final_stop == StopReason::MaxTokens {
             return Ok(StepOutcome::Stop(AgentStop::Truncated));
         }
@@ -591,16 +621,20 @@ async fn run_step(
         content: ordered,
     });
 
-    // ツール呼び出しの途中で出力上限に達した: 引数が切れているので実行せず、書き直させる。
-    if final_stop == StopReason::MaxTokens && !calls.is_empty() {
-        let ids: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
+    // ツール呼び出しの途中で出力上限に達した: どの呼び出しも実行せず、書き直させる。引数の途中で切れた呼び出し
+    // （`cut`）と、引数まで届いた呼び出し（`calls`）とで返す文を分ける（届いた方を「切れた」と言わない）。
+    if final_stop == StopReason::MaxTokens && !(calls.is_empty() && cut.is_empty()) {
+        let whole: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
         // 切れた呼び出しも履歴に入れたので、残量と次の応答の上限は入れた後の予算で数える（D-204・下の通常の道と同じ）。
         // 次の応答の上限は、次に送る prompt で窓に収めた値（実際に送る値と同じ）。
         let observed =
             opts.step_budget_within(&state.messages, fit, state.spent.last_prompt_tokens());
         if let Some(mut blocks) = crate::agent_observation::truncated_call_results(
             &state.messages,
-            &ids,
+            &crate::agent_observation::TruncatedCalls {
+                cut: &cut,
+                whole: &whole,
+            },
             budget.max_tokens,
             observed.max_tokens,
         ) {
@@ -625,6 +659,16 @@ async fn run_step(
                 content: blocks,
             });
             return Ok(StepOutcome::Continue);
+        }
+        // 書き直させる回数を使い切った: 打ち切りで止める。出した画面のツールカードは、実行していないと閉じる
+        // （出たまま止まらない）。モデルにはもう返さないので、履歴には積まない。
+        for (id, _) in whole.iter().chain(&cut) {
+            sink.emit(AgentEvent::ToolResult {
+                tool_call_id: id.clone(),
+                ok: false,
+                content: "応答の出力上限で止まったため、実行していません。".to_string(),
+            })
+            .await?;
         }
         return Ok(StepOutcome::Stop(AgentStop::Truncated));
     }

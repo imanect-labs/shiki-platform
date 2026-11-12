@@ -33,8 +33,10 @@
 //!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
 //! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
 //!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
-//! - `truncatecall:`（ツールがあるとき）… 1 ターン目に tools[0] の呼び出しを引数の途中（`{}`）で `MaxTokens` で
-//!   終え、ツールの結果が返ったら通常の応答に戻る（切れた呼び出しの回復の検証用・#1196）。
+//! - `truncatecall:`（ツールがあるとき）… 1 ターン目に tools[0] の呼び出しを引数の途中で切って `MaxTokens` で
+//!   終え（`ToolUseStart` だけを流す・BUG-225 の後のアダプタと同じ形）、ツールの結果が返ったら通常の応答に戻る
+//!   （切れた呼び出しの回復の検証用・#1196）。`truncatecallmix:`（ツールが 2 つ以上）は、その前に tools[1] の
+//!   引数まで届いた呼び出しを 1 つ混ぜる。
 //!
 //! 決定的なのは応答の中身だけで、ツール呼び出しの id は実プロバイダと同じく呼び出しごとに一意
 //! （[`super::stub_stream::stub_tool_call_id`]・承認の鍵が前の決定に当たらないように）。
@@ -396,11 +398,21 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
             prompt_tokens,
         );
     }
-    // --- 出力上限で切れたツール呼び出し `truncatecall:`: 1 ターン目だけ tools[0] の引数が `{}` で
+    // --- 出力上限で切れたツール呼び出し `truncatecall:`: 1 ターン目だけ tools[0] の引数の途中で
     //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動・#1196）。
+    //     `truncatecallmix:` は tools[1] の完全な呼び出しを前に混ぜる。
     //     本文の打ち切りの `truncate:`（GAP-106・上で先に拾う）とは別の語にする。 ---
-    if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("truncatecall:") {
-        return truncated_tool_call_stream(req.tools[0].name.clone(), prompt_tokens);
+    if !req.tools.is_empty() && !has_tool_result(req) {
+        let whole = if user_text.starts_with("truncatecallmix:") {
+            req.tools.get(1).map(|t| Some(t.name.clone()))
+        } else if user_text.starts_with("truncatecall:") {
+            Some(None)
+        } else {
+            None
+        };
+        if let Some(whole) = whole {
+            return truncated_tool_call_stream(req.tools[0].name.clone(), whole, prompt_tokens);
+        }
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {

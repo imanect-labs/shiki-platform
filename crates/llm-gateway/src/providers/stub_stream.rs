@@ -58,31 +58,42 @@ pub(super) fn tool_calls_stream(
 
 /// **出力上限で切れたツール呼び出し**のストリーム（`MaxTokens`）。
 ///
-/// 実プロバイダは引数 JSON の途中で切れると、解釈できない引数を `{}` にして `ToolUseStop` を出し、
-/// 停止理由を `max_tokens`（OpenAI 互換は `length`）で返す。大きな表の編集などで実際に起きる形。
-pub(super) fn truncated_tool_call_stream(name: String, prompt_tokens: u64) -> DeltaStream {
-    let id = "stubtool_cut".to_string();
-    let events = vec![
-        Ok(StreamDelta::TextDelta {
-            text: "表に書き込みます。".to_string(),
-        }),
-        Ok(StreamDelta::ToolUseStart {
+/// 実プロバイダは引数 JSON の途中で切れると、停止理由を `max_tokens`（OpenAI 互換は `length`）で返す。
+/// アダプタは読めない引数の呼び出しを渡さない（BUG-225・[`super::tool_args`]）ので、届くのは `ToolUseStart`
+/// だけで `ToolUseStop` は来ない。大きな表の編集などで実際に起きる形。切れるのは `cut` の呼び出し（id は
+/// `stubtool_cut`）。`whole` があれば、その前に引数まで届いた呼び出し（id は `stubtool_whole`・引数 `{}`）を
+/// 1 つ流す（1 応答に完全な呼び出しと切れた呼び出しが混ざる形）。
+pub(super) fn truncated_tool_call_stream(
+    cut: String,
+    whole: Option<String>,
+    prompt_tokens: u64,
+) -> DeltaStream {
+    let mut events = vec![Ok(StreamDelta::TextDelta {
+        text: "表に書き込みます。".to_string(),
+    })];
+    if let Some(name) = whole {
+        let id = "stubtool_whole".to_string();
+        events.push(Ok(StreamDelta::ToolUseStart {
             id: id.clone(),
             name,
-        }),
-        Ok(StreamDelta::ToolUseStop {
+        }));
+        events.push(Ok(StreamDelta::ToolUseStop {
             id,
             input: serde_json::json!({}),
-        }),
-        Ok(StreamDelta::Done {
-            stop_reason: StopReason::MaxTokens,
-            usage: Usage {
-                prompt_tokens,
-                completion_tokens: 0,
-                ..Default::default()
-            },
-        }),
-    ];
+        }));
+    }
+    events.push(Ok(StreamDelta::ToolUseStart {
+        id: "stubtool_cut".to_string(),
+        name: cut,
+    }));
+    events.push(Ok(StreamDelta::Done {
+        stop_reason: StopReason::MaxTokens,
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens: 0,
+            ..Default::default()
+        },
+    }));
     stream::iter(events).boxed()
 }
 

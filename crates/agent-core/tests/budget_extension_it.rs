@@ -8,6 +8,7 @@
 //! - チェックポイントから再開しても広げた予算のまま（チェックポイントに欄は無く、履歴から導く・古い形でも同じ）。
 //! - `budget_extension` が `None` の経路（サブエージェント・ワークフローの agent.invoke・ミニアプリの AI）は
 //!   作成系の道具を呼んでも広がらない。
+//! - 作成系の道具の呼び出しが出力の上限で切れても広がり、「広げたので同じ呼び出しを書き直して」と返す（D-216）。
 //! - 広げた 1 応答の上限はモデルの窓に収める（窓の小さいモデルで prompt＋max_tokens が溢れない）。
 
 #![allow(
@@ -445,6 +446,78 @@ async fn budget_notes_count_against_the_extended_budget() {
     let notes = budget_notes(&run(false).await.checkpoint.messages);
     assert!(notes[0].starts_with("[予算] 残り 1 ステップ"), "{notes:?}");
     assert!(notes[0].contains("新しい調査を始めないこと"), "{notes:?}");
+}
+
+/// 切れた呼び出し（stub の `truncatecall:` は id `stubtool_cut`）へ返した結果の本文。
+fn cut_result(messages: &[LlmMessage]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == LlmRole::Tool)
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            llm_gateway::Block::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if tool_use_id == "stubtool_cut" => Some(content.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("切れた呼び出しの結果が無い: {messages:?}"))
+}
+
+/// 作成系の道具の呼び出しが出力の上限で切れても（アダプタは引数の届かなかった呼び出しを渡さず、始まりだけが届く・
+/// BUG-225）、その呼び出しで予算が広がり、次の応答は広げた上限で回る。切れた呼び出しには「上限を広げたので
+/// 同じ呼び出しを書き直して」と返し、「小さく分けて」とは言わない（D-216）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_truncated_builder_call_widens_the_next_response() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let run = |extension: bool| {
+        let gateway = &gateway;
+        let c = &c;
+        async move {
+            let mut sink = RecordingSink::default();
+            let outcome = run_agent(
+                gateway,
+                &tools("emit_workflow", false),
+                vec![LlmMessage::text(
+                    LlmRole::User,
+                    "truncatecall: 経費のワークフローを作って",
+                )],
+                &run_context(c),
+                &chat_opts(extension),
+                None,
+                None,
+                &mut sink,
+            )
+            .await
+            .expect("run");
+            (outcome, sink)
+        }
+    };
+    let (outcome, sink) = run(true).await;
+    assert_eq!(outcome.stop, AgentStop::Completed);
+    let text = cut_result(&outcome.checkpoint.messages);
+    assert!(text.contains("4096 トークンに広げた"), "{text}");
+    assert!(text.contains("同じ呼び出しを"), "{text}");
+    assert!(!text.contains("小さく分けて"), "{text}");
+    assert_eq!(sink.response_caps(), [Some(2048), Some(4096)]);
+    // 切れた呼び出しも画面のツールカードとして出る（通常の会話のチェックポイントの保存もこれで始まる）。
+    assert!(
+        sink.events.iter().any(|e| matches!(e,
+            AgentEvent::ToolCall { id, name, .. } if id == "stubtool_cut" && name == "emit_workflow")),
+        "{:?}",
+        sink.events
+    );
+    // 対照: 拡張の無い run は「小さく分けて」と返し、次の応答も元の上限のまま。
+    let (outcome, sink) = run(false).await;
+    assert_eq!(outcome.stop, AgentStop::Completed);
+    let text = cut_result(&outcome.checkpoint.messages);
+    assert!(text.contains("小さく分けて"), "{text}");
+    assert!(!text.contains("広げた"), "{text}");
+    assert_eq!(sink.response_caps(), [Some(2048), Some(2048)]);
 }
 
 /// 広げた 1 応答の上限は、モデルの窓から prompt の見積りと余白を引いた残りに収める。元の上限は下回らない。
