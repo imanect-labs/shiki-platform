@@ -109,7 +109,7 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 /// PC のメインナビ（ドライブ・スキル・アプリ・ワークフロー・データ）。タイルの色は機能ごとに固定し、
-/// 四季トークン（data は primary）を当てる。色だけに頼らず、選択中は枠・地色・太字でも示す。
+/// 四季トークン（data は primary）を当てる。地色の混色は oklab（oklch だと白の色相 0° に引かれて色がずれる）。色だけに頼らず、選択中は枠・地色・太字でも示す。
 const MAIN_NAV: { key: string; label: string; href: string; icon: LucideIcon; tone: string }[] = [
   { key: "drive", label: "ドライブ", href: DRIVE_ROOT, icon: DRIVE_ICON, tone: "var(--season-winter)" },
   { ...SKILLS_NAV, tone: "var(--season-spring)" },
@@ -120,14 +120,14 @@ const MAIN_NAV: { key: string; label: string; href: string; icon: LucideIcon; to
 
 /// PC のナビ 1 マス（アイコン上・ラベル下）。`--tile` に機能の色を受け取る。
 const TILE_CLASS = cn(
-  "flex h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[11.5px] tracking-[-0.02em] outline-none",
+  "flex h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-[12px] px-1 text-[11.5px] tracking-[-0.02em] outline-none",
   "bg-card text-sidebar-foreground/75 ring-1 ring-sidebar-border",
   "transition-[background-color,box-shadow,color,transform] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
-  "hover:bg-[color-mix(in_oklch,var(--tile)_8%,var(--card))] hover:text-sidebar-foreground",
+  "hover:bg-[color-mix(in_oklab,var(--tile)_8%,var(--card))] hover:text-sidebar-foreground",
   "focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.97] pointer-coarse:h-16",
 );
 const TILE_ACTIVE_CLASS =
-  "bg-[color-mix(in_oklch,var(--tile)_14%,var(--card))] font-semibold text-sidebar-foreground ring-[1.5px] ring-[var(--tile)] hover:bg-[color-mix(in_oklch,var(--tile)_14%,var(--card))]";
+  "bg-[color-mix(in_oklab,var(--tile)_14%,var(--card))] font-semibold text-sidebar-foreground ring-[1.5px] ring-[var(--tile)] hover:bg-[color-mix(in_oklab,var(--tile)_14%,var(--card))]";
 
 function TileInner({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
   return (
@@ -153,7 +153,7 @@ function DesktopNav({ onNavigate }: { onNavigate?: () => void }) {
           router.push("/");
           onNavigate?.();
         }}
-        className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-primary px-3 text-[13.5px] font-semibold text-primary-foreground shadow-sm outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar active:scale-[0.98]"
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-[12px] bg-primary px-3 text-[13.5px] font-semibold text-primary-foreground shadow-sm outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar active:scale-[0.98]"
       >
         <PenSquare className="size-[18px] shrink-0" aria-hidden />
         新しいチャット
