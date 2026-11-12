@@ -8,7 +8,7 @@
 import * as React from "react";
 import { Sparkles } from "lucide-react";
 
-import type { SlashSuggestion } from "@/lib/slash-command";
+import { commandLabel, type SlashSuggestion } from "@/lib/slash-command";
 import { readScoped, writeScoped } from "@/lib/user-storage";
 
 /// 最近使ったスキル（ユーザー＋テナント単位のキー・ログアウトで消える・#817）。
@@ -71,10 +71,10 @@ export function SkillRow({
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-baseline gap-1.5">
           <span className="block truncate text-[15px] font-medium text-foreground md:text-sm">
-            /{skill.token}
+            {commandLabel(skill)}
           </span>
-          {/* 名前から `/` 名を作ったスキルは同じ語の二重表示になるので出さない。 */}
-          {skill.skillName !== skill.token ? (
+          {/* コマンドにはどのスキルかを添える（同じコマンド名を別スキルが宣言できるため）。 */}
+          {skill.token ? (
             <span className="shrink-0 truncate text-[11.5px] text-muted-foreground">{skill.skillName}</span>
           ) : null}
         </span>

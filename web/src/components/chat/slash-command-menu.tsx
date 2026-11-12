@@ -4,7 +4,8 @@
 ///
 /// 入力欄の先頭で `/` を打つと出る。↑↓ で移動・Enter/Tab で確定・Esc で閉じる。
 /// 候補は `GET /skills/catalog`（モデルが見ているカタログと同一の源）由来で、
-/// **コマンド宣言を持つスキルだけ**が並ぶ。
+/// コマンド宣言つきは `/<コマンド>`、宣言の無いスキルはスキル名で並ぶ（後者は `/` の後に打った語を
+/// スキル名で探す。打ち込みでは呼べず、補完から選ぶ）。
 ///
 /// 見た目は既存のドロップダウン（`components/ui/dropdown-menu`）の作法に合わせる:
 /// 選択は塗り（`bg-accent`）で示し、`border-primary` の枠は使わない。
@@ -14,7 +15,7 @@ import * as React from "react";
 import { Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { SlashSuggestion } from "@/lib/slash-command";
+import { commandLabel, type SlashSuggestion } from "@/lib/slash-command";
 
 /// listbox / option の DOM id（textarea の aria-controls / aria-activedescendant と対にする）。
 export const SLASH_LISTBOX_ID = "slash-command-listbox";
@@ -79,8 +80,8 @@ export function SlashCommandMenu({
           <Sparkles className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-baseline gap-1.5">
-              <span className="truncate text-sm font-medium text-foreground">/{s.token}</span>
-              {s.skillName !== s.token ? (
+              <span className="truncate text-sm font-medium text-foreground">{commandLabel(s)}</span>
+              {s.token ? (
                 <span className="shrink-0 text-[11px] text-muted-foreground">{s.skillName}</span>
               ) : null}
             </span>

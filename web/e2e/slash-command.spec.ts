@@ -5,8 +5,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// コンポーザのスラッシュコマンド（issue #387）の E2E。
 ///
 /// 候補は `GET /skills/catalog`（モデルが `skill` ツールで見ているカタログと同一の源）由来で、
-/// コマンド宣言（`SkillBody.command`）つきは宣言どおり、無いもの（画面で作ったスキル）はスキル名を
-/// `/` 名にして並ぶ。ここでは宣言つきスキルを
+/// コマンド宣言（`SkillBody.command`）つきは `/<コマンド>`、無いもの（画面で作ったスキル）は
+/// スキル名で並ぶ。ここでは宣言つきスキルを
 /// 1 つ作り、補完 → 確定（ピル）→ 解除 → 「+」メニューからの打ち込みまでを通す。
 /// `SHOTS_DIR` を渡すと各状態の PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
@@ -84,9 +84,9 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const menuItem = page.getByTestId("composer-skill-command").first();
   await expect(menuItem).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-plus-menu.png` });
-  // 項目の 1 行目が `/<token>`。それがそのままピルになる。
+  // 項目の 1 行目（`/<token>`、宣言の無いスキルはスキル名）がそのままピルになる。
   const token = ((await menuItem.locator("span.block").first().textContent()) ?? "").trim();
-  expect(token.startsWith("/")).toBe(true);
+  expect(token.length).toBeGreaterThan(0);
   await menuItem.click();
   const pillFromMenu = page.getByTestId("slash-command-pill");
   await expect(pillFromMenu).toBeVisible();
@@ -125,9 +125,9 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
 test("コマンド宣言の無い自作スキルも / と「スキルを検索」から呼べる", async ({ page }) => {
   await loginViaKeycloak(page);
 
-  // 画面で作るスキルと同じく command を持たない。`/` 名はスキル名（空白は `-`）になる。
-  const name = uniqueName("mine");
-  const token = name.normalize("NFKC").trim().replace(/\s+/g, "-");
+  // 画面で作るスキルと同じく command を持たない（`/` 名は作られず、スキル名で探す）。
+  const uniq = uniqueName("mine");
+  const name = `週報 ${uniq}`;
   await page.goto("/");
   const created = await page.evaluate(async (skillName) => {
     const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
@@ -151,26 +151,29 @@ test("コマンド宣言の無い自作スキルも / と「スキルを検索�
   await page.reload();
   const input = page.getByLabel("メッセージを入力");
 
-  // `/` の補完に出る。
-  await input.fill(`/${token}`);
-  await expect(page.getByTestId("slash-command-option")).toHaveCount(1, { timeout: 10_000 });
+  // `/` の後に打った語をスキル名で探して出す（`/` 付きのコマンド名にはしない）。
+  await input.fill(`/${uniq}`);
+  const option = page.getByTestId("slash-command-option");
+  await expect(option).toHaveCount(1, { timeout: 10_000 });
+  await expect(option).toContainText(name);
+  await expect(option).not.toContainText(`/${uniq}`);
   await input.fill("");
 
-  // 「+」メニューの「スキルを検索」は入力欄に `/` を入れて補完を開く。続けて打てば絞り込める。
+  // 「+」の「スキルを検索」は入力欄の先頭に `/` を入れて補完を開く。書きかけの本文は残る。
   await input.fill("今週分をまとめて");
   await page.getByRole("button", { name: "追加メニューを開く" }).click();
   await page.getByTestId("composer-search-skills").click();
   await expect(page.getByTestId("slash-command-menu")).toBeVisible();
   await expect(input).toBeFocused();
-  await page.keyboard.type(token);
-  await expect(page.getByTestId("slash-command-option")).toHaveCount(1);
+  await expect(input).toContainText("今週分をまとめて");
+  await page.keyboard.type(uniq);
+  await expect(option).toHaveCount(1);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/skill-search-slash.png` });
   await page.keyboard.press("Enter");
-  await expect(page.getByTestId("slash-command-pill")).toContainText(`/${token}`);
-  // 検索の前に書いていた本文は、選んだあと本文へ戻る。
+  await expect(page.getByTestId("slash-command-pill")).toContainText(name);
   await expect(input).toHaveText("今週分をまとめて");
 
-  // 送ると、この発話にだけその skill がピンされる。
+  // 送ると、この発話にだけその skill がピンされる。本文にコマンドのリテラルは付けない。
   const posted = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
   );
@@ -180,5 +183,5 @@ test("コマンド宣言の無い自作スキルも / と「スキルを検索�
     skills?: { artifact_id: string }[];
   };
   expect(body.skills?.[0]?.artifact_id).toBe(skillId);
-  expect(body.text).toBe(`/${token} 今週分をまとめて`);
+  expect(body.text).toBe("今週分をまとめて");
 });

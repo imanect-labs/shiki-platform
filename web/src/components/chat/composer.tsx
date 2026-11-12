@@ -41,6 +41,7 @@ import {
   SLASH_LISTBOX_ID,
 } from "./slash-command-menu";
 import {
+  commandLabel,
   composeText,
   fetchSkillCatalog,
   matchSuggestions,
@@ -307,8 +308,15 @@ const ScopedComposer = React.memo(function ScopedComposer({
     };
   }, [threadId]);
 
+  // 「スキルを検索」で開いた補完の最中か。確定済みのピルがあっても補完を出し、選べば差し替え、
+  // やめればピルはそのまま残る（検索を始めただけで選んでいたスキルを失わない）。
+  const [searchingSkill, setSearchingSkill] = React.useState(false);
+  React.useEffect(() => {
+    if (searchingSkill && !value.startsWith("/")) setSearchingSkill(false);
+  }, [searchingSkill, value]);
   // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
-  const slashHits = command || slashDismissed ? null : matchSuggestions(value, suggestions);
+  const slashHits =
+    (command && !searchingSkill) || slashDismissed ? null : matchSuggestions(value, suggestions);
   const slashOpen = (slashHits?.length ?? 0) > 0;
   const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
 
@@ -320,49 +328,44 @@ const ScopedComposer = React.memo(function ScopedComposer({
   // 「返答を待たないと次を書けない」体験を作らないための土台。
   const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
 
-  // 「+」の「スキルを検索」で `/` を入れる前の本文（`/` の補完は 1 行目全体で絞るため、
-  // 本文を残したままでは候補が 0 件になる）。選んだら本文へ戻す。
-  const stashedBody = React.useRef<string | null>(null);
   const inputWrapRef = React.useRef<HTMLDivElement | null>(null);
 
   const pickSuggestion = (s: SlashSuggestion) => {
     setCommand(toActiveCommand(s));
-    // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
-    setValue(stashedBody.current ?? "");
-    stashedBody.current = null;
+    // コマンド部分（1 行目）は入力欄から取り除き、以降はピルが持つ。2 行目以降は
+    // 「スキルを検索」の前に書いていた本文なので残す。
+    const nl = value.indexOf("\n");
+    setValue(value.startsWith("/") && nl >= 0 ? value.slice(nl + 1).replace(/^\n+/, "") : "");
     setSlashIndex(0);
+    setSearchingSkill(false);
   };
 
-  /// 「スキルを検索」: 入力欄に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
-  /// （探す手段を `/` の補完 1 つに揃える）。
+  /// 「スキルを検索」: 入力欄の先頭に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
+  /// （探す手段を `/` の補完 1 つに揃える）。書きかけの本文は 2 行目以降に**見えたまま**残す
+  /// （別に退避すると、選ばずに送る・画面を離れる経路で本文を失う）。補完は 1 行目だけで絞る。
   const startSkillSearch = () => {
-    stashedBody.current = value.trim() ? value : null;
-    setCommand(null);
+    const body = value.trim() ? value : "";
+    setSearchingSkill(true);
     setSlashDismissed(false);
     setSlashIndex(0);
-    setValue("/");
-    // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の後ろへ置く。
+    // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
+    setValue(body ? `/\n\n${body}` : "/");
+    // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の直後へ置く。
     requestAnimationFrame(() => {
       const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
       if (!el) return;
       el.focus({ preventScroll: true });
       if (el instanceof HTMLTextAreaElement) {
-        el.setSelectionRange(el.value.length, el.value.length);
-      } else {
-        const sel = window.getSelection();
-        sel?.selectAllChildren(el);
-        sel?.collapseToEnd();
+        el.setSelectionRange(1, 1);
+        return;
       }
+      // Markdown 入力（contenteditable）: 先頭のブロックの末尾へ。
+      const first = el.firstElementChild ?? el;
+      const sel = window.getSelection();
+      sel?.selectAllChildren(first);
+      sel?.collapseToEnd();
     });
   };
-  // `/` を消して検索をやめたら、退避した本文を戻す。
-  React.useEffect(() => {
-    if (stashedBody.current !== null && !value.startsWith("/")) {
-      const body = stashedBody.current;
-      stashedBody.current = null;
-      setValue((v) => (v ? `${v}${body}` : body));
-    }
-  }, [value]);
 
   const submit = () => {
     if (disabled || uploading) return;
@@ -376,7 +379,6 @@ const ScopedComposer = React.memo(function ScopedComposer({
     // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
     const sentAttachments = attachments.map(({ node_id, name }) => ({ node_id, name }));
     const result = onSubmit(text, sentAttachments, takePendingSelection(attachmentTarget) ?? undefined, active ?? undefined);
-    stashedBody.current = null;
     setValue("");
     attachments.forEach((a) => revokePreview(a.preview));
     setAttachments([]);
@@ -475,7 +477,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
   const approvalLabel =
     autonomous && approvalMode ? approvalModeDef(approvalMode).label : null;
   const effectivePlaceholder = command
-    ? (command.hint ?? `/${command.token} に依頼`)
+    ? (command.hint ?? `${commandLabel(command)} に依頼`)
     : onAutonomousChange && autonomous
       ? desktop
         ? `エージェントに依頼${approvalLabel ? `（${approvalLabel}）` : ""}`
@@ -487,7 +489,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
   if (command) {
     tokens.push({
       key: "command",
-      label: `/${command.token}`,
+      label: commandLabel(command),
       icon: Sparkles,
       removeLabel: "コマンドを外す",
       onRemove: () => setCommand(null),

@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { SlashSuggestion } from "@/lib/slash-command";
+import { commandLabel, type SlashSuggestion } from "@/lib/slash-command";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useCreateContent } from "@/hooks/use-create-content";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -250,7 +250,7 @@ function DesktopPlusMenu({
               >
                 <Sparkles className="text-primary" aria-hidden />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm">/{s.token}</span>
+                  <span className="block truncate text-sm">{commandLabel(s)}</span>
                   <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">
                     {s.summary}
                   </span>
