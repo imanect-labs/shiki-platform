@@ -101,6 +101,13 @@ shiki-server はアクセストークンの `sub` を、そのまま OpenFGA の
   - 後から有効にすると、その人は次のログインで取り込まれ、新しい UUID の `sub` になる（shiki では新しい利用者になる）。
   - 有効かどうかは、管理 API の `GET /admin/realms/<realm>/components?type=org.keycloak.storage.UserStorageProvider`
     の `config.importEnabled` で確かめられる（`["false"]` のプロバイダーの人が断られる）。
+- ログインで断った人の Keycloak の SSO セッションは、shiki-server が受け取った refresh token でサーバ側から終える
+  （`POST /realms/<realm>/protocol/openid-connect/logout` に client の資格情報と `refresh_token` を送る・
+  `crates/api/src/oidc.rs` の `end_sso_session`）。終えないと、ログイン画面を開き直しても Keycloak が同じ人を黙って
+  通し、共有の端末でほかの人が入れない。ブラウザのログアウト（end-session へのフル遷移）を使わないのは、
+  `id_token_hint` を出さないので Keycloak が確認の画面を挟み、戻り先も `post_logout_redirect_uri` に限られるため。
+  ログイン画面は「別のアカウントでログイン」を出し、Keycloak のログイン画面へ送る。終えられなかったとき（Keycloak に
+  届かない・3 秒を過ぎた）は warn のログに残し、そのボタンでは同じ画面に戻る（SSO の Cookie が切れるまで）。
 - 定期の照合は、id が識別子に使えない人を飛ばし、回ごとに 1 行「id が識別子に使えない人を飛ばしました」を warn に
   出す。この決まりより前にログインした人の OpenFGA のタプルは自動では外れないので、手で外す。
 
