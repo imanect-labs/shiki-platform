@@ -93,6 +93,7 @@ export function PdfPage({
   };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const selectionPrecision = regionSelection?.precision ?? "area";
   const fineRequired =
     regionSelection?.enabled &&
     (regionSelection.precision === "line" ||
@@ -121,6 +122,7 @@ export function PdfPage({
     viewport: PageViewport;
     values: FineUnit[];
     error?: string;
+    cellsError?: string;
   } | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
@@ -211,10 +213,12 @@ export function PdfPage({
           pdfjsLib(),
           pageTextContent(doc, pageNumber),
           nativePdfText(doc, pageNumber),
-          pdfBlocks(doc, pageNumber).catch(() => []),
+          pdfBlocks(doc, pageNumber)
+            .then((blocks) => ({ blocks, failed: false }))
+            .catch(() => ({ blocks: [], failed: true })),
         ]),
       )
-      .then(async ([lib, content, native, blocks]) => {
+      .then(async ([lib, content, native, tableResult]) => {
         if (!active) return;
         container.replaceChildren();
         const tl = new lib.TextLayer({
@@ -250,8 +254,11 @@ export function PdfPage({
                 tl.textDivs,
                 native,
                 size.viewport,
-                blocks,
+                tableResult.blocks,
               ),
+              cellsError: tableResult.failed
+                ? "表の文字情報を取得できません。「文字情報を再読み込み」で再取得するか、自由範囲で選択してください。"
+                : undefined,
             });
         }
       })
@@ -271,7 +278,16 @@ export function PdfPage({
       setText(null);
       setFineUnits(null);
     };
-  }, [doc, pageNumber, size, near, textLayer, textRevision, fineRequired]);
+  }, [
+    doc,
+    pageNumber,
+    size,
+    near,
+    textLayer,
+    textRevision,
+    fineRequired,
+    selectionPrecision,
+  ]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
@@ -408,6 +424,11 @@ export function PdfPage({
           unitsReady={fineUnits?.viewport === size.viewport}
           unitsError={
             fineUnits?.viewport === size.viewport ? fineUnits.error : undefined
+          }
+          cellsError={
+            fineUnits?.viewport === size.viewport
+              ? fineUnits.cellsError
+              : undefined
           }
           onSelect={regionSelection.onSelect}
         />

@@ -49,6 +49,7 @@ export function PdfRegionLayer({
   units = [],
   unitsReady = true,
   unitsError,
+  cellsError,
 }: {
   viewport: PageViewport;
   page: number;
@@ -58,6 +59,7 @@ export function PdfRegionLayer({
   units?: FineUnit[];
   unitsReady?: boolean;
   unitsError?: string;
+  cellsError?: string;
   onSelect: (
     page: number,
     bbox: PdfRect,
@@ -83,6 +85,17 @@ export function PdfRegionLayer({
   } | null>(null);
   const [note, setNote] = React.useState("");
   const [active, setActive] = React.useState<string | null>(null);
+  const errorFor = (kind: SelectionPrecision) =>
+    kind === "area"
+      ? undefined
+      : (unitsError ?? (kind === "cell" ? cellsError : undefined));
+  const visibleError = errorFor(precision);
+  const unavailable = (kind: SelectionPrecision) => {
+    if (kind === "area") return false;
+    const error = errorFor(kind);
+    if (error) setNote(error);
+    return !unitsReady || !!error;
+  };
   const cancel = () => {
     drag.current = null;
     keyboard.current = null;
@@ -95,7 +108,7 @@ export function PdfRegionLayer({
   }, [viewport, enabled, precision]);
   React.useEffect(() => {
     setNote("");
-  }, [viewport, precision]);
+  }, [viewport, precision, unitsError, cellsError]);
   const point = (e: React.PointerEvent): [number, number] => {
     const r = ref.current!.getBoundingClientRect();
     return [
@@ -123,7 +136,7 @@ export function PdfRegionLayer({
     if (!enabled || e.button !== 0 || !e.isPrimary) return;
     const chosen = selections.find((s) => s.id === id);
     const kind = chosen ? (chosen.precision ?? "area") : precision;
-    if (kind !== "area" && (!unitsReady || unitsError)) return;
+    if (unavailable(kind)) return;
     e.preventDefault();
     e.stopPropagation();
     cancel();
@@ -143,7 +156,7 @@ export function PdfRegionLayer({
   const commit = (bbox: PdfRect, id?: string) => {
     const selected = selections.find((s) => s.id === id);
     const kind = selected ? (selected.precision ?? "area") : precision;
-    if (kind !== "area" && (!unitsReady || unitsError)) return;
+    if (unavailable(kind)) return;
     let fine: FineContent | null | undefined;
     try {
       fine = kind !== "area" ? fineContent(units, bbox, kind) : undefined;
@@ -242,7 +255,7 @@ export function PdfRegionLayer({
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const chosen = selections.find((s) => s.id === id);
     const kind = chosen ? (chosen.precision ?? "area") : precision;
-    if (kind !== "area" && (!unitsReady || unitsError)) return;
+    if (unavailable(kind)) return;
     if (e.key.startsWith("Arrow")) {
       e.preventDefault();
       e.stopPropagation();
@@ -394,17 +407,17 @@ export function PdfRegionLayer({
               />
             );
           })}
-      {enabled && (precision !== "area" || unitsError) && (
+      {enabled && precision !== "area" && (
         <span
-          role={unitsError ? "alert" : "status"}
+          role={visibleError ? "alert" : "status"}
           className={
-            !unitsReady || unitsError
+            !unitsReady || visibleError
               ? "pointer-events-none absolute top-2 left-2 z-10 max-w-[90%] rounded border bg-background/95 p-2 text-xs text-foreground shadow"
               : "pointer-events-none absolute bottom-2 left-2 rounded bg-background/95 px-2 py-1 text-[10px] text-muted-foreground"
           }
         >
-          {unitsError ? (
-            unitsError
+          {visibleError ? (
+            visibleError
           ) : !unitsReady ? (
             "文字の位置を確認中…"
           ) : (
@@ -415,7 +428,7 @@ export function PdfRegionLayer({
           )}
         </span>
       )}
-      {note && !unitsError && (
+      {note && !visibleError && (
         <span
           role="status"
           className="absolute left-2 top-2 max-w-[90%] rounded bg-background p-2 text-xs text-foreground shadow"

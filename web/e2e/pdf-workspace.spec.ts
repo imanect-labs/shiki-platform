@@ -2855,6 +2855,15 @@ test("文字座標の計測失敗を待機状態から復帰させ、自由範�
 }) => {
   await setup(page);
   await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "行", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "行を選択: Quarterly results are ready for review.",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "自由範囲", exact: true }).click();
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
@@ -2898,6 +2907,39 @@ test("文字座標の計測失敗を待機状態から復帰させ、自由範�
     ).restorePdfMeasure(),
   );
   await page.getByRole("button", { name: "自由範囲", exact: true }).click();
+  await expect(
+    page.getByText(
+      "文字の位置を取得できません。自由範囲で選択するか、PDFを開き直してください。",
+      { exact: true },
+    ),
+  ).toHaveCount(0);
   await dragRegion(page, 1, [35 / 550, 45 / 740, 425 / 550, 95 / 740]);
-  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(1);
+  await expect(page.getByTestId("pdf-excerpt-card")).toHaveCount(2);
+});
+
+test("表の取得失敗を空のセルと区別し、行は利用でき、粒度切替で再取得する", async ({
+  page,
+}) => {
+  const source = await setup(page, true);
+  await page.getByTestId("pdf-mode-select").click();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  const error = page.getByText(
+    "表の文字情報を取得できません。「文字情報を再読み込み」で再取得するか、自由範囲で選択してください。",
+    { exact: true },
+  );
+  await expect(error.first()).toBeInViewport();
+  await page.getByRole("button", { name: "行", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "行を選択: Quarterly results are ready for review.",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(error).toHaveCount(0);
+  source.recover();
+  await page.getByRole("button", { name: "表セル", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "セルを選択: 1200", exact: true }),
+  ).toBeVisible();
+  await expect(error).toHaveCount(0);
 });
