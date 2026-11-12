@@ -122,6 +122,7 @@ import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
+import type { MetaToolName } from "@/generated/gui-spec";
 import { ApprovalCard, BudgetBanner } from "./agent-progress";
 import { TaskInlineLine, TaskPanelAside, TaskPanelSheet, type TaskActivities } from "./task-panel";
 import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
@@ -330,14 +331,10 @@ export function Conversation({
   React.useEffect(() => {
     if (!livePlan || livePlan.length === 0) return;
     setLatestPlan(livePlan);
-    const acts: TaskActivities = {};
-    for (const t of liveTools ?? []) {
-      const id = liveTaskTools?.[t.key];
-      if (id) (acts[id] ??= []).push(t);
-    }
-    setLatestActivities(acts);
+    setLatestActivities(taskActivitiesOf(liveTools ?? [], liveTaskTools ?? {}));
   }, [livePlan, liveTools, liveTaskTools]);
-  // null は「まだ利用者が開閉していない」（開いておく）。
+  // null は「まだ利用者が開閉していない」。右カラムを出せる幅では開いておき、それ以外（シート）は
+  // 上のバーのボタン・回答内の 1 行で開く（勝手にモーダルを出して入力欄を覆わない）。
   const [taskPanelChoice, setTaskPanelChoice] = React.useState<boolean | null>(null);
   React.useEffect(() => {
     setLatestPlan([]);
@@ -345,9 +342,11 @@ export function Conversation({
     setTaskPanelChoice(null);
   }, [threadId]);
   const hasPlan = latestPlan.length > 0;
-  const taskPanelOpen = hasPlan && (taskPanelChoice ?? !isPanel);
+  const taskAside = !isPanel && wide;
+  const taskPanelOpen = hasPlan && (taskPanelChoice ?? taskAside);
   const toggleTaskPanel = React.useCallback(() => setTaskPanelChoice(!taskPanelOpen), [taskPanelOpen]);
   const openTaskPanel = React.useCallback(() => setTaskPanelChoice(true), []);
+  const closeTaskPanel = React.useCallback(() => setTaskPanelChoice(false), []);
   const planDone = latestPlan.filter((t) => t.status === "done").length;
   const headerPlan = React.useMemo(
     () =>
@@ -356,7 +355,6 @@ export function Conversation({
         : null,
     [hasPlan, planDone, latestPlan.length, taskPanelOpen, toggleTaskPanel],
   );
-  const taskAside = !isPanel && wide;
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
   const canExport = messages.some(
@@ -432,6 +430,22 @@ export function Conversation({
   // 1 レンダー分古いまま onDone に入り、最後のバッチ（下書き・参照など）が確定から
   // 欠落する（stub LLM の高速バーストで顕在化）。ref を同期更新して確実に拾う。
   const streamRef = React.useRef<StreamState | null>(null);
+  // 生成の終わり（完了・停止・エラー）で、タスクパネルを最後の状態に揃える。最後の計画イベントと
+  // 完了が同じ描画にまとまると、上の effect は計画を拾えない。実行中のままの表示も止める
+  // （停止・エラーなら進行中のタスクは保留にする）。
+  const settleTasks = (s: StreamState, interrupted: boolean) => {
+    if (s.plan.length === 0) return;
+    setLatestPlan(
+      s.plan.map((t) => (t.status === "doing" ? { ...t, status: interrupted ? "blocked" : "todo" } : t)),
+    );
+    setLatestActivities(
+      taskActivitiesOf(
+        s.tools.map((t) => (t.running ? { ...t, running: false } : t)),
+        s.taskTools,
+      ),
+    );
+  };
+
   const updateStream = React.useCallback(
     (fn: (s: StreamState | null) => StreamState | null) => {
       streamRef.current = fn(streamRef.current);
@@ -448,6 +462,7 @@ export function Conversation({
     finishRestoreRef.current();
     const s = streamRef.current;
     if (s) finalizeStream(s, setMessages, provisional);
+    if (s) settleTasks(s, provisional === "stopped");
     streamRef.current = null;
     setStream(null);
   }, []);
@@ -642,7 +657,11 @@ export function Conversation({
       onAssistantMessageId: (assistantMessageId) =>
         updateStream((s) => (s ? { ...s, assistantMessageId } : s)),
       onPlan: (subtasks) =>
-        updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
+        updateStream((s) => {
+          if (!s) return s;
+          const plan = mergePlan(s.plan, subtasks);
+          return { ...s, plan, taskTools: reassignTaskTools(s, plan) };
+        }),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
       onContextUsage: setContextUsage,
       onApplied: (seq) => {
@@ -704,6 +723,7 @@ export function Conversation({
         // 失敗した run の途中成果物へ勝手に飛ばさない（会話に留めてユーザーに判断させる）。
         pendingOpenRef.current = null;
         finishRestore();
+        if (streamRef.current) settleTasks(streamRef.current, true);
         streamRef.current = null;
         setStream(null);
         cancelRef.current = null;
@@ -1222,6 +1242,9 @@ export function Conversation({
                       onOpenTasks={openTaskPanel}
                     />
                   </div>
+                ) : isPanel && hasPlan ? (
+                  // 分割ビューは上のバーが無いので、生成が終わってもここからタスクを開けるようにする。
+                  <TaskInlineLine tasks={latestPlan} onOpen={openTaskPanel} />
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
                 {queued.map((q) => (
@@ -1346,7 +1369,7 @@ export function Conversation({
           <TaskPanelAside
             tasks={latestPlan}
             activities={latestActivities}
-            onClose={() => setTaskPanelChoice(false)}
+            onClose={closeTaskPanel}
           />
         ) : null}
       </div>
@@ -1998,6 +2021,50 @@ function runningSubtask(plan: PlanSubtask[]): string | null {
   const doing = plan.find((s) => s.status === "doing");
   const title = doing?.title.trim();
   return title ? `${title}` : null;
+}
+
+/// 計画のメタツール名（語彙の正本は codegen の `MetaToolName`）。
+const PLAN_TOOL: MetaToolName = "plan";
+
+/// ツールの操作をタスクごとに分ける（タスクパネルの詳細）。
+function taskActivitiesOf(tools: ToolActivityItem[], taskTools: Record<string, string>): TaskActivities {
+  const acts: TaskActivities = {};
+  for (const t of tools) {
+    // 計画の更新そのものはタスクの中身ではない（パネルの進み具合で見える）。
+    if (t.name === PLAN_TOOL) continue;
+    const id = taskTools[t.key];
+    if (id) (acts[id] ??= []).push(t);
+  }
+  return acts;
+}
+
+/// 計画が変わったときに、ツールとタスクの対応を付け直す。
+/// - 計画の作り直し（全件）: サブタスク id は位置で振られるので、題名で対応させ直す（消えたタスクの分は落とす）。
+/// - 進行中のタスクが変わった: 計画の更新（`plan` メタツール）と同じステップで呼んだツールは、更新より
+///   先に届いて前のタスクに付いているので、新しく進行中になったタスクへ移す。
+function reassignTaskTools(s: StreamState, plan: PlanSubtask[]): Record<string, string> {
+  let map = s.taskTools;
+  const sameShape =
+    plan.length === s.plan.length && plan.every((t, i) => t.id === s.plan[i]?.id && t.title === s.plan[i]?.title);
+  if (!sameShape) {
+    const titleOf = new Map(s.plan.map((t) => [t.id, t.title]));
+    const idOf = new Map(plan.map((t) => [t.title, t.id]));
+    map = {};
+    for (const [key, oldId] of Object.entries(s.taskTools)) {
+      const id = idOf.get(titleOf.get(oldId) ?? "");
+      if (id) map[key] = id;
+    }
+  }
+  const prevDoing = s.plan.find((t) => t.status === "doing")?.id;
+  const doing = plan.find((t) => t.status === "doing")?.id;
+  const planCall = [...s.tools].reverse().find((t) => t.name === PLAN_TOOL && !t.viaSubagent);
+  if (doing && doing !== prevDoing && planCall?.step !== undefined) {
+    map = { ...map };
+    for (const t of s.tools) {
+      if (!t.viaSubagent && t.name !== PLAN_TOOL && t.step === planCall.step) map[t.key] = doing;
+    }
+  }
+  return map;
 }
 
 /// 計画イベントを蓄積する。フル計画（全 title 非空）は置換、単一の空 title は id で status 更新。

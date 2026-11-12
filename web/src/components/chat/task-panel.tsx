@@ -31,6 +31,11 @@ const STATUS: Record<
   blocked: { label: "保留", icon: PauseCircle, iconClass: "text-amber-600 dark:text-amber-400" },
 };
 
+/// 計画の作り直しで開閉の記憶を捨てるための鍵（id は位置で振られるので題名で見る）。
+function planKey(tasks: PlanSubtask[]): string {
+  return tasks.map((t) => t.title).join("\u0000");
+}
+
 /// 完了数と、いま進めているタスク。
 export function taskSummary(tasks: PlanSubtask[]) {
   const done = tasks.filter((t) => t.status === "done").length;
@@ -39,7 +44,14 @@ export function taskSummary(tasks: PlanSubtask[]) {
   return { done, total: tasks.length, current };
 }
 
-function TaskList({ tasks, activities }: { tasks: PlanSubtask[]; activities: TaskActivities }) {
+/// 生成中はトークンごとに会話が描き直されるので、計画と操作が変わった時だけ描き直す。
+const TaskList = React.memo(function TaskList({
+  tasks,
+  activities,
+}: {
+  tasks: PlanSubtask[];
+  activities: TaskActivities;
+}) {
   // 利用者が開いた/閉じたタスク。未操作のタスクは「着手したら開いたまま」（完了で勝手に閉じない＝
   // 進むたびに行が開いたり閉じたりしない）。
   const [toggled, setToggled] = React.useState<Record<string, boolean>>({});
@@ -105,7 +117,7 @@ function TaskList({ tasks, activities }: { tasks: PlanSubtask[]; activities: Tas
       })}
     </ol>
   );
-}
+});
 
 function ActivityLine({ item }: { item: ToolActivityItem }) {
   const d = describeTool(item);
@@ -138,7 +150,10 @@ function PanelHeader({ tasks }: { tasks: PlanSubtask[] }) {
     <div className="flex items-baseline gap-2">
       <span className="text-[14px] font-semibold text-foreground">タスク</span>
       <span className="text-[12px] tabular-nums text-muted-foreground" data-testid="task-progress">
-        {done}/{total} 完了
+        <span data-testid="plan-progress">
+          {done}/{total}
+        </span>{" "}
+        完了
       </span>
     </div>
   );
@@ -174,7 +189,7 @@ export function TaskPanelAside({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-6">
-        <TaskList tasks={tasks} activities={activities} />
+        <TaskList key={planKey(tasks)} tasks={tasks} activities={activities} />
       </div>
     </aside>
   );
@@ -205,7 +220,7 @@ export function TaskPanelSheet({
           </SheetTitle>
         </SheetHeader>
         <SheetBody className="px-1">
-          <TaskList tasks={tasks} activities={activities} />
+          <TaskList key={planKey(tasks)} tasks={tasks} activities={activities} />
         </SheetBody>
       </SheetContent>
     </Sheet>

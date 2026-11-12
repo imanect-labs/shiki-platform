@@ -284,7 +284,7 @@ export function ChatSettingsView() {
         <SettingsRow
           label="操作ログの表示"
           htmlFor="pref-activity-detail"
-          description="AI が裏で行った操作（検索・SQL の実行・ツールの使用など）をチャットにどこまで出すか。シンプルでは「調べています」のような進み具合だけを出し、押すと失敗を含む個々の操作を確認できます。エージェントのタスクごとの操作は右側のパネルでも確認できます。"
+          description="AI が裏で行った操作（検索・SQL の実行・ツールの使用など）をチャットにどこまで出すか。シンプルでは「調べています」のような進み具合だけを出し、押すと失敗を含む個々の操作を確認できます。エージェントのタスクごとの操作は、上のバーのタスクのボタンからも確認できます。"
         >
           <Select
             value={prefs.activity_detail}
