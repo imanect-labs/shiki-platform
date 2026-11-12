@@ -299,14 +299,14 @@ audit_actions! {
     SkillPublish = "skill.publish", "スキルを公開", App;
     SkillPublishSignature = "skill.publish.signature", "公開するスキルの署名を検証", App;
     SkillUninstall = "skill.uninstall", "スキルをアンインストール", App;
-    StorageTrashRetentionPurge = "storage.trash_retention.purge", "保持期間を過ぎたごみ箱の中身を完全に削除", System;
+    StorageTrashRetentionPurge = "storage.trash_retention.purge", "保持期間を過ぎたゴミ箱の中身を完全に削除", System;
     StorageUploadGcExpire = "storage.upload_gc.expire", "未完了のアップロードを破棄", System;
     StorageUploadGcOrphanDelete = "storage.upload_gc.orphan_delete", "孤立したアップロードを削除", System;
     TenantProvision = "tenant.provision", "テナントを作成", Admin;
     TenantAuditRetentionSet = "tenant.audit_retention.set", "監査ログの保持期間を変更", Admin;
     TenantPurge = "tenant.purge", "テナントを撤去", Admin;
     TenantRetenant = "tenant.retenant", "テナント ID を変更", Admin;
-    TenantTrashRetentionSet = "tenant.trash_retention.set", "ごみ箱の保持期間を変更", Admin;
+    TenantTrashRetentionSet = "tenant.trash_retention.set", "ゴミ箱の保持期間を変更", Admin;
     ThreadCreate = "thread.create", "スレッドを作成", Chat;
     ThreadDelete = "thread.delete", "スレッドを削除", Chat;
     ThreadFeedback = "thread.feedback", "回答を評価", Chat;
@@ -330,8 +330,8 @@ audit_actions! {
     ThreadUiAction = "thread.ui_action", "画面部品の操作を受け付け", Chat;
     ThreadUnshare = "thread.unshare", "スレッドの共有を解除", Share;
     ThreadYuiSaveAsApp = "thread.yui_save_as_app", "図をアプリとして保存", Chat;
-    TrashEmpty = "trash.empty", "ごみ箱を空にする", File;
-    TrashList = "trash.list", "ごみ箱の一覧", File;
+    TrashEmpty = "trash.empty", "ゴミ箱を空にする", File;
+    TrashList = "trash.list", "ゴミ箱の一覧", File;
     UiActionInvoke = "ui_action.invoke", "画面部品の操作を実行", Agent;
     WorkflowApprovalDecide = "workflow.approval.decide", "承認待ちを判断", Workflow;
     WorkflowApprovalRequest = "workflow.approval.request", "承認を依頼", Workflow;
