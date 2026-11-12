@@ -51,6 +51,13 @@ impl ChatWorker {
         run: &ClaimedRun,
     ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        if let Some(storage) = &self.storage {
+            tools.push(Arc::new(
+                crate::drive_copy_tool::DriveCopyTool::new(storage.clone(), run.run_id)
+                    .with_collab(self.collab.clone()),
+            ));
+        }
+
         if let Some(search) = &self.search {
             let bounds = self.search_bounds(run, skills).await?;
             let folder = bounds.folder.clone().unwrap_or_default();

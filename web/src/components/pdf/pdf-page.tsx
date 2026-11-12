@@ -9,23 +9,46 @@
 /// 取り、それまでは `estimate`（1 ページ目の縦横比から出した高さ）で場所だけ確保する。
 ///
 /// テキスト層は pdf.js の `TextLayer`（透明な文字を canvas に重ね、選択・コピー・検索の塗りに使う）。
-/// 文字は `pageTextContent` のキャッシュを検索と共有する（span の並びと検索の文字位置を一致させる）。
+/// 検索の文字位置とnative spanを明示対応させる。行座標の無いOCRは段落・表の枠で示す。
 import * as React from "react";
+import {
+  measureFineUnits,
+  type FineUnit,
+  type FineContent,
+  type SelectionPrecision,
+} from "@/lib/pdf-fine-selection";
+import { pdfBlocks } from "@/lib/pdf-excerpts";
+import { PdfRegionLayer } from "@/components/pdf/pdf-region-layer";
+import {
+  syntheticOcrRect,
+  nativePdfText,
+  nativeTextOrigin,
+  type PdfExcerpt,
+  type PdfRect,
+} from "@/lib/pdf-excerpts";
 import type { PDFDocumentProxy, PageViewport } from "pdfjs-dist";
 
 import { cn } from "@/lib/utils";
 import { boxToViewport, pdfjsLib } from "@/lib/pdf";
 import { setPageHighlights } from "@/lib/pdf-highlight";
-import { buildPageText, matchPieces, pageTextContent, type PageText } from "@/lib/pdf-text";
+import {
+  buildPageText,
+  matchPieces,
+  pageTextContent,
+  type PageText,
+} from "@/lib/pdf-text";
 import type { CiteBox } from "@/lib/citation-locate";
 
-type Size = { w: number; h: number; viewport: PageViewport };
+type Size = { w: number; h: number; viewport: PageViewport; rotation: number };
 
 /// 1 ページの canvas の画素数の上限。
 const MAX_CANVAS_PIXELS = 16_000_000;
 
 /// このページの検索の一致（ページ文字列上の [開始, 終了)）。`active` は今の一致。
-export type PageHighlights = { ranges: ReadonlyArray<readonly [number, number]>; active: readonly [number, number] | null };
+export type PageHighlights = {
+  ranges: ReadonlyArray<readonly [number, number]>;
+  active: readonly [number, number] | null;
+};
 
 export function PdfPage({
   doc,
@@ -38,6 +61,8 @@ export function PdfPage({
   rotation = 0,
   textLayer = false,
   highlights,
+  regionSelection,
+  textRevision = 0,
 }: {
   doc: PDFDocumentProxy;
   pageNumber: number;
@@ -54,26 +79,62 @@ export function PdfPage({
   /// 文字を選択・コピーできるようにする（ビューア本体のみ。サムネイルや出典の縮小表示では出さない）。
   textLayer?: boolean;
   highlights?: PageHighlights;
+  textRevision?: number;
+  regionSelection?: {
+    enabled: boolean;
+    selections: PdfExcerpt[];
+    precision?: SelectionPrecision;
+    onSelect: (
+      page: number,
+      bbox: PdfRect,
+      replaceId?: string,
+      fine?: FineContent,
+    ) => void;
+  };
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
+  const selectionPrecision = regionSelection?.precision ?? "area";
+  const fineRequired =
+    regionSelection?.enabled &&
+    (regionSelection.precision === "line" ||
+      regionSelection.precision === "cell" ||
+      regionSelection.selections.some(
+        (s) => s.page === pageNumber && s.precision,
+      ));
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const textRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<Size | null>(null);
   // ページの縦横比（その回転での 高さ / 幅）。倍率・回転を変えた瞬間にも高さを同じ描画で決めるために持つ
   // （寸法の取り直しは非同期なので、待つと呼び出し側が見ている場所を保てない）。
-  const [ratio, setRatio] = React.useState<{ rotation: number; value: number } | null>(null);
+  const [ratio, setRatio] = React.useState<{
+    rotation: number;
+    value: number;
+  } | null>(null);
   const [near, setNear] = React.useState(eager);
   // テキスト層の描画結果（span と、検索と同じ文字位置）。描き直すたびに差し替わる。
-  const [text, setText] = React.useState<{ divs: HTMLElement[]; page: PageText } | null>(null);
+  const [text, setText] = React.useState<{
+    divs: (HTMLElement | null)[];
+    page: PageText;
+    ocr: Map<number, PdfRect>;
+  } | null>(null);
   const highlightKey = React.useId();
+  const [fineUnits, setFineUnits] = React.useState<{
+    viewport: PageViewport;
+    values: FineUnit[];
+    error?: string;
+    cellsError?: string;
+  } | null>(null);
 
   // 画面に近づいた / 離れたを追う（離れたら canvas を空にする）。
   React.useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
-    const io = new IntersectionObserver((entries) => setNear(eager || entries.some((e) => e.isIntersecting)), {
-      rootMargin: "1200px 0px",
-    });
+    const io = new IntersectionObserver(
+      (entries) => setNear(eager || entries.some((e) => e.isIntersecting)),
+      {
+        rootMargin: "1200px 0px",
+      },
+    );
     io.observe(el);
     return () => io.disconnect();
   }, [eager]);
@@ -89,8 +150,11 @@ export function PdfPage({
         // 表示の回転は、PDF がページに持つ回転（/Rotate）に足す（上書きすると元から横向きの文書が崩れる）。
         const total = (page.rotate + rotation) % 360;
         const base = page.getViewport({ scale: 1, rotation: total });
-        const viewport = page.getViewport({ scale: width / base.width, rotation: total });
-        setSize({ w: width, h: viewport.height, viewport });
+        const viewport = page.getViewport({
+          scale: width / base.width,
+          rotation: total,
+        });
+        setSize({ w: width, h: viewport.height, viewport, rotation });
         setRatio({ rotation, value: base.height / base.width });
       })
       .catch(() => undefined);
@@ -115,9 +179,14 @@ export function PdfPage({
       .then((page) => {
         if (!active) return;
         // 拡大しても canvas の画素数を上限内に収める（iOS Safari は約 16M 画素を超えると描けない）。
-        const cap = Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, size.viewport.width * size.viewport.height));
+        const cap = Math.sqrt(
+          MAX_CANVAS_PIXELS /
+            Math.max(1, size.viewport.width * size.viewport.height),
+        );
         const dpr = Math.min(window.devicePixelRatio || 1, 2, cap);
-        const viewport = size.viewport.clone({ scale: size.viewport.scale * dpr });
+        const viewport = size.viewport.clone({
+          scale: size.viewport.scale * dpr,
+        });
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
         const ctx = canvas.getContext("2d");
@@ -138,69 +207,232 @@ export function PdfPage({
     if (!container || !textLayer || !near || !size) return;
     let active = true;
     let layer: { cancel: () => void } | null = null;
-    Promise.all([pdfjsLib(), pageTextContent(doc, pageNumber)])
-      .then(async ([lib, content]) => {
+    Promise.resolve()
+      .then(() =>
+        Promise.all([
+          pdfjsLib(),
+          pageTextContent(doc, pageNumber),
+          nativePdfText(doc, pageNumber),
+          pdfBlocks(doc, pageNumber)
+            .then((blocks) => ({ blocks, failed: false }))
+            .catch(() => ({ blocks: [], failed: true })),
+        ]),
+      )
+      .then(async ([lib, content, native, tableResult]) => {
         if (!active) return;
         container.replaceChildren();
-        const tl = new lib.TextLayer({ textContentSource: content, container, viewport: size.viewport });
+        const tl = new lib.TextLayer({
+          textContentSource: native,
+          container,
+          viewport: size.viewport,
+        });
         layer = tl;
         await tl.render();
-        if (active) setText({ divs: tl.textDivs, page: buildPageText(content) });
+        if (active) {
+          const ocr = new Map<number, PdfRect>();
+          const divByItem = new Map(
+            native.items
+              .filter((item) => "str" in item)
+              .map((item, index) => [item, tl.textDivs[index] ?? null]),
+          );
+          const divs = content.items
+            .filter((item) => "str" in item)
+            .map((item, index) => {
+              const rect = syntheticOcrRect(item);
+              if (rect) {
+                ocr.set(index, rect);
+                return null;
+              }
+              return divByItem.get(nativeTextOrigin(item)) ?? null;
+            });
+          setText({ divs, page: buildPageText(content), ocr });
+          if (wrapRef.current && fineRequired)
+            setFineUnits({
+              viewport: size.viewport,
+              values: measureFineUnits(
+                wrapRef.current,
+                tl.textDivs,
+                native,
+                size.viewport,
+                tableResult.blocks,
+              ),
+              cellsError: tableResult.failed
+                ? "表の文字情報を取得できません。「文字情報を再読み込み」で再取得するか、自由範囲で選択してください。"
+                : undefined,
+            });
+        }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active)
+          setFineUnits({
+            viewport: size.viewport,
+            values: [],
+            error:
+              "文字の位置を取得できません。自由範囲で選択するか、PDFを開き直してください。",
+          });
+      });
     return () => {
       active = false;
       layer?.cancel();
       container.replaceChildren();
       setText(null);
+      setFineUnits(null);
     };
-  }, [doc, pageNumber, size, near, textLayer]);
+  }, [
+    doc,
+    pageNumber,
+    size,
+    near,
+    textLayer,
+    textRevision,
+    fineRequired,
+    selectionPrecision,
+  ]);
 
   // 検索の一致を塗る。今の一致はページ内で見える位置までスクロールする。
   const activeKey = highlights?.active ? highlights.active.join(":") : "";
   const scrolledTo = React.useRef("");
   React.useEffect(() => {
-    if (!text || !highlights || (highlights.ranges.length === 0 && !highlights.active)) {
-      setPageHighlights(highlightKey, [], null);
+    if (
+      !text ||
+      !highlights ||
+      (highlights.ranges.length === 0 && !highlights.active)
+    ) {
+      setPageHighlights(highlightKey, [], []);
       return;
     }
-    const toRange = ([s, e]: readonly [number, number]): Range | null => {
-      const pieces = matchPieces(text.page.segments, s, e);
-      if (pieces.length === 0) return null;
-      const [fi, fa] = pieces[0];
-      const [li, , lb] = pieces[pieces.length - 1];
-      const first = text.divs[fi]?.firstChild;
-      const last = text.divs[li]?.firstChild;
-      if (!first || !last) return null;
-      const r = document.createRange();
-      r.setStart(first, Math.min(fa, first.textContent?.length ?? 0));
-      r.setEnd(last, Math.min(lb, last.textContent?.length ?? 0));
-      return r;
+    const toRanges = ([s, e]: readonly [number, number]): Range[] => {
+      const ranges: Range[] = [];
+      for (const [index, start, end] of matchPieces(text.page.segments, s, e)) {
+        const node = text.divs[index]?.firstChild;
+        if (!node) continue;
+        const range = document.createRange();
+        range.setStart(node, Math.min(start, node.textContent?.length ?? 0));
+        range.setEnd(node, Math.min(end, node.textContent?.length ?? 0));
+        ranges.push(range);
+      }
+      return ranges;
     };
-    const all = highlights.ranges.map(toRange).filter((r): r is Range => r != null);
-    const active = highlights.active ? toRange(highlights.active) : null;
-    setPageHighlights(highlightKey, all, active);
-    if (active && scrolledTo.current !== activeKey) {
+    const all = highlights.ranges.flatMap(toRanges);
+    const activeRanges = highlights.active ? toRanges(highlights.active) : [];
+    const active = activeRanges[0] ?? null;
+    const ocrIndex = highlights.active
+      ? matchPieces(text.page.segments, ...highlights.active).find(([index]) =>
+          text.ocr.has(index),
+        )?.[0]
+      : undefined;
+    const activeBlock =
+      ocrIndex != null
+        ? wrapRef.current?.querySelector(`[data-ocr-segment="${ocrIndex}"]`)
+        : null;
+    setPageHighlights(highlightKey, all, activeRanges);
+    if ((active || activeBlock) && scrolledTo.current !== activeKey) {
       scrolledTo.current = activeKey;
-      (active.startContainer.parentElement ?? null)?.scrollIntoView({ block: "center", inline: "nearest" });
+      (activeBlock ?? active?.startContainer.parentElement)?.scrollIntoView({
+        block: "center",
+        inline: "nearest",
+      });
     }
-    if (!active) scrolledTo.current = "";
+    if (!active && !activeBlock) scrolledTo.current = "";
   }, [text, highlights, highlightKey, activeKey]);
-  React.useEffect(() => () => setPageHighlights(highlightKey, [], null), [highlightKey]);
+  React.useEffect(
+    () => () => setPageHighlights(highlightKey, [], []),
+    [highlightKey],
+  );
 
+  const ocrHits = new Map<number, { rect: PdfRect; active: boolean }>();
+  if (text && highlights)
+    for (const range of highlights.ranges) {
+      for (const [index] of matchPieces(text.page.segments, ...range)) {
+        const rect = text.ocr.get(index);
+        if (rect)
+          ocrHits.set(index, {
+            rect,
+            active:
+              ocrHits.get(index)?.active ||
+              (!!highlights.active &&
+                range[0] === highlights.active[0] &&
+                range[1] === highlights.active[1]),
+          });
+      }
+    }
   const mine = boxes.filter((b) => b.page === pageNumber);
   const height = ratio
-    ? width * ((ratio.rotation - rotation) % 180 === 0 ? ratio.value : 1 / ratio.value)
+    ? width *
+      ((ratio.rotation - rotation) % 180 === 0 ? ratio.value : 1 / ratio.value)
     : (estimate ?? width * 1.414);
   return (
     <div
       ref={wrapRef}
       data-page={pageNumber}
-      className={cn("relative overflow-hidden rounded-sm bg-white shadow-sm ring-1 ring-black/[0.06]", className)}
-      style={{ width, height, ["--scale-factor" as string]: size?.viewport.scale ?? 1 }}
+      className={cn(
+        "relative overflow-hidden rounded-sm bg-white shadow-sm ring-1 ring-black/[0.06]",
+        className,
+      )}
+      style={{
+        width,
+        height,
+        ["--scale-factor" as string]: size?.viewport.scale ?? 1,
+      }}
     >
-      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" aria-hidden />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 h-full w-full"
+        aria-hidden
+      />
       {textLayer ? <div ref={textRef} className="pdf-text-layer" /> : null}
+      {size &&
+        Array.from(ocrHits, ([index, hit]) => {
+          const css = boxToViewport(hit.rect, false, size.viewport);
+          return (
+            <div
+              key={index}
+              data-ocr-search-box=""
+              data-ocr-segment={index}
+              title="OCR の検索結果（段落・表単位）"
+              className={cn(
+                "pointer-events-none absolute z-[2] rounded-sm border border-dashed",
+                hit.active
+                  ? "border-orange-500 bg-orange-400/25"
+                  : "border-yellow-500 bg-yellow-400/20",
+              )}
+              style={{
+                left: css.left,
+                top: css.top,
+                width: css.width,
+                height: css.height,
+              }}
+            >
+              <span className="absolute bottom-full left-0 whitespace-nowrap rounded-t bg-background/90 px-1 text-[10px] text-foreground">
+                OCR・段落／表単位
+              </span>
+            </div>
+          );
+        })}
+      {size && regionSelection ? (
+        <PdfRegionLayer
+          viewport={size.viewport}
+          page={pageNumber}
+          enabled={
+            regionSelection.enabled &&
+            size.w === width &&
+            size.rotation === rotation
+          }
+          selections={regionSelection.selections}
+          precision={regionSelection.precision}
+          units={fineUnits?.viewport === size.viewport ? fineUnits.values : []}
+          unitsReady={fineUnits?.viewport === size.viewport}
+          unitsError={
+            fineUnits?.viewport === size.viewport ? fineUnits.error : undefined
+          }
+          cellsError={
+            fineUnits?.viewport === size.viewport
+              ? fineUnits.cellsError
+              : undefined
+          }
+          onSelect={regionSelection.onSelect}
+        />
+      ) : null}
       {size
         ? mine.map((b, i) => {
             const css = boxToViewport(b.bbox, b.topLeft, size.viewport);
@@ -209,7 +441,12 @@ export function PdfPage({
                 key={i}
                 data-cite-box=""
                 className="pointer-events-none absolute z-[2] rounded-[3px] bg-[var(--season-autumn)]/15 ring-2 ring-[var(--season-autumn)]/70"
-                style={{ left: css.left - 3, top: css.top - 3, width: css.width + 6, height: css.height + 6 }}
+                style={{
+                  left: css.left - 3,
+                  top: css.top - 3,
+                  width: css.width + 6,
+                  height: css.height + 6,
+                }}
               />
             );
           })

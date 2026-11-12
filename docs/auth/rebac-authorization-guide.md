@@ -892,7 +892,7 @@ flowchart LR
   位置を進めない。Keycloak が 403 を返したら（provisioner に利用者を読む権限が無い）、1 行の warn でその回を止める
   （位置を進めない。権限の誤りはどの人でも同じなので、人ごとの warn を出し続けない）。
 - **回し方**: `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（`membership_reconcile_cursor`
-  の `cursor_tenant_id`・`cursor_user_id`・migration 0146）から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに
+  の `cursor_tenant_id`・`cursor_user_id`・migration 0148）から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに
   ceil(N / batch_size) 回。1 人につき OpenFGA の読み 1〜2 回と Keycloak の読み 1〜2 回（直接タプルの無い人は Keycloak を
   読まない）。サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める: advisory lock を取れた 1 台が、最後に照合を
   始めた時刻（`last_run_at`・DB の時刻）から間隔の 9 割が経っていなければ何もしない（各サーバーのタイマーのずれで

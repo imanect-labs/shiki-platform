@@ -23,6 +23,15 @@ pub enum Role {
 pub enum Block {
     /// 本文テキスト。
     Text { text: String },
+    /// 認可済みの添付画像。URLではなく、上限を確認した画像のbase64実体を渡す。
+    Image {
+        media_type: String,
+        /// 呼び出し元が再読込するための参照。プロバイダへは送信しない。
+        source_id: String,
+        /// 実体は永続化せず、再開時に現在の権限で再読込する。
+        #[serde(skip)]
+        data: ImageData,
+    },
     /// 思考（extended thinking）。
     Thinking { text: String },
     /// モデルのツール呼び出し。
@@ -52,6 +61,16 @@ pub enum Block {
         provider: String,
         item: serde_json::Value,
     },
+}
+
+/// 画像実体はプロバイダ送信にだけ使い、Debug・チェックポイントへは出さない。
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ImageData(pub std::sync::Arc<str>);
+
+impl std::fmt::Debug for ImageData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[image data]")
+    }
 }
 
 impl Block {

@@ -378,3 +378,64 @@ async fn runs_without_the_extension_keep_their_budget() {
         );
     }
 }
+
+/// 履歴の道具の結果に添えた残量の知らせ（`[予算]`・#1176）の本文を、順に取り出す。
+fn budget_notes(messages: &[LlmMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|m| m.role == LlmRole::Tool)
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            llm_gateway::Block::ToolResult { content, .. } => {
+                content.find("[予算]").map(|i| content[i..].to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// 残量の知らせ（#1176）は、作成系の道具を呼んだその結果から広げた上限で数える。広げる前の上限で
+/// 「残り 1 手・畳め」と知らせると、広げた手数を使わずに畳んでしまう（D-204 と #1176 のかみ合わせ）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_notes_count_against_the_extended_budget() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let run = |extension: bool| {
+        let gateway = &gateway;
+        let c = &c;
+        async move {
+            let mut sink = RecordingSink::default();
+            run_agent(
+                gateway,
+                &tools("emit_workflow", false),
+                user_msg(),
+                &run_context(c),
+                &chat_opts(extension),
+                None,
+                None,
+                &mut sink,
+            )
+            .await
+            .expect("run")
+        }
+    };
+    // 広げる run: 1 手目の結果から、広げた 5 手に対する残り（4 手）を知らせ、畳めとは言わない。
+    let notes = budget_notes(&run(true).await.checkpoint.messages);
+    assert!(notes.len() >= 2, "{notes:?}");
+    assert!(notes[0].starts_with("[予算] 残り 4 ステップ"), "{notes:?}");
+    assert!(!notes[0].contains("新しい調査を始めないこと"), "{notes:?}");
+    // 上限に近づいたら、広げた上限に対して畳めと知らせる（残り 2 手から）。
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("[予算] 残り 2 ステップ")
+                && n.contains("新しい調査を始めないこと")),
+        "{notes:?}"
+    );
+    // 対照: 広げない run は、元の 2 手に対する残り（1 手）で畳めと知らせる。
+    let notes = budget_notes(&run(false).await.checkpoint.messages);
+    assert!(notes[0].starts_with("[予算] 残り 1 ステップ"), "{notes:?}");
+    assert!(notes[0].contains("新しい調査を始めないこと"), "{notes:?}");
+}

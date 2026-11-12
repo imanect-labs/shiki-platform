@@ -82,17 +82,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
-**ドライブの `node` の索引（migration 0136 `node_shared_scan_idx`・0139 `node_name_scan_idx` と
+**ドライブの `node` の索引（migration 0138 `node_shared_scan_idx`・0141 `node_name_scan_idx` と
 `node_name_scan_desc_idx`・BUG-162・BUG-187）** も、上と同じ手順で事前に作れる（どれも `create index if not exists`）。
 構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が大きな
 環境では事前に作るか、停止時間を取って当てる（読むのは止まらない）。
 
 ```sql
--- BUG-162 / migration 0136: ドライブの「共有されたもの」を更新の順に引く
+-- BUG-162 / migration 0138: ドライブの「共有されたもの」を更新の順に引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
     ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
 
--- BUG-187 / migration 0139: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
+-- BUG-187 / migration 0141: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
     ON node (tenant_id, org, (kind <> 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_desc_idx
@@ -345,3 +345,14 @@ RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`
 - **jsonb を直接書き換えるとき**（手作業の修正など）も、`UPDATE OF metadata` / `UPDATE OF payload` でトリガが列を
   写し直す。`audit_cited_chunk` は挿入時にだけ作るので、`cited_chunk_ids` を書き換えたら手で直す
   （監査ログは追記専用なので、通常は起きない）。
+
+## 7. PDF ブロックのページ索引（migration 0117）
+
+`doc_block` は `page` に加え、provenance の最小・最大ページを `prov_page_min` / `prov_page_max` の
+保存生成列へ写す。`prov` の挿入・更新に自動で追従する。通常のページ索引と、跨ページ・`page` 未設定の
+行だけを持つ補助 btree 索引で候補を絞る。JSON のページ一致は RLS 後の残余条件で確認するので、
+非連続の provenance の中間ページを返さない。RLS を無効化したり、JSON 関数を leakproof として宣言したりしない。
+
+保存生成列の追加は既存行の計算と表の書き直しを伴う。索引作成も通常の `CREATE INDEX` で、
+`doc_block` のロックを migration のコミットまで保持する。大量のブロックがある環境では、保守時間帯に
+適用する。ロックの取得待ちは5秒で打ち切るが、取得後の実行時間はデータ量と環境に依存する。

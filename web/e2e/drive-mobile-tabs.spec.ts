@@ -9,7 +9,7 @@ test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
 test.afterEach(() => cleanup.run());
 
 /// スマホのドライブ: 上端のタブ（ホーム／最近使った／お気に入り／共有済み／ゴミ箱）で区画を
-/// 切り替えられ、フォルダの中では出ない。PC はサイドバーが担うので出さない。
+/// 切り替えられ、フォルダの中では出ない。PC も同じタブで切り替え、サイドバーに子メニューは無い。
 ///
 /// ログインは PC の画面で済ませ、そのセッションをタッチ端末の文脈へ持ち込む
 /// （ログイン完了の判定はシェルのアカウントメニューを見るため、スマホ幅では使えない）。
@@ -70,8 +70,13 @@ test("スマホのドライブは上端のタブで区画を切り替え、フ�
   await expect(phone).toHaveURL(/folder=/);
   await expect(tabs).toBeHidden();
 
-  // PC はサイドバーに子メニューがあるのでタブを出さない。
-  await expect(page.getByRole("navigation", { name: "ドライブ" })).toBeHidden();
+  // PC も同じタブを出し（フォルダの外）、サイドバーにはドライブの子メニュー（開閉）を持たない。
+  await page.goto("/drive");
+  await expect(page.getByRole("navigation", { name: "ドライブ" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /ドライブを(開く|閉じる)/ })).toHaveCount(0);
+  await page.getByTestId("drive-tab-shared").click();
+  await expect(page).toHaveURL(/\/drive\/shared$/);
+  await expect(page.getByTestId("drive-tab-shared")).toHaveAttribute("aria-current", "page");
 
   await phone.context().close();
 });

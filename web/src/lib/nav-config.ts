@@ -28,11 +28,11 @@ export type NavLeaf = {
   icon: LucideIcon;
 };
 
-/// Drive アコーディオン配下の子。`backend` が false の項目は本 issue 時点で
+/// ドライブの区画（本文上端のタブ・DriveTabs）。`backend` が false の項目は本 issue 時点で
 /// API が無く、ページは「作り込んだ空状態」を表示する（フェイクデータを置かない）。
 export type DriveChild = NavLeaf & { backend: boolean };
 
-/// Drive のルート（親）。クリックでホームへ遷移し、アコーディオンを開く。
+/// ドライブのルート。サイドバーの「ドライブ」はここ（ホーム）へ遷移する。
 export const DRIVE_ROOT = "/drive";
 
 export const DRIVE_CHILDREN: DriveChild[] = [
@@ -81,7 +81,7 @@ export function isActivePath(href: string, pathname: string): boolean {
 /// 全画面に近い集中モードにする（下書き /notes/draft 等も含む）。ドライブ一覧や
 /// チャットは対象外（ナビゲーションが主役）。
 export function isEditorRoute(pathname: string): boolean {
-  return /^\/(notes|slides|csv|office)\//.test(pathname);
+  return /^\/(notes|slides|csv|office|pdf)\//.test(pathname);
 }
 
 /// パスからヘッダのページタイトルを解決する（現在地表示）。

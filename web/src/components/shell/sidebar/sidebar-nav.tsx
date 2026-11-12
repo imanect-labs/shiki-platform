@@ -15,11 +15,9 @@ import {
   WORKFLOWS_NAV,
   isActivePath,
 } from "@/lib/nav-config";
-import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { approvalBadge, useApprovalCount } from "@/hooks/use-approval-count";
 import { CountBadge, NavItem, type NavBadge } from "./nav-item";
-import { SidebarDriveAccordion } from "./sidebar-drive-accordion";
 import { useSidebar } from "./sidebar-context";
 
 /// スマホのドロワのナビ 1 マス（アイコン上・ラベル下）。
@@ -66,7 +64,7 @@ function NavTile({
 
 /// スマホのドロワ上部: 「新しいチャット」（主ボタン）と検索を 1 段に、その下にナビ 6 マスを 3 列 2 行。
 /// 「ワークフロー」が 6 列では収まらない（省略される）ので 3 列にする。履歴に使える縦幅を広げるため、
-/// ドライブの子メニューはここに出さない（ドライブ画面側の ⋯ が導線）。
+/// ドライブの子メニューはここに出さない（区画の切替はドライブ画面上端のタブ）。
 function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -122,9 +120,112 @@ function MobileNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-/// サイドバー上部: 新規チャット（主役 CTA）＋ 検索（検索ボックス風）＋ ナビ（ドライブ/スキル/アプリ/ワークフロー）。
+/// PC のメインナビ（ドライブ・スキル・アプリ・ワークフロー・データ）。タイルの色は機能ごとに固定し、
+/// 四季トークン（data は primary）を当てる。地色の混色は oklab（oklch だと白の色相 0° に引かれて色がずれる）。色だけに頼らず、選択中は枠・地色・太字でも示す。
+const MAIN_NAV: { key: string; label: string; href: string; icon: LucideIcon; tone: string }[] = [
+  { key: "drive", label: "ドライブ", href: DRIVE_ROOT, icon: DRIVE_ICON, tone: "var(--season-winter)" },
+  { ...SKILLS_NAV, tone: "var(--season-spring)" },
+  { ...APPS_NAV, tone: "var(--season-autumn)" },
+  { ...WORKFLOWS_NAV, tone: "var(--season-summer)" },
+  { ...DATA_NAV, tone: "var(--primary)" },
+];
+
+/// PC のナビ 1 マス（アイコン上・ラベル下）。`--tile` に機能の色を受け取る。
+const TILE_CLASS = cn(
+  "flex h-[60px] min-w-0 flex-col items-center justify-center gap-1 rounded-[12px] px-1 text-[11.5px] tracking-[-0.02em] outline-none",
+  "bg-card text-sidebar-foreground/75 ring-1 ring-sidebar-border",
+  "transition-[background-color,box-shadow,color,transform] duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+  "hover:bg-[color-mix(in_oklab,var(--tile)_8%,var(--card))] hover:text-sidebar-foreground",
+  "focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.97] pointer-coarse:h-16",
+);
+const TILE_ACTIVE_CLASS =
+  "bg-[color-mix(in_oklab,var(--tile)_14%,var(--card))] font-semibold text-sidebar-foreground ring-[1.5px] ring-[var(--tile)] hover:bg-[color-mix(in_oklab,var(--tile)_14%,var(--card))]";
+
+function TileInner({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+  return (
+    <>
+      <Icon className="size-5 shrink-0 text-[var(--tile)]" aria-hidden />
+      <span className="max-w-full truncate">{label}</span>
+    </>
+  );
+}
+
+/// PC の展開時: 主ボタン「新しいチャット」と、検索＋ナビ 5 項目の 3×2 タイル（スマホのドロワと同じ
+/// アイコン上・ラベル下の並び）。ドライブの区画はサイドバーに出さず、ドライブ画面上端のタブが担う。
+/// 「承認」はタイルの下に件数つきの 1 行で置く（タイルに足すと 3 列の 3 段目が 1 マスだけになる）。
+/// 承認の件数はこの中とレールだけで読む（スマホのドロワは [`MobileNav`] が読む）。
+function DesktopNav({ onNavigate }: { onNavigate?: () => void }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { setSearchOpen } = useSidebar();
+  const approvals = approvalBadge(useApprovalCount());
+
+  return (
+    <div className="flex flex-col gap-3 px-2.5">
+      <button
+        type="button"
+        onClick={() => {
+          router.push("/");
+          onNavigate?.();
+        }}
+        className="flex h-10 w-full items-center justify-center gap-2 rounded-[12px] bg-primary px-3 text-[13.5px] font-semibold text-primary-foreground shadow-sm outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar active:scale-[0.98]"
+      >
+        <PenSquare className="size-[18px] shrink-0" aria-hidden />
+        新しいチャット
+      </button>
+
+      <nav aria-label="メインナビゲーション" className="grid grid-cols-3 gap-1.5">
+        {/* 検索（実体はシェルのパレット）。⌘K はツールチップで示す。 */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              aria-label="文書・チャットを検索"
+              aria-keyshortcuts="Meta+K Control+K"
+              className={TILE_CLASS}
+              style={{ ["--tile" as string]: "var(--muted-foreground)" }}
+            >
+              <TileInner icon={Search} label="検索" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">検索（⌘K）</TooltipContent>
+        </Tooltip>
+        {MAIN_NAV.map((item) => {
+          const active = isActivePath(item.href, pathname);
+          return (
+            <Link
+              key={item.key}
+              href={item.href}
+              onClick={onNavigate}
+              // 配下（/drive/trash 等）では現在地の "page" を区画タブに譲り、ここは "true"（含む）にする。
+              aria-current={active ? (pathname === item.href ? "page" : "true") : undefined}
+              className={cn(TILE_CLASS, active && TILE_ACTIVE_CLASS)}
+              style={{ ["--tile" as string]: item.tone }}
+            >
+              <TileInner icon={item.icon} label={item.label} />
+            </Link>
+          );
+        })}
+        <NavItem
+          icon={APPROVALS_NAV.icon}
+          label={APPROVALS_NAV.label}
+          badge={approvals}
+          active={isActivePath(APPROVALS_NAV.href, pathname)}
+          className="col-span-3"
+          onClick={() => {
+            router.push(APPROVALS_NAV.href);
+            onNavigate?.();
+          }}
+        />
+      </nav>
+    </div>
+  );
+}
+
+/// サイドバー上部のナビ。展開時はタイル（`DesktopNav`）、レール（collapsed）時はアイコンのみの縦列、
+/// スマホのドロワは詰めたレイアウト（`MobileNav`）。
 /// 検索ダイアログ本体はシェルで単一管理し、ここは開くトリガーのみ（多重マウント回避）。
-/// `mobile` はスマホのドロワ用の詰めたレイアウト（`MobileNav`）。
 export function SidebarNav({
   collapsed,
   mobile = false,
@@ -135,138 +236,64 @@ export function SidebarNav({
   onNavigate?: () => void;
 }) {
   if (mobile) return <MobileNav onNavigate={onNavigate} />;
-  return <DesktopNav collapsed={collapsed} onNavigate={onNavigate} />;
+  if (!collapsed) return <DesktopNav onNavigate={onNavigate} />;
+  return <RailNav onNavigate={onNavigate} />;
 }
 
-/// PC のサイドバー上部（承認の件数はこの中だけで読む・スマホのドロワは [`MobileNav`] が読む）。
-function DesktopNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
+/// レール（collapsed）: アイコンのみの縦列。ラベルはツールチップで補う。
+function RailNav({ onNavigate }: { onNavigate?: () => void }) {
   const router = useRouter();
   const pathname = usePathname();
   const { setSearchOpen } = useSidebar();
   const approvals = approvalBadge(useApprovalCount());
 
-  const startNewChat = () => {
-    router.push("/");
-    onNavigate?.();
-  };
-
   return (
     <div className="flex flex-col gap-2 px-2.5">
-      {/* 主役 CTA: 新しいチャット（白の浮き上がるボタン＋季節色のペン・押下フィードバック）。
-          重い navy 塗りは避け、カード面＋境界＋淡い影で「押せる主役」を軽やかに示す。 */}
-      {collapsed ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={startNewChat}
-              aria-label="新しいチャット"
-              className="mx-auto flex size-9 items-center justify-center rounded-[10px] bg-sidebar-accent text-sidebar-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/70 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
-            >
-              <PenSquare
-                className="size-[18px]"
-                style={{ color: seasonVar(currentSeasonIndex()) }}
-                aria-hidden
-              />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">新しいチャット</TooltipContent>
-        </Tooltip>
-      ) : (
-        <button
-          type="button"
-          onClick={startNewChat}
-          className="flex h-9 w-full items-center gap-2 rounded-[10px] bg-sidebar-accent px-3 text-[13.5px] font-medium text-sidebar-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-sidebar-accent/70 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-[0.98]"
-        >
-          <PenSquare
-            className="size-[18px] shrink-0"
-            style={{ color: seasonVar(currentSeasonIndex()) }}
-            aria-hidden
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              router.push("/");
+              onNavigate?.();
+            }}
+            aria-label="新しいチャット"
+            className="mx-auto flex size-9 items-center justify-center rounded-[10px] bg-primary text-primary-foreground outline-none transition-[transform,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-sidebar-ring active:scale-95"
+          >
+            <PenSquare className="size-[18px]" aria-hidden />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">新しいチャット</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setSearchOpen(true)}
+            aria-label="検索"
+            className="mx-auto flex size-9 items-center justify-center rounded-[10px] text-sidebar-foreground/60 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          >
+            <Search className="size-[18px]" aria-hidden />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">検索</TooltipContent>
+      </Tooltip>
+      <nav aria-label="メインナビゲーション" className="flex flex-col gap-0.5 pt-1">
+        {MAIN_NAV.map((item) => (
+          <NavItem
+            key={item.key}
+            icon={item.icon}
+            label={item.label}
+            href={item.href}
+            collapsed
+            active={isActivePath(item.href, pathname)}
+            onClick={onNavigate}
           />
-          新しいチャット
-        </button>
-      )}
-
-      {/* 検索: 検索ボックス風のトリガ（実体はシェルのパレット）。 */}
-      {collapsed ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={() => setSearchOpen(true)}
-              aria-label="検索"
-              className="mx-auto flex size-9 items-center justify-center rounded-[10px] text-sidebar-foreground/60 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-            >
-              <Search className="size-[18px]" aria-hidden />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">検索</TooltipContent>
-        </Tooltip>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setSearchOpen(true)}
-          className="group flex h-9 w-full items-center gap-2.5 rounded-[10px] border border-sidebar-border bg-sidebar-accent/40 px-2.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
-        >
-          <Search className="size-4 shrink-0 text-sidebar-foreground/45" aria-hidden />
-          <span className="flex-1 text-[13px] text-sidebar-foreground/45">検索</span>
-          {/* ショートカット表記はキーボードのある（マウス操作の）端末だけ。 */}
-          <kbd className="hidden rounded border border-sidebar-border bg-sidebar px-1.5 py-0.5 text-[10px] font-medium leading-none text-sidebar-foreground/45 pointer-fine:inline-block">
-            ⌘K
-          </kbd>
-        </button>
-      )}
-
-      {/* ナビ（検索/新規チャットとは間を空けて視覚分離）。 */}
-      <nav
-        aria-label="メインナビゲーション"
-        className={cn("flex flex-col gap-0.5", collapsed ? "pt-1" : "pt-1.5")}
-      >
-        <SidebarDriveAccordion collapsed={collapsed} onNavigate={onNavigate} />
-        <NavItem
-          icon={SKILLS_NAV.icon}
-          label={SKILLS_NAV.label}
-          collapsed={collapsed}
-          active={isActivePath(SKILLS_NAV.href, pathname)}
-          onClick={() => {
-            router.push(SKILLS_NAV.href);
-            onNavigate?.();
-          }}
-        />
-        <NavItem
-          icon={APPS_NAV.icon}
-          label={APPS_NAV.label}
-          collapsed={collapsed}
-          active={isActivePath(APPS_NAV.href, pathname)}
-          onClick={() => {
-            router.push(APPS_NAV.href);
-            onNavigate?.();
-          }}
-        />
-        <NavItem
-          icon={WORKFLOWS_NAV.icon}
-          label={WORKFLOWS_NAV.label}
-          collapsed={collapsed}
-          active={isActivePath(WORKFLOWS_NAV.href, pathname)}
-          onClick={() => {
-            router.push(WORKFLOWS_NAV.href);
-            onNavigate?.();
-          }}
-        />
-        <NavItem
-          icon={DATA_NAV.icon}
-          label={DATA_NAV.label}
-          collapsed={collapsed}
-          active={isActivePath(DATA_NAV.href, pathname)}
-          onClick={() => {
-            router.push(DATA_NAV.href);
-            onNavigate?.();
-          }}
-        />
+        ))}
         <NavItem
           icon={APPROVALS_NAV.icon}
           label={APPROVALS_NAV.label}
-          collapsed={collapsed}
+          collapsed
           badge={approvals}
           active={isActivePath(APPROVALS_NAV.href, pathname)}
           onClick={() => {

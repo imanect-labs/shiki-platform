@@ -2,7 +2,9 @@
 
 /// 文書エディタ（ノート・スライド・CSV・Office）の AI アシスタントの共通コンテナ。
 ///
-/// - lg 以上: 本文の右に浮かぶ角丸カード（本文はパネル幅ぶんの右余白でパネルを避ける）。
+/// - lg 以上: 画面の右端に縦いっぱい（上部バーの高さまで貫通）に浮かぶ角丸カード。本文は
+///   パネル幅ぶんの右余白で、上部バーは `AVOID_ASSISTANT` でパネルを避ける（⋯ がパネルの左隣に
+///   来る）。開閉と幅は `assistant-dock` 経由でシェルの列へ渡す。
 ///   左端のつまみをドラッグ（または ←/→ キー）で幅を変えられ、幅は画面の好みとして保存する
 ///   （ダブルクリックで既定幅へ戻す）。
 /// - lg 未満: 下からの**非モーダル**なシート。初期は約 55dvh（半分）で、本文はシートの上に
@@ -16,6 +18,7 @@
 import { Maximize2, Minimize2, Sparkles, X } from "lucide-react";
 import * as React from "react";
 
+import { useAssistantDock } from "@/components/shell/assistant-dock";
 import { useLocalStorage } from "@/hooks/use-local-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { cn } from "@/lib/utils";
@@ -36,7 +39,7 @@ const MIN_BODY = 352;
 const GUTTER = 28;
 const WIDTH_KEY = "shiki.assistant-panel-width";
 
-/// 画面に入る最大幅。本文に MIN_BODY を残す（CSS の `calc(100%-380px)` と同じ式）。
+/// 画面に入る最大幅。本文に MIN_BODY を残す（本文の右余白の `calc(100%-352px)` と同じ考え方）。
 /// 画面が狭いときは MIN_WIDTH を下回る（そのときは幅を変えられない）。
 function maxWidthFor(rootWidth: number): number {
   return Math.max(0, Math.min(MAX_WIDTH, rootWidth - MIN_BODY - GUTTER));
@@ -53,6 +56,7 @@ export function AssistantLayout({
   label,
   title = "アシスタント",
   panel,
+  keepMounted = false,
   overlay,
   className,
   children,
@@ -63,8 +67,10 @@ export function AssistantLayout({
   label: string;
   /// パネル見出し。
   title?: string;
-  /// パネルの中身（会話）。open のときだけ描く。
+  /// パネルの中身（会話）。既定では open のときだけ描く。
   panel: React.ReactNode;
+  /// 初回表示後は非表示でも保持し、未送信の本文・添付を失わない。
+  keepMounted?: boolean;
   /// 本文の下端に重ねる案内（引用ハイライトのヒント等）。シートが開いていればその上に出す。
   overlay?: React.ReactNode;
   className?: string;
@@ -72,18 +78,29 @@ export function AssistantLayout({
   children: React.ReactNode;
 }) {
   const rootRef = React.useRef<HTMLDivElement>(null);
+  const [opened, setOpened] = React.useState(open);
+  React.useEffect(() => { if (open) setOpened(true); }, [open]);
   const [stored, setStored] = useLocalStorage<number>(WIDTH_KEY, DEFAULT_WIDTH);
   const saved = typeof stored === "number" && Number.isFinite(stored) ? stored : DEFAULT_WIDTH;
   // 画面に入る幅（本文に MIN_BODY を残す）へ丸めた、実際に表示する幅。
   const rootWidth = useElementWidth(rootRef);
   const width = clampWidth(saved, rootWidth ?? Number.POSITIVE_INFINITY);
   const maxWidth = Math.round(maxWidthFor(rootWidth ?? Number.POSITIVE_INFINITY));
+  // 幅は CSS 変数で本文の右余白・パネル幅・上部バーの右余白へ渡す（ドラッグ中は変数だけ書き換える）。
+  // シェルの中ではシェルの列に載せ（上部バーも読む）、シェルの外では自分に載せる。
+  const dock = useAssistantDock();
+  const publish = dock?.publish;
+  React.useEffect(() => {
+    // 計測前（初回描画）は幅が丸まっていないので、上部バーにはまだ避けさせない。
+    publish?.({ open: open && rootWidth !== null, width });
+  }, [publish, open, width, rootWidth]);
+  React.useEffect(() => () => publish?.(null), [publish]);
+  const varRef = dock?.el ?? rootRef;
   return (
     <div
       ref={rootRef}
-      // 幅は CSS 変数で本文の右余白とパネル幅の両方へ渡す（ドラッグ中は変数だけ書き換える）。
       // 画面が狭くて保存幅が入らないときは calc 側で本文に MIN_BODY を残す。
-      style={{ "--assistant-w": `${width}px` } as React.CSSProperties}
+      style={dock ? undefined : ({ "--assistant-w": `${width}px` } as React.CSSProperties)}
       className={cn("group/assistant relative flex min-h-0 flex-1", className)}
     >
       <div
@@ -108,14 +125,16 @@ export function AssistantLayout({
           {overlay}
         </div>
       ) : null}
-      {open ? (
+      {open || (keepMounted && opened) ? (
         <AssistantSheet
+          open={open}
           onClose={onClose}
           label={label}
           title={title}
           width={width}
           maxWidth={maxWidth}
           rootRef={rootRef}
+          varRef={varRef}
           onWidthChange={setStored}
         >
           {panel}
@@ -126,25 +145,52 @@ export function AssistantLayout({
 }
 
 function AssistantSheet({
+  open,
   onClose,
   label,
   title,
   width,
   maxWidth,
   rootRef,
+  varRef,
   onWidthChange,
   children,
 }: {
+  open: boolean;
   onClose: () => void;
   label: string;
   title: string;
   width: number;
   maxWidth: number;
   rootRef: React.RefObject<HTMLDivElement | null>;
+  varRef: React.RefObject<HTMLDivElement | null>;
   onWidthChange: (w: number) => void;
   children: React.ReactNode;
 }) {
   const [mode, setMode] = React.useState<SheetMode>("half");
+  const closeRef = React.useRef<HTMLButtonElement>(null);
+  // PC では開いている間、上部バーの ✨ トグルが隠れる。トグルから開いたときはフォーカスを
+  // パネルの × へ移し、× で閉じたときはトグルへ戻す（フォーカスが body へ落ちないように）。
+  React.useEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest("[data-assistant-toggle]")) {
+      closeRef.current?.focus();
+    }
+  }, [open]);
+  const closeAndRestoreFocus = () => {
+    onClose();
+    // トグルはパネルが消えた後（シェルの列の再描画）で現れるので、現れるまで数フレーム試す。
+    let tries = 0;
+    const restore = () => {
+      const toggle = document.querySelector<HTMLElement>("[data-assistant-toggle]");
+      toggle?.focus();
+      if (toggle && document.activeElement !== toggle && ++tries < 10) {
+        requestAnimationFrame(restore);
+      }
+    };
+    requestAnimationFrame(restore);
+  };
   // 幅つまみ（separator）の aria-controls が指すパネルの id。
   const paneId = React.useId();
   const sheetRef = React.useRef<HTMLDivElement>(null);
@@ -212,12 +258,14 @@ function AssistantSheet({
       aria-label={label}
       id={paneId}
       data-sheet-mode={mode}
-      style={{ "--assistant-sheet-base": height } as React.CSSProperties}
+      style={{ "--assistant-sheet-base": height, display: open ? undefined : "none" } as React.CSSProperties}
+      hidden={!open}
       className={cn(
         "z-20 flex flex-col overflow-hidden bg-card",
         "animate-in fade-in-0 duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
-        // PC: 本文の右に浮かぶ角丸カード（幅は左端のつまみで変える）。
-        "lg:absolute lg:inset-y-3 lg:right-3 lg:w-[min(var(--assistant-w),calc(100%-380px))] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
+        // PC: 画面の右端に縦いっぱい（上部バーも貫通）に浮かぶ角丸カード（幅は左端のつまみで変える）。
+        // 幅は JS 側で本文に MIN_BODY を残すよう丸め済み（計測前の 1 フレーム用に画面幅でも抑える）。
+        "lg:fixed lg:inset-y-3 lg:right-3 lg:w-[min(var(--assistant-w),calc(100vw-380px))] lg:rounded-2xl lg:border lg:shadow-lg lg:slide-in-from-right-4",
         // スマホ/タブレット: 下からのシート（非モーダル・本文は上に見えたまま）。
         "max-lg:absolute max-lg:inset-x-0 max-lg:bottom-0 max-lg:slide-in-from-bottom-8",
         "max-lg:h-[var(--assistant-sheet-h,var(--assistant-sheet-base))] max-lg:transition-[height] max-lg:duration-[var(--duration-normal)]",
@@ -231,6 +279,7 @@ function AssistantSheet({
           width={width}
           maxWidth={maxWidth}
           rootRef={rootRef}
+          varRef={varRef}
           onWidthChange={onWidthChange}
         />
       ) : null}
@@ -261,8 +310,9 @@ function AssistantSheet({
           )}
         </button>
         <button
+          ref={closeRef}
           type="button"
-          onClick={onClose}
+          onClick={closeAndRestoreFocus}
           aria-label="チャットを閉じる"
           className="flex size-11 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-90 lg:size-7 lg:rounded-md"
         >
@@ -276,13 +326,14 @@ function AssistantSheet({
 
 /// PC パネルの左端の幅つまみ（WAI-ARIA の window splitter）。
 ///
-/// ドラッグ中は再描画せず、ルートの `--assistant-w` を直接書き換える（本文の右余白とパネル幅が
+/// ドラッグ中は再描画せず、`varRef`（シェルの列）の `--assistant-w` を直接書き換える（本文の右余白・パネル幅・上部バーが
 /// 同じ変数で追従する）。離したときに保存する。←/→ キーで 16px ずつ、ダブルクリックで既定幅。
 function WidthHandle({
   controls,
   width,
   maxWidth,
   rootRef,
+  varRef,
   onWidthChange,
 }: {
   /// 幅を変えるパネルの id（aria-controls）。
@@ -290,18 +341,33 @@ function WidthHandle({
   /// 表示中の幅（画面に入るよう丸めた値）。
   width: number;
   maxWidth: number;
+  /// 幅の基準（本文＋パネルの領域）。
   rootRef: React.RefObject<HTMLDivElement | null>;
+  /// ドラッグ中に `--assistant-w` と `data-resizing` を書く要素。
+  varRef: React.RefObject<HTMLDivElement | null>;
   onWidthChange: (w: number) => void;
 }) {
   const drag = React.useRef<{ id: number; startX: number; startW: number; rootW: number; w: number } | null>(
     null,
   );
   const [active, setActive] = React.useState(false);
+  // ドラッグ中にアンマウント（ページ遷移・lg 未満への縮小）しても、シェルの列に書いた状態を残さない。
+  // 幅は消さずにドラッグ前の確定幅へ戻す（パネルが残る場合も列の変数をそのまま使い続けるため）。
+  React.useEffect(
+    () => () => {
+      const el = varRef.current;
+      const d = drag.current;
+      if (!d || !el) return;
+      delete el.dataset.resizing;
+      el.style.setProperty("--assistant-w", `${d.startW}px`);
+    },
+    [varRef],
+  );
   const rootWidth = () => rootRef.current?.getBoundingClientRect().width ?? window.innerWidth;
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!root) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -312,7 +378,7 @@ function WidthHandle({
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!d || !root || d.id !== e.pointerId) return;
     // 左端をつかむので、左へ動かすほど広がる。
     d.w = clampWidth(d.startW - (e.clientX - d.startX), d.rootW);
@@ -320,7 +386,7 @@ function WidthHandle({
   };
   const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
-    const root = rootRef.current;
+    const root = varRef.current;
     if (!d || d.id !== e.pointerId) return;
     drag.current = null;
     setActive(false);
@@ -356,6 +422,7 @@ function WidthHandle({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onLostPointerCapture={endDrag}
       onDoubleClick={() => onWidthChange(clampWidth(DEFAULT_WIDTH, rootWidth()))}
       onKeyDown={onKeyDown}
       // つまみは枠の内側 8px。目印の線は枠に重ねて 1 本だけ出す（グローバルのフォーカスリングは

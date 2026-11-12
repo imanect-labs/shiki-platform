@@ -66,6 +66,42 @@ impl ChatStore {
         thread_id: Uuid,
         text: &str,
         attachments: &[Attachment],
+        selection: Option<crate::model::SelectionContext>,
+        agent_mode_override: Option<bool>,
+        autonomous: bool,
+        once_skills: &[SkillPin],
+        model: Option<&RunModel>,
+        requested_tools: &[agent_core::ToolName],
+        trace_id: Option<&str>,
+    ) -> Result<PostResult, ChatError> {
+        self.post_message_on_branch(
+            ctx,
+            thread_id,
+            text,
+            attachments,
+            selection,
+            agent_mode_override,
+            autonomous,
+            once_skills,
+            model,
+            requested_tools,
+            BranchTarget::default(),
+            trace_id,
+        )
+        .await
+    }
+
+    /// [`Self::post_message_with_model`] に**編集元の発話**（`edit_of`・#1166）を足したもの。
+    ///
+    /// `edit_of` が無ければ表示中の枝の葉に続ける。あれば編集元と同じ親に新しい発話を置く
+    /// （編集元とその続きは消さずに別の枝として残る）。どちらでも新しい応答が表示中の枝になる。
+    #[allow(clippy::too_many_arguments)] // 発話の全構成要素（呼び出し元は api 1 箇所）。
+    pub async fn post_message_on_branch(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        text: &str,
+        attachments: &[Attachment],
         // エディタの選択コンテキスト（Task 11.10）。node_id の可読性検証は api 層の責務
         // （storage.get_metadata の viewer 判定・監査つき）。ここでは上限の切り詰めのみ行う。
         selection: Option<crate::model::SelectionContext>,
@@ -81,6 +117,8 @@ impl ChatStore {
         // 語彙照合・重複除去・件数上限は API 層で済んでいる。run にスナップショットするだけで、
         // 提示ツール・承認・認可は変えない（ワーカーが誘導＝常時ロード＋注記に使う）。
         requested_tools: &[agent_core::ToolName],
+        // 親の指定（#1166）: 編集元の user 発話、または続ける先（画面で表示している枝の末尾）。
+        branch: BranchTarget,
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         let post = AuditAction::ThreadPost;
@@ -150,16 +188,19 @@ impl ChatStore {
         }
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
+        let active = touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
+        // 親を決める（スレッドの行ロックの後＝並行する投稿・枝の切り替えと直列）。
+        let parent = parent_for_post(&mut tx, thread_id, ctx.tenant_id(), active, branch).await?;
         let user_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
-             VALUES ($1, $2, $3, 'user', $4, $5) RETURNING id",
+            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode, parent_id) \
+             VALUES ($1, $2, $3, 'user', $4, $5, $6) RETURNING id",
         )
         .bind(thread_id)
         .bind(ctx.org())
         .bind(ctx.tenant_id())
         .bind(Json(&user_content))
         .bind(agent_mode)
+        .bind(parent)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -176,6 +217,8 @@ impl ChatStore {
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
+        // 新しい応答を表示中の枝にする（編集で作った枝へ画面が移る）。
+        super::branches::set_active_leaf(&mut tx, thread_id, ctx.tenant_id(), asst_id).await?;
 
         // 承認モードは投入時点の thread 値をスナップショットする（発話者はモードを見て投稿する
         // ＝その水準での実行に同意・実行中の緩和は actor 本人設定のみ有効・#350）。
@@ -230,26 +273,99 @@ impl ChatStore {
     }
 }
 
+/// 新しい発話をどこに置くか（#1166）。既定は表示中の枝の続き。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BranchTarget {
+    /// 編集して送り直す元の user 発話（同じ親に新しい版を置く）。
+    pub edit_of: Option<Uuid>,
+    /// 続ける先のメッセージ（送った人の画面に出ていた枝の末尾）。別のタブ・共同編集者が
+    /// 枝を切り替えていても、送った人が見ていた会話に続ける。生成中は無視して順番待ちにする。
+    pub after: Option<Uuid>,
+}
+
+/// 新しい user 発話の親（編集なら編集元の親、続ける先の指定があればそこ、無ければ表示中の枝の葉）。
+async fn parent_for_post(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thread_id: Uuid,
+    tenant_id: &str,
+    active: Option<Uuid>,
+    branch: BranchTarget,
+) -> Result<Option<Uuid>, ChatError> {
+    use super::branches::{busy_error, has_unfinished_run, load_tree};
+    let busy = has_unfinished_run(tx, thread_id, tenant_id).await?;
+    if let Some(edit_of) = branch.edit_of {
+        if busy {
+            return Err(busy_error());
+        }
+        // 編集できるのは同じスレッドの user 発話だけ（応答や他スレッドの id は存在秘匿で 404）。
+        let row: Option<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT parent_id FROM message \
+             WHERE id = $1 AND thread_id = $2 AND tenant_id = $3 AND role = 'user'",
+        )
+        .bind(edit_of)
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        return row.ok_or(ChatError::NotFound);
+    }
+    // 続ける先（生成中は表示中の枝の後ろへ順番待ちにするので使わない）。
+    let after = branch.after.filter(|_| !busy);
+    // 多くの投稿は「指定（または表示中）の葉に子が無い」ので、木を引かずに 1 問で確かめる。
+    if let Some(leaf) = after.or(active) {
+        let (role, has_child): (Option<String>, bool) = sqlx::query_as(
+            "SELECT (SELECT role FROM message WHERE id = $1 AND thread_id = $2 AND tenant_id = $3), \
+                    EXISTS (SELECT 1 FROM message WHERE thread_id = $2 AND parent_id = $1 AND tenant_id = $3)",
+        )
+        .bind(leaf)
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        if let Some(after) = after {
+            return match role.as_deref() {
+                // 無ければ 404。
+                None => Err(ChatError::NotFound),
+                // 発話を指していたら（空の応答が画面に出ていない等）、その応答の側へ辿る。
+                // 発話の直下に発話を置くと、発話が 2 つ続き、空の応答との版の切り替えが出る。
+                Some("user") if has_child => {
+                    let (tree, _) = load_tree(tx, thread_id, tenant_id).await?;
+                    Ok(Some(tree.descend_latest(after)))
+                }
+                // 回答はそのまま親にする（子があれば新しい枝になる）。
+                Some(_) => Ok(Some(after)),
+            };
+        }
+        if role.is_some() && !has_child {
+            return Ok(Some(leaf));
+        }
+    }
+    let (tree, active) = load_tree(tx, thread_id, tenant_id).await?;
+    Ok(tree.active_leaf(active))
+}
+
 /// スレッドの `updated_at` を更新して行ロックを取る（削除と直列化する・投稿の最初に呼ぶ）。
 ///
 /// 削除が先に確定していれば 0 行で NotFound。こちらが先なら削除は commit を待ってから、
 /// ここで積む run も停止要求の対象にする（[`ChatStore::delete_thread`]）。
+///
+/// 返り値は表示中の枝の葉の指定（`thread.active_message_id`・#1166）。
 async fn touch_live_thread(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     thread_id: Uuid,
     tenant_id: &str,
-) -> Result<(), ChatError> {
-    let touched = sqlx::query(
+) -> Result<Option<Uuid>, ChatError> {
+    let touched: Option<Option<Uuid>> = sqlx::query_scalar(
         "UPDATE thread SET updated_at = now() \
-         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+         RETURNING active_message_id",
     )
     .bind(thread_id)
     .bind(tenant_id)
-    .execute(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_db)?;
-    if touched.rows_affected() == 0 {
-        return Err(ChatError::NotFound);
-    }
-    Ok(())
+    touched.ok_or(ChatError::NotFound)
 }

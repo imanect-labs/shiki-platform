@@ -18,7 +18,7 @@ pub struct CapabilityUsage {
     pub app_id: Uuid,
     /// 呼んだ利用者（`principal` が `app` の行は空・BUG-204）。
     pub user_sub: String,
-    /// 呼んだ主体の種類（`user` は利用者・`app` は B2 の自動実行のアプリの主体・BUG-204・migration 0143）。
+    /// 呼んだ主体の種類（`user` は利用者・`app` は B2 の自動実行のアプリの主体・BUG-204・migration 0145）。
     pub principal: String,
     pub capability: String,
     pub day: NaiveDate,

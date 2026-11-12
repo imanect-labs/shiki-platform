@@ -109,8 +109,8 @@ test("ドライブのフォルダをパスのラベルで参照し、保存後�
   const childId = await createFolder(page, child, parentId);
 
   await page.goto("/skills/new");
-  // 本文の操作に集中するためアシスタントは閉じる。
-  await page.getByTestId("skill-chat-toggle").first().click();
+  // 本文の操作に集中するためアシスタントは閉じる（PC では開いている間 ✨ は隠れるので、パネルの × で閉じる）。
+  await page.getByRole("button", { name: "チャットを閉じる" }).click();
   const name = uniqueName("ref-skill");
   await page.getByTestId("skill-name-input").fill(name);
   await page.getByTestId("skill-description-input").fill("参照の E2E");
@@ -250,7 +250,7 @@ test("AI に直してもらっても、AI が触れなかった項目（script�
 test("全角の「＠」でもドライブの参照を開ける", async ({ page }) => {
   await loginViaKeycloak(page);
   await page.goto("/skills/new");
-  await page.getByTestId("skill-chat-toggle").first().click();
+  await page.getByRole("button", { name: "チャットを閉じる" }).click();
   await page.getByTestId("skill-body-editor").click();
   await page.keyboard.insertText("規程は ＠");
   await expect(page.getByRole("dialog", { name: "ドライブから参照" })).toBeVisible();

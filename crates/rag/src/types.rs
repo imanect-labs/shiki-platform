@@ -61,7 +61,7 @@ pub struct ParsedBlock {
     pub level: Option<u32>,
     pub text: String,
     pub page: Option<i32>,
-    /// PDF など座標を持つ形式のみ: 原本上の枠（worker の prov。charspan は使わない）。
+    /// PDF など座標を持つ形式のみ: 原本上の枠と本文内文字範囲（worker の prov）。
     #[serde(default)]
     pub prov: Vec<PageBox>,
     /// list_item のみ: 見た目の番号・記号。

@@ -33,6 +33,8 @@
 //!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
 //! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
 //!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
+//! - `truncatecall:`（ツールがあるとき）… 1 ターン目に tools[0] の呼び出しを引数の途中（`{}`）で `MaxTokens` で
+//!   終え、ツールの結果が返ったら通常の応答に戻る（切れた呼び出しの回復の検証用・#1196）。
 //!
 //! 決定的なのは応答の中身だけで、ツール呼び出しの id は実プロバイダと同じく呼び出しごとに一意
 //! （[`super::stub_stream::stub_tool_call_id`]・承認の鍵が前の決定に当たらないように）。
@@ -46,6 +48,7 @@ use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, stub_tool_call_id,
     text_stream, text_stream_ending, tool_call_stream, tool_calls_stream,
+    truncated_tool_call_stream,
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
@@ -87,7 +90,10 @@ fn last_user_text(req: &GenerateRequest) -> String {
             m.content
                 .iter()
                 .filter_map(|b| match b {
-                    Block::Text { text } => Some(text.as_str()),
+                    // 前のターンの作業記録（chat の履歴が足す）は利用者の発話ではない。
+                    Block::Text { text } if !text.starts_with(crate::WORK_LOG_MARK) => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -389,6 +395,12 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
             serde_json::json!({}),
             prompt_tokens,
         );
+    }
+    // --- 出力上限で切れたツール呼び出し `truncatecall:`: 1 ターン目だけ tools[0] の引数が `{}` で
+    //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動・#1196）。
+    //     本文の打ち切りの `truncate:`（GAP-106・上で先に拾う）とは別の語にする。 ---
+    if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("truncatecall:") {
+        return truncated_tool_call_stream(req.tools[0].name.clone(), prompt_tokens);
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {

@@ -102,7 +102,7 @@ mod tests {
     /// DB の check 制約が全ての値を許す（足した値を migration に書き忘れると確定が落ちる）。
     #[test]
     fn db_check_constraint_lists_every_value() {
-        let sql = include_str!("../../../migrations/0150_message_stop_reason.sql");
+        let sql = include_str!("../../../migrations/0152_message_stop_reason.sql");
         for r in ALL {
             assert!(sql.contains(&format!("'{}'", r.as_str())), "{}", r.as_str());
         }

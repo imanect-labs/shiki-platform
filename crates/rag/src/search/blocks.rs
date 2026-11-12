@@ -27,22 +27,79 @@ impl SearchService {
         limit: u32,
         trace_id: Option<&str>,
     ) -> Result<DocBlocksPage, RagError> {
+        self.blocks_on_page(ctx, node, version, from, limit, None, trace_id)
+            .await
+    }
+
+    /// PDF のページで絞った窓。跨ページブロックは provenance のページも照合する。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn blocks_on_page(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+        version: i64,
+        from: i32,
+        limit: u32,
+        page: Option<i32>,
+        trace_id: Option<&str>,
+    ) -> Result<DocBlocksPage, RagError> {
+        self.blocks_in_page_range(ctx, node, version, from, limit, page, page, trace_id)
+            .await
+    }
+
+    /// ページ範囲は最大16ページ。検索の一括取得でも認可済み Node と本文監査を維持する。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn blocks_in_page_range(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+        version: i64,
+        from: i32,
+        limit: u32,
+        page: Option<i32>,
+        page_end: Option<i32>,
+        trace_id: Option<&str>,
+    ) -> Result<DocBlocksPage, RagError> {
+        let page_end = page.map(|start| {
+            page_end
+                .unwrap_or(start)
+                .clamp(start, start.saturating_add(15))
+        });
         let limit = limit.clamp(1, MAX_BLOCKS_PER_PAGE);
         // 1 件多く取り、続きがあるかを判定する。
-        let mut rows: Vec<DocBlock> = sqlx::query_as(
+        // ページ指定と未指定は別の prepared statement にする。nullable parameter の
+        // OR で包むと generic plan がページ索引を使えなくなる。
+        let page_filter = if page.is_some() {
+            // RLS より前に評価できる列比較で候補を絞り、JSON の厳密照合は権限判定後に行う。
+            "and (page between $7 and $8 or \
+                  (prov_page_min is not null and (page is null or prov_page_min <> page or prov_page_max <> page) \
+                   and prov_page_min <= $8 and prov_page_max >= $7)) \
+             and (page between $7 and $8 or jsonb_path_query_array(prov, '$[*].page') @> any($9::jsonb[]))"
+        } else {
+            ""
+        };
+        let statement = format!(
             "select ordinal, type, level, text, list_marker, page, prov from doc_block \
              where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
-               and ordinal >= $5 \
-             order by ordinal limit $6",
-        )
-        .bind(ctx.tenant_id())
-        .bind(ctx.org())
-        .bind(node.id)
-        .bind(version)
-        .bind(from.max(0))
-        .bind(i64::from(limit) + 1)
-        .fetch_all(&self.pool)
-        .await?;
+               and ordinal >= $5 {page_filter} order by ordinal limit $6"
+        );
+        let query = sqlx::query_as(&statement)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(node.id)
+            .bind(version)
+            .bind(from.max(0))
+            .bind(i64::from(limit) + 1);
+        let query = if let Some(page) = page {
+            let end = page_end.unwrap_or(page);
+            let pages: Vec<serde_json::Value> = (page..=end)
+                .map(|value| serde_json::json!([value]))
+                .collect();
+            query.bind(page).bind(end).bind(pages)
+        } else {
+            query
+        };
+        let mut rows: Vec<DocBlock> = query.fetch_all(&self.pool).await?;
         let next_from = if rows.len() > limit as usize {
             rows.truncate(limit as usize);
             rows.last().map(|b| b.ordinal + 1)
@@ -63,6 +120,8 @@ impl SearchService {
                     trace_id,
                     metadata: serde_json::json!({
                         "version": version,
+                        "page": page,
+                        "page_end": page_end,
                         "ordinals": [first, last],
                     }),
                 },

@@ -5,6 +5,11 @@ import type { components } from "@/generated/api";
 import { apiFetch } from "./api";
 import { numberedName } from "./file-name";
 import { sha256Hex } from "./sha256";
+import { storageScopeGeneration } from "./user-storage";
+
+function assertUploadScope(expected: number) {
+  if (storageScopeGeneration() !== expected) throw new Error("ログイン状態が変わったためアップロードを中止しました");
+}
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
 export type ChildrenResponse = components["schemas"]["ChildrenResponse"];
@@ -295,15 +300,18 @@ export async function uploadNewFile(opts: {
   parentId?: string;
   onProgress?: (fraction: number) => void;
 }): Promise<NodeResponse> {
+  const startedAt = storageScopeGeneration();
   const parent = opts.parentId ?? null;
   const candidates = [
     opts.file.name,
     ...Array.from({ length: MAX_FREE_NAME_TRIES }, (_, i) => numberedName(opts.file.name, i + 1)),
   ];
   for (const name of candidates) {
-    if (await findSiblingByName(parent, name).catch(() => null)) continue;
+    const sibling = await findSiblingByName(parent, name).catch(() => null);
+    assertUploadScope(startedAt);
+    if (sibling) continue;
     try {
-      return await uploadFile({ ...opts, name });
+      return await uploadFile({ ...opts, name, expectedScopeGeneration: startedAt });
     } catch (e) {
       if (!isConflict(e)) throw e;
     }
@@ -316,15 +324,20 @@ export async function uploadFile(opts: {
   parentId?: string;
   targetNodeId?: string;
   baseVersion?: number;
+  /// 呼び出し元のユーザー世代。同名検索・ハッシュ計算・転送中のログアウトを遮断する。
+  expectedScopeGeneration?: number;
   name?: string;
   onProgress?: (fraction: number) => void;
 }): Promise<NodeResponse> {
   const { file } = opts;
+  const startedAt = opts.expectedScopeGeneration ?? storageScopeGeneration();
+  assertUploadScope(startedAt);
   const name = opts.name ?? file.name;
   const buffer = await file.arrayBuffer();
   const sha256 = await sha256Hex(buffer);
   const contentType = file.type || "application/octet-stream";
 
+  assertUploadScope(startedAt);
   // 1. declare（presigned PUT URL を得る）。
   const ticket = await apiFetch("/files", {
     method: "POST",
@@ -340,13 +353,17 @@ export async function uploadFile(opts: {
     }),
   }).then((r) => okJson<UploadTicketResponse>(r));
 
+  assertUploadScope(startedAt);
   // 2. presigned PUT で実体をオブジェクトストアへ直接転送（BFF を経由しない）。
   await putWithProgress(ticket.upload_url, buffer, contentType, opts.onProgress);
 
+  assertUploadScope(startedAt);
   // 3. finalize（server-side で再ハッシュ照合し node を確定）。
-  return apiFetch(`/files/${ticket.upload_id}/finalize`, { method: "POST" }).then((r) =>
+  const node = await apiFetch(`/files/${ticket.upload_id}/finalize`, { method: "POST" }).then((r) =>
     okJson<NodeResponse>(r),
   );
+  assertUploadScope(startedAt);
+  return node;
 }
 
 /// presigned PUT を進捗付きで送る（XHR で upload.onprogress を取る）。
@@ -396,9 +413,9 @@ export function versionDownloadUrl(fileId: string, version: number): Promise<Dow
 export function getVersionBlocks(
   fileId: string,
   version: number,
-  opts: { from: number; limit: number },
+  opts: { from: number; limit: number; page?: number; page_end?: number },
 ): Promise<DocBlocksPage> {
-  return apiFetch(`/files/${fileId}/versions/${version}/blocks${qs({ from: opts.from, limit: opts.limit })}`).then(
+  return apiFetch(`/files/${fileId}/versions/${version}/blocks${qs({ from: opts.from, limit: opts.limit, page: opts.page, page_end: opts.page_end })}`).then(
     (r) => okJson<DocBlocksPage>(r),
   );
 }

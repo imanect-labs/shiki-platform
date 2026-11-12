@@ -35,14 +35,18 @@ pub(super) struct ThreadHistory {
 }
 
 impl ChatWorker {
-    /// 直前までのメッセージを LLM 履歴へ写す（テキストのみ・短ホライズン）。
+    /// 生成対象までの枝のメッセージを LLM 履歴へ写す（有界の画像添付を含む・短ホライズン）。
     pub(super) async fn build_history(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         assistant_message_id: Uuid,
     ) -> Result<ThreadHistory, ChatError> {
-        let msgs = self.store.get_messages(ctx, thread_id, None).await?;
+        // 生成対象の祖先だけ（編集で枝分かれした会話の、他の枝の発話を混ぜない・#1166）。
+        let msgs = self
+            .store
+            .get_message_path(ctx, thread_id, assistant_message_id, None)
+            .await?;
         // スキルごとに、最新の内容（編集中の内容・下書き）を持つメッセージの位置（#919）。
         // それより前の内容は履歴では 1 行の印にする（往復のたびに全体を積み上げない）。
         // 最新の位置では、それまでの内容を重ねた全体像を見せる（下書きは部分更新のことがある）。
@@ -61,8 +65,45 @@ impl ChatWorker {
             }
         }
         let mut out = Vec::new();
+        let image_store = self
+            .storage
+            .as_ref()
+            .map(|storage| crate::attachments::StorageAttachmentStore::new(storage.clone()));
+        let mut images = super::history_images::load_images(
+            ctx,
+            &msgs,
+            image_store
+                .as_ref()
+                .map(|s| s as &dyn agent_core::AttachmentStore),
+        )
+        .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
+        // 直近の assistant ターンだけ、ツールの作業記録を次の user 発話の前に添える
+        // （前のターンで見つけた id・値を次のターンで使えるように・history_work_log.rs）。
+        let logged_from = msgs
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.role == Role::Assistant && m.id != assistant_message_id)
+            .map(|(i, _)| i)
+            .rev()
+            .nth(super::history_work_log::WORK_LOG_TURNS - 1)
+            .unwrap_or(0);
+        // 共有の相手がいる会話では、作業記録に結果の本文を載せない（PIT-84・D-214）。保存した結果は
+        // 共有の前の全部入りのことがあり、相手のいる会話の次の回答へ戻すと、モデルが本文に写して相手に
+        // 見える（試運転の観測を相手のいる会話で絞るのと同じ考え方）。呼び出しの名前と引数は相手の
+        // 画面にも見えるので残す。記録する呼び出しが無ければ問い合わせない。
+        let logs_calls = msgs.iter().enumerate().any(|(i, m)| {
+            i >= logged_from
+                && m.role == Role::Assistant
+                && m.id != assistant_message_id
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, crate::model::ContentBlock::ToolCall { .. }))
+        });
+        let log_results =
+            !logs_calls || !self.store.thread_audience(ctx, thread_id).await.is_shared();
+        let mut pending_log: Option<String> = None;
         for (i, m) in msgs.into_iter().enumerate() {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
@@ -86,6 +127,9 @@ impl ChatWorker {
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
+            if role == LlmRole::Assistant && i >= logged_from {
+                pending_log = super::history_work_log::work_log(&m.content, log_results);
+            }
             let mut text = message_text_with(
                 &m.content,
                 &|name| latest_skill.get(name) == Some(&i),
@@ -99,7 +143,19 @@ impl ChatWorker {
             if text.trim().is_empty() {
                 continue;
             }
-            out.push(LlmMessage::text(role, text));
+            let mut message = LlmMessage::text(role, text);
+            // 作業記録は発話とは別のブロックとして前に置く（発話の本文そのものは変えない）。
+            if role == LlmRole::User {
+                if let Some(log) = pending_log.take() {
+                    message
+                        .content
+                        .insert(0, llm_gateway::Block::Text { text: log });
+                }
+            }
+            if let Some(blocks) = images.remove(&m.id) {
+                message.content.extend(blocks);
+            }
+            out.push(message);
         }
         Ok(ThreadHistory {
             messages: out,
@@ -142,6 +198,13 @@ impl ChatWorker {
             .take()
             .unwrap_or_else(|| self.config.system_prompt.clone());
         opts.system = Some(match self.origin_document(run).await {
+            Some((node_id, name))
+                if name
+                    .as_deref()
+                    .is_some_and(|n| n.to_ascii_lowercase().ends_with(".pdf")) =>
+            {
+                format!("{base}\n\nユーザーは PDF（node_id={node_id}）を参照しています。選択範囲の出典・版・ページを区別して回答してください。PDF は閲覧対象です。")
+            }
             Some((node_id, name)) => {
                 opts.tool_search.always_load.extend(
                     super::history::origin_document_tools(name.as_deref())
@@ -278,6 +341,10 @@ impl ChatWorker {
                 opts.parallel_read_tools = self.config.parallel_read_tools;
                 opts.tool_search.enabled = self.config.tool_search;
                 opts.tool_search.embedder = self.tool_search_embedder();
+                // 1 応答の出力上限は通常チャットと同じ設定値にする。プロファイル既定（4096）の
+                // ままだと、思考と大きなツール引数（表の編集・委譲の指示文）で枠が尽き、
+                // 引数の途中で切れて run が止まっていた（プレビューの実測）。
+                opts.max_tokens = Some(self.config.max_tokens);
                 opts
             } else {
                 // storage 未配線: 自律不能。制約版に落とす（黙って弱くしない・警告）。
@@ -333,7 +400,11 @@ impl ChatWorker {
         // 作成系の道具の初回の呼び出しで予算を 1 回だけ広げる（通常の会話だけ・HD-4 (c)・D-204）。
         super::builder_tools::extend_on_builder_tools(&mut opts, &self.config.app_builder, &tools);
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する（自律・作成系・R1）。
-        let resume = resume_state(run, sink).await?;
+        // 画像は現在の権限で読み直したものに差し替える（#1179）。
+        let mut resume = resume_state(run, sink).await?;
+        if let Some(checkpoint) = resume.as_mut() {
+            super::history_images::refresh_checkpoint_images(checkpoint, &history);
+        }
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(
@@ -357,6 +428,8 @@ impl ChatWorker {
         })?;
         // 本文は sink の projection、停止（Cancelled）は cancel フラグで確定する。ここでは途中で
         // 止まった理由だけを返し、done イベントとメッセージに残す（利用者に打ち切りを伝える）。
+        // 出力上限で切れたまま終わった run（#1196）も `Truncated` として残し、画面が回答の下に
+        // 「途中で打ち切りました・続けて」の注記を出す（本文へ注記の文を足すと注記が二重になる・GAP-106）。
         let stop = StopReason::from_agent(outcome.stop);
         if let Some(stop) = stop {
             tracing::info!(run_id = %run.run_id, stop_reason = stop.as_str(), "回答が途中で止まった");

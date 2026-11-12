@@ -15,10 +15,8 @@ type BaseProps = {
   active?: boolean;
   /// レール（アイコンのみ）表示か。true ならラベルを隠し tooltip を出す。
   collapsed?: boolean;
-  /// 階層の深さ（アコーディオン子のインデント用）。
-  depth?: number;
   /// 指定すると、アクティブ時にアイコンを四季の差し色（春→夏→秋→冬の巡回）で点灯させる。
-  /// Drive 配下のサブセクションにだけ渡し、汎用ナビは無地のまま据え置く。
+  /// 設定画面のセクション一覧など、区画の並びにだけ渡し、汎用ナビは無地のまま据え置く。
   seasonIndex?: number;
   trailing?: React.ReactNode;
   /// 件数のバッジ（承認の受信箱など）。広げた表示では右端に数、レールではアイコンの右上に点を出す。
@@ -34,12 +32,10 @@ type LinkProps = BaseProps & { href: string; onClick?: () => void };
 type ButtonProps = BaseProps & {
   href?: undefined;
   onClick?: () => void;
-  "aria-expanded"?: boolean;
-  "aria-controls"?: string;
 };
 
 // アクティブ＝ホバーと同系のグレー（白カードは廃止）。アクティブはやや濃いグレーで区別。
-function itemClasses(active: boolean, collapsed: boolean, depth: number) {
+function itemClasses(active: boolean, collapsed: boolean) {
   return cn(
     // isolate: 独自の stacking context を作り、アクティブピル（-z-10）を項目内に収める
     // （サイドバー背景の下へ潜って見えなくなる事故を防ぐ）。
@@ -50,7 +46,6 @@ function itemClasses(active: boolean, collapsed: boolean, depth: number) {
     active
       ? "font-medium text-sidebar-foreground"
       : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
-    !collapsed && depth > 0 && "pl-9",
   );
 }
 
@@ -133,7 +128,6 @@ export function NavItem(props: LinkProps | ButtonProps) {
     label,
     active = false,
     collapsed = false,
-    depth = 0,
     seasonIndex,
     trailing,
     badge,
@@ -149,7 +143,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
         onClick={props.onClick}
         aria-current={active ? "page" : undefined}
         aria-label={collapsed || badge ? spoken : undefined}
-        className={cn(itemClasses(active, collapsed, depth), className)}
+        className={cn(itemClasses(active, collapsed), className)}
       >
         <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} badge={badge} />
       </Link>
@@ -159,9 +153,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
         onClick={props.onClick}
         aria-current={active ? "page" : undefined}
         aria-label={collapsed || badge ? spoken : undefined}
-        aria-expanded={props["aria-expanded"]}
-        aria-controls={props["aria-controls"]}
-        className={cn(itemClasses(active, collapsed, depth), className)}
+        className={cn(itemClasses(active, collapsed), className)}
       >
         <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} badge={badge} />
       </button>

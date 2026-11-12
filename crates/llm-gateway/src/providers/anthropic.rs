@@ -254,6 +254,14 @@ fn tool_result_content(
 fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<(Value, Option<Value>)> {
     match b {
         Block::Text { text } => Some((json!({ "type": "text", "text": text }), None)),
+        Block::Image {
+            media_type, data, ..
+        } => Some((
+            json!({
+                "type":"image", "source":{"type":"base64", "media_type":media_type, "data":data.0.as_ref()}
+            }),
+            None,
+        )),
         // 再送する thinking はここでは扱わない（Phase 3 では省略）。
         // 他プロバイダの不透明な推論アイテムも送らない。
         Block::Thinking { .. } | Block::Reasoning { .. } => None,
@@ -433,6 +441,26 @@ fn rate_limit_wait(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_image_is_sent_as_base64_source() {
+        let image = Block::Image {
+            media_type: "image/png".into(),
+            source_id: "file".into(),
+            data: crate::ImageData("YWJj".into()),
+        };
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let refs = RefRendering {
+            known: HashSet::new(),
+            native: true,
+            names: &names,
+        };
+        let (wire, after) = to_anthropic_block(&image, &refs).expect("image");
+        assert_eq!(
+            wire["source"],
+            json!({"type":"base64", "media_type":"image/png", "data":"YWJj"})
+        );
+        assert!(after.is_none());
+    }
     use super::*;
 
     /// 429 の `retry-after` は 20 秒まで待つ。長い待ち・HTTP-date・読めない値・指示の無いもの・締め切りを越える待ちは

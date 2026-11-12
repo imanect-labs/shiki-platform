@@ -19,6 +19,8 @@ import {
   getAutonomousMode,
   getThread,
   getThreadMessages,
+  forkThread,
+  selectBranch,
   postMessage,
   isEmptyContent,
   notifyThreadsChanged,
@@ -74,6 +76,7 @@ import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
 import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
+import { BranchSwitcher, MessageMoreMenu, UserMessageActions, UserMessageEditor } from "./message-branch";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
@@ -259,6 +262,10 @@ export function Conversation({
   const wide = useMediaQuery("(min-width: 1200px)");
   const sourceAside = !isPanel && wide;
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
+  // 表示中の枝の本当の末尾（サーバ上の id）。描画からは落とす空の回答（生成の失敗・停止）も含める。
+  // 送信時の「続ける先」（after）に使う: 描画の末尾（直前の発話）を渡すと、空の回答の兄弟として
+  // 新しい枝ができてしまう。読み込み・投稿の受理で更新する。
+  const leafRef = React.useRef<string | null>(null);
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   // 作成した文書の遷移先。**run 完了後**に遷移する（#381）: document_ref はツール結果直後に
@@ -313,7 +320,9 @@ export function Conversation({
   // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
-  const canExport = messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "text" && b.text.trim()));
+  const canExport = messages.some(
+    (m) => m.role === "assistant" && m.content.some((b) => (b.type === "text" && b.text.trim()) || b.type === "translation"),
+  );
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
@@ -686,7 +695,12 @@ export function Conversation({
       context?: SelectionContext,
       // この発話にだけ適用する skill（スラッシュコマンド・#387）。
       onceSkills?: { artifactId: string; version?: number | null }[],
+      // 編集して送り直す元の発話と、その位置の版の一覧（#1166）。その発話から後ろを画面から
+      // 外して、新しい版として送る（版の切り替えは読み直さずに画面で足す）。
+      editOf?: { messageId: string; siblingIds: string[] },
     ) => {
+      // 編集は生成中には受けない（表示中の枝と生成先がずれる・ボタンも押せなくしている）。
+      if (editOf && streamRef.current) return;
       setError(null);
       setNotice(null);
       // 自分の発話は必ず見える位置へ（読み返し中に送っても、送ったものと返答を追う）。
@@ -735,10 +749,26 @@ export function Conversation({
           );
         return;
       }
-      setMessages((prev) => [
-        ...prev,
-        { id: newId(), role: "user", content: userBlocks, createdAt: new Date().toISOString() },
-      ]);
+      const localId = newId();
+      // 続ける先＝画面に出ている枝の末尾。別のタブで版を切り替えられても、サーバはこの会話に
+      // 続ける（編集のときは編集元の位置が決めるので送らない）。
+      const after = editOf ? undefined : (leafRef.current ?? undefined);
+      setMessages((prev) => {
+        // 編集: 元の発話から後ろは別の版になる（「< 2/2 >」で戻れる）。
+        const cut = editOf ? prev.findIndex((m) => m.id === editOf.messageId) : -1;
+        const kept = cut >= 0 ? prev.slice(0, cut) : prev;
+        return [
+          ...kept,
+          {
+            id: localId,
+            role: "user",
+            content: userBlocks,
+            createdAt: new Date().toISOString(),
+            local: true,
+            siblingIds: editOf ? [...editOf.siblingIds, localId] : [],
+          },
+        ];
+      });
       streamRef.current = { ...EMPTY_STREAM };
       setStream(streamRef.current);
       const handlers = makeHandlers();
@@ -753,6 +783,30 @@ export function Conversation({
             settleToolChoice(threadId, tools);
             handlers.onRunId?.(runId);
           },
+          // 受理された回答の枠が新しい末尾（次の発話はこの後ろに続ける）。
+          onAssistantMessageId: (assistantMessageId) => {
+            leafRef.current = assistantMessageId;
+            handlers.onAssistantMessageId?.(assistantMessageId);
+          },
+          // 編集が受理されなかったら、画面から外した続きを読み直して戻す。
+          onError: (msg) => {
+            handlers.onError?.(msg);
+            if (editOf) setReloadKey((k) => k + 1);
+          },
+          // 受理された: 仮の発話をサーバの ID に置き換える（読み直さずに編集・版の切り替えができる）。
+          onUserMessageId: (userMessageId) =>
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localId
+                  ? {
+                      ...m,
+                      id: userMessageId,
+                      local: false,
+                      siblingIds: m.siblingIds?.map((id) => (id === localId ? userMessageId : id)),
+                    }
+                  : m,
+              ),
+            ),
         },
         runAutonomous,
         runAutonomous,
@@ -760,9 +814,60 @@ export function Conversation({
         onceSkills,
         model,
         tools,
+        { editOf: editOf?.messageId, after },
       );
     },
     [threadId, makeHandlers, autonomous, scrollToBottom],
+  );
+
+  // 編集中の発話（#1166）。同時に 1 つだけ。
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  /// 過去の発話を直して送り直す（元の添付・選択コンテキストはそのまま付け直す）。
+  const resendEdited = React.useCallback(
+    (m: ChatMessageT, text: string) => {
+      setEditingId(null);
+      const attachments = m.content
+        .filter((b): b is Extract<ContentBlock, { type: "file_ref" }> => b.type === "file_ref")
+        .map((b) => ({ node_id: b.node_id, name: b.name }));
+      const context = m.content.find(
+        (b): b is Extract<ContentBlock, { type: "selection_context" }> => b.type === "selection_context",
+      )?.context;
+      send(text, attachments, undefined, context, undefined, {
+        messageId: m.id,
+        siblingIds: m.siblingIds && m.siblingIds.length > 0 ? m.siblingIds : [m.id],
+      });
+    },
+    [send],
+  );
+  // 枝の切り替え（#1166）。表示中の枝はスレッドの状態なので、サーバで切り替えてから読み直す。
+  const [switchingBranch, setSwitchingBranch] = React.useState(false);
+  const switchBranch = React.useCallback(
+    (messageId: string) => {
+      setSwitchingBranch(true);
+      setError(null);
+      // 押せない状態は読み直しが画面に反映されるまで続ける（古い版の一覧から 2 度押させない）。
+      selectBranch(threadId, messageId)
+        .then(() => reload())
+        .catch((e) => {
+          setSwitchingBranch(false);
+          setError(
+            e instanceof Error && e.message.includes("(403)")
+              ? "この会話の版を切り替える権限がありません"
+              : e instanceof Error
+                ? e.message
+                : "枝の切り替えに失敗しました",
+          );
+        });
+    },
+    [threadId, reload],
+  );
+  // 新しいチャットに分岐（#1166）。その回答までを複製した会話へ移る。
+  const forkAt = React.useCallback(
+    async (messageId: string) => {
+      const thread = await forkThread(threadId, messageId);
+      router.push(`/c/${thread.id}`);
+    },
+    [threadId, router],
   );
 
   /// 順番待ちを取り消す（サーバの run もキャンセルする＝離脱後に走り出さない）。
@@ -860,6 +965,8 @@ export function Conversation({
         }) => {
         if (!active) return;
         setContextUsage(usage);
+        // 経路の本当の末尾（空の回答も含む）。順番待ちがあれば、その末尾が表示中の枝の葉。
+        leafRef.current = msgs.at(-1)?.id ?? null;
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
         // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。ただし途中で
         // 止まった理由のある回答（出力の上限で本文の前に切れた等・GAP-106）は注記を出すので残す
@@ -881,6 +988,7 @@ export function Conversation({
             })),
         );
         setMessages(shown.filter((m) => !queuedRunOf.has(m.id)));
+        setSwitchingBranch(false);
         const resuming = activeRunId !== null;
         // 初回の読み込みでだけ（その後の読み直しで、手で直した内容を上書きしない）。
         if (adoptSkillDraftOnLoad && onSkillDraftOpened && !resuming && !adoptedDraftRef.current) {
@@ -953,6 +1061,7 @@ export function Conversation({
       })
       .catch((e) => {
         if (!active) return;
+        setSwitchingBranch(false);
         if (e instanceof ThreadNotFound) setNotFound(true);
         else setError(e instanceof Error ? e.message : "読み込みに失敗しました");
       });
@@ -1032,9 +1141,16 @@ export function Conversation({
                 ) : null}
                 {messages.map((m) =>
                   m.role === "user" ? (
-                    <div key={m.id} className="min-w-0" {...{ [ANCHOR_ATTR]: m.id }}>
-                      <UserRow blocks={m.content} />
-                    </div>
+                    <UserTurn
+                      key={m.id}
+                      message={m}
+                      editing={editingId === m.id}
+                      busy={stream !== null || queued.length > 0}
+                      switching={switchingBranch}
+                      onEdit={setEditingId}
+                      onResend={resendEdited}
+                      onSelectBranch={switchBranch}
+                    />
                   ) : (
                     <div key={m.id} className="min-w-0" {...{ [ANCHOR_ATTR]: savedMessageId(m) ?? m.id }}>
                     <AssistantRow
@@ -1050,6 +1166,7 @@ export function Conversation({
                       onUiAction={reload}
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
+                      onFork={forkAt}
                       compactDisclaimer={isPanel}
                       threadTitle={threadTitle}
                     />
@@ -1203,6 +1320,14 @@ export function Conversation({
 function paragraphBreak(text: string): string {
   if (!text.trim()) return text;
   return text.endsWith("\n\n") ? text : `${text.replace(/\s+$/, "")}\n\n`;
+}
+
+/// 発話の本文（コピー・編集の初期値）。
+function userText(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
 }
 
 /// 保存済みの回答の ID。読み込んだ行は `id` そのもの、生成直後の仮の行は `serverId`
@@ -1400,6 +1525,64 @@ const UserRow = React.memo(function UserRow({
   );
 });
 
+/// 発話 1 件と、その下の操作（コピー・編集・枝の切り替え・#1166）。
+///
+/// memo して、生成中のトークンで過去の発話を描き直さない（props は安定した値と関数だけ）。
+const UserTurn = React.memo(function UserTurn({
+  message: m,
+  editing,
+  busy,
+  switching,
+  onEdit,
+  onResend,
+  onSelectBranch,
+}: {
+  message: ChatMessageT;
+  editing: boolean;
+  /// 生成中・順番待ちあり（編集も枝の切り替えもできない）。
+  busy: boolean;
+  /// 枝の切り替えの途中。
+  switching: boolean;
+  onEdit: (id: string | null) => void;
+  onResend: (m: ChatMessageT, text: string) => void;
+  onSelectBranch: (id: string) => void;
+}) {
+  const text = userText(m.content);
+  return (
+    <div className="group/user min-w-0" {...{ [ANCHOR_ATTR]: m.id }}>
+      {editing ? (
+        <div className="ml-auto w-full max-w-[85%] max-md:max-w-full">
+          <UserMessageEditor
+            initialText={text}
+            onCancel={() => onEdit(null)}
+            onSubmit={(t) => onResend(m, t)}
+          />
+        </div>
+      ) : (
+        <UserRow
+          blocks={m.content}
+          footer={
+            <UserMessageActions
+              text={text}
+              // 画面で足しただけの発話はサーバの id が無いので、読み直すまで直せない。
+              onEdit={m.local ? undefined : () => onEdit(m.id)}
+              editDisabled={busy}
+              branch={
+                <BranchSwitcher
+                  siblingIds={m.siblingIds ?? []}
+                  currentId={m.id}
+                  disabled={busy || switching}
+                  onSelect={onSelectBranch}
+                />
+              }
+            />
+          }
+        />
+      )}
+    </div>
+  );
+});
+
 /// 順番待ちの発話 1 件。吹き出しは送信済みと同じで、下に控えめな状態と取り消しだけ添える
 /// （サーバは受理済み＝本当に送れているので、見た目を弱めて「未送信」に見せない）。
 function QueuedRow({ item, onCancel }: { item: QueuedMessage; onCancel: () => void }) {
@@ -1456,6 +1639,7 @@ const AssistantRow = React.memo(function AssistantRow({
   onUiAction,
   onSaveAsApp,
   latest = false,
+  onFork,
   compactDisclaimer = false,
   threadTitle = null,
 }: {
@@ -1478,6 +1662,8 @@ const AssistantRow = React.memo(function AssistantRow({
   onSaveAsApp: (target: SaveAsAppTarget) => void;
   /// 最新の回答（アクションを常に出し、下に免責文を 1 回だけ添える）。
   latest?: boolean;
+  /// その回答までを新しいチャットへ複製する（「…」の「新しいチャットに分岐」・#1166）。
+  onFork?: (messageId: string) => Promise<void>;
   /// 免責文を短くする（分割ビューのパネル）。
   compactDisclaimer?: boolean;
   /// 会話の題名（書き出すファイル名の候補・回答に見出しが無いとき）。
@@ -1535,6 +1721,11 @@ const AssistantRow = React.memo(function AssistantRow({
   );
   const translations = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "translation" }> => b.type === "translation",
+  );
+  // 書き出しに渡す訳文（生の値・描き直しのたびに配列を作り直さない）。
+  const rawTranslations = React.useMemo(
+    () => blocks.flatMap((b) => (b.type === "translation" ? [b.translation] : [])),
+    [blocks],
   );
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
@@ -1607,7 +1798,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {evidenceOpen ? <EvidenceTable /> : null}
           {/* 途中で止まった回答は、本文と成果物の後ろ・操作の前に理由と続け方を添える（GAP-106）。 */}
           <StopReasonNote reason={stopReason} />
-          {text ? (
+          {text || translations.length > 0 ? (
             <MessageFooter text={text} pinned={latest}>
               <MessageExportMenu
                 threadId={threadId}
@@ -1615,9 +1806,14 @@ const AssistantRow = React.memo(function AssistantRow({
                 segments={segments}
                 text={text}
                 citations={citations}
+                translations={rawTranslations}
+                imageProxy={imageProxy}
               />
               {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
+              {savedMessageId && onFork ? (
+                <MessageMoreMenu onFork={() => onFork(savedMessageId)} />
+              ) : null}
             </MessageFooter>
           ) : null}
           {latest ? (

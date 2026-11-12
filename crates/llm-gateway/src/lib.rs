@@ -56,8 +56,8 @@ pub use gateway::{
     GenerationRecord, LlmGateway, ProviderInfo, UsageSource, WorkflowEditorSettings,
 };
 pub use model::{
-    Block, Effort, GenerateRequest, Message, ResponseFormat, Role, StopReason, StreamDelta,
-    ToolDef, Usage,
+    Block, Effort, GenerateRequest, ImageData, Message, ResponseFormat, Role, StopReason,
+    StreamDelta, ToolDef, Usage,
 };
 pub use provider::{DeltaStream, LlmError, LlmProvider};
 pub use structured::StructuredOutputMode;
@@ -65,4 +65,9 @@ pub use tenant::{
     ChoiceError, ModelChoice, ResolvedChoice, SettingsError, SettingsPatch, TenantLlmSettings,
     AUTO_MODEL, MODEL_CHOICE_DISABLED, MODEL_UNAVAILABLE, NO_MODEL,
 };
+/// 前のターンの作業記録（chat の履歴が user 発話の前に別ブロックで足す）の先頭の印。
+///
+/// 書式は chat が持つ。ここに置くのは、決定的 stub がこのブロックを利用者の発話として
+/// 読まない（`search:` 等の先頭一致の駆動を崩さない）ために参照するから。
+pub const WORK_LOG_MARK: &str = "[システムが付けた記録]";
 pub use usage_report::{UsageBreakdown, UsageDay, UsageFilter, UsageReport, UsageTotals};

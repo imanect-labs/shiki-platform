@@ -731,6 +731,17 @@ async fn later_share_keeps_earlier_tool_results_off_the_partner() {
             "履歴が渡っている: {context}"
         );
         assert_clean("dave の次の回答の文脈", &context);
+        // alice 本人が話しかけても、共有の後は前のターンの結果の本文を作業記録（#1196）で戻さない
+        // （戻すと、モデルが共有の前の全部入りを本文に写して dave に見える）。呼び出しは残る。
+        let own = env.post(&env.alice, thread, "echohistory:").await;
+        wait_done(&env.pool, own.run_id).await;
+        let context = env.answer_text(own.assistant_message_id).await;
+        assert!(
+            context.contains("- try_workflow ")
+                && context.contains("共有の相手がいる会話では渡しません"),
+            "作業記録の呼び出しが残る: {context}"
+        );
+        assert_clean("alice の共有の後の回答の文脈", &context);
 
         // 共有の後に alice が新しい生成で同じ引数を呼ぶと、前回の結果が絞った形で返る（新しく起動しない）。
         let text = format!(r#"calltool:try_workflow {{"workflow_id":"{wf}","version":1}}"#);

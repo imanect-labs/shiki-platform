@@ -4,7 +4,7 @@
 -- いたため、利用量の API（GET /apps/{app_id}/usage）で利用者の分と見分けられなかった。principal が 'app' の行は
 -- アプリの主体の分で、user_sub は空（利用者ではない）。'user' の行は利用者（B1 の PKCE・B2 が交換したトークン）の分。
 --
--- 既にある行のうち、インストールに今のサービスアカウントの利用者（b2_service_sub・migration 0137）と同じ user_sub の
+-- 既にある行のうち、インストールに今のサービスアカウントの利用者（b2_service_sub・migration 0139）と同じ user_sub の
 -- ものは、アプリの主体の分に直す（入れ直す前の古いサービスアカウントの分は見分けられないので、そのまま残す）。
 
 alter table app_capability_usage

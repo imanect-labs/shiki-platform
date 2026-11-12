@@ -295,7 +295,7 @@ pub async fn get_thread(
     ))
 }
 
-/// メッセージを線形取得する（viewer 認可・引用は閲覧者権限で再評価）。
+/// 表示中の枝のメッセージを線形取得する（viewer 認可・引用は閲覧者権限で再評価・枝の切り替え先つき）。
 #[utoipa::path(
     get, path = "/threads/{id}/messages",
     params(("id" = Uuid, Path, description = "スレッド ID")),
@@ -393,18 +393,54 @@ pub async fn post_message(
         _ => Vec::new(),
     };
     let model = resolve_run_model(&state, &ctx, req.model.as_deref(), req.effort).await?;
-    let r = chat_store(&state)?
-        .post_message_with_model(
+    let store = chat_store(&state)?;
+    // 発話の編集（#1166）は「その発話の送り直し」。元の run の手順書（スラッシュコマンドの skill）・
+    // 自律・ツール指定を、今回の指定が無い分だけ継ぐ（直しただけで手順が消えないように）。
+    // ピンの適用の認可はワーカーが発話者の権限で取り直す（fail-closed）。
+    let inherited = match req.edit_of {
+        Some(edit_of) => {
+            store
+                .edited_turn_context(&ctx, id, edit_of, trace.as_deref())
+                .await?
+        }
+        None => None,
+    };
+    let (once_skills, requested_tools, autonomous) = match inherited {
+        Some(run) => (
+            if once_skills.is_empty() {
+                run.skill_pins
+            } else {
+                once_skills
+            },
+            if requested_tools.is_empty() {
+                run.requested_tools
+            } else {
+                requested_tools
+            },
+            req.autonomous.unwrap_or(false) || run.autonomous,
+        ),
+        None => (
+            once_skills,
+            requested_tools,
+            req.autonomous.unwrap_or(false),
+        ),
+    };
+    let r = store
+        .post_message_on_branch(
             &ctx,
             id,
             &req.text,
             &attachments,
             selection,
             req.agent_mode,
-            req.autonomous.unwrap_or(false),
+            autonomous,
             &once_skills,
             model.as_ref(),
             &requested_tools,
+            chat::BranchTarget {
+                edit_of: req.edit_of,
+                after: req.after,
+            },
             trace.as_deref(),
         )
         .await?;

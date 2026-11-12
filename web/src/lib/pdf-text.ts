@@ -1,15 +1,27 @@
 /// PDF の文字（テキスト層・文書内検索）。
 ///
-/// ページの文字は pdf.js の `getTextContent` から取り、テキスト層の描画と検索で**同じ結果**を
-/// 使う（テキスト層の i 番目の span と、検索が数える i 番目の文字片を一致させるため）。
+/// ネイティブ文字層に保存済み OCR を補い、テキスト層の描画と検索で**同じ結果**を
+/// 使う。native文字はspanへ対応させ、OCRの一致は文字位置を推測せずブロック枠で示す。
 /// 取得は重いので、文書ごと・ページごとに覚えておく。
+import {
+  pdfBlocks,
+  withOcrContent,
+  nativePdfText,
+  prefetchPdfBlocks,
+} from "@/lib/pdf-excerpts";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { TextContent, TextItem } from "pdfjs-dist/types/src/display/api";
 
-const contents = new WeakMap<PDFDocumentProxy, Map<number, Promise<TextContent>>>();
+const contents = new WeakMap<
+  PDFDocumentProxy,
+  Map<number, Promise<TextContent>>
+>();
 
 /// ページの文字（キャッシュ付き）。
-export function pageTextContent(doc: PDFDocumentProxy, pageNumber: number): Promise<TextContent> {
+export function pageTextContent(
+  doc: PDFDocumentProxy,
+  pageNumber: number,
+): Promise<TextContent> {
   let byPage = contents.get(doc);
   if (!byPage) {
     byPage = new Map();
@@ -17,7 +29,17 @@ export function pageTextContent(doc: PDFDocumentProxy, pageNumber: number): Prom
   }
   let hit = byPage.get(pageNumber);
   if (!hit) {
-    hit = doc.getPage(pageNumber).then((p) => p.getTextContent());
+    hit = doc.getPage(pageNumber).then(async (p) => {
+      const native = await nativePdfText(doc, pageNumber);
+      // OCR はアップロード時のみ。取得失敗時はネイティブ文字層を利用し、範囲抽出側で再試行できる。
+      const blocks = await pdfBlocks(doc, pageNumber).catch(() => []);
+      return withOcrContent(
+        native,
+        blocks,
+        pageNumber,
+        p.getViewport({ scale: 1 }),
+      );
+    });
     hit.catch(() => byPage.delete(pageNumber));
     byPage.set(pageNumber, hit);
   }
@@ -63,7 +85,10 @@ export function normalize(s: string): string {
 export type PdfMatch = { page: number; start: number; end: number };
 
 /// ページ文字列の中の一致位置（重ならないように左から順に）。
-export function findInText(text: string, query: string): Array<[number, number]> {
+export function findInText(
+  text: string,
+  query: string,
+): Array<[number, number]> {
   const q = normalize(query.trim());
   if (!q) return [];
   const out: Array<[number, number]> = [];
@@ -101,15 +126,43 @@ export function matchPieces(
 export async function searchDocument(
   doc: PDFDocumentProxy,
   query: string,
-  opts: { signal: AbortSignal; onProgress: (matches: PdfMatch[], scanned: number) => void },
+  opts: {
+    signal: AbortSignal;
+    onProgress: (matches: PdfMatch[], scanned: number) => void;
+  },
 ): Promise<PdfMatch[]> {
   const matches: PdfMatch[] = [];
-  for (let page = 1; page <= doc.numPages; page++) {
-    if (opts.signal.aborted) break;
-    const { text } = buildPageText(await pageTextContent(doc, page));
-    for (const [start, end] of findInText(text, query)) matches.push({ page, start, end });
-    // 数ページごとに途中経過を返す（毎ページだと再描画が多い）。
-    if (page % 8 === 0 || page === doc.numPages) opts.onProgress([...matches], page);
+  for (
+    let first = 1;
+    first <= doc.numPages && !opts.signal.aborted;
+    first += 64
+  ) {
+    const last = Math.min(doc.numPages, first + 63);
+    await prefetchPdfBlocks(doc, first, last, opts.signal);
+    for (let start = first; start <= last && !opts.signal.aborted; start += 8) {
+      const pages = Array.from(
+        { length: Math.min(8, last - start + 1) },
+        (_, i) => start + i,
+      );
+      const texts = await Promise.all(
+        pages.map((page) => pageTextContent(doc, page)),
+      );
+      if (opts.signal.aborted) break;
+      for (let index = 0; index < pages.length; index++) {
+        const { text } = buildPageText(texts[index]);
+        for (const [start, end] of findInText(text, query))
+          matches.push({ page: pages[index], start, end });
+      }
+      opts.onProgress([...matches], pages[pages.length - 1]);
+    }
   }
   return matches;
+}
+
+export function resetPageText(doc: PDFDocumentProxy, page: number) {
+  contents.get(doc)?.delete(page);
+}
+
+export function resetDocumentText(doc: PDFDocumentProxy) {
+  contents.delete(doc);
 }

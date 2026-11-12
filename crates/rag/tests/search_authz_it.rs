@@ -652,6 +652,78 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
     assert!(page.blocks[0].text.contains("位置文書"));
     assert!(page.next_from.is_none());
 
+    // ページ絞り込みは SQL で行い、跨ページの provenance でもヒットする。
+    sqlx::query("update doc_block set page = 2, prov = $4 where tenant_id = $1 and node_id = $2 and version = $3")
+        .bind(env.alice.tenant_id()).bind(file).bind(hit.version)
+        .bind(serde_json::json!([
+            {"page": 2, "bbox": [10, 50, 80, 20], "origin": "bottom_left", "charspan": [0, 2]},
+            {"page": 3, "bbox": [10, 50, 80, 20], "origin": "bottom_left", "charspan": [2, 4]}
+        ])).execute(&env.pool).await.unwrap();
+    let crossing = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(3), None)
+        .await
+        .unwrap();
+    assert_eq!(crossing.blocks.len(), 1);
+    assert_eq!(crossing.blocks[0].prov[1].charspan, Some([2, 4]));
+    // 複数ページ窓も provenance の索引条件を通り、同一ブロックを重複返却しない。
+    let range = env
+        .search
+        .blocks_in_page_range(
+            &env.alice,
+            &node,
+            hit.version,
+            0,
+            10,
+            Some(1),
+            Some(3),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(range.blocks.len(), 1);
+    let provenance_only = env
+        .search
+        .blocks_in_page_range(
+            &env.alice,
+            &node,
+            hit.version,
+            0,
+            10,
+            Some(3),
+            Some(4),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(provenance_only.blocks.len(), 1);
+    let absent = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(4), None)
+        .await
+        .unwrap();
+    assert!(absent.blocks.is_empty());
+    // 境界の生成列は更新に追従する。非連続の provenance の中間ページは返さない。
+    sqlx::query("update doc_block set prov = jsonb_set(prov, '{1,page}', '5') where tenant_id = $1 and node_id = $2 and version = $3")
+        .bind(env.alice.tenant_id()).bind(file).bind(hit.version)
+        .execute(&env.pool).await.unwrap();
+    let bounds: (Option<i32>, Option<i32>) = sqlx::query_as(
+        "select prov_page_min, prov_page_max from doc_block where tenant_id = $1 and node_id = $2 and version = $3",
+    ).bind(env.alice.tenant_id()).bind(file).bind(hit.version).fetch_one(&env.pool).await.unwrap();
+    assert_eq!(bounds, (Some(2), Some(5)));
+    let hole = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(4), None)
+        .await
+        .unwrap();
+    assert!(hole.blocks.is_empty());
+    let last = env
+        .search
+        .blocks_on_page(&env.alice, &node, hit.version, 0, 10, Some(5), None)
+        .await
+        .unwrap();
+    assert_eq!(last.blocks.len(), 1);
+
     // 窓の外（存在しない ordinal 以降）は空。別テナントの文脈では何も読めない。
     let empty = env
         .search

@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { resolvePageIcon, resolvePageTitle } from "@/lib/nav-config";
+import { AVOID_ASSISTANT } from "./assistant-dock";
 import { BrandMark } from "./brand-logo";
 import { useSidebar } from "./sidebar/sidebar-context";
 import {
@@ -25,7 +26,13 @@ export function Header() {
   const title = resolvePageTitle(pathname);
 
   return (
-    <header className="shiki-dash-bottom hidden print:hidden h-14 shrink-0 items-center gap-2.5 bg-background/80 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:flex">
+    <header
+      className={cn(
+        "shiki-dash-bottom hidden print:hidden h-14 shrink-0 items-center gap-2.5 bg-background/80 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:flex",
+        // 文書のアシスタントパネルは上まで貫通するので、操作群をパネルの左隣へ寄せる。
+        AVOID_ASSISTANT,
+      )}
+    >
       {spec ? (
         <ChromeBar spec={spec} />
       ) : (

@@ -310,6 +310,7 @@ audit_actions! {
     ThreadCreate = "thread.create", "スレッドを作成", Chat;
     ThreadDelete = "thread.delete", "スレッドを削除", Chat;
     ThreadFeedback = "thread.feedback", "回答を評価", Chat;
+    ThreadFork = "thread.fork", "新しいチャットに分岐", Chat;
     ThreadGet = "thread.get", "スレッドを参照", Chat;
     ThreadMessage = "thread.message", "メッセージを参照", Chat;
     ThreadMessages = "thread.messages", "メッセージの一覧", Chat;
@@ -318,6 +319,7 @@ audit_actions! {
     ThreadRename = "thread.rename", "スレッドの名前を変更", Chat;
     ThreadRunCancel = "thread.run.cancel", "生成を中止", Chat;
     ThreadRunGet = "thread.run.get", "生成の状態を参照", Chat;
+    ThreadSelectBranch = "thread.select_branch", "表示する枝を切り替え", Chat;
     ThreadSetAutonomousMode = "thread.set_autonomous_mode", "承認モードを変更", Chat;
     ThreadSetOrigin = "thread.set_origin", "スレッドの起点を設定", Chat;
     ThreadSetPins = "thread.set_pins", "固定する文書を変更", Chat;

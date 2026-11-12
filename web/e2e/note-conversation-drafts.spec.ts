@@ -250,6 +250,17 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   const handle = page.getByRole("separator", { name: "アシスタントの幅を変更" });
   const before = (await sheet.boundingBox())!.width;
 
+  // パネルは上部バーまで貫通し、⋯ はパネルの左隣に来る（開いている間は ✨ トグルを隠す）。
+  expect((await sheet.boundingBox())!.y).toBeLessThan(24);
+  // 上部バーの右余白はアニメーションするので、落ち着くまで取り直して比べる。
+  await expect
+    .poll(async () => {
+      const menu = (await page.getByTestId("chrome-menu").boundingBox())!;
+      return (await sheet.boundingBox())!.x - (menu.x + menu.width);
+    })
+    .toBeGreaterThanOrEqual(0);
+  await expect(page.getByTestId("note-ask-ai")).toBeHidden();
+
   // 左へドラッグすると広がり、本文はパネルの下に潜らない。
   const hb = (await handle.boundingBox())!;
   await page.mouse.move(hb.x + hb.width / 2, hb.y + 200);
@@ -278,6 +289,17 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   await handle.dblclick();
   await expect(handle).toHaveAttribute("aria-valuenow", "420");
   await expect(handle).toHaveAttribute("aria-controls", /.+/);
+
+  // キーボードで開閉してもフォーカスが迷子にならない（✨ は開いている間隠れる）。
+  const toggle = page.getByTestId("note-ask-ai");
+  await page.getByRole("button", { name: "チャットを閉じる" }).click();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Enter");
+  // 開いたらフォーカスはパネルの中（× か入力欄）へ移る。
+  await expect
+    .poll(() => sheet.evaluate((el) => el.contains(document.activeElement)))
+    .toBe(true);
+  await expect(toggle).toBeHidden();
 
   // 画面が狭いと最大まで広げても本文に 352px を残す（最大幅は画面に合わせて縮む）。
   await page.setViewportSize({ width: 1280, height: 900 });

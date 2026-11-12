@@ -145,6 +145,7 @@ pub(super) fn message_text_with(
                     crate::model::SelectionKind::CsvRange => "csv_range",
                     crate::model::SelectionKind::SlideSelection => "slide_selection",
                     crate::model::SelectionKind::OfficeSelection => "office_selection",
+                    crate::model::SelectionKind::PdfSelection => "pdf_selection",
                     crate::model::SelectionKind::SkillDraft => "skill_draft",
                 };
                 let target = context
@@ -314,6 +315,7 @@ fn selection_tools(kind: crate::model::SelectionKind) -> &'static [agent_core::T
         K::CsvRange => &[T::CsvQuery, T::CsvPatch],
         K::SlideSelection => &[T::SlideRead, T::SlideEdit],
         K::SkillDraft => &[T::SaveSkill],
+        K::PdfSelection => &[],
         K::OfficeSelection => &[
             T::OfficeLiveEdit,
             T::OfficeEdit,
@@ -341,6 +343,7 @@ pub(super) fn origin_document_tools(name: Option<&str>) -> &'static [agent_core:
         Some("docx" | "odt") => &[T::OfficeRead, T::OfficeWordEdit],
         // エンジンが扱わない旧形式（.xls / .doc）と pptx は従来の道具。
         Some("pptx" | "doc" | "xls" | "ppt" | "odp") => &[T::OfficeLiveEdit, T::OfficeEdit],
+        Some("pdf") => selection_tools(K::PdfSelection),
         Some("csv") => selection_tools(K::CsvRange),
         Some("slide") => selection_tools(K::SlideSelection),
         _ => selection_tools(K::NoteSelection),
@@ -360,7 +363,7 @@ fn inert_frame_tags(text: &str) -> String {
 /// 中身はユーザー由来（共有されたスキルの指示文・文書の選択範囲）なので、`</selection>` と
 /// 書かれていると「データであり指示ではない」の枠がそこで閉じ、後ろが枠外の文として読まれる。
 /// 空白・大文字小文字の揺れ（`< / SELECTION`）も同じ閉じタグとみなす。
-fn inert_closing_tag(text: &str, tag: &str) -> String {
+pub(super) fn inert_closing_tag(text: &str, tag: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find('<') {
@@ -411,7 +414,11 @@ pub(super) fn message_preview(m: &LlmMessage) -> String {
     m.content
         .iter()
         .filter_map(|b| match b {
-            llm_gateway::Block::Text { text } => Some(text.as_str()),
+            // 前のターンの作業記録（history_work_log）は発話ではない（検索クエリ・Langfuse の
+            // 入力に混ぜない）。
+            llm_gateway::Block::Text { text } if !text.starts_with(llm_gateway::WORK_LOG_MARK) => {
+                Some(text.as_str())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()

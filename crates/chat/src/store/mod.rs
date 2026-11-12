@@ -10,6 +10,7 @@
 mod answer_images;
 mod approval;
 mod autonomous;
+mod branches;
 mod custom_instructions;
 mod feedback;
 mod message_view;
@@ -30,7 +31,7 @@ mod ui_runs;
 mod yui_actions;
 
 pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
-pub use post::PostResult;
+pub use post::{BranchTarget, PostResult};
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
 pub use threads::ThreadOrigin;

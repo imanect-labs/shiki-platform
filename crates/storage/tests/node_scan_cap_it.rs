@@ -794,7 +794,7 @@ async fn exact_name_lookup_finds_the_sibling_a_search_page_misses() {
     .await;
 }
 
-/// 上限に届いた名前の検索で候補を引く文（`storage::named_scan_sql`）は、名前の順の索引（migration 0139 の
+/// 上限に届いた名前の検索で候補を引く文（`storage::named_scan_sql`）は、名前の順の索引（migration 0141 の
 /// `node_name_scan_idx`・降順は `node_name_scan_desc_idx`）をたどって件数で打ち切る。並びはフォルダー優先 → 名前の
 /// 自然順 → id（#1040）。索引が無いと、引くたびに組織の生きているノードをすべて読んで並べ直す計画になる。小さな表でも
 /// 索引を選べるかだけを見るため、走査と並べ直しを抑えて計画を立てさせる（索引で並びを満たせないと Sort が残る）。

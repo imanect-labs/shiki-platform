@@ -151,7 +151,7 @@ fn steps_of(blocks: &[ContentBlock]) -> Vec<ReplayStep> {
 /// 版を跨いだ takeover で旧イベントと混在した親の呼び出しも `None`）。**親の `subagent` 呼び出しが
 /// 結果を返すまでの間に現れた `step` 無しの呼び出し**だけを子とみなす（子は親のツール実行中にしか
 /// 走らない）。
-fn child_call_ids(blocks: &[ContentBlock]) -> Vec<&str> {
+pub(super) fn child_call_ids(blocks: &[ContentBlock]) -> Vec<&str> {
     let subagent = agent_core::ToolName::Subagent.as_str();
     let mut pending: Vec<&str> = Vec::new();
     let mut children = Vec::new();
@@ -203,6 +203,7 @@ mod tests {
             content,
             agent_mode: true,
             parent_id: None,
+            sibling_ids: Vec::new(),
             invoked_actions: Vec::new(),
             bound_actions: Vec::new(),
             ui_runs: Vec::new(),

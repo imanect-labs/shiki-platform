@@ -9,10 +9,13 @@
 /// - 画像は md ではそのまま、ノート・Word ではリンクにする（ノートは画像を取り込まず、Word の変換側に
 ///   外部の画像を取りに行かせない）。
 ///
+/// - Web ページの訳文（translation ブロック）は、回答の本文の後・出典の前に置く。外部ページ由来なので、
+///   書き出した先でも会話の `page` モードと同じ扱いにする（[`translationMarkdown`]）。
+///
 /// 解析はチャットの表示と同じ（remark・GFM・日本語の強調・数式）。数式の解析器は表示と同じく押した
 /// ときだけ読み込むので、ここの関数は非同期にしている。
 
-import type { Code, Heading, Image, Nodes, Root } from "mdast";
+import type { Code, Heading, Image, Link, Nodes, Root } from "mdast";
 import { toString } from "mdast-util-to-string";
 import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
@@ -21,24 +24,135 @@ import { unified, type Processor } from "unified";
 
 import type { Citation } from "@/lib/chat-api";
 import { citationLocator, groupCitations, isWebCitation, safeWebUrl } from "@/lib/citation";
+import { langLabel, translationTitle, type Translation } from "@/lib/translation";
 
 /// 出所の表示名を返す関数（チャットの出典一覧と同じもの・`MessageCitations.nameOf`）。
 export type SourceName = (c: Pick<Citation, "node_id" | "web">) => string;
 
-/// 回答の本文に「出典」の一覧を付けた Markdown。出典が無ければ本文だけ。
+/// 回答の本文に、訳文と「出典」の一覧を付けた Markdown。どちらも無ければ本文だけ。
 export async function answerMarkdown(
   text: string,
   citations: readonly Citation[],
   nameOf: SourceName,
+  translations: readonly Translation[] = [],
 ): Promise<string> {
   const sources = sourcesMarkdown(text, citations, nameOf);
-  if (!sources) return `${text.trimEnd()}\n`;
-  // 本文の終わりのフェンスが閉じていない（生成の停止など）と、後ろに足す出典まで図・コードに入る。
-  return `${await closeTrailingFence(text.trimEnd())}\n\n${sources}\n`;
+  if (!sources && translations.length === 0) return `${text.trimEnd()}\n`;
+  // 本文の終わりのフェンスが閉じていない（生成の停止など）と、後ろに足す訳文・出典まで図・コードに入る。
+  const parts = text.trim() ? [await closeTrailingFence(text.trimEnd())] : [];
+  for (const t of translations) parts.push(await translationMarkdown(t, 2));
+  if (sources) parts.push(sources);
+  return `${parts.join("\n\n")}\n`;
 }
 
+/// 訳文の節（題名の見出し・出典と機械翻訳の注記・訳文）。`depth` は題名の見出しの深さで、訳文の中の
+/// 見出しはその下へ下げる（ページの見出しで、書き出しの「質問」「回答」「出典」の節を装わせない）。
+///
+/// 訳文は外部ページ由来なので、会話の `page` モードと同じ扱いにして書き出す:
+/// - 図・表・ボタンになるフェンス（```ui・```yui・```data_grid）は言語名を外して素のコードにする
+///   （ノートは ```ui を図として描くので、ページの内容がノートの図・操作にならないように）。
+/// - リンクには行き先のホストを添える（リンクの文字で行き先を装わせない）。
+/// - 閉じていないフェンス・HTML は閉じる（後ろの訳文・出典を吸い込ませない）。
+export async function translationMarkdown(t: Translation, depth: number): Promise<string> {
+  const title = translationTitle(t);
+  const partLabel = t.parts > 1 ? `（${t.part}/${t.parts}）` : "";
+  const head: string[] = [];
+  if (title) head.push(`${"#".repeat(depth)} ${escapeInline(title)}${partLabel}`);
+  const url = linkDestination(safeWebUrl(t.sourceUrl));
+  const source = url ? `[${escapeInline(t.host)}](${url})` : escapeInline(t.host);
+  const notes = [
+    t.failedChunks > 0 ? "一部は翻訳できなかったため、原文のまま載せています。" : null,
+    t.sourceTruncated && t.part >= t.parts ? "ページが非常に長いため、取得できた範囲までの訳です。" : null,
+  ].filter(Boolean);
+  head.push(`出典: ${source} の機械翻訳（${escapeInline(langLabel(t.targetLang))}）${title ? "" : partLabel}${notes.length ? `。${notes.join("")}` : ""}`);
+  const body = await closeTrailingFence((await pageMarkdown(t.markdown, depth)).trim());
+  return body ? `${head.join("\n\n")}\n\n${body}` : head.join("\n\n");
+}
+
+/// 外部ページ由来の Markdown を書き出し用に直す（[`translationMarkdown`] の規則）。
+/// 差し替えは重ならないようにする（見出しは記号の部分だけ・リンクはリンクの範囲だけを差し替える）。
+async function pageMarkdown(md: string, depth: number): Promise<string> {
+  const edits: Edit[] = [];
+  const tree = await parse(md);
+  // ページで一番上の見出しを、題名のすぐ下の段にそろえる（ページの多くは h2 から始まる。そのまま下げると
+  // 段が深くなりすぎ、H3 までのノートでは見出しでなくなる）。
+  let top = 6;
+  walk(tree, (node) => {
+    if (node.type === "heading") top = Math.min(top, node.depth);
+  });
+  walk(tree, (node) => {
+    if (node.type === "heading") edits.push(...demotedHeading(md, node, depth + 1 - top));
+    else if (node.type === "code" && isSpecialFence(node)) {
+      const edit = plainFence(md, node);
+      if (edit) edits.push(edit);
+    } else if (node.type === "link") {
+      const edit = linkWithHost(md, node);
+      if (edit) edits.push(edit);
+    }
+  });
+  return applyEdits(md, edits);
+}
+
+/// 見出しを `shift` 段下げる（6 段で止める）。中身の前の記号（`## `）を差し替え、後ろの記号
+/// （閉じの `##`・setext の下線）を落とす。中身は元の文字のまま（記法を保つ）。
+function demotedHeading(md: string, node: Heading, shift: number): Edit[] {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) return [];
+  const marks = "#".repeat(Math.min(6, Math.max(1, node.depth + shift)));
+  const first = node.children[0]?.position?.start.offset;
+  const last = node.children[node.children.length - 1]?.position?.end.offset;
+  if (first === undefined || last === undefined) return [{ start, end, text: marks }];
+  // 中身の前が空（setext 見出し）なら差し替える範囲が無いので、中身の先頭の 1 単位ごと書き直す。
+  const prefix: Edit =
+    first > start
+      ? { start, end: first, text: `${marks} ` }
+      : { start, end: start + 1, text: `${marks} ${md.slice(start, start + 1)}` };
+  return [prefix, { start: last, end, text: "" }];
+}
+
+/// 図・表・ボタンとして描かれるフェンスの種類（会話の表示・ノートが特別に扱うもの）。
+function isSpecialFence(node: Code): boolean {
+  return isFigure(node) || /^data_grid(?:$|\s)/i.test((node.lang ?? "").trim());
+}
+
+/// フェンスの開きの行から言語名（と続く情報）を外す。開きの行の記号はそのまま残す。
+function plainFence(md: string, node: Code): Edit | null {
+  const start = node.position?.start.offset;
+  if (start === undefined) return null;
+  const lineEnd = md.indexOf("\n", start);
+  const openLine = md.slice(start, lineEnd < 0 ? md.length : lineEnd);
+  const fence = /^(`{3,}|~{3,})/.exec(openLine);
+  if (!fence) return null;
+  return { start, end: start + openLine.length, text: fence[1] };
+}
+
+/// リンクの後ろに行き先のホストを添える（文字が行き先そのものなら添えない）。http(s) 以外・相対・
+/// 断片だけのリンク（`#節` など）は書き出した先で辿れないので、リンクを外して文字だけ残す。
+function linkWithHost(md: string, node: Link): Edit | null {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) return null;
+  const label = toString(node).trim();
+  let host: string | null = null;
+  try {
+    const u = new URL(node.url);
+    if (u.protocol === "http:" || u.protocol === "https:") host = u.host;
+  } catch {
+    host = null;
+  }
+  if (!host) return { start, end, text: escapeInline(label) };
+  if (!label || label === node.url || label === host) return null;
+  return { start, end, text: `${md.slice(start, end)}（${escapeInline(host)}）` };
+}
 /// 会話のやり取り 1 組（質問と、それへの回答）。質問の無い回答（会話の先頭など）もある。
-export type ThreadTurn = { question: string | null; answer: string; citations: readonly Citation[] };
+export type ThreadTurn = {
+  question: string | null;
+  answer: string;
+  citations: readonly Citation[];
+  /// 回答に付いた Web ページの訳文（回答の本文の後・出典の前に置く）。
+  translations?: readonly Translation[];
+};
 
 /// 会話全体の Markdown。題名と日付、やり取りを順に（質問 → 回答 → その回答の出典）並べる。
 /// `includeQuestions` が偽なら回答だけを並べる。思考・ツールの実行・添付は含めない。
@@ -54,9 +168,12 @@ export async function threadMarkdown(
       // 先頭の空行と末尾の空白だけ落とす（1 行目の字下げは打ったとおりに残す）。
       parts.push("## 質問", literalQuote(t.question.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
     }
-    if (!t.answer.trim()) continue;
+    const translations = t.translations ?? [];
+    if (!t.answer.trim() && translations.length === 0) continue;
+    parts.push("## 回答");
     // 先頭の空行と末尾の空白だけ落とす（字下げのコードブロックで始まる回答の 1 行目を崩さない）。
-    parts.push("## 回答", await closeTrailingFence(t.answer.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
+    if (t.answer.trim()) parts.push(await closeTrailingFence(t.answer.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
+    for (const tr of translations) parts.push(await translationMarkdown(tr, 3));
     const sources = sourcesMarkdown(t.answer, t.citations, opts.nameOf, "###");
     if (sources) parts.push(sources);
   }

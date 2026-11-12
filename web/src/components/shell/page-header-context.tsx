@@ -52,7 +52,7 @@ export type PageChromeSpec = {
   primary?: React.ReactNode;
   /// アイコン操作（`ChromeIconButton` を並べる）。主操作とアシスタントの間に出る。
   actions?: React.ReactNode;
-  /// AI アシスタントの開閉。常に ⋯ の直前に出す。
+  /// AI アシスタントの開閉。常に ⋯ の直前に出す（PC で開いている間は隠す）。
   assistant?: { active: boolean; onToggle: () => void; label?: string; testId?: string };
   /// ⋯ メニュー。空なら ⋯ 自体を出さない。
   menu?: ChromeMenuItem[];
@@ -229,6 +229,11 @@ function AssistantToggle({ assistant }: { assistant: NonNullable<PageChromeSpec[
       pressed={assistant.active}
       onClick={assistant.onToggle}
       data-testid={assistant.testId}
+      data-assistant-toggle=""
+      // PC（lg 以上）でパネルが実際に出ている間は、パネルが上部バーの隣に縦いっぱいに出て自身の ×
+      // で閉じられるので、トグルは隠して ⋯ だけをパネルの左隣に残す（ページの開閉フラグではなく
+      // シェルの列の data-assistant-open で判定する。セッション準備前などパネルが出ていない間は残す）。
+      className="lg:group-data-[assistant-open]/assistant:hidden"
     >
       <Sparkles aria-hidden />
     </ChromeIconButton>

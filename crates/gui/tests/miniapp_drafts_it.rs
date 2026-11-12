@@ -714,7 +714,7 @@ async fn broken_figures_are_saved_as_drafts_but_not_published() {
     .await;
 }
 
-/// 書き損じで止めるのは一度も公開していない版だけ。前に公開していた版（migration 0145 が書き損じごと公開した版にした
+/// 書き損じで止めるのは一度も公開していない版だけ。前に公開していた版（migration 0147 が書き損じごと公開した版にした
 /// ものを含む）へは、書き損じがあっても公開を戻せる（新しい版に誤りがあったときの逃げ道を塞がない）。
 #[tokio::test]
 async fn rolling_back_to_a_broken_published_version_is_allowed() {
@@ -735,7 +735,7 @@ async fn rolling_back_to_a_broken_published_version_is_allowed() {
             .expect("create");
         assert_eq!(app.warnings.len(), 1, "{:?}", app.warnings);
         let app = app.id;
-        // migration 0145 と同じく、書き損じのある v1 をそのまま公開した版にする。
+        // migration 0147 と同じく、書き損じのある v1 をそのまま公開した版にする。
         sqlx::query(
             "UPDATE artifact SET published_version = 1, published_at = now() WHERE id = $1",
         )

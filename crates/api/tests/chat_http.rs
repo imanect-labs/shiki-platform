@@ -1832,3 +1832,158 @@ async fn create_thread_with_search_folder() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+/// 会話の分岐（#1166）: 編集して送り直す（`edit_of`）→ 兄弟が載る → 枝の切り替え（204）→
+/// 新しいチャットに分岐（201）。存在しないメッセージは 404。
+#[tokio::test]
+async fn chat_branch_and_fork_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-chat-branch").await;
+    let app = build_router(state);
+    let send = |method: &str, uri: String, body: Option<String>| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(COOKIE, &cookie);
+        if method != "GET" {
+            req = req.header("x-csrf-token", csrf);
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b)),
+            None => req.body(Body::empty()),
+        };
+        app.clone().oneshot(req.unwrap())
+    };
+
+    let resp = send(
+        "POST",
+        "/threads".into(),
+        Some(r#"{"title":"分岐"}"#.into()),
+    )
+    .await
+    .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let post = |body: String| send("POST", format!("/threads/{tid}/messages"), Some(body));
+
+    let first = body_json(post(r#"{"text":"Q1"}"#.into()).await.unwrap()).await;
+    let u1 = first["user_message_id"].as_str().unwrap().to_string();
+    let a1 = first["assistant_message_id"].as_str().unwrap().to_string();
+
+    // 生成中は編集・切り替え・確定前の回答からの分岐を受けない（400 / 404）。
+    let resp = post(format!(r#"{{"text":"早すぎる直し","edit_of":"{u1}"}}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let resp = send(
+        "POST",
+        format!("/threads/{tid}/fork"),
+        Some(format!(r#"{{"message_id":"{a1}"}}"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // ワーカーは回していないので、生成を終えた状態を DB に作る。
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    let a1_id: uuid::Uuid = a1.parse().unwrap();
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE message_id = $1")
+        .bind(a1_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(r#"UPDATE message SET content = '[{"type":"text","text":"A1"}]' WHERE id = $1"#)
+        .bind(a1_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resp = post(format!(r#"{{"text":"Q1 直し","edit_of":"{u1}"}}"#))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let edited = body_json(resp).await;
+    let u1b = edited["user_message_id"].as_str().unwrap().to_string();
+    let tid_uuid: uuid::Uuid = tid.parse().unwrap();
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE thread_id = $1")
+        .bind(tid_uuid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // 表示中は直した枝。兄弟（古い順）が載る。
+    let msgs = body_json(
+        send("GET", format!("/threads/{tid}/messages"), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    let list = msgs["messages"].as_array().unwrap();
+    assert_eq!(list[0]["id"], u1b.as_str());
+    assert_eq!(list[0]["sibling_ids"], serde_json::json!([u1, u1b]));
+
+    // 元の版へ切り替える（204）→ 元の発話が表示される。
+    let resp = send(
+        "PUT",
+        format!("/threads/{tid}/branch"),
+        Some(format!(r#"{{"message_id":"{u1}"}}"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let msgs = body_json(
+        send("GET", format!("/threads/{tid}/messages"), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(msgs["messages"][0]["id"], u1.as_str());
+
+    // 回答から新しいチャットに分岐（201・新しいスレッド・その回答までの 2 件）。
+    let resp = send(
+        "POST",
+        format!("/threads/{tid}/fork"),
+        Some(format!(r#"{{"message_id":"{a1}"}}"#)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let forked = body_json(resp).await;
+    assert_ne!(forked["id"], tid.as_str());
+    assert_eq!(forked["title"], "分岐（分岐）");
+    let fid = forked["id"].as_str().unwrap();
+    let msgs = body_json(
+        send("GET", format!("/threads/{fid}/messages"), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(msgs["messages"].as_array().unwrap().len(), 2, "{msgs}");
+
+    // 存在しないメッセージ・他スレッドの発話は 404。
+    let missing = uuid::Uuid::new_v4();
+    for (method, uri, body) in [
+        (
+            "PUT",
+            format!("/threads/{tid}/branch"),
+            format!(r#"{{"message_id":"{missing}"}}"#),
+        ),
+        (
+            "POST",
+            format!("/threads/{tid}/fork"),
+            format!(r#"{{"message_id":"{missing}"}}"#),
+        ),
+        (
+            "POST",
+            format!("/threads/{fid}/messages"),
+            format!(r#"{{"text":"x","edit_of":"{u1}"}}"#),
+        ),
+    ] {
+        let resp = send(method, uri.clone(), Some(body)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+}

@@ -13,6 +13,50 @@ use llm_gateway::{Block, Message as LlmMessage};
 
 use crate::budget::{Budget, Spent};
 
+/// run 内で変化しない上限と計画の作法。残量はツール結果で更新し、system のキャッシュを保つ。
+///
+/// `extensible` は、この run の上限が途中で 1 回だけ広がりうるか（[`crate::BudgetExtension`]・D-204）。
+/// 広がった後は [予算] の残量が広げた上限で数えられるので、ここに書いた上限より残量を正とさせる
+/// （system は run 内で変えない。どの道具で広がるかは書かない＝広げるために道具を呼ばせない）。
+pub(crate) fn budget_system_prompt(
+    system: Option<&str>,
+    budget: &Budget,
+    has_tools: bool,
+    extensible: bool,
+) -> String {
+    let extension_note = if extensible {
+        "作業の内容によっては、この上限が途中で広がることがあります。\
+         そのときはツール結果の [予算] の残量を正としてください。"
+    } else {
+        ""
+    };
+    let tool_plan = if has_tools {
+        "複数工程の依頼では、何をどの順で調べ、何を実行して\
+         どう結果を確かめるかを、利用者に見える本文として最初に 1〜3 文で伝えてください。\
+         思考欄だけに書かず、内部の予算数値や長い作業一覧は説明に含めないでください。\
+         単純な質問はそのまま回答して構いません。\
+         計画だけのために応答を終えず、計画の本文と最初のツール呼び出しを同じ生成で返してください。"
+    } else {
+        "ツールは提示されていません。指定された出力形式を守り、成果物をそのまま返してください。"
+    };
+    format!(
+        "{}\n\n[実行予算と計画]\n\
+         この run の上限は {} ステップです。{extension_note}LLM の生成 1 回が 1 ステップで、\
+         ツール結果を受けた後の生成・計画ツールの呼び出し・最終回答も数えます。\
+         同じ生成で複数ツールを呼んでもステップ数は 1 ですが、依存する操作は結果を見てから進めてください。\n\
+         最初に、依頼の完了条件と、必要な調査・操作・結果確認・最終回答までを上限内に収める\
+         短い手順を見積もってください。{tool_plan}\
+         既存の手順が計画や承認を要求する場合は従ってください。\n\
+         ツール結果の [予算] は次の生成前の残量です。再開時は実行済みの作業と残量から続け、\
+         残量と未完の必須工程に合わせて手順を更新してください。\
+         任意の追加調査より、依頼された操作と結果確認・最終回答の手数を確保してください。\
+         必須の確認・承認は省略せず、実行していない操作を完了と報告しないでください。\
+         必須工程が収まらないと分かったら、追加探索を続けず、不足条件と実行済み・未実行を明示してください。",
+        system.unwrap_or_default(),
+        budget.max_steps,
+    )
+}
+
 /// 残り予算を**最後のツール結果へ書き足す**（#407）。
 ///
 /// 独立した user メッセージにはできない: Anthropic は user メッセージの連続を受け付けず、
@@ -51,6 +95,58 @@ const FINAL_ANSWER_INSTRUCTION: &str = "\n\n[予算] 上限に達しました。
 /// 既に催促済みかは見ない（着地は 1 回しか呼ばれない＝ループを抜ける直前）。
 pub(crate) fn demand_final_answer(messages: &mut [LlmMessage]) -> bool {
     append_to_last_tool_result(messages, FINAL_ANSWER_INSTRUCTION)
+}
+
+/// 出力上限で切れたツール呼び出しへ返す結果の目印（回数を数えるのにも使う）。
+const TRUNCATED_CALL_MARK: &str = "[出力上限] この呼び出しは";
+
+/// 1 run で「切れた呼び出し」を書き直させる回数の上限。超えたら Truncated で畳む
+/// （毎回同じ大きさで書いて切れ続けるモデルで、ステップ予算を空費させない）。
+const MAX_TRUNCATED_RETRIES: usize = 3;
+
+/// **出力上限（`max_tokens`）で切れたツール呼び出し**へ返す結果を組む。上限回数を超えたら `None`。
+///
+/// 切れた呼び出しの引数は途中までしか無く、プロバイダは解釈できない引数を `{}` にして返す
+/// （openai.rs / anthropic.rs）。それを実行すると空の編集・既定値での操作になるので**実行しない**。
+/// 黙って run を畳むと、画面ではツールカードが出たまま止まり、利用者には何が起きたか分からない
+/// （実測: エージェントモードで大きな表の編集・委譲の指示文が切れ、そのまま終わっていた）。
+/// 「切れた・小さく分けて呼び直せ」をツール結果として返し、次の生成で書き直させる。
+/// tool_use と対の tool_result にするのは、両プロバイダが確実に受け付ける形だから（冒頭の注記）。
+pub(crate) fn truncated_call_results(
+    messages: &[LlmMessage],
+    call_ids: &[(String, String)],
+    max_tokens: Option<u32>,
+) -> Option<Vec<Block>> {
+    // 回数は**切れた応答（ステップ）単位**で数える（1 応答に複数の呼び出しがあっても 1 回）。
+    let retried = messages
+        .iter()
+        .filter(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, Block::ToolResult { content, .. } if content.starts_with(TRUNCATED_CALL_MARK))
+            })
+        })
+        .count();
+    if retried >= MAX_TRUNCATED_RETRIES {
+        return None;
+    }
+    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    Some(
+        call_ids
+            .iter()
+            .map(|(id, name)| {
+                Block::tool_result(
+                    id.clone(),
+                    format!(
+                        "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
+                         実行していません（{name} は何も変更していません）。\
+                         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
+                         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+                    ),
+                    true,
+                )
+            })
+            .collect(),
+    )
 }
 
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
@@ -134,6 +230,57 @@ mod tests {
     fn nothing_to_nudge_without_a_tool_result() {
         let mut messages = vec![LlmMessage::text(LlmRole::User, "調べて")];
         assert!(!nudge_empty_response(&mut messages));
+    }
+
+    /// 切れた呼び出しは失敗の結果で閉じ、上限回数を超えたら諦める。
+    #[test]
+    fn truncated_calls_are_closed_and_retried_a_bounded_number_of_times() {
+        // 1 応答に 2 件の呼び出しがあっても、数えるのは応答（ステップ）単位。
+        let ids = vec![
+            ("c1".to_string(), "office.excel_edit".to_string()),
+            ("c2".to_string(), "drive.move".to_string()),
+        ];
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "埋めて")];
+        for _ in 0..MAX_TRUNCATED_RETRIES {
+            let blocks = truncated_call_results(&messages, &ids, Some(8192)).unwrap();
+            let Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } = &blocks[0]
+            else {
+                panic!("形が違う");
+            };
+            assert_eq!(tool_use_id, "c1");
+            assert!(*is_error);
+            assert!(content.contains("8192 トークン"), "{content}");
+            assert!(content.contains("実行していません"), "{content}");
+            messages.push(LlmMessage {
+                role: LlmRole::Tool,
+                content: blocks,
+            });
+        }
+        assert!(
+            truncated_call_results(&messages, &ids, Some(8192)).is_none(),
+            "上限回数を超えたら書き直させない"
+        );
+    }
+
+    /// 上限が途中で広がりうる run（D-204）だけ、system の上限より [予算] の残量を正とさせる。
+    /// どの道具で広がるかは書かない（広げるために道具を呼ばせない）。
+    #[test]
+    fn system_prompt_mentions_the_extension_only_when_it_can_happen() {
+        let budget = Budget::chat(6);
+        let plain = budget_system_prompt(Some("前置き"), &budget, true, false);
+        assert!(plain.starts_with("前置き\n\n[実行予算と計画]"), "{plain}");
+        assert!(plain.contains("上限は 6 ステップです。"), "{plain}");
+        assert!(!plain.contains("広がる"), "{plain}");
+        let wide = budget_system_prompt(Some("前置き"), &budget, true, true);
+        assert!(wide.contains("上限は 6 ステップです。"), "{wide}");
+        assert!(wide.contains("上限が途中で広がることがあります"), "{wide}");
+        assert!(wide.contains("[予算] の残量を正としてください"), "{wide}");
+        assert!(!wide.contains("emit_workflow"), "{wide}");
     }
 
     /// 予算超過の着地指示は「ツールはもう使えない・いま書け」と伝える。

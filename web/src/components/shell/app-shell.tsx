@@ -13,6 +13,7 @@ import { Sidebar } from "./sidebar/sidebar";
 import { MobileSidebar } from "./mobile-sidebar";
 import { SidebarSearch } from "./sidebar/sidebar-search";
 import { Header, MobileChrome } from "./header";
+import { AssistantDockColumn } from "./assistant-dock";
 import { PageHeaderProvider, usePageChromeValue } from "./page-header-context";
 
 /// 検索パレットの単一インスタンス（⌘K / "/" リスナーもここに 1 つだけ存在させる）。
@@ -90,10 +91,10 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="flex h-dvh w-full overflow-hidden bg-background">
           <Sidebar />
           <MobileSidebar />
-          <div className="relative flex min-w-0 flex-1 flex-col">
+          <AssistantDockColumn className="relative flex min-w-0 flex-1 flex-col">
             <ShellChrome />
             <ShellMain>{children}</ShellMain>
-          </div>
+          </AssistantDockColumn>
           <ShellSearch />
         </div>
       </PageHeaderProvider>

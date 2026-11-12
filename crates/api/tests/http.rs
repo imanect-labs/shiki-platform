@@ -1329,6 +1329,44 @@ async fn version_blocks_requires_session_and_rag() {
         .await
         .unwrap();
     let app = build_router(state_with(store, None));
+    for query in [
+        "page=0",
+        "page=-1",
+        "page_end=3",
+        "page=3&page_end=2",
+        "page=1&page_end=17",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{path}&{query}"))
+                    .header(COOKIE, "shiki_session=sid-blocks.default")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    for query in ["page=1", "page=1&page_end=16"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("{path}&{query}"))
+                    .header(COOKIE, "shiki_session=sid-blocks.default")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{query}"
+        );
+    }
     let resp = app
         .oneshot(
             Request::builder()

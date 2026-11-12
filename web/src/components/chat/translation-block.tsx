@@ -15,87 +15,25 @@ import { Check, Copy, ExternalLink, Languages, TriangleAlert } from "lucide-reac
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { toast } from "@/components/ui/use-toast";
 import { collectImageSources, type ImageProxy } from "@/lib/answer-images";
-
-export type Translation = {
-  sourceUrl: string;
-  host: string;
-  title: string | null;
-  translatedTitle: string | null;
-  targetLang: string;
-  markdown: string;
-  failedChunks: number;
-  chunks: number;
-  sourceImages: string[];
-  sourceTruncated: boolean;
-  fetchedAt: string | null;
-  /// 長いページの部（1 始まり）と総数。
-  part: number;
-  parts: number;
-};
-
-const LANG_LABELS: Record<string, string> = {
-  ja: "日本語",
-  en: "英語",
-  "zh-cn": "中国語（簡体字）",
-  zh: "中国語（簡体字）",
-  "zh-tw": "中国語（繁体字）",
-  ko: "韓国語",
-  fr: "フランス語",
-  de: "ドイツ語",
-  es: "スペイン語",
-};
-
-function str(v: unknown): string | null {
-  return typeof v === "string" && v.trim() ? v : null;
-}
-
-/// ブロックの JSON を読む（形が違えば null）。URL は http(s) だけを受け付ける。
-export function parseTranslation(raw: unknown): Translation | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-  const sourceUrl = str(r.source_url);
-  const markdown = typeof r.markdown === "string" ? r.markdown : null;
-  if (!sourceUrl || markdown === null) return null;
-  let host: string;
-  try {
-    const u = new URL(sourceUrl);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    host = u.host;
-  } catch {
-    return null;
-  }
-  const images = Array.isArray(r.source_images)
-    ? r.source_images.filter((u): u is string => typeof u === "string")
-    : [];
-  return {
-    sourceUrl,
-    host,
-    title: str(r.title),
-    translatedTitle: str(r.translated_title),
-    targetLang: str(r.target_lang) ?? "ja",
-    markdown,
-    failedChunks: Array.isArray(r.failed_chunks) ? r.failed_chunks.length : 0,
-    chunks: typeof r.chunks === "number" ? r.chunks : 0,
-    sourceImages: images,
-    sourceTruncated: r.source_truncated === true,
-    fetchedAt: str(r.fetched_at),
-    part: typeof r.part === "number" ? r.part : 1,
-    parts: typeof r.parts === "number" ? r.parts : 1,
-  };
-}
-
-function langLabel(code: string): string {
-  return LANG_LABELS[code.toLowerCase()] ?? code;
-}
+import { langLabel, parseTranslation, translationTitle, type Translation } from "@/lib/translation";
 
 /// コピーする本文（見出し・出典・機械翻訳の注記を添える）。
 function copyText(t: Translation): string {
-  const title = t.translatedTitle ?? t.title;
+  const title = translationTitle(t);
   const head = title ? `# ${title}\n\n` : "";
   return `${head}出典: ${t.sourceUrl}（機械翻訳）\n\n${t.markdown}\n`;
 }
 
-export function TranslationBlock({ raw, imageProxy }: { raw: unknown; imageProxy: ImageProxy | null }) {
+/// `print` は書き出しの印刷（PDF）用: コピーの操作と「続けて」の案内を出さない（紙面では押せない）。
+export function TranslationBlock({
+  raw,
+  imageProxy,
+  print = false,
+}: {
+  raw: unknown;
+  imageProxy: ImageProxy | null;
+  print?: boolean;
+}) {
   const t = React.useMemo(() => parseTranslation(raw), [raw]);
   // 出所は原文の画像だけ（`![](url)` の形にして回答の画像と同じ規則で集める・サーバと同じ）。
   const imageSources = React.useMemo(
@@ -104,7 +42,7 @@ export function TranslationBlock({ raw, imageProxy }: { raw: unknown; imageProxy
   );
   const [copied, setCopied] = React.useState(false);
   if (!t) return null;
-  const title = t.translatedTitle ?? t.title;
+  const title = translationTitle(t);
   const more = t.part < t.parts;
 
   const copy = async () => {
@@ -132,6 +70,7 @@ export function TranslationBlock({ raw, imageProxy }: { raw: unknown; imageProxy
           <ExternalLink className="size-3" aria-hidden />
         </a>
         <span>の機械翻訳（{langLabel(t.targetLang)}）</span>
+        {print ? null : (
         <button
           type="button"
           onClick={copy}
@@ -141,6 +80,7 @@ export function TranslationBlock({ raw, imageProxy }: { raw: unknown; imageProxy
           {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
           {copied ? "コピー済み" : "コピー"}
         </button>
+        )}
       </p>
       {t.failedChunks > 0 || t.sourceTruncated ? (
         <p
@@ -164,7 +104,7 @@ export function TranslationBlock({ raw, imageProxy }: { raw: unknown; imageProxy
           {t.markdown}
         </Markdown>
       </div>
-      {more ? (
+      {more && !print ? (
         <p className="mt-3 text-[13px] text-muted-foreground" data-testid="translation-more">
           続きがあります（{t.part}/{t.parts}）。「続けて」と送ると続きを訳します。
         </p>

@@ -33,6 +33,7 @@ impl AgentProfile {
 }
 
 /// ループのオプション。予算（step/time/token/cost）は [`Budget`] に集約する。
+#[derive(Clone)]
 pub struct AgentOptions {
     /// 自律度プロファイル。
     pub profile: AgentProfile,

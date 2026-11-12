@@ -180,7 +180,15 @@ fn to_input_items(m: &Message, names: &ToolNameMap, known: &HashSet<&str>) -> Ve
             })
             .collect(),
         Role::System => vec![json!({ "role": "system", "content": join_text(&m.content) })],
-        Role::User => vec![json!({ "role": "user", "content": join_text(&m.content) })],
+        Role::User => vec![
+            json!({ "role": "user", "content": if m.content.iter().any(|b| matches!(b, Block::Image { .. })) {
+            json!(m.content.iter().filter_map(|b| match b {
+                Block::Text { text } => Some(json!({"type":"input_text", "text":text})),
+                Block::Image { media_type, data, .. } => Some(json!({"type":"input_image", "image_url":format!("data:{media_type};base64,{}", data.0)})),
+                _ => None,
+            }).collect::<Vec<_>>())
+        } else { json!(join_text(&m.content)) } }),
+        ],
         // 届いた順のまま戻す（推論アイテムは直後の本文・ツール呼び出しと対で受け付けられる）。
         Role::Assistant => m
             .content
@@ -350,6 +358,30 @@ fn cut(why: &str) -> LlmError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_image_is_sent_as_input_image() {
+        let message = Message {
+            role: Role::User,
+            content: vec![
+                Block::Text {
+                    text: "describe".into(),
+                },
+                Block::Image {
+                    media_type: "image/png".into(),
+                    source_id: "file".into(),
+                    data: crate::ImageData("YWJj".into()),
+                },
+            ],
+        };
+        let names = ToolNameMap::new(std::iter::empty::<&str>());
+        let wire = to_input_items(&message, &names, &HashSet::new());
+        assert_eq!(wire[0]["content"][0]["type"], "input_text");
+        assert_eq!(wire[0]["content"][1]["type"], "input_image");
+        assert_eq!(
+            wire[0]["content"][1]["image_url"],
+            "data:image/png;base64,YWJj"
+        );
+    }
     use super::*;
     use crate::model::{Effort, ToolDef};
     use crate::providers::openai_responses_events::EventMapper;

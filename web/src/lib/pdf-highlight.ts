@@ -7,7 +7,7 @@
 const ALL = "pdf-find";
 const ACTIVE = "pdf-find-active";
 
-const byPage = new Map<string, { all: Range[]; active: Range | null }>();
+const byPage = new Map<string, { all: Range[]; active: Range[] }>();
 
 type HighlightRegistry = Map<string, unknown>;
 type HighlightCtor = new (...ranges: Range[]) => unknown;
@@ -26,15 +26,15 @@ function flush() {
   const active: Range[] = [];
   for (const v of byPage.values()) {
     all.push(...v.all);
-    if (v.active) active.push(v.active);
+    active.push(...v.active);
   }
   api.reg.set(ALL, new api.Ctor(...all));
   api.reg.set(ACTIVE, new api.Ctor(...active));
 }
 
 /// ページ `key` の一致を登録する（空で呼ぶと解除）。
-export function setPageHighlights(key: string, all: Range[], active: Range | null): void {
-  if (all.length === 0 && !active) byPage.delete(key);
+export function setPageHighlights(key: string, all: Range[], active: Range[]): void {
+  if (all.length === 0 && active.length === 0) byPage.delete(key);
   else byPage.set(key, { all, active });
   flush();
 }

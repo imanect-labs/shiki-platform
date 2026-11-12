@@ -3,7 +3,7 @@
 //! - 警告: 見送りは何度起こしても同じ結果になる（再試行しない）ので、発火のたびに警告するとログを埋める。
 //!   (理由・テナント・ワークフロー・有効化した版) ごとにプロセスで 1 回にし、2 回目からは debug に落とす。
 //! - 記録: 作成者が自動化の止まったことに気づけるよう、ワークフローごとに 1 行（`workflow_launch_skip`・migration
-//!   0140）に、理由の code と作成者向けの文・回数・最初と最後の時刻を残す。自動実行が run を作れたら消し、オンに
+//!   0142）に、理由の code と作成者向けの文・回数・最初と最後の時刻を残す。自動実行が run を作れたら消し、オンに
 //!   し直す・オフにすると消す。登録の API（`GET /workflows/{id}/registration`）が返し、ワークフローの画面が出す。
 
 use chrono::{DateTime, Utc};
@@ -242,7 +242,7 @@ mod tests {
     /// 理由の code は記録の表の check と同じ集合で、文は内部の言葉（委譲・コード）を出さない（GAP-67・付録 C の P1）。
     #[test]
     fn causes_match_the_table_and_speak_plainly() {
-        let migration = include_str!("../../../../migrations/0140_workflow_launch_skip.sql");
+        let migration = include_str!("../../../../migrations/0142_workflow_launch_skip.sql");
         let check = migration
             .split("check (code in (")
             .nth(1)

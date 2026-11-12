@@ -6,7 +6,7 @@
 -- ファイル 1 件の完全削除でも node と node_version を全件読み、大きなフォルダの完全削除や保持期間の掃除
 -- （GAP-108c）は時間の上限に届きうる。
 --
--- 0133・0153 と同じく CONCURRENTLY は使わない（作る間は node・node_version への書き込みが待たされる）。大きな表に
+-- 0135・0155 と同じく CONCURRENTLY は使わない（作る間は node・node_version への書き込みが待たされる）。大きな表に
 -- 当てるときはメンテナンスの時間に当てるか、事前に同じ名前の索引を CONCURRENTLY で作っておく（if not exists で飛ばす）。
 create index if not exists node_tenant_parent_fk_idx on node (tenant_id, parent_id);
 create index if not exists node_version_blob_fk_idx on node_version (tenant_id, org, blob_sha256);

@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use authz::AuthContext;
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::error::RagError;
 use crate::parser_http::map_worker_error;
@@ -62,18 +63,22 @@ pub struct HttpEmbeddingProvider {
 }
 
 impl HttpEmbeddingProvider {
+    /// CPU ワーカー向けに送信量を制限する HTTP 埋め込みプロバイダーを作る。
     pub fn new(http: reqwest::Client, base_url: &str, expected_model_version: &str) -> Self {
         HttpEmbeddingProvider {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             expected_model_version: expected_model_version.to_string(),
-            batch_size: 64,
+            // CPU 上の長い表は少数件でも推論が重い。worker の DTO 件数上限とは
+            // 別に送信量を絞り、1 リクエストの推論量とピークメモリを抑える。
+            batch_size: 8,
         }
     }
 }
 
 #[async_trait]
 impl EmbeddingProvider for HttpEmbeddingProvider {
+    /// 文書は要求ごとに5分を上限とし、検索はClientに設定された期限で埋め込む。
     async fn embed(
         &self,
         ctx: &AuthContext,
@@ -84,16 +89,20 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
         let mut model_version = self.expected_model_version.clone();
         let mut dimension = 0usize;
         for batch in texts.chunks(self.batch_size.max(1)) {
-            let resp = self
-                .http
-                .post(format!("{}/embed", self.base_url))
-                .json(&serde_json::json!({
-                    "tenant_id": ctx.tenant_id(),
-                    "input_type": input.as_str(),
-                    "texts": batch,
-                }))
-                .send()
-                .await?;
+            let mut request =
+                self.http
+                    .post(format!("{}/embed", self.base_url))
+                    .json(&serde_json::json!({
+                        "tenant_id": ctx.tenant_id(),
+                        "input_type": input.as_str(),
+                        "texts": batch,
+                    }));
+            // 文書の索引作成は長い表をCPUで推論するため、検索クエリ用の
+            // 短い期限から分離する。検索は呼び出し元Clientの期限を維持する。
+            if matches!(input, EmbedInput::Document) {
+                request = request.timeout(Duration::from_mins(5));
+            }
+            let resp = request.send().await?;
             if !resp.status().is_success() {
                 return Err(map_worker_error(resp).await);
             }

@@ -17,6 +17,8 @@ mod config;
 mod gate;
 mod generate;
 mod history;
+mod history_images;
+mod history_work_log;
 /// 生成ジョブの可視期限のハートビート（接続を待ちの間に持たない）。
 mod job_lease;
 /// 実行オプション/system プロンプト（generate.rs から分割）。

@@ -205,6 +205,365 @@ fn user_msg(text: &str) -> Vec<LlmMessage> {
     vec![LlmMessage::text(LlmRole::User, text)]
 }
 
+/// 初回の system がプロバイダに届き、計画用の余分なターンを消費しない。
+#[tokio::test]
+async fn budget_plan_reaches_first_generation_in_both_profiles() {
+    let Some(pool) = setup().await else { return };
+    let gateway = stub_gateway(pool);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockOkTool)];
+    for mut opts in [
+        AgentOptions::chat(6),
+        AgentOptions::autonomous(6, None, 1_000_000, 1_000_000),
+    ] {
+        opts.system = Some("元の指示".into());
+        let mut sink = RecordingSink::new();
+        let result = run_agent(
+            &gateway,
+            &tools,
+            user_msg("echosystem:"),
+            &run_context(&c, "budget plan"),
+            &opts,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        let text: String = sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(text.starts_with("system: 元の指示"), "{text}");
+        assert!(text.contains("上限は 6 ステップ"), "{text}");
+        assert!(text.contains("利用者に見える本文"), "{text}");
+        assert!(text.contains("最初のツール呼び出しを同じ生成"), "{text}");
+        assert_eq!(text.matches("[実行予算と計画]").count(), 1);
+        assert_eq!(result.checkpoint.spent.steps, 1);
+        assert_eq!(result.stop, AgentStop::Completed);
+        assert_eq!(opts.system.as_deref(), Some("元の指示"));
+        let mut resumed_sink = RecordingSink::new();
+        let resumed = run_agent(
+            &gateway,
+            &tools,
+            Vec::new(),
+            &run_context(&c, "budget system resume"),
+            &opts,
+            Some(result.checkpoint),
+            None,
+            &mut resumed_sink,
+        )
+        .await
+        .unwrap();
+        let text: String = resumed_sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text.matches("[実行予算と計画]").count(), 1, "{text}");
+        assert_eq!(resumed.checkpoint.spent.steps, 2);
+        assert_eq!(opts.system.as_deref(), Some("元の指示"));
+    }
+}
+
+/// ツールを持たない計画子には、本文の前置きやツール呼び出しを要求しない。
+#[tokio::test]
+async fn budget_without_tools_preserves_output_format() {
+    let Some(pool) = setup().await else { return };
+    let gateway = stub_gateway(pool);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    for mut opts in [
+        AgentOptions::chat(6),
+        AgentOptions::autonomous(6, None, 1_000_000, 1_000_000),
+    ] {
+        opts.offer_plan_tool = false;
+        opts.system = Some("計画 JSON だけを返す。前後に説明を書かない。".into());
+        let mut sink = RecordingSink::new();
+        let result = run_agent(
+            &gateway,
+            &[],
+            user_msg("echosystem:"),
+            &run_context(&c, "budget without tools"),
+            &opts,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        let text: String = sink
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.contains("計画 JSON だけを返す。前後に説明を書かない。"),
+            "{text}"
+        );
+        assert!(text.contains("上限は 6 ステップ"), "{text}");
+        assert!(text.contains("指定された出力形式を守り"), "{text}");
+        assert!(!text.contains("利用者に見える本文"), "{text}");
+        assert!(!text.contains("最初のツール呼び出し"), "{text}");
+        assert_eq!(result.stop, AgentStop::Completed);
+    }
+}
+
+/// 通常チャットにも残量を通知し、再開しても消費をリセットしない。
+#[tokio::test]
+async fn budget_observations_survive_resume_in_both_profiles() {
+    let Some(pool) = setup().await else { return };
+    let gateway = stub_gateway(pool);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(MockOkTool)];
+    for opts in [
+        AgentOptions::chat(6),
+        AgentOptions::autonomous(6, None, 1_000_000, 1_000_000),
+    ] {
+        let mut sink = RecordingSink::new();
+        run_agent(
+            &gateway,
+            &tools,
+            user_msg("loop: noop"),
+            &run_context(&c, "budget"),
+            &opts,
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .unwrap();
+        for (index, checkpoint) in sink.checkpoints.iter().enumerate() {
+            let content = checkpoint
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .iter()
+                .find_map(|b| match b {
+                    llm_gateway::Block::ToolResult { content, .. } => Some(content),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                content.contains(&format!("残り {} ステップ", 5 - index)),
+                "{content}"
+            );
+            if index >= 3 {
+                assert!(
+                    content.contains("依頼された操作・結果確認・最終回答"),
+                    "{content}"
+                );
+                assert!(!content.contains("この次の応答で終えること"), "{content}");
+            }
+        }
+        let saved = serde_json::to_string(&sink.checkpoints[0]).unwrap();
+        let mut resumed_sink = RecordingSink::new();
+        let resumed = run_agent(
+            &gateway,
+            &tools,
+            Vec::new(),
+            &run_context(&c, "budget resume"),
+            &opts,
+            Some(serde_json::from_str(&saved).unwrap()),
+            None,
+            &mut resumed_sink,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resumed.checkpoint.spent.steps, 6);
+        assert_eq!(resumed.stop, AgentStop::Budget(BudgetKind::Steps));
+        assert_eq!(resumed_sink.checkpoints.len(), 5);
+        assert_eq!(opts.system, None);
+    }
+}
+
+/// 実 LLM 検証用の文書。実データには触れず、編集と再読込を別々に記録する。
+#[derive(Default)]
+struct BudgetDocument {
+    read: bool,
+    edited: bool,
+    verified: bool,
+    edits: usize,
+}
+
+struct BudgetDocumentTool {
+    edit: bool,
+    document: Arc<std::sync::Mutex<BudgetDocument>>,
+}
+
+#[async_trait]
+impl Tool for BudgetDocumentTool {
+    fn name(&self) -> &str {
+        if self.edit {
+            "document.edit"
+        } else {
+            "document.read"
+        }
+    }
+
+    fn description(&self) -> &str {
+        if self.edit {
+            "文書の締切を変更する。先に document.read で現在の文書を確認すること。"
+        } else {
+            "文書の現在の本文を取得する。編集後もこのツールで本文を再取得して結果を確認できる。"
+        }
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        if self.edit {
+            serde_json::json!({
+                "type": "object", "properties": { "deadline": { "type": "string" } },
+                "required": ["deadline"], "additionalProperties": false
+            })
+        } else {
+            serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false })
+        }
+    }
+
+    async fn call(
+        &self,
+        _ctx: &AuthContext,
+        input: serde_json::Value,
+        _trace_id: Option<&str>,
+    ) -> Result<ToolOutcome, ToolError> {
+        let mut doc = self.document.lock().unwrap();
+        if self.edit {
+            if !doc.read {
+                return Ok(ToolOutcome::error(
+                    "先に document.read で現在の文書を確認してください",
+                ));
+            }
+            if input["deadline"] != "金曜日" {
+                return Ok(ToolOutcome::error("deadline には金曜日を指定してください"));
+            }
+            doc.edited = true;
+            doc.edits += 1;
+            Ok(ToolOutcome::ok(
+                "編集しました。document.read で本文を確認できます。",
+            ))
+        } else {
+            doc.read = true;
+            doc.verified |= doc.edited;
+            Ok(ToolOutcome::ok(if doc.edited {
+                "提出締切は金曜日です。"
+            } else {
+                "提出締切は月曜日です。"
+            }))
+        }
+    }
+}
+
+/// 実行例: ANTHROPIC_TEST_API_KEY を秘密変数で設定し、DB を用意して
+/// `cargo test -p shiki-agent-core --test resume_it haiku_budget_plan_live -- --ignored --nocapture`。
+/// API 呼出しは各プロファイル最大 6 ステップ＋予算超過時の最終回答 1 回。
+#[tokio::test]
+#[ignore = "実 Anthropic API を呼ぶ。秘密変数とテストDBを用意して明示実行する"]
+async fn haiku_budget_plan_live() {
+    let pool = setup().await.expect("テストDBが必要です");
+    let api_key = shiki_testenv::var("ANTHROPIC_TEST_API_KEY").expect("秘密変数が必要です");
+    let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "claude-haiku-5-5".into());
+    // TLS を中継する検証環境向け。証明書検証は維持し、本番クライアントは変更しない。
+    let mut http = reqwest::Client::builder();
+    if let Ok(path) = std::env::var("ANTHROPIC_TEST_CA") {
+        let pem = std::fs::read(path).expect("検証用 CA を読み込めること");
+        for cert in reqwest::Certificate::from_pem_bundle(&pem).unwrap() {
+            http = http.add_root_certificate(cert);
+        }
+    }
+    let gateway = LlmGateway::build(
+        pool,
+        http.build().unwrap(),
+        GatewayConfig {
+            provider: ProviderConfig {
+                kind: ProviderKind::Anthropic,
+                base_url: Some("https://api.anthropic.com".into()),
+                api_key: Some(api_key),
+                ..Default::default()
+            },
+            catalog: ModelCatalog {
+                default_model: model.clone(),
+                models: vec![ModelEntry {
+                    id: model.clone(),
+                    ..Default::default()
+                }],
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    for mut opts in [
+        AgentOptions::chat(6),
+        AgentOptions::autonomous(6, None, 100_000, 1_000_000),
+    ] {
+        opts.max_tokens = Some(2048);
+        opts.offer_plan_tool = false;
+        opts.system = Some("利用者の依頼を日本語で遂行してください。".into());
+        let document = Arc::new(std::sync::Mutex::new(BudgetDocument::default()));
+        let tools: Vec<Arc<dyn Tool>> = [false, true]
+            .into_iter()
+            .map(|edit| {
+                Arc::new(BudgetDocumentTool {
+                    edit,
+                    document: Arc::clone(&document),
+                }) as Arc<dyn Tool>
+            })
+            .collect();
+        let mut sink = RecordingSink::new();
+        let result = run_agent(
+            &gateway, &tools,
+            user_msg("文書を読んで、提出締切を金曜日に変更してください。変更後の本文も確認してください。"),
+            &run_context(&c, "budget plan live fixture"), &opts, None, None, &mut sink,
+        ).await.unwrap();
+        let first_tool = sink
+            .events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolCall { .. }))
+            .unwrap();
+        let plan: String = sink.events[..first_tool]
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let doc = document.lock().unwrap();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "model": model, "profile": format!("{:?}", opts.profile), "plan": plan,
+                "stop": format!("{:?}", result.stop), "steps": result.checkpoint.spent.steps,
+                "tokens": result.checkpoint.spent.tokens, "edits": doc.edits, "verified": doc.verified,
+            })
+        );
+        assert!(
+            !plan.trim().is_empty(),
+            "最初のツール実行前に計画本文が必要"
+        );
+        assert!(
+            matches!(
+                sink.events[first_tool],
+                AgentEvent::ToolCall { step: 0, .. }
+            ),
+            "計画だけのターンを使わない"
+        );
+        assert_eq!(doc.edits, 1, "編集を重複しない");
+        assert!(doc.verified, "編集後の本文を再取得して確認する");
+        assert_eq!(result.stop, AgentStop::Completed);
+        assert!(result.checkpoint.spent.steps <= 6);
+    }
+}
+
 fn run_context<'a>(ctx: &'a AuthContext, preview: &str) -> RunContext<'a> {
     RunContext {
         ctx,
