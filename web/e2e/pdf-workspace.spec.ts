@@ -1703,6 +1703,9 @@ test("端末のPDFを結合し、追加順の変更とファイル除外を反�
     buffer: Buffer.from(await extra.save()),
   });
   await expect(dialog.getByTestId("pdf-merge-source")).toHaveCount(2);
+  await expect(
+    dialog.getByText("追加資料.pdf を追加しました", { exact: true }),
+  ).toBeVisible();
   await dialog.getByLabel("追加資料.pdfを前へ", { exact: true }).click();
   const event = page.waitForEvent("download");
   await dialog.getByRole("button", { name: "PDF を保存", exact: true }).click();
@@ -1717,6 +1720,9 @@ test("端末のPDFを結合し、追加順の変更とファイル除外を反�
     .getByLabel("追加資料.pdfを結合から外す", { exact: true })
     .click();
   await expect(
+    dialog.getByText("追加資料.pdf を追加しました", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
     dialog.getByRole("button", { name: "PDF を保存", exact: true }),
   ).toBeDisabled();
   await page.getByLabel("結合するPDFを追加").setInputFiles({
@@ -1726,6 +1732,9 @@ test("端末のPDFを結合し、追加順の変更とファイル除外を反�
   });
   await expect(dialog.getByRole("alert")).toBeVisible();
   await expect(dialog.getByTestId("pdf-merge-source")).toHaveCount(1);
+  await expect(
+    dialog.getByText("追加資料.pdf を追加しました", { exact: true }),
+  ).toHaveCount(0);
   await page.screenshot({ path: "test-results/pdf-merge-light.png" });
 });
 
@@ -1828,7 +1837,7 @@ for (const theme of ["light", "dark"] as const)
     await page.getByTestId("pdf-mode-tools").click();
     await page.getByRole("button", { name: /ページを整理/ }).click();
     const dialog = page.getByRole("dialog", {
-      name: "ページを、思いどおりに。",
+      name: "ページの並べ替え・削除",
       exact: true,
     });
     await expect(dialog).toBeVisible();
@@ -1877,7 +1886,7 @@ test("ドライブのPDFも結合リストへ追加できる", async ({ page }) 
   await expect(page.getByTestId("pdf-merge-source")).toHaveCount(2);
   const download = page.waitForEvent("download");
   await page
-    .getByRole("dialog", { name: "資料を、ひとつのPDFに。", exact: true })
+    .getByRole("dialog", { name: "PDFの結合", exact: true })
     .getByRole("button", { name: "PDF を保存", exact: true })
     .click();
   const out = await PDFDocument.load(

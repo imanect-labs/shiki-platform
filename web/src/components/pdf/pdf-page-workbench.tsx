@@ -96,6 +96,7 @@ export function PdfPageWorkbench({
     sourcesRef.current = next;
     setSources(next);
     setDone(false);
+    setAnnouncement("");
   };
   const change = (next: number[], message: string) => {
     if (next === order) return;
@@ -157,6 +158,8 @@ export function PdfPageWorkbench({
     loadingOperation.current = true;
     setLoading(true);
     setError("");
+    setDone(false);
+    setAnnouncement("");
     try {
       for (const file of files) {
         if (!current()) return;
@@ -189,6 +192,8 @@ export function PdfPageWorkbench({
     setPicker(false);
     setLoading(true);
     setError("");
+    setDone(false);
+    setAnnouncement("");
     try {
       await add(async () => {
         const total = await totalBytes();
@@ -286,13 +291,13 @@ export function PdfPageWorkbench({
           </p>
           <DialogTitle className="text-xl">
             {mode === "organize"
-              ? "ページを、思いどおりに。"
-              : "資料を、ひとつのPDFに。"}
+              ? "ページの並べ替え・削除"
+              : "PDFの結合"}
           </DialogTitle>
           <DialogDescription className="mt-2 text-xs leading-relaxed">
             {mode === "organize"
-              ? "ドラッグで順序を変更。矢印ボタンでも並べ替えできます。削除は元に戻せます。"
-              : "上から順に結合します。ファイルを追加し、ドラッグや矢印で順序を整えてください。"}
+              ? "ドラッグまたは矢印ボタンで並べ替えられます。削除したページは元に戻せます。"
+              : "一覧の上から順にPDFを結合します。ドラッグまたは矢印ボタンで順序を変更できます。"}
           </DialogDescription>
         </div>
         <div className="flex flex-wrap items-center gap-2 border-b bg-muted/30 px-5 py-3 sm:px-7">

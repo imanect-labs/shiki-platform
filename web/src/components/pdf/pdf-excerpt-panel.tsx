@@ -88,9 +88,7 @@ export function PdfExcerptPanel({
             </div>
             <p className="text-sm font-medium">最初の範囲を選択</p>
             <p className="mt-2 text-xs leading-6 text-muted-foreground">
-              文章も表も、そのまま抜粋。
-              <br />
-              枠を追加してから内容を確認できます。
+              選択した範囲の内容がここに表示されます。
             </p>
             <span className="mt-5 rounded-md border px-2 py-1 text-[10px] text-muted-foreground">
               矢印で位置 · Shift＋矢印でサイズ · Enterで追加
