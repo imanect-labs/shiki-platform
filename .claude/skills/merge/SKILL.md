@@ -8,7 +8,7 @@ description: 作業ツリーの変更を /pr で merge-ready な PR にし、CI 
 ```text
 Step 1  /pr を回す            Phase 1〜6。緑（review-status.sh が exit 0）になるまで
 Step 2  マージ前の確認        緑にした HEAD のまま・base が main・コンフリクトなし・draft でない
-Step 3  マージキューに入れる   HEAD の SHA を固定して gh pr merge
+Step 3  マージする          キューの有無を確かめ、HEAD の SHA を固定して gh pr merge
 Step 4  キューを見届ける      scripts/queue-wait.sh。落ちたら Step 1 の Phase 6 に戻る
 Step 5  後始末と報告          Issue のクローズ確認・作った Issue と PR の報告
 ```
@@ -60,19 +60,38 @@ gh pr view --json number,url,state,isDraft,baseRefName,mergeable,headRefOid,clos
 | `headRefOid` | 控えた `<GREEN_SHA>` と一致 | 緑の後に push がある。Step 1 に戻る |
 | `closingIssuesReferences` | 対応 Issue がある | 本文に `Closes #<n>` が無ければ足す（`dev-workflow` の規約） |
 
-## Step 3 — マージキューに入れる
+## Step 3 — マージする（キューがあればキューに入れる）
 
-main はマージキュー必須。マージ方式はキュー側の設定で決まるので、`--squash` 等は付けない。
+**先に main にマージキューの規則が実際に掛かっているかを確かめる。** CI（`ci.yml`）は `merge_group` を受けるが、
+リポジトリ設定でキューが有効とは限らない（2026-11 時点では `merge_group` の run が 0 件で、PR は squash で直接マージされていた）:
 
 ```bash
-gh pr merge <PR#> --match-head-commit <GREEN_SHA>
+gh api repos/{owner}/{repo}/rules/branches/main --jq '[.[] | select(.type == "merge_queue")] | length'
 ```
 
-- `--match-head-commit` で、確認した HEAD 以外がマージされるのを防ぐ（その間に誰かが push していたら失敗する → Step 1 へ）。
-- 必須チェックの一部が未完了だと auto-merge の予約になる。それで構わない（`queue-wait.sh` は予約中を待機として扱う）。
-- 「キューが無い」旨のエラーで直マージを求められたら、リポジトリ設定が変わっている。方式を推測で選ばず human に確認する。
+- **1 以上（キューあり）** — マージ方式はキュー側の設定で決まるので、`--squash` 等は付けない:
+
+  ```bash
+  gh pr merge <PR#> --match-head-commit <GREEN_SHA>
+  ```
+
+  必須チェックの一部が未完了だと auto-merge の予約になる。それで構わない（`queue-wait.sh` は予約中を待機として扱う）。
+
+- **0（キューなし）** — main の履歴に合わせて squash で直接マージする:
+
+  ```bash
+  gh pr merge <PR#> --squash --match-head-commit <GREEN_SHA>
+  ```
+
+  キューの全量テストが走らないので、PR で選ばれなかったテストは main の push run で初めて回る。そこで落ちたら
+  `selection-gap` が Issue を起票する（Step 5 で main の run も見る）。
+
+どちらでも `--match-head-commit` で、確認した HEAD 以外がマージされるのを防ぐ（その間に誰かが push していたら失敗する → Step 1 へ）。
+`--admin` は付けない。保護ルールに弾かれたら、理由を human に報告する。
 
 ## Step 4 — キューを見届ける
+
+キューなしで直接マージした場合も `queue-wait.sh` で `MERGED` を確かめる（即 exit 0 になる）。
 
 マージキュー（`merge_group`）は docs 以外の変更を含む限り**全量**のテストを回す。PR では選ばれなかったテストがここで落ちうる
 （`.claude/skills/pr/references/gates.md` 冒頭）。
@@ -120,7 +139,10 @@ gh pr merge <PR#> --match-head-commit <GREEN_SHA>
 
    開いたままなら、マージした PR を書いた完了コメントを付けてクローズする（`--reason completed`）。
 
-2. ローカルを最新化する（次のタスクは `origin/main` から切る）:
+2. **キューなしでマージしたなら、main の push run（全量テスト）の結果まで見る。** 落ちたら `selection-gap` の Issue を確認し、
+   この PR が原因なら直す PR を出す（`gh run list --branch main --event push --limit 3`）。
+
+3. ローカルを最新化する（次のタスクは `origin/main` から切る）:
 
    ```bash
    git fetch origin main
@@ -128,7 +150,7 @@ gh pr merge <PR#> --match-head-commit <GREEN_SHA>
 
    リモートブランチの削除はリポジトリの自動削除設定に任せる。手で消すのは human に頼まれた時だけ。
 
-3. human に報告する:
+4. human に報告する:
    - PR の URL と変更の一行要約、merge commit の SHA
    - 検証内容（`/pr` の Phase 2 の結果。UI ならスクリーンショット）
    - キューで落ちてやり直したなら、その原因と対応
@@ -140,7 +162,8 @@ gh pr merge <PR#> --match-head-commit <GREEN_SHA>
 | 用途 | コマンド |
 | --- | --- |
 | ゲート判定（緑か） | `.claude/skills/pr/scripts/review-status.sh [PR#]` |
-| マージキューに入れる | `gh pr merge <PR#> --match-head-commit <sha>` |
+| キューの有無 | `gh api repos/{owner}/{repo}/rules/branches/main --jq '[.[] \| select(.type == "merge_queue")] \| length'` |
+| マージ（キューあり / なし） | `gh pr merge <PR#> --match-head-commit <sha>` / `… --squash --match-head-commit <sha>` |
 | キュー待ち | `.claude/skills/merge/scripts/queue-wait.sh <PR#> [分]` |
 | キューの run | `gh run list --event merge_group --limit 5` |
 | キュー投入の取り消し | `gh pr merge <PR#> --disable-auto`（キュー投入済みなら PR ページの「Remove from queue」） |
