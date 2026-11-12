@@ -12,18 +12,14 @@
 #        1 と 2 だけでは「対応漏れ」を検出できない。実際に PR #393/#394 で
 #        「12/12 pass・未解消スレッドなし」の状態から 7 件が未対応で残り、
 #        うち 2 件は実バグだった。時刻の突き合わせが唯一の確実な検出手段。
-#     4. スタック PR（base != 既定ブランチ）の警告
-#        CodeRabbit は base が既定ブランチ以外の PR を自動レビューしない。
-#        `gh pr comment <n> --body "@coderabbitai review"` で明示トリガが要る。
-#
 #   exit: 0=緑 / 1=ブロック / 2=取得エラー。
 #
 #   環境変数:
 #     PR_REVIEW_BOTS  ゲート扱いする bot ログイン（空白区切り）。
-#                     既定: "coderabbitai[bot] chatgpt-codex-connector[bot]"
+#                     既定: "chatgpt-codex-connector[bot]"
 set -euo pipefail
 
-PR_REVIEW_BOTS="${PR_REVIEW_BOTS:-coderabbitai[bot] chatgpt-codex-connector[bot]}"
+PR_REVIEW_BOTS="${PR_REVIEW_BOTS:-chatgpt-codex-connector[bot]}"
 
 err() { printf '%s\n' "$*" >&2; }
 
@@ -48,14 +44,12 @@ HEAD_SHA=$(printf '%s' "$meta" | jq -r '.headRefOid // ""')
 # 「まだ起動していない」か「コンフリクトで起動できない」のどちらか。待っても解消しないので rebase を促す。
 MERGEABLE=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
 
-if ! repo=$(gh repo view --json owner,name,defaultBranchRef -q '.owner.login + "/" + .name + " " + .defaultBranchRef.name' 2>/dev/null); then
+if ! repo=$(gh repo view --json owner,name -q '.owner.login + "/" + .name' 2>/dev/null); then
   err "リポジトリ情報を取得できません。"
   exit 2
 fi
 OWNER="${repo%%/*}"
-rest="${repo#*/}"
-NAME="${rest%% *}"
-DEFAULT_BRANCH="${rest##* }"
+NAME="${repo#*/}"
 
 bots_json=$(printf '%s' "$PR_REVIEW_BOTS" | jq -R 'split(" ") | map(select(length>0))')
 blocked=0
@@ -138,9 +132,6 @@ else
   echo "  最終コミット: $last_commit"
 
   # インラインレビューコメント。
-  # CodeRabbit は修正を確認した後に「対応済み」「指摘を取り下げ」の返信を付ける。これらは
-  # 常に最終コミットより後になるため、除外しないと恒久的に赤くなる（対応すべき指摘ではない）。
-  ACK_MARKERS='<review_comment_addressed>|<review_comment_withdrawn>'
   # コメント一覧は 1 回だけ取得して使い回す（--paginate は PR あたり複数リクエストになるため、
   # 同じ内容を 2 度引かない）。
   # 取得失敗を空配列に化けさせない。失敗を「コメントなし」と扱うと、取りこぼし検出が
@@ -151,19 +142,13 @@ else
   fi
 
   late_inline=$(printf '%s' "$comments_json" \
-    | jq -r --argjson bots "$bots_json" --arg t "$last_commit" --arg ack "$ACK_MARKERS" '
+    | jq -r --argjson bots "$bots_json" --arg t "$last_commit" '
       [ .[]
         | select(.user.login as $a | $bots | index($a))
         | select(.created_at > $t)
-        | select((.body // "") | test($ack) | not)
         | "  [\(.created_at)] [\(.user.login)] id=\(.id) \(.path):\(.line // .original_line // "-")\n      \((.body // "") | gsub("\n"; " ") | .[0:200])"
       ] | .[]' 2>/dev/null || true)
 
-  ack_count=$(printf '%s' "$comments_json" \
-    | jq --argjson bots "$bots_json" --arg t "$last_commit" --arg ack "$ACK_MARKERS" '
-      [ .[] | select(.user.login as $a | $bots | index($a))
-             | select(.created_at > $t)
-             | select((.body // "") | test($ack)) ] | length' 2>/dev/null || echo 0)
 
   # レビュー本体（サマリ本文）。
   if ! reviews_json=$(gh api --paginate "repos/$OWNER/$NAME/pulls/$PR_NUM/reviews" 2>/dev/null); then
@@ -200,7 +185,6 @@ else
   else
     echo "  （なし）"
   fi
-  [ "${ack_count:-0}" -gt 0 ] && echo "  （うち $ack_count 件は bot の「対応済み/取り下げ」返信のため除外）"
 
   # --- 3.5 bot が「最新コミットを見たか」を確認する ---
   # 「最終コミット後のコメントが無い」には 2 つの意味がある:
@@ -209,7 +193,7 @@ else
   # 時刻比較だけでは (b) を緑と誤判定する。
   #
   # ただし「review オブジェクトが無い＝未レビュー」ではない:
-  #   - CodeRabbit は指摘ゼロだと review を作らず、commit status（context="CodeRabbit"）だけ出す。
+  #   - Codex は指摘ゼロだとリアクションだけで review を作らないことがある。
   #   - Codex は push ごとの再レビューをしない（初回のみのことがある）。
   # したがって review の有無だけでブロックすると、恒久的に緑にならなくなる。
   # ブロックするのは「レビューが実行中（pending）」＝結果が未確定の時だけにして、
@@ -225,7 +209,7 @@ else
       blocked=1
     fi
 
-    # 参考情報: HEAD に対して review も status も残していない bot を挙げる。
+    # 参考情報: HEAD に対して review を残していない bot を挙げる。
     silent_bots=""
     for bot in $PR_REVIEW_BOTS; do
       reviewed=$(printf '%s' "$reviews_json" | jq -r --arg b "$bot" --arg sha "$HEAD_SHA" \
@@ -238,16 +222,6 @@ else
       echo "     判断に使うなら PR ページで最終レビュー対象コミットを確認すること（ブロックはしない）。"
     fi
   fi
-fi
-
-# --- 4. スタック PR の警告 ---
-if [ "$BASE_REF" != "$DEFAULT_BRANCH" ]; then
-  echo "== スタック PR =="
-  echo "  base = $BASE_REF（既定ブランチ $DEFAULT_BRANCH ではない）"
-  echo "  ⚠️  CodeRabbit は base が既定ブランチ以外の PR を自動レビューしません。"
-  echo "     明示トリガ: gh pr comment $PR_NUM --body \"@coderabbitai review\""
-  echo "     force-push で HEAD が変わったら再トリガすること。"
-  # 警告のみ（ブロックはしない）。
 fi
 
 echo "================================"

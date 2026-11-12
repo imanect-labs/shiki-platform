@@ -93,3 +93,4 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 - `dev-workflow` — ブランチ → Issue → 実装 → PR → close の進め方
 - `architecture-invariants` — 不変条件の詳細チェックリスト
 - `pr` — PR 作成から CI・AI レビュー通過までのループ
+- `merge` — `/pr` で緑にしてからマージキューに入れ、main に入るまで見届ける
