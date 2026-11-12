@@ -70,9 +70,10 @@ impl From<Installed> for InstallAppResponse {
     responses(
         (status = 200, description = "インストール完了", body = InstallAppResponse),
         (status = 400, description = "granted ⊄ requested・未知スコープ・信頼ティア不許可"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない・署名検証失敗"),
         (status = 404, description = "レジストリに存在しない"),
-        (status = 409, description = "yank 済み・テーブル名衝突。同じテナントのほかの組織にインストールがあれば code=installed_in_other_org と理由の message", body = crate::error_body::ConflictBody),
+        (status = 409, description = "テーブル名衝突など。取り下げた版なら code=yanked と理由の message。同じテナントのほかの組織にインストールがあれば code=installed_in_other_org と理由の message", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -117,7 +118,10 @@ pub async fn install_app(
 #[utoipa::path(
     get,
     path = "/apps/installations",
-    responses((status = 200, description = "インストール一覧")),
+    responses(
+        (status = 200, description = "インストール一覧"),
+        (status = 401, description = "未認証"),
+    ),
     security(("session" = [])),
 )]
 pub async fn list_installations(
@@ -189,6 +193,7 @@ pub async fn list_installations(
     params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
     responses(
         (status = 204, description = "アンインストール完了"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
         (status = 404, description = "インストールが存在しない"),
         (status = 409, description = "同じテナントのほかの組織のインストール（code=installed_in_other_org と理由の message）", body = crate::error_body::ConflictBody),
@@ -215,6 +220,7 @@ pub async fn uninstall_app(
     params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
     responses(
         (status = 200, description = "アプリのテーブルと、見られる・編集できる・追加だけの部署・グループ", body = app_platform::AppTableAccess),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
         (status = 404, description = "インストールが存在しない"),
     ),
@@ -240,6 +246,7 @@ pub async fn app_table_roles(
     responses(
         (status = 200, description = "変えた後のアプリのテーブルと部署・グループ", body = app_platform::AppTableAccess),
         (status = 400, description = "部署・グループの id が不正・見つからない・足して外す食い違い・件数の上限・テーブルが無い"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
         (status = 404, description = "インストールが存在しない"),
     ),
@@ -267,6 +274,7 @@ pub async fn update_app_table_roles(
     params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
     responses(
         (status = 200, description = "利用量集計"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
     ),
     security(("session" = [])),
@@ -280,6 +288,21 @@ pub async fn app_usage(
     Ok(Json(usage))
 }
 
+/// レジストリ一覧の 1 項目（登録の行と、呼ぶ人が取り下げられるか・GAP-69b）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RegistryListItem {
+    #[serde(flatten)]
+    pub entry: RegistryEntry,
+    /// 呼ぶ人がこの公開を取り下げられるか（アプリの持ち主か組織の管理者・画面の出し分けだけ）。
+    pub can_yank: bool,
+}
+
+/// レジストリ一覧（`GET /apps/registry`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RegistryListResponse {
+    pub items: Vec<RegistryListItem>,
+}
+
 /// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。取り下げたものと、実体の
 /// アーティファクトを消したものは出さない（D-203・GAP-69a）。
 ///
@@ -288,13 +311,16 @@ pub async fn app_usage(
 #[utoipa::path(
     get,
     path = "/apps/registry",
-    responses((status = 200, description = "レジストリ一覧")),
+    responses(
+        (status = 200, description = "レジストリ一覧", body = RegistryListResponse),
+        (status = 401, description = "未認証"),
+    ),
     security(("session" = [])),
 )]
 pub async fn list_registry(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<RegistryListResponse>, ApiError> {
     let items = state
         .installs
         .registry()
@@ -307,18 +333,12 @@ pub async fn list_registry(
             vec![false; items.len()]
         }
     };
-    let items: Vec<serde_json::Value> = items
+    let items = items
         .into_iter()
         .zip(can_yank)
-        .map(|(entry, can_yank)| {
-            let mut v = serde_json::to_value(entry).unwrap_or_default();
-            if let Some(obj) = v.as_object_mut() {
-                obj.insert("can_yank".into(), can_yank.into());
-            }
-            v
-        })
+        .map(|(entry, can_yank)| RegistryListItem { entry, can_yank })
         .collect();
-    Ok(Json(serde_json::json!({ "items": items })))
+    Ok(Json(RegistryListResponse { items }))
 }
 
 /// コードアプリの公開を取り下げる（D-203・GAP-69b）。
@@ -332,6 +352,7 @@ pub async fn list_registry(
     params(("id" = Uuid, Path, description = "レジストリのエントリの ID（`GET /apps/registry` の `id`）")),
     responses(
         (status = 204, description = "取り下げた（もう取り下げていたときも）"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アプリの持ち主でも組織の管理者でもない"),
         (status = 404, description = "呼ぶ人の組織のコードアプリの登録に無い（ほかの組織・skill の登録を含む）"),
     ),
@@ -364,6 +385,7 @@ pub struct ImportAppRequest {
     request_body = ImportAppRequest,
     responses(
         (status = 200, description = "レジストリ登録済み", body = RegistryEntry),
+        (status = 401, description = "未認証"),
         (status = 403, description = "署名検証失敗・鍵不明/失効"),
         (status = 409, description = "同名 version は登録済み（不変 publish）"),
     ),
