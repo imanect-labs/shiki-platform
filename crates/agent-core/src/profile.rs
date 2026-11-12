@@ -91,6 +91,43 @@ pub(crate) struct StepBudget<'a> {
     pub(crate) extended: bool,
 }
 
+/// 広げた 1 応答の出力上限をモデルの窓に収めるための材料（D-204）。
+///
+/// 広げた上限（既定 32768）をそのまま送ると、窓の小さいモデル（例: 窓 32k の vLLM）では
+/// 「prompt＋max_tokens＞窓」で 400 になり、作成の直後の生成が失敗する。広げる前の上限で動いていた
+/// 構成を悪くしないよう、元の上限は下回らない。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WindowFit {
+    /// モデルの窓（カタログの `context_window_tokens`・知らなければ `None`＝抑えない）。
+    pub(crate) window_tokens: Option<u32>,
+    /// 履歴の見積りに足す固定分（system・ツール定義・トークナイザの差・[`crate::context::ContextGauge`]）。
+    pub(crate) overhead_tokens: usize,
+}
+
+/// 窓から prompt の見積りを引いた後に、さらに空けておく余白（窓の千分率）。
+/// 見積りは概算（[`crate::context::estimate_prompt_tokens`]）なので、外れても溢れない側に倒す。
+const WINDOW_MARGIN_PERMILLE: u64 = 50;
+
+/// 広げた 1 応答の上限 `extended` を、窓 `window` から prompt の見積りと余白を引いた残りに収める。
+/// 元の上限 `base` は下回らない（元の値で動いていた構成を悪くしない）。`base` が無く残りも無ければ
+/// 広げる前と同じ `None`（プロバイダ既定）に戻す。
+fn fit_response_tokens(
+    extended: u32,
+    base: Option<u32>,
+    window: u32,
+    prompt_tokens: u64,
+) -> Option<u32> {
+    let margin = u64::from(window) * WINDOW_MARGIN_PERMILLE / 1000;
+    let room = u64::from(window)
+        .saturating_sub(prompt_tokens)
+        .saturating_sub(margin);
+    let fitted = u32::try_from(room).unwrap_or(u32::MAX).min(extended);
+    match base {
+        Some(b) => Some(fitted.max(b)),
+        None => (fitted > 0).then_some(fitted),
+    }
+}
+
 /// tool search の設定（[`crate::tool_search`]）。
 ///
 /// 遅延にできるツール（[`crate::ToolName::loading`] が `Deferred`）の定義が十分大きいときだけ
@@ -221,6 +258,28 @@ impl AgentOptions {
             },
         }
     }
+
+    /// [`Self::step_budget`] に加えて、広げた 1 応答の上限を窓に収める（[`WindowFit`]・D-204）。
+    ///
+    /// 次に送る prompt は、直前の実測（`last_prompt_tokens`）と、今の履歴の見積り＋固定分の大きい方で見積もる
+    /// （履歴は直前の実測の後にも伸びているので、実測だけでは小さく出る）。広げていないステップは何もしない。
+    pub(crate) fn step_budget_within(
+        &self,
+        messages: &[llm_gateway::Message],
+        fit: WindowFit,
+        last_prompt_tokens: u64,
+    ) -> StepBudget<'_> {
+        let mut step = self.step_budget(messages);
+        if let (true, Some(extended), Some(window)) =
+            (step.extended, step.max_tokens, fit.window_tokens)
+        {
+            let estimate = crate::context::estimate_prompt_tokens(messages)
+                .saturating_add(fit.overhead_tokens);
+            let prompt = last_prompt_tokens.max(u64::try_from(estimate).unwrap_or(u64::MAX));
+            step.max_tokens = fit_response_tokens(extended, self.max_tokens, window, prompt);
+        }
+        step
+    }
 }
 
 impl Default for AgentOptions {
@@ -315,5 +374,65 @@ mod tests {
         // 設定そのものは書き換えない（保存しない）。
         assert_eq!(opts.budget.max_steps, 6);
         assert_eq!(opts.max_tokens, Some(8192));
+    }
+
+    /// 広げた上限は窓から prompt と余白を引いた残りに収め、元の上限は下回らない（D-204）。
+    #[test]
+    fn extended_response_tokens_fit_the_window() {
+        // 窓 32768・prompt 10000 → 余白 1638 を引いて 21130。
+        assert_eq!(
+            fit_response_tokens(32_768, Some(8192), 32_768, 10_000),
+            Some(21_130)
+        );
+        // 窓に余裕があれば広げた値のまま。
+        assert_eq!(
+            fit_response_tokens(32_768, Some(8192), 200_000, 10_000),
+            Some(32_768)
+        );
+        // 残りが元の上限より小さくても、元の上限は下回らない（広げる前と同じ要求になる）。
+        assert_eq!(
+            fit_response_tokens(32_768, Some(8192), 32_768, 30_000),
+            Some(8192)
+        );
+        // 元の上限が無く残りも無ければ、広げる前と同じプロバイダ既定に戻す。
+        assert_eq!(fit_response_tokens(32_768, None, 32_768, 40_000), None);
+        assert_eq!(
+            fit_response_tokens(32_768, None, 32_768, 10_000),
+            Some(21_130)
+        );
+    }
+
+    /// 窓を知っていれば、広げたステップだけ上限を抑える。広げていないステップ・窓を知らないモデルは変えない。
+    #[test]
+    fn step_budget_within_caps_only_extended_steps_with_a_known_window() {
+        let mut opts = AgentOptions::chat(6);
+        opts.max_tokens = Some(8192);
+        opts.budget_extension = Some(extension());
+        let fit = WindowFit {
+            window_tokens: Some(32_768),
+            overhead_tokens: 0,
+        };
+        // 直前の実測が見積りより大きければ実測を使う。
+        let step = opts.step_budget_within(&called_emit(), fit, 10_000);
+        assert!(step.extended);
+        assert_eq!(step.max_tokens, Some(21_130));
+        // 広げていないステップは元の値のまま。
+        let before = opts.step_budget_within(&called_emit()[..1], fit, 30_000);
+        assert_eq!(before.max_tokens, Some(8192));
+        // 窓を知らなければ広げた値のまま。
+        let unknown = WindowFit {
+            window_tokens: None,
+            overhead_tokens: 0,
+        };
+        let step = opts.step_budget_within(&called_emit(), unknown, 10_000);
+        assert_eq!(step.max_tokens, Some(32_768));
+        // 固定分（system・ツール定義）も見積りに入れる。
+        let heavy = WindowFit {
+            window_tokens: Some(32_768),
+            overhead_tokens: 20_000,
+        };
+        let step = opts.step_budget_within(&called_emit(), heavy, 0);
+        let max = step.max_tokens.unwrap();
+        assert!(max < 32_768 - 20_000, "{max}");
     }
 }

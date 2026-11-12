@@ -8,6 +8,7 @@
 //! - チェックポイントから再開しても広げた予算のまま（チェックポイントに欄は無く、履歴から導く・古い形でも同じ）。
 //! - `budget_extension` が `None` の経路（サブエージェント・ワークフローの agent.invoke・ミニアプリの AI）は
 //!   作成系の道具を呼んでも広がらない。
+//! - 広げた 1 応答の上限はモデルの窓に収める（窓の小さいモデルで prompt＋max_tokens が溢れない）。
 
 #![allow(
     clippy::unwrap_used,
@@ -143,6 +144,11 @@ fn ctx(tenant: &str) -> AuthContext {
 }
 
 fn stub_gateway(pool: PgPool) -> LlmGateway {
+    stub_gateway_with_window(pool, None)
+}
+
+/// モデルの窓（カタログの `context_window_tokens`）を指定した stub の gateway。
+fn stub_gateway_with_window(pool: PgPool, window: Option<u32>) -> LlmGateway {
     let config = GatewayConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Stub,
@@ -152,6 +158,7 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             default_model: "m".into(),
             models: vec![ModelEntry {
                 id: "m".into(),
+                context_window_tokens: window,
                 ..Default::default()
             }],
         },
@@ -438,4 +445,58 @@ async fn budget_notes_count_against_the_extended_budget() {
     let notes = budget_notes(&run(false).await.checkpoint.messages);
     assert!(notes[0].starts_with("[予算] 残り 1 ステップ"), "{notes:?}");
     assert!(notes[0].contains("新しい調査を始めないこと"), "{notes:?}");
+}
+
+/// 広げた 1 応答の上限は、モデルの窓から prompt の見積りと余白を引いた残りに収める。元の上限は下回らない。
+/// 窓を知らないモデル（上のテスト）では広げた値のまま。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_widened_response_limit_fits_the_model_window() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // 窓 4096: 広げた上限（4096）をそのまま送ると、prompt の分だけ窓を溢れる。
+    let window = 4096;
+    let gateway = stub_gateway_with_window(pool, Some(window));
+    let c = ctx(&tenant);
+    let mut sink = RecordingSink::default();
+    let outcome = run_agent(
+        &gateway,
+        &tools("emit_workflow", false),
+        user_msg(),
+        &run_context(&c),
+        &chat_opts(true),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run");
+    assert_eq!(outcome.stop, AgentStop::Budget(BudgetKind::Steps));
+    assert_eq!(outcome.checkpoint.spent.steps, 5, "手数は広がる");
+    let caps = sink.response_caps();
+    assert_eq!(caps.len(), 6, "{caps:?}");
+    assert_eq!(caps[0], Some(2048), "{caps:?}");
+    for cap in &caps[1..] {
+        let cap = cap.expect("上限を送る");
+        assert!(
+            cap > 2048 && cap < window,
+            "窓に収めた上で、元の上限より広げる: {caps:?}"
+        );
+    }
+    // 窓が元の上限ほどしか無ければ、元の上限を下回らない（広げる前と同じ要求）。
+    let tight = stub_gateway_with_window(setup().await.expect("同じ DB"), Some(2048));
+    let mut sink = RecordingSink::default();
+    run_agent(
+        &tight,
+        &tools("emit_workflow", false),
+        user_msg(),
+        &run_context(&c),
+        &chat_opts(true),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run");
+    let caps = sink.response_caps();
+    assert!(caps.iter().all(|c| *c == Some(2048)), "{caps:?}");
 }

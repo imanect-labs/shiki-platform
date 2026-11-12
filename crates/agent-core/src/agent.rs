@@ -30,7 +30,7 @@ use crate::event::{
 };
 use crate::loop_detect::LoopDetector;
 use crate::plan;
-use crate::profile::{AgentOptions, AgentOutcome, StepBudget};
+use crate::profile::{AgentOptions, AgentOutcome, StepBudget, WindowFit};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
@@ -159,7 +159,17 @@ pub async fn run_agent(
             break AgentStop::Cancelled;
         }
         // 作成系の道具を呼んでいれば、広げた予算と 1 応答の上限で回す（毎ステップ履歴から導く・D-204）。
-        let budget = opts.step_budget(&state.messages);
+        // 広げた上限はモデルの窓に収める。見積りの固定分には tool_search で読み込んだ定義の増分も入れる
+        // （拡張のある run だけ。剪定する自律版は下でも同じものを足す）。
+        if opts.budget_extension.is_some() {
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+        }
+        let fit = WindowFit {
+            window_tokens,
+            overhead_tokens: gauge.overhead_tokens(),
+        };
+        let budget =
+            opts.step_budget_within(&state.messages, fit, state.spent.last_prompt_tokens());
         if budget.extended && !extended {
             extended = true;
             // 元の上限に対して出した警告を引きずらない（広げた上限に近づいたら出し直す）。
@@ -214,6 +224,7 @@ pub async fn run_agent(
             run,
             opts,
             &budget,
+            fit,
             approver,
             &mut state,
             sink,
@@ -414,6 +425,8 @@ async fn run_step(
     opts: &AgentOptions,
     // このステップの予算と 1 応答の出力上限（予算を広げていれば広げた値・D-204）。
     budget: &StepBudget<'_>,
+    // 広げた 1 応答の上限を窓に収める材料（切れた呼び出しで広がる上限を知らせるのに使う・D-204）。
+    fit: WindowFit,
     approver: Option<&dyn Approver>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
@@ -582,7 +595,9 @@ async fn run_step(
     if final_stop == StopReason::MaxTokens && !calls.is_empty() {
         let ids: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
         // 切れた呼び出しも履歴に入れたので、残量と次の応答の上限は入れた後の予算で数える（D-204・下の通常の道と同じ）。
-        let observed = opts.step_budget(&state.messages);
+        // 次の応答の上限は、次に送る prompt で窓に収めた値（実際に送る値と同じ）。
+        let observed =
+            opts.step_budget_within(&state.messages, fit, state.spent.last_prompt_tokens());
         if let Some(mut blocks) = crate::agent_observation::truncated_call_results(
             &state.messages,
             &ids,
