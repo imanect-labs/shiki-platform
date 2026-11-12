@@ -127,7 +127,8 @@ const norm = (s: string) => s.normalize("NFKC").toLowerCase();
 /// 補完を出すのは**先頭が `/` のときだけ**（文中の `/` は URL・パスなので拾わない）。
 /// `firstLineOnly` のときは **1 行目だけ**で絞る（「スキルを検索」は書きかけの本文を 2 行目以降に
 /// 残して `/` を入れる）。
-/// コマンド宣言つきは token の前方一致、宣言の無いものはスキル名の部分一致で拾う。
+/// コマンド宣言つきは token の前方一致を先に、続けてスキル名・説明に語がすべて含まれるものを拾う
+/// （宣言の無いスキルは後者だけ）。
 export function matchSuggestions(
   value: string,
   suggestions: SlashSuggestion[],
@@ -138,10 +139,16 @@ export function matchSuggestions(
   if (!firstLineOnly && value.includes("\n")) return null;
   const typed = value.slice(1).split("\n", 1)[0];
   const lower = typed.toLowerCase();
-  const name = norm(typed).trim();
-  const hits = suggestions.filter((s) =>
-    s.token ? s.token.toLowerCase().startsWith(lower) : norm(s.skillName).includes(name),
-  );
+  // コマンド名を知らなくても探せるよう、スキル名・説明も見る（空白区切りの語がすべて含まれるか）。
+  // コマンド名の前方一致を先に並べる（Enter で確定する先頭がコマンドの補完になるように）。
+  const terms = norm(typed).split(/\s+/).filter(Boolean);
+  const byText = (s: SlashSuggestion) => {
+    const hay = norm(`${s.token} ${s.skillName} ${s.summary}`);
+    return terms.every((t) => hay.includes(t));
+  };
+  const prefix = suggestions.filter((s) => s.token && s.token.toLowerCase().startsWith(lower));
+  const seen = new Set(prefix);
+  const hits = [...prefix, ...suggestions.filter((s) => !seen.has(s) && byText(s))];
   // 完全一致 1 件だけになっても候補は出し続ける（Enter で確定できることを示す）。
   return hits;
 }

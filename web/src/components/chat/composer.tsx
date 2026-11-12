@@ -355,13 +355,14 @@ const ScopedComposer = React.memo(function ScopedComposer({
   /// （別に退避すると、選ばずに送る・画面を離れる経路で本文を失う）。補完は 1 行目だけで絞る。
   const startSkillSearch = () => {
     const body = value.trim() ? value : "";
-    setSearchingSkill(body.startsWith("/") ? "typed" : "inserted");
+    // 検索中に押し直したら状態を保つ（入れた `/` 行を本文扱いにしない）。
+    setSearchingSkill((cur) => cur || (body.startsWith("/") ? "typed" : "inserted"));
     setSlashDismissed(false);
     setSlashIndex(0);
     // 既に `/` で始まっている（検索中・打ちかけのコマンド）なら行を足さず、その 1 行目で探す
     // （足すと、選んだあとに古い `/…` 行が本文の先頭に上がってコマンドとして送られる）。
     // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
-    if (!body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
+    if (!searchingSkill && !body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
     // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の直後へ置く。
     requestAnimationFrame(() => {
       const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
