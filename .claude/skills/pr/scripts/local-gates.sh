@@ -111,6 +111,8 @@ if touches '^(crates/|Cargo\.(toml|lock)$)'; then
   else
     run_gate "cargo test" cargo test --workspace --all-features
   fi
+  # ts-rs の書き出し（crates/*/bindings）が Rust の型と合っているか（CI の rust ジョブの最後と同じ）。
+  run_gate "ts-rs bindings (scripts/check-ts-bindings.sh)" bash scripts/check-ts-bindings.sh
   run_gate "cargo machete (未使用依存)" cargo machete crates
 fi
 

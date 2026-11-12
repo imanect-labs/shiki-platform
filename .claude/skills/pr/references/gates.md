@@ -29,7 +29,7 @@ PR の CI に `paths-ignore` は無い。`docs/**` / 最上位の `*.md` / `.cla
 
 | CI ジョブ | ローカルで回す | 回す条件 |
 | --- | --- | --- |
-| Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features` | `crates/` 差分 |
+| Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features`<br>`bash scripts/check-ts-bindings.sh`（ts-rs の書き出しが Rust の型と合っているか。import の拡張子の差は見ない） | `crates/` 差分 |
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
 | Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`python3 -m unittest discover -s scripts -p 'test_*.py'`<br>`python3 scripts/ci-select.py check`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加・E2E spec／ページ／クレート追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
@@ -194,3 +194,5 @@ cargo llvm-cov report --summary-only --ignore-filename-regex '<ci.yml と同じ 
   この状態で `git add -A` すると**無関係な生成物が数十件コミットに混入する**（実際に 82 件混入した）。
   CI も同じコマンドを使う＝ CI 側でも同じ差分が出るだけなので、**CI はこの混入を検出できない**。
   → ゲート実行後は必ず `git status` / `git diff --stat` を見てから、**パスを明示して add する**。
+  中身の差（型を変えたのに書き出しを commit し忘れた）は、rust ジョブの `scripts/check-ts-bindings.sh` が落とす。
+  拡張子だけの差は検査が見ないので、`git checkout -- crates/*/bindings` で戻してよい（#422）。
