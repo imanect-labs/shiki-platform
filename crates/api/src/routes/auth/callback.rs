@@ -304,8 +304,9 @@ async fn principal_or_refuse(
 /// ログインできない（Import を有効にした後も SSO の Cookie が切れるまで続く）。ブラウザのログアウト
 /// （`logout.rs`・end-session へのフル遷移）は `id_token_hint` を出さないので Keycloak が確認の画面を挟み、戻り先も
 /// `post_logout_redirect_uri` に限られるので、ここはトークンを持っているサーバ側で終える
-/// （[`oidc::end_sso_session`]）。終えられなくてもログイン画面へは戻す（ログイン画面の「別のアカウントでログイン」は、
-/// そのときは同じ画面に戻る）。アカウント操作の往復は、始めた人のセッションを残すので終えない。
+/// （[`oidc::end_sso_session`]）。終えられなくてもログイン画面へは戻す。そのときログイン画面の「別のアカウントで
+/// ログイン」は、Keycloak が黙って通してここに戻るので、押すたびに終えるのを試し直す（Keycloak に届かないままなら、
+/// SSO の Cookie が切れるまで同じ画面に戻る）。アカウント操作の往復は、始めた人のセッションを残すので終えない。
 async fn end_unusable_sso_session(state: &AppState, refresh_token: Option<&str>) {
     let Some(refresh_token) = refresh_token else {
         tracing::warn!("refresh token が無いので、断った人の SSO セッションを終えられません");
