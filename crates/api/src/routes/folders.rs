@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
 use storage::service::PurgeOutcome;
+use storage::trash_retention::TrashRetentionSetting;
 
 use crate::{
     error::ApiError,
@@ -428,6 +430,11 @@ pub struct TrashItemResponse {
     pub file_count: Option<i64>,
     /// フォルダなら、配下のファイルのうち呼んだ人が作ったのでないものの数（ファイルなら `null`）。
     pub others_file_count: Option<i64>,
+    /// ゴミ箱に入れた時刻。
+    pub deleted_at: DateTime<Utc>,
+    /// テナントに保持期間があれば、この時刻を過ぎると自動で完全に削除される（保持期間が無ければ `null`・D-202）。
+    /// 掃除は中断アップロードの回収と同じ周（既定 1 時間ごと）に走るので、実際に消えるのはこの後の周。
+    pub purge_after: Option<DateTime<Utc>>,
 }
 
 /// ゴミ箱の 1 ページ。
@@ -436,6 +443,24 @@ pub struct TrashResponse {
     pub items: Vec<TrashItemResponse>,
     /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。
     pub next_cursor: Option<String>,
+    /// テナントのゴミ箱の保持日数（ゴミ箱に入れてからこの日数で自動で完全に削除する）。`null` は自動では消さない。
+    pub retention_days: Option<i32>,
+}
+
+/// 保持期間による自動の完全削除の期限（`greatest(削除した時刻, 猶予の起点) + 日数`）。
+///
+/// 掃除が消すかを決める式（`storage::trash_retention` の `due_on`・候補の SQL）と同じ。Postgres の `greatest` は
+/// null を無視するので、猶予の起点が無ければ削除した時刻から数える。
+fn purge_after(
+    deleted_at: DateTime<Utc>,
+    setting: Option<&TrashRetentionSetting>,
+) -> Option<DateTime<Utc>> {
+    let setting = setting?;
+    let days = setting.days?;
+    let start = setting
+        .since
+        .map_or(deleted_at, |since| since.max(deleted_at));
+    Some(start + chrono::Duration::days(i64::from(days)))
 }
 
 /// ゴミ箱の中身（削除の根ノード）を新しい順に 1 ページ返す。
@@ -466,21 +491,33 @@ pub async fn list_trash(
             trace.as_deref(),
         )
         .await?;
+    let retention = state
+        .storage
+        .trash_retention()
+        .setting(ctx.tenant_id())
+        .await?;
     let mut nodes: Vec<NodeResponse> = page.items.iter().map(|e| e.node.clone().into()).collect();
     resolve_updated_by_names(&state, &ctx, &mut nodes).await;
     let items = nodes
         .into_iter()
         .zip(page.items)
-        .map(|(node, e)| TrashItemResponse {
-            node,
-            can_purge: e.can_purge,
-            file_count: e.file_count,
-            others_file_count: e.others_file_count,
+        .map(|(node, e)| {
+            // 論理削除は根に deleted_at と updated_at を同じ時刻で書く（無いことはないが、無ければ更新の時刻）。
+            let deleted_at = e.node.deleted_at.unwrap_or(e.node.updated_at);
+            TrashItemResponse {
+                node,
+                can_purge: e.can_purge,
+                file_count: e.file_count,
+                others_file_count: e.others_file_count,
+                deleted_at,
+                purge_after: purge_after(deleted_at, retention.as_ref()),
+            }
         })
         .collect();
     Ok(Json(TrashResponse {
         items,
         next_cursor: page.next_cursor,
+        retention_days: retention.and_then(|r| r.days),
     }))
 }
 
@@ -607,5 +644,36 @@ mod tests {
             freed_bytes: 0,
         };
         assert!(purge_refused(&PurgeOutcome::Purged(report)).is_none());
+    }
+
+    /// 自動の完全削除の期限は、削除した時刻と猶予の起点の遅いほうに日数を足した時刻（掃除の式と同じ）。
+    #[test]
+    fn purge_after_counts_from_later_of_deleted_and_since() {
+        let t = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        let deleted = t("2026-11-01T00:00:00Z");
+        let setting = |days, since| TrashRetentionSetting { days, since };
+        // 保持期間が無い（設定の行が無い・日数が null）なら期限は無い。
+        assert_eq!(purge_after(deleted, None), None);
+        assert_eq!(purge_after(deleted, Some(&setting(None, None))), None);
+        // 猶予の起点が無ければ、削除した時刻から数える。
+        assert_eq!(
+            purge_after(deleted, Some(&setting(Some(30), None))),
+            Some(t("2026-12-01T00:00:00Z"))
+        );
+        // 起点が削除より後（日数を入れる前に削除した）なら起点から、前なら削除した時刻から数える。
+        assert_eq!(
+            purge_after(
+                deleted,
+                Some(&setting(Some(30), Some(t("2026-11-10T00:00:00Z"))))
+            ),
+            Some(t("2026-12-10T00:00:00Z"))
+        );
+        assert_eq!(
+            purge_after(
+                deleted,
+                Some(&setting(Some(1), Some(t("2026-10-01T00:00:00Z"))))
+            ),
+            Some(t("2026-11-02T00:00:00Z"))
+        );
     }
 }

@@ -26,6 +26,7 @@ import {
   type TrashItem,
 } from "@/lib/storage";
 import { DateTime } from "@/components/ui/date-time";
+import { formatDateTime } from "@/lib/format";
 
 import { LoadingRow, NodeIcon, nodeKindLabel } from "./primitives";
 
@@ -60,7 +61,16 @@ function emptyResultMessage(purged: number, skipped: number): string {
 /// ゴミ箱ビュー。削除の根ノードを新しい順に並べ、各行から復元・完全に削除できる（完全に削除は持ち主か管理者だけ）。
 /// 上の「ゴミ箱を空にする」は、自分のゴミ箱に出ているもののうち、自分が完全に削除できるものをまとめて消す。
 export function TrashView() {
-  const fetchPage = React.useCallback((cursor?: string) => listTrash({ cursor, limit: 50 }), []);
+  // テナントのゴミ箱の保持日数（自動で完全に削除されるまでの日数・無ければ null）。
+  const [retentionDays, setRetentionDays] = React.useState<number | null>(null);
+  const fetchPage = React.useCallback(
+    (cursor?: string) =>
+      listTrash({ cursor, limit: 50 }).then((page) => {
+        setRetentionDays(page.retention_days ?? null);
+        return page;
+      }),
+    [],
+  );
   const list = useInfiniteList<TrashItem>(fetchPage, []);
   const sentinelRef = useInfiniteSentinel(list.loadMore, list.hasMore && !list.loading);
   const [pendingId, setPendingId] = React.useState<string | null>(null);
@@ -167,8 +177,14 @@ export function TrashView() {
             <NodeIcon kind={node.kind} name={node.name} contentType={node.content_type} className="size-7 shrink-0" />
             <div className="min-w-0 flex-1">
               <p className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] md:truncate">{node.name}</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {nodeKindLabel(node)}・更新 <DateTime iso={node.updated_at} />
+              <p className="text-xs text-muted-foreground max-md:line-clamp-2 md:truncate">
+                {nodeKindLabel(node)}・削除 <DateTime iso={node.deleted_at} />
+                {node.purge_after ? (
+                  <>
+                    ・<time dateTime={node.purge_after}>{formatDateTime(node.purge_after)}</time>{" "}
+                    ごろ自動で完全に削除
+                  </>
+                ) : null}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
@@ -214,6 +230,11 @@ export function TrashView() {
 
   return (
     <div className="flex flex-col gap-3">
+      {retentionDays !== null ? (
+        <p className="text-sm text-muted-foreground">
+          ゴミ箱に入れてから {retentionDays} 日たつと、自動で完全に削除されます。
+        </p>
+      ) : null}
       <div
         ref={fallbackRef}
         tabIndex={-1}

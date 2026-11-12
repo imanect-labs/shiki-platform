@@ -7,6 +7,8 @@ import { cleanupQueue, createFolderApi, loginAs, loginViaKeycloak, trashFolderAp
 ///   中のファイルの数と、ほかの人が作った数が出る。キーボードで開け、Esc で閉じると開いたボタンへ戻る。
 /// - 削除に失敗したときの文言（中に削除の後で作られたファイルがある 409・権限の 403）はダイアログの中に出る
 ///   （応答は route で差し替える）。
+/// - 行には削除した時刻が出る。テナントに保持期間があれば、ページに日数が、行に自動で消える日時が出る
+///   （一覧の応答に保持期間を差し込む。保持期間の口と期限の式は cargo の trash_http が確かめる）。
 /// - 持ち主でも管理者でもない人（bob）には、共有されたフォルダの「完全に削除」が出ない。「空にする」は自分の
 ///   ものだけを消し、残した数を言う。
 /// 作ったフォルダは最後にゴミ箱へ移す（完全に削除したものは 404 で何もしない）。`E2E_SHOTS_DIR` があれば撮る。
@@ -93,7 +95,27 @@ test("ゴミ箱: フォルダの持ち主は中のほかの人のファイルも
   await uploadText(bob, folder, `${uniqueName("bob")}.txt`);
   await trashFolderApi(page, folder);
 
+  // 保持期間（一覧の応答に差し込む）: ページに日数、行に削除した時刻と自動で消える日時が出る。
+  const listPattern = /\/api\/trash(\?|$)/;
+  await page.route(listPattern, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const res = await route.fetch();
+    const body = (await res.json()) as { items: Record<string, unknown>[] };
+    await route.fulfill({
+      response: res,
+      json: {
+        ...body,
+        retention_days: 30,
+        items: body.items.map((i) => ({ ...i, purge_after: "2026-12-24T01:00:00Z" })),
+      },
+    });
+  });
   const row = await trashRow(page, folderName);
+  await expect(page.getByText("ゴミ箱に入れてから 30 日たつと、自動で完全に削除されます。")).toBeVisible();
+  await expect(row).toContainText(/削除 .+・2026\/12\/24 \d{2}:00 ごろ自動で完全に削除/);
+  await settle(page);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/7p-trash-retention-pc.png` });
+  await page.unroute(listPattern);
   const purge = row.getByRole("button", { name: `「${folderName}」を完全に削除` });
 
   // キーボードで開く: フォーカスは「キャンセル」に来る。中の数とほかの人の数が出る。Esc で閉じると開いたボタンへ戻る。
@@ -190,6 +212,9 @@ test("ゴミ箱: 持ち主でも管理者でもない人には「完全に削除
   await expect(sharedRow.getByRole("button", { name: `「${sharedName}」を完全に削除` })).toHaveCount(0);
   const ownRow = bob.getByRole("listitem").filter({ has: bob.getByText(ownName, { exact: true }) });
   await expect(ownRow.getByRole("button", { name: `「${ownName}」を完全に削除` })).toBeVisible();
+  // 保持期間が無ければ、日数の案内は出ない。行には削除した時刻が出る。
+  await expect(bob.getByText(/自動で完全に削除/)).toHaveCount(0);
+  await expect(ownRow).toContainText("フォルダ・削除 ");
 
   // 空にする: 確かめてから消す。終わったら消した数と残した数を言う。共有されたフォルダは残る。
   const emptyButton = bob.getByRole("button", { name: "ゴミ箱を空にする" });
