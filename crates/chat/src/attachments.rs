@@ -48,7 +48,12 @@ impl AttachmentStore for StorageAttachmentStore {
         }
         let (_, bytes) = self
             .storage
-            .read_file_internal(ctx, id, trace_id)
+            .read_file_internal_bounded(
+                ctx,
+                id,
+                i64::try_from(max_bytes).unwrap_or(i64::MAX),
+                trace_id,
+            )
             .await
             .map_err(map_err)?;
         // メタデータ確認と読み出しの間に新版が入ると、上限を超える blob をそのまま返してしまう。
