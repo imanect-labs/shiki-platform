@@ -133,7 +133,10 @@ export function SkillRow({
           <span className="block truncate text-[15px] font-medium text-foreground md:text-sm">
             /{skill.token}
           </span>
-          <span className="shrink-0 truncate text-[11.5px] text-muted-foreground">{skill.skillName}</span>
+          {/* 名前から `/` 名を作ったスキルは同じ語の二重表示になるので出さない。 */}
+          {skill.skillName !== skill.token ? (
+            <span className="shrink-0 truncate text-[11.5px] text-muted-foreground">{skill.skillName}</span>
+          ) : null}
         </span>
         <span className="mt-0.5 block line-clamp-2 text-[12.5px] leading-relaxed text-muted-foreground">
           {skill.summary}

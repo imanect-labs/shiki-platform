@@ -229,11 +229,24 @@ function DesktopPlusMenu({
         {/* ツール（#734）。選んだツールはこの発話にだけ優先して使われる。選んでもメニューは閉じない。 */}
         <DesktopToolItems scope={modelScope} />
 
-        {/* スキル（#387・#390）。最近使ったもの → 先頭の数件。残りは「スキルを検索」から。 */}
+        {/* スキル（#387・#390）。検索 → 最近使ったもの → 先頭の数件。 */}
         {skills.length > 0 && onPickSkill ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="uppercase tracking-wide">スキル</DropdownMenuLabel>
+            {/* 件数に関わらず常に出し、見出しの直下に置く（メニューが内部スクロールしても見える位置に。
+                数件しか無くても、名前や説明で探す入口が要る）。 */}
+            <DropdownMenuItem
+              className="gap-2.5 px-2.5 py-2"
+              data-testid="composer-all-skills"
+              onSelect={() => {
+                after.pending.current = openSkills;
+              }}
+            >
+              <Search className="text-muted-foreground" aria-hidden />
+              <span className="flex-1">スキルを検索（{skills.length}）</span>
+              <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
+            </DropdownMenuItem>
             {ranked.slice(0, MAX_MENU_SKILLS).map((s) => (
               <DropdownMenuItem
                 key={s.key}
@@ -250,18 +263,6 @@ function DesktopPlusMenu({
                 </span>
               </DropdownMenuItem>
             ))}
-            {/* 件数に関わらず常に出す（数件しか無くても、名前や説明で探す入口が要る）。 */}
-            <DropdownMenuItem
-              className="gap-2.5 px-2.5 py-2"
-              data-testid="composer-all-skills"
-              onSelect={() => {
-                after.pending.current = openSkills;
-              }}
-            >
-              <Search className="text-muted-foreground" aria-hidden />
-              <span className="flex-1">スキルを検索（{skills.length}）</span>
-              <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
-            </DropdownMenuItem>
             <p className="px-2.5 pb-1 pt-1.5 text-[11.5px] text-muted-foreground">
               入力欄で「/」を打っても呼べます
             </p>

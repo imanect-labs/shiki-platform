@@ -80,7 +80,9 @@ export function SlashCommandMenu({
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-baseline gap-1.5">
               <span className="truncate text-sm font-medium text-foreground">/{s.token}</span>
-              <span className="shrink-0 text-[11px] text-muted-foreground">{s.skillName}</span>
+              {s.skillName !== s.token ? (
+                <span className="shrink-0 text-[11px] text-muted-foreground">{s.skillName}</span>
+              ) : null}
             </span>
             <span className="mt-0.5 block line-clamp-2 text-[12px] leading-relaxed text-muted-foreground">
               {s.summary}
