@@ -620,13 +620,14 @@ export function listTrash(opts?: { cursor?: string; limit?: number }): Promise<T
   );
 }
 
-/// 完全に削除しなかった理由（409 の `code`）。
-export type PurgeRefusal = "not_in_trash" | "inside_deleted_folder" | "live_descendants";
+/// 完全に削除しなかった理由（409 の `code`・Rust の `PurgeRefusalCode` から生成）。
+export type PurgeRefusal = components["schemas"]["PurgeRefusalCode"];
+type PurgeRefusalBody = components["schemas"]["PurgeRefusalBody"];
 
-/// 完全削除で何も消さなかった（409）。`code` で画面の文言を出し分ける。
+/// 完全削除で何も消さなかった（409）。`code` で画面の文言を出し分ける（読めない本文なら `undefined`）。
 export class PurgeRefusedError extends StorageApiError {
   constructor(
-    public code: string,
+    public code: PurgeRefusal | undefined,
     message: string,
   ) {
     super(409, message);
@@ -638,9 +639,10 @@ export class PurgeRefusedError extends StorageApiError {
 export async function purgeTrashItem(id: string): Promise<void> {
   const res = await apiFetch(`/trash/${id}`, { method: "DELETE" });
   if (res.status === 409) {
-    const body = (await res.json().catch(() => null)) as { code?: unknown; title?: unknown } | null;
+    const body = (await res.json().catch(() => null)) as Partial<PurgeRefusalBody> | null;
+    // 知らない値は画面の switch の default（サーバーの title）へ回る。
     throw new PurgeRefusedError(
-      typeof body?.code === "string" ? body.code : "",
+      typeof body?.code === "string" ? body.code : undefined,
       typeof body?.title === "string" ? body.title : statusMessage(409),
     );
   }

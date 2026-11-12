@@ -153,6 +153,46 @@ impl ArtifactConflictBody {
     }
 }
 
+/// ゴミ箱の完全削除で何も消さなかった理由（`DELETE /trash/{id}` の 409 の `code`・GAP-108b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PurgeRefusalCode {
+    /// ゴミ箱に無い（ほかの人が元に戻した・削除していない）。
+    NotInTrash,
+    /// 削除したフォルダの中にある（ゴミ箱に出ているのは親のフォルダ）。
+    InsideDeletedFolder,
+    /// フォルダの中に、削除した後に作られた（削除されていない）ノードがある。
+    LiveDescendants,
+}
+
+/// ゴミ箱の完全削除の構造化 409。`title` は利用者に見せてよい日本語。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PurgeRefusalBody {
+    /// 常に 409。
+    pub status: u16,
+    pub title: String,
+    pub code: PurgeRefusalCode,
+}
+
+impl PurgeRefusalBody {
+    pub fn new(code: PurgeRefusalCode) -> Self {
+        let title = match code {
+            PurgeRefusalCode::NotInTrash => "ゴミ箱にありません",
+            PurgeRefusalCode::InsideDeletedFolder => {
+                "フォルダごとゴミ箱にあります。ゴミ箱に出ているフォルダを完全に削除してください"
+            }
+            PurgeRefusalCode::LiveDescendants => {
+                "このフォルダの中に、削除した後に作られたファイルがあります。フォルダを元に戻して中を確かめてください"
+            }
+        };
+        PurgeRefusalBody {
+            status: 409,
+            title: title.into(),
+            code,
+        }
+    }
+}
+
 /// 構造化 413（本文が上限を超えた・一括取込の `import_too_large`）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PayloadTooLargeBody {

@@ -17,6 +17,7 @@ use storage::service::PurgeOutcome;
 
 use crate::{
     error::ApiError,
+    error_body::{to_body, PurgeRefusalBody, PurgeRefusalCode},
     extract::{AuthContextExt, TraceIdExt},
     routes::files::NodeResponse,
     state::AppState,
@@ -483,25 +484,17 @@ pub async fn list_trash(
     }))
 }
 
-/// 完全削除で何も消さなかったときの 409（`code` と、利用者に見せてよい文言）。
+/// 完全削除で何も消さなかったときの 409（`code` と、利用者に見せてよい文言・[`PurgeRefusalBody`]）。
 fn purge_refused(outcome: &PurgeOutcome) -> Option<ApiError> {
-    let (code, title) = match outcome {
+    let code = match outcome {
         PurgeOutcome::Purged(_) => return None,
-        PurgeOutcome::NotInTrash => ("not_in_trash", "ゴミ箱にありません"),
-        PurgeOutcome::InsideDeletedFolder => (
-            "inside_deleted_folder",
-            "フォルダごとゴミ箱にあります。ゴミ箱に出ているフォルダを完全に削除してください",
-        ),
-        PurgeOutcome::HasLiveDescendants => (
-            "live_descendants",
-            "このフォルダの中に、削除した後に作られたファイルがあります。フォルダを元に戻して中を確かめてください",
-        ),
+        PurgeOutcome::NotInTrash => PurgeRefusalCode::NotInTrash,
+        PurgeOutcome::InsideDeletedFolder => PurgeRefusalCode::InsideDeletedFolder,
+        PurgeOutcome::HasLiveDescendants => PurgeRefusalCode::LiveDescendants,
     };
-    Some(ApiError::ConflictJson(serde_json::json!({
-        "status": 409,
-        "title": title,
-        "code": code,
-    })))
+    Some(ApiError::ConflictJson(to_body(&PurgeRefusalBody::new(
+        code,
+    ))))
 }
 
 /// ゴミ箱の根（ファイルかフォルダ）を、配下ごと完全に削除する（元に戻せない・GAP-108b・D-201）。
@@ -517,7 +510,7 @@ fn purge_refused(outcome: &PurgeOutcome) -> Option<ApiError> {
         (status = 401, description = "未認証"),
         (status = 403, description = "持ち主でも組織の管理者でもない"),
         (status = 404, description = "無い（システム領域・ほかの組織を含む）"),
-        (status = 409, description = "消さなかった（code: not_in_trash・inside_deleted_folder・live_descendants）"),
+        (status = 409, description = "消さなかった（code で理由を返す）", body = PurgeRefusalBody),
     ),
     security(("session" = [])),
 )]
