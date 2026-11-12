@@ -82,6 +82,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "items",
      "note": "領域の出口ノードの出力・要素の順",
      "optional": false,
@@ -89,6 +90,7 @@
      "type": "Array<unknown>"
     },
     {
+     "absent_if": "",
      "name": "errors",
      "note": "on_item_error: collect のとき",
      "optional": true,
@@ -139,6 +141,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "file_id",
      "note": "読んだファイルの ID",
      "optional": false,
@@ -146,6 +149,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "id",
      "note": "file_id と同じ・古い名前",
      "optional": false,
@@ -153,6 +157,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "name",
      "note": "",
      "optional": false,
@@ -160,6 +165,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "version",
      "note": "読んだバージョン・CSV を編集の前提にできる",
      "optional": false,
@@ -167,6 +173,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "content_type",
      "note": "",
      "optional": false,
@@ -174,6 +181,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "size",
      "note": "",
      "optional": false,
@@ -181,6 +189,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "encoding",
      "note": "読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）・文章のファイルのときだけ",
      "optional": true,
@@ -188,6 +197,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "text",
      "note": "中身の文章（先頭の BOM は含まない）・PDF や Word は社内文書の検索に取り込まれた本文で、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入る",
      "optional": false,
@@ -195,6 +205,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "truncated",
      "note": "PDF や Word の本文が長く、上限の字数で切ったとき true・文章のファイルは切らない（いつも false）",
      "optional": false,
@@ -224,6 +235,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "file_id",
      "note": "保存したファイルの ID",
      "optional": false,
@@ -231,6 +243,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "id",
      "note": "file_id と同じ・古い名前",
      "optional": false,
@@ -238,6 +251,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "name",
      "note": "保存した名前・番号を付けたときは付けた名前",
      "optional": false,
@@ -245,6 +259,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "version",
      "note": "",
      "optional": false,
@@ -252,6 +267,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "sha256",
      "note": "",
      "optional": false,
@@ -259,6 +275,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "size",
      "note": "",
      "optional": false,
@@ -288,6 +305,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "items",
      "note": "名前の順・最大 100 件・kind は file か folder",
      "optional": false,
@@ -295,6 +313,7 @@
      "type": "Array<{ id: string, name: string, kind: string, size: number }>"
     },
     {
+     "absent_if": "",
      "name": "truncated",
      "note": "続きがあるとき true・残りは items に入らない",
      "optional": false,
@@ -302,6 +321,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "next_cursor",
      "note": "続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null",
      "optional": false,
@@ -331,6 +351,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "results",
      "note": "関連の強いものから並ぶ・relevance は関連の強さの目安・score は順位から決めた値（1 位は 1、2 位は 0.5）で関連の強さではない",
      "optional": false,
@@ -360,6 +381,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "text",
      "note": "",
      "optional": false,
@@ -367,6 +389,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "model",
      "note": "",
      "optional": false,
@@ -374,6 +397,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "data",
      "note": "output_schema を書いたとき・その形で検証済みの値",
      "optional": true,
@@ -403,6 +427,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "text",
      "note": "最後の回答・Markdown",
      "optional": false,
@@ -410,6 +435,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "complete",
      "note": "false は上限で打ち切った回答",
      "optional": false,
@@ -417,6 +443,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "stop",
      "note": "",
      "optional": false,
@@ -424,6 +451,7 @@
      "type": "\"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\""
     },
     {
+     "absent_if": "",
      "name": "model",
      "note": "",
      "optional": false,
@@ -431,6 +459,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "citations",
      "note": "使った資料・50 件まで",
      "optional": false,
@@ -438,6 +467,7 @@
      "type": "Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>"
     },
     {
+     "absent_if": "",
      "name": "tool_calls",
      "note": "",
      "optional": false,
@@ -445,6 +475,7 @@
      "type": "Array<{ tool: string, ok: boolean }>"
     },
     {
+     "absent_if": "",
      "name": "skipped_tools",
      "note": "指定したが使えなかった道具",
      "optional": false,
@@ -452,6 +483,7 @@
      "type": "Array<string>"
     },
     {
+     "absent_if": "",
      "name": "usage",
      "note": "",
      "optional": false,
@@ -481,6 +513,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "answers",
      "note": "確からしさ・確率は 0〜1。choice の label は選択肢の名前（無ければ説明、それも無ければキー）",
      "optional": false,
@@ -488,6 +521,7 @@
      "type": "{ [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }"
     },
     {
+     "absent_if": "",
      "name": "model",
      "note": "指定した判定用のモデル",
      "optional": false,
@@ -495,6 +529,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "resolved_model",
      "note": "実際に答えた決定器の版",
      "optional": false,
@@ -502,6 +537,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "provider",
      "note": "答えた決定器（llm_decider・typesafe・stub）",
      "optional": false,
@@ -509,6 +545,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "calibrated",
      "note": "false は確からしさが較正されていない（AI の自己申告・得票率）",
      "optional": false,
@@ -516,6 +553,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "method",
      "note": "",
      "optional": false,
@@ -523,6 +561,7 @@
      "type": "\"native\" | \"verbalized\" | \"vote\""
     },
     {
+     "absent_if": "",
      "name": "samples",
      "note": "1 回の判定で答えさせた回数",
      "optional": false,
@@ -530,6 +569,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "cached",
      "note": "決定キャッシュの答えを使い回したか（ノードに cache を書いたときだけ true になり得る）",
      "optional": false,
@@ -537,6 +577,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "routed",
      "note": "route を書いたとき・進んだ出口",
      "optional": false,
@@ -544,6 +585,7 @@
      "type": "{ question: string, port: string } | null"
     },
     {
+     "absent_if": "",
      "name": "raised_questions",
      "note": "AI が自分の答えに一様（はい/いいえなら 50%）より低い自信を付け、一様まで引き上げた質問のキー（質問の順・AI の自己申告のときだけ入りうる・無ければ空）",
      "optional": false,
@@ -575,6 +617,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "status",
      "note": "",
      "optional": false,
@@ -582,6 +625,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "host",
      "note": "",
      "optional": false,
@@ -589,6 +633,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "body",
      "note": "JSON なら解析した値・それ以外は文字列",
      "optional": false,
@@ -639,6 +684,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "run_id",
      "note": "",
      "optional": false,
@@ -668,6 +714,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "format",
      "note": "",
      "optional": false,
@@ -675,6 +722,7 @@
      "type": "\"text\" | \"markdown\" | \"table\" | \"file_link\""
     },
     {
+     "absent_if": "",
      "name": "label",
      "note": "",
      "optional": true,
@@ -682,6 +730,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "tone",
      "note": "",
      "optional": false,
@@ -689,6 +738,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "truncated",
      "note": "",
      "optional": false,
@@ -696,6 +746,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "text",
      "note": "text・markdown",
      "optional": true,
@@ -703,6 +754,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "columns",
      "note": "",
      "optional": true,
@@ -710,6 +762,7 @@
      "type": "Array<string>"
     },
     {
+     "absent_if": "",
      "name": "rows",
      "note": "",
      "optional": true,
@@ -717,6 +770,7 @@
      "type": "Array<Array<string>>"
     },
     {
+     "absent_if": "",
      "name": "total_rows",
      "note": "table",
      "optional": true,
@@ -724,6 +778,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "files",
      "note": "file_link",
      "optional": true,
@@ -753,6 +808,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "columns",
      "note": "列の名前・同じ名前の 2 つ目からは a_1 のように付け直す",
      "optional": false,
@@ -760,6 +816,7 @@
      "type": "Array<string>"
     },
     {
+     "absent_if": "",
      "name": "column_types",
      "note": "列の型の名前・BIGINT（整数）・DOUBLE（数値）・BOOLEAN（はい／いいえ）・VARCHAR（テキスト）・DATE（日付）など",
      "optional": false,
@@ -767,6 +824,7 @@
      "type": "Array<string>"
     },
     {
+     "absent_if": "",
      "name": "rows",
      "note": "値は列の種類にかかわらずテキスト・空は null・日付は 2024-01-31 の形",
      "optional": false,
@@ -774,6 +832,7 @@
      "type": "Array<Array<string | null>>"
     },
     {
+     "absent_if": "",
      "name": "items",
      "note": "1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない",
      "optional": false,
@@ -781,6 +840,7 @@
      "type": "Array<{ [列の名前]: string | number | boolean | null }>"
     },
     {
+     "absent_if": "",
      "name": "total_rows",
      "note": "結果の行の数・打ち切ったときは null",
      "optional": false,
@@ -788,6 +848,7 @@
      "type": "number | null"
     },
     {
+     "absent_if": "",
      "name": "truncated",
      "note": "10,000 行か、結果の大きさの上限で打ち切ったとき true",
      "optional": false,
@@ -795,6 +856,7 @@
      "type": "boolean"
     },
     {
+     "absent_if": "",
      "name": "version",
      "note": "集計した CSV のバージョン・CSV を編集の前提にできる",
      "optional": false,
@@ -824,6 +886,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "file_id",
      "note": "編集した CSV の ID",
      "optional": false,
@@ -831,6 +894,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "node_id",
      "note": "file_id と同じ・古い名前",
      "optional": false,
@@ -838,6 +902,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "version",
      "note": "編集の後のバージョン",
      "optional": false,
@@ -845,6 +910,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "rows",
      "note": "",
      "optional": false,
@@ -852,6 +918,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "cols",
      "note": "",
      "optional": false,
@@ -881,6 +948,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "file_id",
      "note": "保存した CSV の ID",
      "optional": false,
@@ -888,6 +956,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "node_id",
      "note": "file_id と同じ・古い名前",
      "optional": false,
@@ -895,6 +964,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "version",
      "note": "",
      "optional": false,
@@ -902,6 +972,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "name",
      "note": "保存した名前・番号を付けたときは付けた名前",
      "optional": false,
@@ -931,13 +1002,15 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "/query/aggregate",
      "name": "items",
-     "note": "",
+     "note": "aggregate を書いていないとき",
      "optional": true,
      "present_if": "",
      "type": "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
     },
     {
+     "absent_if": "",
      "name": "groups",
      "note": "aggregate のとき。key の名前は group_by に書いたとおり（結合先の列は m.<参照名> のような 別名.参照名）。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value が null で、values は aggregate と同じ数の null が並ぶ",
      "optional": true,
@@ -945,6 +1018,7 @@
      "type": "Array<{ key: { [group_by に書いた列]: string | null }, value: number | null, values: Array<number | null> }>"
     },
     {
+     "absent_if": "",
      "name": "next_cursor",
      "note": "",
      "optional": true,
@@ -952,8 +1026,9 @@
      "type": "string"
     },
     {
+     "absent_if": "/query/aggregate",
      "name": "count",
-     "note": "with_count のとき",
+     "note": "with_count のとき。aggregate を書いたときは入らない（件数は aggregate に {\"metric\":\"count\"} を書き、groups の value で読む）",
      "optional": true,
      "present_if": "/query/with_count",
      "type": "{ exact: number } | { at_least: number }"
@@ -962,7 +1037,7 @@
    "output_ports": [
     "out"
    ],
-   "output_shape": "{ items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>, groups?: Array<{ key: { [group_by に書いた列]: string | null }, value: number | null, values: Array<number | null> }>（aggregate のとき。key の名前は group_by に書いたとおり（結合先の列は m.<参照名> のような 別名.参照名）。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value が null で、values は aggregate と同じ数の null が並ぶ）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき） }",
+   "output_shape": "{ items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>（aggregate を書いていないとき）, groups?: Array<{ key: { [group_by に書いた列]: string | null }, value: number | null, values: Array<number | null> }>（aggregate のとき。key の名前は group_by に書いたとおり（結合先の列は m.<参照名> のような 別名.参照名）。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value が null で、values は aggregate と同じ数の null が並ぶ）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき。aggregate を書いたときは入らない（件数は aggregate に {\"metric\":\"count\"} を書き、groups の value で読む）） }",
    "port_rule": "static",
    "required_scope": "data.read",
    "step_cache": null,
@@ -981,6 +1056,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "id",
      "note": "",
      "optional": false,
@@ -988,6 +1064,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "table_id",
      "note": "",
      "optional": false,
@@ -995,6 +1072,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "data",
      "note": "",
      "optional": false,
@@ -1002,6 +1080,7 @@
      "type": "{ [列の参照名]: unknown }"
     },
     {
+     "absent_if": "",
      "name": "rev",
      "note": "",
      "optional": false,
@@ -1009,6 +1088,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "owner",
      "note": "",
      "optional": false,
@@ -1016,6 +1096,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "created_at",
      "note": "",
      "optional": false,
@@ -1023,6 +1104,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "updated_at",
      "note": "",
      "optional": false,
@@ -1052,6 +1134,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "id",
      "note": "",
      "optional": false,
@@ -1059,6 +1142,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "table_id",
      "note": "",
      "optional": false,
@@ -1066,6 +1150,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "data",
      "note": "",
      "optional": false,
@@ -1073,6 +1158,7 @@
      "type": "{ [列の参照名]: unknown }"
     },
     {
+     "absent_if": "",
      "name": "rev",
      "note": "",
      "optional": false,
@@ -1080,6 +1166,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "owner",
      "note": "",
      "optional": false,
@@ -1087,6 +1174,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "created_at",
      "note": "",
      "optional": false,
@@ -1094,6 +1182,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "updated_at",
      "note": "",
      "optional": false,
@@ -1123,6 +1212,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "id",
      "note": "",
      "optional": false,
@@ -1130,6 +1220,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "table_id",
      "note": "",
      "optional": false,
@@ -1137,6 +1228,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "data",
      "note": "",
      "optional": false,
@@ -1144,6 +1236,7 @@
      "type": "{ [列の参照名]: unknown }"
     },
     {
+     "absent_if": "",
      "name": "rev",
      "note": "",
      "optional": false,
@@ -1151,6 +1244,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "owner",
      "note": "",
      "optional": false,
@@ -1158,6 +1252,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "created_at",
      "note": "",
      "optional": false,
@@ -1165,6 +1260,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "updated_at",
      "note": "",
      "optional": false,
@@ -1172,6 +1268,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "created",
      "note": "追加したら true、書き換えたら false",
      "optional": false,
@@ -1201,6 +1298,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "id",
      "note": "",
      "optional": false,
@@ -1208,6 +1306,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "table_id",
      "note": "",
      "optional": false,
@@ -1215,6 +1314,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "data",
      "note": "",
      "optional": false,
@@ -1222,6 +1322,7 @@
      "type": "{ [列の参照名]: unknown }"
     },
     {
+     "absent_if": "",
      "name": "rev",
      "note": "",
      "optional": false,
@@ -1229,6 +1330,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "owner",
      "note": "",
      "optional": false,
@@ -1236,6 +1338,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "created_at",
      "note": "",
      "optional": false,
@@ -1243,6 +1346,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "updated_at",
      "note": "",
      "optional": false,
@@ -1272,6 +1376,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "id",
      "note": "",
      "optional": false,
@@ -1279,6 +1384,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "deleted",
      "note": "",
      "optional": false,
@@ -1308,6 +1414,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "import_id",
      "note": "",
      "optional": false,
@@ -1315,6 +1422,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "status",
      "note": "",
      "optional": false,
@@ -1322,6 +1430,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "rows_total",
      "note": "",
      "optional": false,
@@ -1329,6 +1438,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "rows_applied",
      "note": "",
      "optional": false,
@@ -1336,6 +1446,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "rows_invalid",
      "note": "",
      "optional": false,
@@ -1343,6 +1454,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "rows_rejected",
      "note": "",
      "optional": false,
@@ -1350,6 +1462,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "errors",
      "note": "",
      "optional": false,
@@ -1357,6 +1470,7 @@
      "type": "Array<{ row: number, key: string | null, message: string }>"
     },
     {
+     "absent_if": "",
      "name": "last_error",
      "note": "",
      "optional": false,
@@ -1364,6 +1478,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "rows_matched",
      "note": "同じレコードを探す列で、あるレコードに当たって更新に回した件数",
      "optional": true,
@@ -1498,6 +1613,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "date",
      "note": "ずらした日・YYYY-MM-DD",
      "optional": false,
@@ -1505,6 +1621,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "start",
      "note": "期間の最初の日（週の初め・月初など）",
      "optional": false,
@@ -1512,6 +1629,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "end",
      "note": "期間の最後の日（週の終わり・月末など）",
      "optional": false,
@@ -1519,6 +1637,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "start_at",
      "note": "期間の始まりの日時・時差つき",
      "optional": false,
@@ -1526,6 +1645,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "next_start_at",
      "note": "次の期間の始まりの日時・期間はこれより前まで",
      "optional": false,
@@ -1533,6 +1653,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "year",
      "note": "ずらした日の年",
      "optional": false,
@@ -1540,6 +1661,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "month",
      "note": "ずらした日の月",
      "optional": false,
@@ -1547,6 +1669,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "day",
      "note": "ずらした日の日",
      "optional": false,
@@ -1554,6 +1677,7 @@
      "type": "number"
     },
     {
+     "absent_if": "",
      "name": "weekday",
      "note": "ずらした日の曜日・1＝月曜〜7＝日曜",
      "optional": false,
@@ -2171,6 +2295,7 @@
    "multi_input": false,
    "output_fields": [
     {
+     "absent_if": "",
      "name": "approval_id",
      "note": "",
      "optional": false,
@@ -2178,6 +2303,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "decision",
      "note": "",
      "optional": false,
@@ -2185,6 +2311,7 @@
      "type": "\"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\""
     },
     {
+     "absent_if": "",
      "name": "to",
      "note": "判断で進んだ状態",
      "optional": false,
@@ -2192,6 +2319,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "decided_by",
      "note": "判断した人の ID",
      "optional": false,
@@ -2199,6 +2327,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "decided_at",
      "note": "",
      "optional": false,
@@ -2206,6 +2335,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "comment",
      "note": "",
      "optional": false,
@@ -2213,6 +2343,7 @@
      "type": "string | null"
     },
     {
+     "absent_if": "",
      "name": "record_id",
      "note": "",
      "optional": false,
@@ -2220,6 +2351,7 @@
      "type": "string"
     },
     {
+     "absent_if": "",
      "name": "rev",
      "note": "判断の後の rev",
      "optional": false,
