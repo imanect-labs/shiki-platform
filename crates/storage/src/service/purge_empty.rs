@@ -7,6 +7,12 @@
 //!
 //! 古い順（`deleted_at`, `id` の昇順）に keyset で進め、1 回の呼び出しで消す根・消すノードの合計・確かめる根の
 //! 候補に上限を置く。上限に届いたら、最後に確かめた候補の位置を続きとして返す（`next_cursor` の間は繰り返す）。
+//!
+//! 消す範囲は、**最初の呼び出し（続きの位置なし）の時点でゴミ箱にあったもの**に限る。最初の呼び出しで上限の時刻
+//! （DB の `now()`）を決め、`deleted_at` がそれより後の根は、同じ呼び出しの後のバッチでも続きの呼び出しでも
+//! 消さない（大きなゴミ箱を空にする数分の間に、確認の後でゴミ箱に入れたものを、元に戻す機会なしに消さない）。
+//! 上限は続きの位置に入れて渡す（位置は不透明な文字列のまま）。利用者が位置を書き換えて上限を後ろにずらしても、
+//! 位置なしで呼べば消せる範囲より広がらないので、認可の問題にはならない。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -199,15 +205,18 @@ impl StorageService {
             trace_id,
         )
         .await?;
-        let mut after: Option<(DateTime<Utc>, Uuid)> = match cursor {
+        // 続きなら位置と上限の時刻を受け継ぐ。最初の呼び出しなら、上限をいまの時刻（DB の時計）にする。
+        let (mut after, upper): (Option<TrashPos>, DateTime<Utc>) = match cursor {
             Some(c) => {
-                let (ts, id) = decode_ts_cursor(c)?;
-                let ts = DateTime::parse_from_rfc3339(&ts)
-                    .map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?
-                    .with_timezone(&Utc);
-                Some((ts, id))
+                let (pos, upper) = decode_empty_cursor(c)?;
+                (Some(pos), upper)
             }
-            None => None,
+            None => (
+                None,
+                sqlx::query_scalar("SELECT now()")
+                    .fetch_one(&self.db)
+                    .await?,
+            ),
         };
         // 元に戻せない操作なので、剥奪をすぐに効かせる（PIT-11）。
         let is_admin = self
@@ -224,7 +233,7 @@ impl StorageService {
         let mut failure: Option<StorageError> = None;
         let mut exhausted = false;
         'scan: loop {
-            let batch = self.trash_candidates(ctx, after).await?;
+            let batch = self.trash_candidates(ctx, after, upper).await?;
             let short = (batch.len() as i64) < EMPTY_TRASH_BATCH;
             let (listed, can) = self.empty_checks(ctx, &batch, is_admin).await?;
             for (i, cand) in batch.iter().enumerate() {
@@ -267,7 +276,7 @@ impl StorageService {
             }
         }
         if !exhausted && failure.is_none() {
-            out.next_cursor = after.map(|(ts, id)| encode_ts_cursor(&ts.to_rfc3339(), id));
+            out.next_cursor = after.map(|(ts, id)| encode_empty_cursor(ts, id, upper));
         }
         self.audit
             .record(
@@ -294,15 +303,18 @@ impl StorageService {
         }
     }
 
-    /// ゴミ箱の一覧と同じ条件（システム領域でない削除の根）の候補を、`after` の次から古い順に引く。
+    /// ゴミ箱の一覧と同じ条件（システム領域でない削除の根）の候補のうち、`upper` までに削除したものを、`after` の
+    /// 次から古い順に引く。
     async fn trash_candidates(
         &self,
         ctx: &AuthContext,
         after: Option<(DateTime<Utc>, Uuid)>,
+        upper: DateTime<Utc>,
     ) -> Result<Vec<Candidate>, StorageError> {
         Ok(sqlx::query_as(
             "SELECT n.id, n.kind, n.deleted_at FROM node n \
              WHERE n.org = $1 AND n.tenant_id = $2 AND n.deleted_at IS NOT NULL AND n.system = false \
+               AND n.deleted_at <= $6 \
                AND NOT EXISTS ( \
                  SELECT 1 FROM node p \
                  WHERE p.tenant_id = n.tenant_id AND p.id = n.parent_id AND p.deleted_at IS NOT NULL) \
@@ -314,6 +326,7 @@ impl StorageService {
         .bind(after.map(|(ts, _)| ts))
         .bind(after.map(|(_, id)| id))
         .bind(EMPTY_TRASH_BATCH)
+        .bind(upper)
         .fetch_all(&self.db)
         .await?)
     }
@@ -363,5 +376,73 @@ impl StorageService {
                 .await?
         };
         Ok((listed, can))
+    }
+}
+
+/// 「空にする」の位置（最後に確かめた候補の `deleted_at` と `id`）。
+type TrashPos = (DateTime<Utc>, Uuid);
+
+/// 「空にする」の続きの位置と上限の分け目（RFC 3339 の時刻には現れない）。
+const UPPER_SEP: char = '|';
+
+/// 「空にする」の続きの位置（最後に確かめた候補と、最初の呼び出しで決めた上限の時刻）を不透明な文字列にする。
+fn encode_empty_cursor(deleted_at: DateTime<Utc>, id: Uuid, upper: DateTime<Utc>) -> String {
+    encode_ts_cursor(
+        &format!(
+            "{}{UPPER_SEP}{}",
+            deleted_at.to_rfc3339(),
+            upper.to_rfc3339()
+        ),
+        id,
+    )
+}
+
+/// [`encode_empty_cursor`] の逆。上限の無い位置（一覧の位置など）と壊れた位置は `Invalid`。
+fn decode_empty_cursor(cursor: &str) -> Result<(TrashPos, DateTime<Utc>), StorageError> {
+    let invalid = || StorageError::Invalid("カーソルが不正です".into());
+    let (ts, id) = decode_ts_cursor(cursor)?;
+    let (deleted_at, upper) = ts.split_once(UPPER_SEP).ok_or_else(invalid)?;
+    let parse = |t: &str| {
+        DateTime::parse_from_rfc3339(t)
+            .map(|t| t.with_timezone(&Utc))
+            .map_err(|_| invalid())
+    };
+    Ok(((parse(deleted_at)?, id), parse(upper)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_cursor_round_trips_with_upper() {
+        let id = Uuid::new_v4();
+        let deleted_at = DateTime::parse_from_rfc3339("2026-11-01T01:02:03.456789Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let upper = DateTime::parse_from_rfc3339("2026-11-12T10:00:00.5Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let c = encode_empty_cursor(deleted_at, id, upper);
+        assert_eq!(decode_empty_cursor(&c).unwrap(), ((deleted_at, id), upper));
+    }
+
+    #[test]
+    fn empty_cursor_rejects_cursor_without_upper() {
+        // 一覧の位置（上限を持たない）や壊れた位置は受けない。
+        let list = encode_ts_cursor("2026-11-01T01:02:03+00:00", Uuid::new_v4());
+        assert!(matches!(
+            decode_empty_cursor(&list),
+            Err(StorageError::Invalid(_))
+        ));
+        let bad = encode_ts_cursor("2026-11-01T01:02:03+00:00|nope", Uuid::new_v4());
+        assert!(matches!(
+            decode_empty_cursor(&bad),
+            Err(StorageError::Invalid(_))
+        ));
+        assert!(matches!(
+            decode_empty_cursor("zz"),
+            Err(StorageError::Invalid(_))
+        ));
     }
 }
