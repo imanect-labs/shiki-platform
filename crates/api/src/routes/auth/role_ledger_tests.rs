@@ -26,6 +26,7 @@ use sqlx::PgPool;
 use storage::DirectoryStore;
 use uuid::Uuid;
 
+use super::membership_audit::{Discard, MembershipAudit, MembershipSource};
 use super::role_member::{current_roles, sync_roles};
 
 /// 台帳の行（表示名・作成日時・更新日時）。無ければ `None`。
@@ -63,11 +64,17 @@ async fn scenario(pool: &PgPool, fga: &dyn AuthzClient, tenant: &str) {
         authz::TenantId::parse(tenant).unwrap(),
     );
     let directory = DirectoryStore::new(pool.clone());
+    let audit = MembershipAudit::new(
+        &Discard,
+        MembershipSource::Login,
+        ctx.tenant(),
+        &ctx.principal().id,
+    );
     let desired: Vec<String> = vec!["engineering".into(), "acme/sales".into()];
 
     // 1. 初めての同期: 台帳の行とタプルを両方作る。
     assert!(
-        sync_roles(fga, &directory, &ctx, &desired).await,
+        sync_roles(fga, &directory, &audit, &ctx, &desired).await,
         "タプルを足した"
     );
     let mut held = current_roles(fga, &ctx.subject(), &ctx.ns())
@@ -92,7 +99,7 @@ async fn scenario(pool: &PgPool, fga: &dyn AuthzClient, tenant: &str) {
         .unwrap();
     assert!(row(pool, tenant, "acme/sales").await.is_none());
     assert!(
-        !sync_roles(fga, &directory, &ctx, &desired).await,
+        !sync_roles(fga, &directory, &audit, &ctx, &desired).await,
         "タプルは変えない"
     );
     let restored = row(pool, tenant, "acme/sales")
@@ -110,7 +117,7 @@ async fn scenario(pool: &PgPool, fga: &dyn AuthzClient, tenant: &str) {
     assert!(directory.role_exists(&ctx, "acme/sales").await.unwrap());
 
     // 3. あるべき集合から外れたロールはタプルを外し、台帳の行は残す。
-    assert!(sync_roles(fga, &directory, &ctx, &desired[..1]).await);
+    assert!(sync_roles(fga, &directory, &audit, &ctx, &desired[..1]).await);
     assert_eq!(
         current_roles(fga, &ctx.subject(), &ctx.ns()).await.unwrap(),
         ["engineering"]

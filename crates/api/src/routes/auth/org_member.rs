@@ -20,12 +20,15 @@
 //!   外さない（未知の状態に破壊的な操作をしない・ロールの同期と同じ）。
 //! - 失敗してもログインは止めない。付け損ねは権限が減る向き（`/me` とゲートウェイが断る）、外し損ねは次の同期で
 //!   収束する。
+//! - 付け外しは、システムを主体にした監査に組織ごとに 1 行ずつ残す（[`super::membership_audit`]・GAP-78）。付けたことを
+//!   記録できなければ付けたタプルを外し、外したことを記録できなくても外したものは戻さない（どちらも権限が減る向き）。
 
 use authz::{
     AuthzClient, Consistency, GroupLayout, Namespace, ObjectType, Principal, PrincipalKind,
-    Relation, Subject,
+    Relation, Subject, TenantId,
 };
 
+use super::membership_audit::{AuditSink, MembershipAudit, MembershipSource};
 use crate::extract::DEFAULT_ORG;
 
 /// 1 回の同期で変えたもの（ログ・テスト用）。
@@ -52,33 +55,68 @@ pub(crate) fn desired_org(
         .filter(|org| authz::validate_local_id(org).is_ok())
 }
 
-/// 利用者の組織の member を、所属グループから決まる組織だけにそろえる（本文はモジュールの説明）。
+/// 利用者の組織の member を、所属グループから決まる組織だけにそろえ、付け外しを監査に残す（本文はモジュールの説明）。
 ///
-/// 利用者でない主体（ワークフロー・アプリの主体）には何もしない。
-pub(crate) async fn sync_org_member(
+/// `sink` と `source` は監査の記録係と仕事（ログインかセッションの更新か）。利用者でない主体（ワークフロー・アプリの
+/// 主体）には何もしない。
+pub(crate) async fn sync_org_member_audited(
     authz: &dyn AuthzClient,
+    sink: &dyn AuditSink,
+    source: MembershipSource,
     principal: &Principal,
-    tenant_id: &str,
+    tenant: &TenantId,
     layout: GroupLayout,
 ) -> OrgMemberSync {
     let mut out = OrgMemberSync::default();
     if principal.kind != PrincipalKind::User {
         return out;
     }
-    let ns = Namespace::for_tenant(tenant_id);
+    let audit = MembershipAudit::new(sink, source, tenant, &principal.id);
+    let ns = Namespace::for_tenant(tenant);
     let subject = ns.user(&principal.id);
-    out.desired = desired_org(&principal.groups, tenant_id, layout);
+    out.desired = desired_org(&principal.groups, tenant, layout);
     if let Some(org) = &out.desired {
-        out.granted = grant(authz, &subject, &ns, org).await;
+        out.granted = grant(authz, &audit, &subject, &ns, org).await;
     }
     // 組織が決まらない人は既定の組織に落ちるので、その member は残す（BUG-200）。
     let keep = out.desired.as_deref().unwrap_or(DEFAULT_ORG);
-    out.revoked = revoke_others(authz, &subject, &ns, keep).await;
+    out.revoked = revoke_others(authz, &audit, &subject, &ns, keep).await;
     out
 }
 
-/// 決まった組織の member を、無ければ書く（書いたら `true`）。
-async fn grant(authz: &dyn AuthzClient, subject: &Subject, ns: &Namespace<'_>, org: &str) -> bool {
+/// 監査を確かめない試し用の [`sync_org_member_audited`]（記録は捨てる・仕事はログイン）。
+#[cfg(test)]
+pub(crate) async fn sync_org_member(
+    authz: &dyn AuthzClient,
+    principal: &Principal,
+    tenant_id: &str,
+    layout: GroupLayout,
+) -> OrgMemberSync {
+    let Ok(tenant) = TenantId::parse(tenant_id) else {
+        return OrgMemberSync::default();
+    };
+    let sink = super::membership_audit::Discard;
+    sync_org_member_audited(
+        authz,
+        &sink,
+        MembershipSource::Login,
+        principal,
+        &tenant,
+        layout,
+    )
+    .await
+}
+
+/// 決まった組織の member を、無ければ書く（書いて監査に残せたら `true`）。
+///
+/// 書いたことを監査に残せなければ、書いたタプルを外して `false`（記録の無い付与を残さない・次の同期で付け直して記録する）。
+async fn grant(
+    authz: &dyn AuthzClient,
+    audit: &MembershipAudit<'_>,
+    subject: &Subject,
+    ns: &Namespace<'_>,
+    org: &str,
+) -> bool {
     let object = ns.organization(org);
     // 書いた直後のゲートウェイ・`/me` の判定と食い違わないよう、強い整合で確かめる。
     let present = authz
@@ -95,11 +133,18 @@ async fn grant(authz: &dyn AuthzClient, subject: &Subject, ns: &Namespace<'_>, o
         Err(e) => Err(e),
     };
     match wrote {
-        Ok(wrote) => {
-            if wrote {
-                tracing::info!(%org, "所属グループから組織の member を付けた");
+        Ok(false) => false,
+        Ok(true) => {
+            if let Err(e) = audit.org_granted(org).await {
+                tracing::error!(%org, error = %e, "組織の member を付けたことを監査に残せません（付けたタプルを外す）");
+                if let Err(e) = authz.delete_tuple(subject, Relation::Member, &object).await {
+                    tracing::error!(%org, error = %e,
+                        "監査に残せなかった組織の member を外せません（記録の無い付与が残っている・手で確かめる）");
+                }
+                return false;
             }
-            wrote
+            tracing::info!(%org, "所属グループから組織の member を付けた");
+            true
         }
         Err(e) => {
             tracing::warn!(%org, error = %e, "組織の member を付けられません（次のログイン・更新で付け直す）");
@@ -114,12 +159,15 @@ async fn grant(authz: &dyn AuthzClient, subject: &Subject, ns: &Namespace<'_>, o
 /// 何も外さない。
 async fn revoke_others(
     authz: &dyn AuthzClient,
+    audit: &MembershipAudit<'_>,
     subject: &Subject,
     ns: &Namespace<'_>,
     keep: &str,
 ) -> Vec<String> {
     match current_orgs(authz, subject, ns).await {
-        Some(current) => revoke_stale(authz, subject, ns, &current, &[keep.to_string()]).await,
+        Some(current) => {
+            revoke_stale(authz, audit, subject, ns, &current, &[keep.to_string()]).await
+        }
         None => Vec::new(),
     }
 }
@@ -182,9 +230,11 @@ pub(crate) fn orgs_kept_by_reconcile(
 
 /// `current` のうち `keep` にない組織の member を外し、外した組織を返す（ログインの同期と定期の照合で共用）。
 ///
-/// 外すのは member だけ（admin・audit_viewer には触れない・PIT-65）。member が無い組織は no-op。
+/// 外すのは member だけ（admin・audit_viewer には触れない・PIT-65）。member が無い組織は no-op。外した組織は、外して
+/// から 1 つずつ監査に残す（記録できなくても戻さない・[`MembershipAudit::org_revoked`]）。
 pub(crate) async fn revoke_stale(
     authz: &dyn AuthzClient,
+    audit: &MembershipAudit<'_>,
     subject: &Subject,
     ns: &Namespace<'_>,
     current: &[String],
@@ -198,6 +248,7 @@ pub(crate) async fn revoke_stale(
         {
             Ok(true) => {
                 tracing::info!(%org, "所属グループから外れた組織の member を外した");
+                audit.org_revoked(org).await;
                 revoked.push(org.clone());
             }
             Ok(false) => {}
@@ -461,7 +512,14 @@ mod tests {
         );
         let current = current_orgs(&fga, &me, &ns).await.unwrap();
         let keep = orgs_kept_by_reconcile(&admin_groups, "t", layout);
-        let revoked = revoke_stale(&fga, &me, &ns, &current, &keep).await;
+        let tenant = TenantId::parse("t").unwrap();
+        let audit = MembershipAudit::new(
+            &super::super::membership_audit::Discard,
+            MembershipSource::Reconcile,
+            &tenant,
+            "u1",
+        );
+        let revoked = revoke_stale(&fga, &audit, &me, &ns, &current, &keep).await;
         assert_eq!(
             revoked,
             ["old"],

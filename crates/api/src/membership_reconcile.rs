@@ -14,6 +14,12 @@
 //!   ロールはログインの同期と同じ決め方（[`role_member::desired_roles`]・所属グループとロールの claim の元の属性
 //!   `roles`・D-140）。記録の無いロール（手で書いたタプル）には触れない。
 //!
+//! # 監査
+//!
+//! 外したものは、主体を `system:membership-reconcile` にした監査に残す（組織は 1 つにつき 1 行、ロールは 1 人 1 回で
+//! 1 行・[`crate::routes::auth::membership_audit`]・GAP-78）。外してから記録し、記録できなくても外したものは戻さない
+//! （error のログに残し、[`ReconcileReport::audit_failed`] に数える）。
+//!
 //! # 外さないとき（fail-safe）
 //!
 //! - Keycloak を読めない（接続できない・権限が無い・5xx・パスの無いグループ）人は、何も外さない。
@@ -43,17 +49,21 @@
 use std::panic::AssertUnwindSafe;
 use std::{sync::Arc, time::Duration};
 
-use authz::{AuthContext, AuthzClient, GroupLayout, Namespace, Principal, PrincipalKind};
+use authz::{AuthContext, AuthzClient, GroupLayout, Namespace, Principal, PrincipalKind, TenantId};
 use futures::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use storage::audit::AuditRecorder;
 use storage::{DirectoryEntry, DirectoryStore, StorageError};
 
 use crate::{
     config::AuthConfig,
     extract::{group_layout, org_of_groups},
     keycloak_admin::{AdminSession, KeycloakAdmin, KeycloakAdminError},
-    routes::auth::{org_member, role_member},
+    routes::auth::{
+        membership_audit::{AuditSink, MembershipAudit, MembershipSource},
+        org_member, role_member,
+    },
 };
 
 /// advisory lock の鍵（この照合専用の固定値）。
@@ -139,6 +149,8 @@ pub struct ReconcileReport {
     pub revoked_orgs: usize,
     /// member を外した部署の数。
     pub revoked_roles: usize,
+    /// 外したことを監査に残せなかった行の数（外したものは戻さない・GAP-78）。
+    pub audit_failed: usize,
     /// 最後まで読んで頭に戻った。
     pub wrapped: bool,
 }
@@ -183,6 +195,7 @@ pub fn spawn(mut deps: ReconcileDeps, config: &MembershipReconcileConfig) {
                     failed = r.failed,
                     revoked_orgs = r.revoked_orgs,
                     revoked_roles = r.revoked_roles,
+                    audit_failed = r.audit_failed,
                     "組織の member と部署を Keycloak の所属グループと照合しました"
                 ),
                 Ok(Some(r)) => tracing::debug!(
@@ -294,16 +307,23 @@ pub(crate) async fn reconcile_page(
 ) -> Result<usize, ReconcileError> {
     let recorded = deps.directory.recorded_roles_of(page).await?;
     let layout = group_layout(&deps.auth);
+    // 外したものの監査（ハッシュチェーンにつなぐ・GAP-78）。
+    let sink = AuditRecorder::new(deps.db.clone());
     let mut done = 0;
     let mut streak = 0;
     for (i, entry) in page.iter().enumerate() {
         let roles = recorded.get(entry).map_or(&[][..], Vec::as_slice);
-        match reconcile_user(deps, kc, entry, roles, layout).await {
+        match reconcile_user(deps, &sink, kc, entry, roles, layout).await {
             UserOutcome::Untouched => {}
-            UserOutcome::Checked { orgs, roles } => {
+            UserOutcome::Checked {
+                orgs,
+                roles,
+                audit_failed,
+            } => {
                 report.checked += 1;
                 report.revoked_orgs += orgs;
                 report.revoked_roles += roles;
+                report.audit_failed += audit_failed;
             }
             UserOutcome::NotFound => report.not_found += 1,
             UserOutcome::Failed(e) => {
@@ -339,8 +359,12 @@ pub(crate) async fn reconcile_page(
 enum UserOutcome {
     /// 照合するタプルが無い（Keycloak を読んでいない）。
     Untouched,
-    /// 照合した（外した組織・部署の数）。
-    Checked { orgs: usize, roles: usize },
+    /// 照合した（外した組織・部署の数と、監査に残せなかった行の数）。
+    Checked {
+        orgs: usize,
+        roles: usize,
+        audit_failed: usize,
+    },
     /// Keycloak にいない（外さない）。
     NotFound,
     /// Keycloak を読めない（外さない）。
@@ -350,17 +374,19 @@ enum UserOutcome {
 /// 1 人を照合する（本文はモジュールの説明）。
 async fn reconcile_user(
     deps: &ReconcileDeps,
+    sink: &dyn AuditSink,
     kc: &mut AdminSession<'_>,
     entry: &DirectoryEntry,
     recorded_roles: &[String],
     layout: GroupLayout,
 ) -> UserOutcome {
-    let tenant_id = entry.tenant_id.as_str();
-    if authz::validate_tenant_id(tenant_id).is_err()
-        || authz::validate_local_id(&entry.user_id).is_err()
-    {
+    let Ok(tenant) = TenantId::parse(entry.tenant_id.as_str()) else {
+        return UserOutcome::Untouched;
+    };
+    if authz::validate_local_id(&entry.user_id).is_err() {
         return UserOutcome::Untouched;
     }
+    let tenant_id = tenant.as_str();
     let authz = &*deps.authz;
     let ns = Namespace::for_tenant(tenant_id);
     let subject = ns.user(&entry.user_id);
@@ -406,29 +432,37 @@ async fn reconcile_user(
         stale_roles.retain(|role| !desired.contains(role));
     }
 
-    // 3. 外す（ログインの同期と同じ手順）。
+    // 3. 外す（ログインの同期と同じ手順）。外したものは監査に残す（ロールの行の組織はログインの同期と同じ・
+    //    `AuthContext` と同じ規則）。
+    let audit = MembershipAudit::new(sink, MembershipSource::Reconcile, &tenant, &entry.user_id);
+    let user_org = org_of_groups(&groups, tenant_id, layout);
     let keep = org_member::orgs_kept_by_reconcile(&groups, tenant_id, layout);
-    let revoked_orgs = org_member::revoke_stale(authz, &subject, &ns, &orgs, &keep).await;
-    let revoked_roles = role_member::revoke_roles(authz, &subject, &ns, &stale_roles).await;
+    let revoked_orgs = org_member::revoke_stale(authz, &audit, &subject, &ns, &orgs, &keep).await;
+    let revoked_roles =
+        role_member::revoke_roles(authz, &audit, &user_org, &subject, &ns, &stale_roles).await;
     if !revoked_orgs.is_empty() || !revoked_roles.is_empty() {
         tracing::info!(%tenant_id, user = %entry.user_id, orgs = ?revoked_orgs, roles = ?revoked_roles,
             "照合: 所属グループ・属性 roles から外れた人の member を外した");
     }
     if !revoked_roles.is_empty() {
-        after_roles_revoked(deps, entry, &groups, layout, &revoked_roles).await;
+        after_roles_revoked(deps, entry, &tenant, &groups, user_org, &revoked_roles).await;
     }
     UserOutcome::Checked {
         orgs: revoked_orgs.len(),
         roles: revoked_roles.len(),
+        audit_failed: audit.failed(),
     }
 }
 
 /// ロールを外した後: 写し（AI 活用分析の部署集計）から消し、構造化データの購読へ知らせる（ログインの同期と同じ）。
+///
+/// `org` はログインの同期と同じ組織（`AuthContext` と同じ規則）。
 async fn after_roles_revoked(
     deps: &ReconcileDeps,
     entry: &DirectoryEntry,
+    tenant: &TenantId,
     groups: &[String],
-    layout: GroupLayout,
+    org: String,
     revoked: &[String],
 ) {
     if let Err(e) = deps
@@ -438,13 +472,6 @@ async fn after_roles_revoked(
     {
         tracing::warn!(error = %e, "照合: directory_user_role から外せません（次のログインで置き換わる）");
     }
-    // ログインの同期と同じ組織（`AuthContext` と同じ規則）。
-    let org = org_of_groups(groups, &entry.tenant_id, layout);
-    // tenant_id が文字ポリシーに反するなら通知しない（購読は TTL で引き直す・#1032）。
-    let Ok(tenant) = authz::TenantId::parse(entry.tenant_id.as_str()) else {
-        tracing::warn!("照合: tenant_id が不正なため SSE へのロール変更を通知しません");
-        return;
-    };
     let ctx = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
@@ -455,7 +482,7 @@ async fn after_roles_revoked(
             tenant_id: Some(entry.tenant_id.clone()),
         },
         org,
-        tenant,
+        tenant.clone(),
     );
     if let Err(e) = deps.data.notify_authz_changed(&ctx, None).await {
         tracing::warn!(error = %e, "照合: SSE へのロール変更の通知に失敗（購読は TTL で引き直す）");

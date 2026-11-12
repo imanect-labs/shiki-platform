@@ -13,6 +13,9 @@ pub mod callback;
 mod gateway_fixture;
 pub mod login;
 pub mod logout;
+pub(crate) mod membership_audit;
+#[cfg(test)]
+mod membership_audit_tests;
 #[cfg(test)]
 mod membership_reconcile_tests;
 pub(crate) mod org_member;

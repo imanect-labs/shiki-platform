@@ -13,7 +13,9 @@ use authz::{AuthContext, Principal};
 
 use super::{
     action::{normalize_action_status, AccountAction},
-    build_cookie, org_member, parse_flow, removal_cookie, role_member, FLOW_COOKIE,
+    build_cookie,
+    membership_audit::{MembershipAudit, MembershipSource},
+    org_member, parse_flow, removal_cookie, role_member, FLOW_COOKIE,
 };
 
 /// ログインの往復で、組織の member の同期を待つ長さ（[`org_member`]・過ぎたら裏で続ける）。
@@ -119,6 +121,7 @@ pub async fn callback(
         state.clone(),
         principal.clone(),
         tenant_id.clone(),
+        MembershipSource::Login,
     ));
 
     // 同じブラウザの旧セッション（アカウント操作の往復・再ログイン）。新セッションの保存に
@@ -194,14 +197,29 @@ pub async fn callback(
 ///
 /// 戻った直後の `/me` と、続けて開くアプリのゲートウェイが、どちらもこのタプルで組織のメンバーかを判定するため、
 /// リダイレクトの前に待つ。待つのは [`ORG_MEMBER_WAIT`] までで、過ぎたら裏で続けさせてログインを進める（OpenFGA の
-/// 遅れでログインを止めない）。
-async fn sync_org_member_before_redirect(state: &AppState, principal: &Principal, tenant_id: &str) {
+/// 遅れでログインを止めない）。付け外しは監査に残す（[`super::membership_audit`]・仕事はログイン）。
+async fn sync_org_member_before_redirect(
+    state: &AppState,
+    principal: &Principal,
+    tenant_id: &authz::TenantId,
+) {
     let sync = tokio::spawn({
         let authz = state.authz.clone();
+        let audit = state.audit.clone();
         let principal = principal.clone();
-        let tenant_id = tenant_id.to_string();
+        let tenant_id = tenant_id.clone();
         let layout = group_layout(&state.config.auth);
-        async move { org_member::sync_org_member(&*authz, &principal, &tenant_id, layout).await }
+        async move {
+            org_member::sync_org_member_audited(
+                &*authz,
+                &*audit,
+                MembershipSource::Login,
+                &principal,
+                &tenant_id,
+                layout,
+            )
+            .await
+        }
     });
     if tokio::time::timeout(ORG_MEMBER_WAIT, sync).await.is_err() {
         tracing::warn!("組織の member の同期が時間内に終わりません（裏で続ける）");
@@ -228,20 +246,29 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
 /// セッションの更新（アクセストークンの寿命ごと・`middleware/session.rs`）で、組織の member（[`org_member`]・
 /// D-130）とロールのメンバーシップ（[`provision_roles`]）を claims にそろえる（detached・best-effort）。
 ///
-/// 組織を移った人・所属グループから外れた人の member は、ここか次のログインで外れる。
+/// 組織を移った人・所属グループから外れた人の member は、ここか次のログインで外れる。付け外しは監査に残す
+/// （[`super::membership_audit`]・仕事はセッションの更新）。
 pub(crate) async fn sync_memberships(
     state: AppState,
     principal: Principal,
     tenant_id: authz::TenantId,
 ) {
-    org_member::sync_org_member(
+    org_member::sync_org_member_audited(
         &*state.authz,
+        &*state.audit,
+        MembershipSource::SessionRefresh,
         &principal,
-        tenant_id.as_str(),
+        &tenant_id,
         group_layout(&state.config.auth),
     )
     .await;
-    provision_roles(state, principal, tenant_id).await;
+    provision_roles(
+        state,
+        principal,
+        tenant_id,
+        MembershipSource::SessionRefresh,
+    )
+    .await;
 }
 
 /// IdP claim（roles ＋ groups）由来のロール/部署メンバーシップを OpenFGA へ **diff 同期**する
@@ -264,6 +291,8 @@ pub(crate) async fn sync_memberships(
 /// - **表示用**: 共有ダイアログ用に `directory_role` も upsert する（タプルが既にあるロールの欠けた行も戻す・BUG-270）。
 /// - **best-effort**: 失敗しても login を止めない。付与失敗は access が減る方向（fail-safe）、
 ///   剥奪失敗は次回ログインで再収束。
+/// - **監査**: 付け外しはシステムを主体にした監査に残す（`source` はログインかセッションの更新・
+///   [`super::membership_audit`]・GAP-78）。
 // groups claim からの role 収束は「抽出→現在集合との差分→付与/剥奪→表示用 upsert」の
 // 分岐が本質的に多い。best-effort の各失敗を握り潰す都合で cognitive complexity が高くなるが、
 // 収束ロジックを一望できる利点を優先してグランドファーザ許容する。
@@ -272,6 +301,7 @@ pub(crate) async fn provision_roles(
     state: AppState,
     principal: Principal,
     tenant_id: authz::TenantId,
+    source: MembershipSource,
 ) {
     // あるべき集合（claims 由来・正規化済み）。
     let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
@@ -310,8 +340,10 @@ pub(crate) async fn provision_roles(
         tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");
     }
 
-    // ロールの直接タプルと台帳をあるべき集合にそろえる（剥奪・付与・台帳の欠けの復元・BUG-270）。
-    let changed = role_member::sync_roles(&*state.authz, &state.directory, &ctx, &desired).await;
+    // ロールの直接タプルと台帳をあるべき集合にそろえる（剥奪・付与・台帳の欠けの復元・BUG-270）。付け外しは監査に残す。
+    let audit = MembershipAudit::new(&*state.audit, source, ctx.tenant(), &ctx.principal().id);
+    let changed =
+        role_member::sync_roles(&*state.authz, &state.directory, &audit, &ctx, &desired).await;
     // ロールが変わったら構造化データの SSE 購読へ知らせる（TTL を待たずに材料を引き直す・PIT-70 ③）。
     if changed {
         if let Err(e) = state.data.notify_authz_changed(&ctx, None).await {
