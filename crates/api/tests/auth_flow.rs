@@ -920,10 +920,90 @@ impl AuthzClient for OrgMembers {
     }
 }
 
+/// 組織の member の付け外しを監査に残せる DB（`STORAGE_TEST_DATABASE_URL`・migrate 済み）。
+///
+/// 付けたことを監査に残せなければ、付けたタプルを外す（GAP-78）。届かない DB の記録係では付与が残らないので、付与を
+/// 見るテストは実 DB の記録係を渡す。未設定ならスキップする（`SHIKI_REQUIRE_IT=1` なら失敗）。
+async fn membership_audit_db() -> Option<sqlx::PgPool> {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("Postgres 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migration 適用");
+    Some(pool)
+}
+
+/// テナントの監査の最後の行の id（これより後の行を、このテストが書いた行として読む）。
+async fn last_audit_id(pool: &sqlx::PgPool, tenant: &str) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log WHERE tenant_id = $1")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// 監査の 1 行（主体・action・org の列・metadata・チェーンにつないだか）。
+type OrgMemberAuditRow = (String, String, String, serde_json::Value, bool);
+
+/// `after` より後に書かれた、利用者 `sub` の組織の付け外しの行（書いた順）。`want` 件そろうまで少し待つ。
+async fn org_member_audit_rows(
+    pool: &sqlx::PgPool,
+    tenant: &str,
+    sub: &str,
+    after: i64,
+    want: usize,
+) -> Vec<OrgMemberAuditRow> {
+    let mut rows = Vec::new();
+    for _ in 0..100 {
+        let raw: Vec<(String, String, String, String, bool)> = sqlx::query_as(
+            "SELECT actor, action, org, metadata::text, chained FROM audit_log \
+             WHERE tenant_id = $1 AND object_type = 'user' AND object_id = $2 AND id > $3 \
+             AND decision = 'allow' AND action IN ('org.member.grant', 'org.member.revoke') \
+             ORDER BY id",
+        )
+        .bind(tenant)
+        .bind(sub)
+        .bind(after)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows = raw
+            .into_iter()
+            .map(|(actor, action, org, metadata, chained)| {
+                (
+                    actor,
+                    action,
+                    org,
+                    serde_json::from_str(&metadata).unwrap(),
+                    chained,
+                )
+            })
+            .collect();
+        if rows.len() >= want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    rows
+}
+
 /// ログインは、所属グループから決まる組織の member を、リダイレクトで戻す前に OpenFGA へ書く（D-130）。戻った直後の
 /// `/me` とアプリのゲートウェイが、このタプルで組織のメンバーかを判定するため。ほかの組織の member は外す。
+/// 付け外しは監査に残し、残せない付与は外すので、実 DB が要る（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
 #[tokio::test]
 async fn login_writes_the_org_member_before_redirecting() {
+    let Some(pool) = membership_audit_db().await else {
+        return;
+    };
+    let after = last_audit_id(&pool, "default").await;
     let token_body = serde_json::json!({
         "access_token": valid_access_token(),
         "refresh_token": "rt",
@@ -940,6 +1020,7 @@ async fn login_writes_the_org_member_before_redirecting() {
         .push((me.clone(), "organization:default|old".into()));
     let state = AppState {
         authz: members.clone(),
+        audit: Arc::new(storage::audit::AuditRecorder::new(pool.clone())),
         ..state_with(config_with(&idp, vec![]))
     };
     let app = build_router(state);
@@ -961,6 +1042,35 @@ async fn login_writes_the_org_member_before_redirecting() {
         members.rows(),
         [(me, "organization:default|acme".to_string())],
         "リダイレクトの時点で member がそろっている"
+    );
+    // 付けた組織と外した組織を 1 行ずつ、同期の仕事を主体にして、ハッシュチェーンにつないで残す（GAP-78）。
+    // 行はテナント default のハッシュチェーンの途中に入る（後にほかの行がつながる）ので、消さずに残す。
+    let sync = "system:membership-sync";
+    assert_eq!(
+        org_member_audit_rows(
+            &pool,
+            "default",
+            "00000000-0000-0000-0000-000000000001",
+            after,
+            2
+        )
+        .await,
+        [
+            (
+                sync.to_string(),
+                "org.member.grant".to_string(),
+                "acme".to_string(),
+                serde_json::json!({ "source": "login", "org": "acme" }),
+                true
+            ),
+            (
+                sync.to_string(),
+                "org.member.revoke".to_string(),
+                "old".to_string(),
+                serde_json::json!({ "source": "login", "org": "old" }),
+                true
+            ),
+        ]
     );
 }
 
