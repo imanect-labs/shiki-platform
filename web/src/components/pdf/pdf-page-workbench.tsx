@@ -179,8 +179,10 @@ export function PdfPageWorkbench({
         });
       }
     } catch (e) {
-      if (current())
+      if (current()) {
+        setAnnouncement("");
         setError(e instanceof Error ? e.message : "PDFを開けませんでした。");
+      }
     } finally {
       loadingOperation.current = false;
       if (current()) setLoading(false);
@@ -219,8 +221,10 @@ export function PdfPageWorkbench({
         };
       });
     } catch (e) {
-      if (current())
+      if (current()) {
+        setAnnouncement("");
         setError(e instanceof Error ? e.message : "PDFを開けませんでした。");
+      }
     } finally {
       loadingOperation.current = false;
       if (current()) setLoading(false);

@@ -1735,6 +1735,23 @@ test("端末のPDFを結合し、追加順の変更とファイル除外を反�
   await expect(
     dialog.getByText("追加資料.pdf を追加しました", { exact: true }),
   ).toHaveCount(0);
+  await page.getByLabel("結合するPDFを追加").setInputFiles([
+    {
+      name: "正常.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from(await extra.save()),
+    },
+    {
+      name: "不正.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("invalid"),
+    },
+  ]);
+  await expect(dialog.getByTestId("pdf-merge-source")).toHaveCount(2);
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(
+    dialog.getByText("正常.pdf を追加しました", { exact: true }),
+  ).toHaveCount(0);
   await page.screenshot({ path: "test-results/pdf-merge-light.png" });
 });
 
