@@ -111,6 +111,9 @@ pub async fn install_app(
 ///
 /// 呼ぶ人がアプリの持ち主なら、自動実行（event・cron）の関数の直近の失敗を `function_failures`
 /// （[`app_platform::AppFunctionFailure`] の配列・新しい順）に添える（失敗が無いときと、持ち主でないときは付けない・GAP-60）。
+///
+/// 各項目に `yanked`（入れた版の公開を取り下げたか）を添える。取り下げても入れたアプリは動き続け、新しくは入れられ
+/// ない（GAP-69b）。
 #[utoipa::path(
     get,
     path = "/apps/installations",
@@ -138,14 +141,34 @@ pub async fn list_installations(
             std::collections::HashMap::new()
         }
     };
+    // 入れた版の公開を取り下げたか（GAP-69b）。入れたアプリは動き続けるので、読めなくても一覧は返す（添えないだけ）。
+    let installed: Vec<(Uuid, String, String)> = items
+        .iter()
+        .map(|i| (i.app_id, i.app_name.clone(), i.installed_version.clone()))
+        .collect();
+    let yanked = match state
+        .installs
+        .registry()
+        .yanked_installs(&ctx, &installed)
+        .await
+    {
+        Ok(yanked) => yanked,
+        Err(e) => {
+            tracing::warn!(error = %e, "入れた版の取り下げを読めません（一覧には添えません）");
+            std::collections::HashSet::new()
+        }
+    };
     let items: Vec<serde_json::Value> = items
         .into_iter()
         .map(|i| {
             let count = counts.get(&i.app_id).copied().unwrap_or(0);
             let failed = failures.get(&i.app_id).cloned();
+            let is_yanked =
+                yanked.contains(&(i.app_id, i.app_name.clone(), i.installed_version.clone()));
             let mut v = serde_json::to_value(i).unwrap_or_default();
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("table_count".into(), count.into());
+                obj.insert("yanked".into(), is_yanked.into());
                 if let Some(failed) = failed {
                     obj.insert(
                         "function_failures".into(),
@@ -259,6 +282,9 @@ pub async fn app_usage(
 
 /// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。取り下げたものと、実体の
 /// アーティファクトを消したものは出さない（D-203・GAP-69a）。
+///
+/// 各項目に `can_yank`（呼ぶ人が取り下げられるか＝アプリの持ち主か組織の管理者・画面の出し分け）を添える。判定を
+/// 読めない（OpenFGA の一時的な障害など）ときは `false` にして一覧は返す（取り下げの口が確かめ直す・GAP-69b）。
 #[utoipa::path(
     get,
     path = "/apps/registry",
@@ -274,7 +300,51 @@ pub async fn list_registry(
         .registry()
         .list_installable(&ctx, "mini_app_code", 200)
         .await?;
+    let can_yank = match state.installs.yankable(&ctx, &items).await {
+        Ok(can_yank) => can_yank,
+        Err(e) => {
+            tracing::warn!(error = %e, "取り下げられるかを読めません（取り下げの口を出しません）");
+            vec![false; items.len()]
+        }
+    };
+    let items: Vec<serde_json::Value> = items
+        .into_iter()
+        .zip(can_yank)
+        .map(|(entry, can_yank)| {
+            let mut v = serde_json::to_value(entry).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("can_yank".into(), can_yank.into());
+            }
+            v
+        })
+        .collect();
     Ok(Json(serde_json::json!({ "items": items })))
+}
+
+/// コードアプリの公開を取り下げる（D-203・GAP-69b）。
+///
+/// 新しいインストールが止まり、組織の公開アプリの一覧から外れる。入れてあるアプリは動き続け、登録の行も残る
+/// （動いているものを止めるのはアンインストール）。取り下げられるのは、アプリの持ち主と組織の管理者。もう取り下げて
+/// いても 204（監査は取り下げたときだけ `app.yank` を残す）。
+#[utoipa::path(
+    post,
+    path = "/apps/registry/{id}/yank",
+    params(("id" = Uuid, Path, description = "レジストリのエントリの ID（`GET /apps/registry` の `id`）")),
+    responses(
+        (status = 204, description = "取り下げた（もう取り下げていたときも）"),
+        (status = 403, description = "アプリの持ち主でも組織の管理者でもない"),
+        (status = 404, description = "呼ぶ人の組織のコードアプリの登録に無い（ほかの組織・skill の登録を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn yank_registry_entry(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    state.installs.yank(&ctx, id, trace.as_deref()).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// オフライン import 要求（署名付きマニフェスト・エアギャップ配布）。
@@ -454,6 +524,9 @@ pub(crate) fn app_install_route_decls() -> Vec<crate::server::RouteDecl> {
             post(import_app)
         }),
         r("/apps/registry", &["GET"], Session, || get(list_registry)),
+        r("/apps/registry/{id}/yank", &["POST"], Session, || {
+            post(yank_registry_entry)
+        }),
         r("/apps/{app_id}/usage", &["GET"], Session, || get(app_usage)),
     ]
 }

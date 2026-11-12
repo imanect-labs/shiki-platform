@@ -253,6 +253,7 @@ use utoipa::{
         crate::routes::app_install::update_app_table_roles,
         crate::routes::app_install::import_app,
         crate::routes::app_install::list_registry,
+        crate::routes::app_install::yank_registry_entry,
         crate::routes::app_install::app_usage,
         crate::routes::app_install::admin_add_trusted_key,
         crate::routes::app_install::admin_list_trusted_keys,
