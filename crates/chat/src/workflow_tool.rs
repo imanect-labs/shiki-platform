@@ -13,9 +13,13 @@ use std::sync::Arc;
 
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use workflow_engine::{Catalog, ValidationError, WorkflowStore, WorkflowStoreError};
 
+use crate::builder_obs::{
+    already_created, created_differently, on_name_taken, ref_line, BuilderKind, NameTaken,
+};
 use crate::tool_args::ObjectArg;
 
 mod guide;
@@ -238,6 +242,9 @@ pub struct EmitWorkflowTool {
     decision_models: Option<Vec<DecisionModel>>,
     /// モデルを省いたときに動く組織の既定のモデルが、発話ユーザーのアカウントでは使えないとき、そのモデル（D-185）。
     default_unavailable: Option<String>,
+    /// 作成の冪等（R1）: 本人がこの会話の run の間（作られた時刻以降）に作った同名を引くストアと、その時刻。
+    /// `None` は照合しない（名前の重なりは常に作れなかった旨を返す）。
+    created_since: Option<(Arc<artifact::ArtifactStore>, DateTime<Utc>)>,
     description: String,
 }
 
@@ -250,8 +257,23 @@ impl EmitWorkflowTool {
             models: None,
             decision_models: None,
             default_unavailable: None,
+            created_since: None,
             description: guide::emit_description(None, None),
         }
+    }
+
+    /// 作成の冪等（R1）を有効にする。`since` は会話の run の作られた時刻（再試行しても変わらない）。
+    ///
+    /// 新しく作ろうとして名前が重なったとき、本人が `since` 以降に作った同名と内容（保存と同じ正規化を通した IR）を
+    /// 比べ、同じなら作成済みとして今の版を返す（版は増やさない）。違えば保存せず、id と版を添えて直し方を言う。
+    #[must_use]
+    pub fn with_created_since(
+        mut self,
+        artifacts: Arc<artifact::ArtifactStore>,
+        since: DateTime<Utc>,
+    ) -> Self {
+        self.created_since = Some((artifacts, since));
+        self
     }
 
     /// 発話ユーザーが使えるモデルを説明文に載せる（run ごとに組む・空なら model を書かない旨を書く）。
@@ -386,6 +408,9 @@ impl Tool for EmitWorkflowTool {
                         );
                     }
                 }
+                // 末尾に参照の行（こちらが作った値だけ・T02）。
+                text.push('\n');
+                text.push_str(&ref_line(BuilderKind::Workflow, id, &ir.name, version));
                 let mut outcome = ToolOutcome::ok(text);
                 outcome.workflow_refs.push(serde_json::json!({
                     "id": id,
@@ -395,8 +420,62 @@ impl Tool for EmitWorkflowTool {
                 }));
                 Ok(outcome)
             }
+            // 新しく作ろうとして名前が重なった: 本人がこの run の間に作ったものかを確かめる（作成の冪等・R1）。
+            Err(WorkflowStoreError::Artifact(artifact::ArtifactError::Conflict(
+                artifact::ConflictReason::NameTaken { .. },
+            ))) if target.is_none() => Ok(self.name_taken(ctx, &ir_json, trace_id).await),
             // 検証の誤り・権限不足・競合等もモデルに観測させ、ユーザーへ言語化させる（run は失敗させない）。
             Err(e) => Ok(save_failure(e, target.is_some(), &ir_json)),
+        }
+    }
+}
+
+impl EmitWorkflowTool {
+    /// 新しく作ろうとして名前が重なったときの観測（作成の冪等・R1）。
+    ///
+    /// 本人がこの run の間に作った同名で、今の版が今回の IR（保存と同じ正規化を通したもの）と同じなら作成済みとして
+    /// 返す（モデルが同じ IR を作り直しても版が動かず、名前を変えて作り直すループにならない）。内容が違えば保存せず、
+    /// id と版を添えて直し方を言う（古い版を指す成功に近い観測を返さない）。ほかの人の同名・前からある同名・照合
+    /// できないときは、これまでどおり作れなかった旨を返す（持ち主・id・作成時刻は出さない）。
+    async fn name_taken(
+        &self,
+        ctx: &AuthContext,
+        ir_json: &serde_json::Value,
+        trace_id: Option<&str>,
+    ) -> ToolOutcome {
+        let name = ir_json
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let Some((artifacts, since)) = &self.created_since else {
+            return ToolOutcome::error(create_name_taken(name));
+        };
+        let (body, _) = workflow_engine::complete_declared_scopes(ir_json);
+        match on_name_taken(
+            artifacts,
+            ctx,
+            BuilderKind::Workflow,
+            name,
+            *since,
+            &body,
+            trace_id,
+        )
+        .await
+        {
+            Ok(NameTaken::Same(found)) => already_created(&found),
+            Ok(NameTaken::Differs(found)) => created_differently(
+                &found,
+                &format!(
+                    "直すなら、workflow_id に {} を、expected_version に {} を付けて保存し直してください（read_workflow で\
+                     今の IR を読んでから変更を当てる）。別のワークフローとして作るなら、IR の name を別の名前にしてください。",
+                    found.id, found.version
+                ),
+            ),
+            Ok(NameTaken::Other) => ToolOutcome::error(create_name_taken(name)),
+            Err(e) => {
+                tracing::warn!(error = %e, "作成済みのワークフローの照合に失敗（作れなかった旨を返す）");
+                ToolOutcome::error(create_name_taken(name))
+            }
         }
     }
 }

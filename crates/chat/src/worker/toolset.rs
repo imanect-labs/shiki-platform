@@ -26,7 +26,7 @@ impl ChatWorker {
     ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
         let mut tools = self.core_tools(skills, attachments, run).await?;
         // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）と、ワークフローを探すツール。
-        self.push_workflow_tools(&mut tools, ctx).await;
+        self.push_workflow_tools(&mut tools, ctx, run).await;
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋Office 編集/CSV。
@@ -115,14 +115,21 @@ impl ChatWorker {
     /// emit / read / list はストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
     /// 説明文には発話ユーザーの組織で使えるモデルと判定用のモデルを載せる（保存時の照合と同じ集合）。引けなければ
     /// run を落とさず、モデルを載せない説明文にする（候補は検証エラーで返る）。
+    ///
+    /// 作成の冪等（R1・T02）: 名前が重なったら、本人がこの run の作られた時刻（再試行しても変わらない）以降に作った
+    /// 同名と内容を比べる。引くストアは artifact の単一チョークポイント（skill と同じ `ArtifactStore`）。
     pub(super) async fn push_workflow_tools(
         &self,
         tools: &mut Vec<Arc<dyn Tool>>,
         ctx: &AuthContext,
+        run: &ClaimedRun,
     ) {
         if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
             let mut emit =
                 crate::workflow_tool::EmitWorkflowTool::new(store.clone(), catalog.clone());
+            if let Some(artifacts) = &self.skill_artifacts {
+                emit = emit.with_created_since(Arc::clone(artifacts), run.created_at);
+            }
             match catalog.models(ctx).await {
                 Ok(models) => emit = emit.with_models(&models),
                 Err(e) => {
