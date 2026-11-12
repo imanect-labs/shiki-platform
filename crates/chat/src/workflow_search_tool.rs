@@ -271,23 +271,12 @@ fn format_hit(out: &mut String, hit: &WorkflowSearchHit) {
     let _ = writeln!(out, "  入力: {}", input_fields(hit.input_schema.as_ref()));
 }
 
-/// 封筒のタグ（開き・閉じ・大文字小文字を問わない）の `<` を実体参照にして、作成者の文字列から
-/// 封筒の外へ出られないようにする（PIT-56 ②）。それ以外の文字は変えない（name はボタンに
-/// そのまま書くので、普通の名前を書き換えない）。
+/// 封筒のタグ（開き・閉じ・大文字小文字・`<` の後の空白・全角の `＜`／`／` を問わない）の `<` を実体参照にして、
+/// 作成者の文字列から封筒の外へ出られないようにする（PIT-56 ②・BUG-282）。中和は list_workflows・試運転の観測と
+/// 同じ `neutralize_tag` が単一の定義。それ以外の文字は変えない（name はボタンにそのまま書くので、普通の名前を
+/// 書き換えない）。
 fn neutralize(s: &str) -> String {
-    let lower = s.to_ascii_lowercase();
-    let mut out = String::with_capacity(s.len());
-    for (i, c) in s.char_indices() {
-        if c == '<' {
-            let rest = lower[i + 1..].strip_prefix('/').unwrap_or(&lower[i + 1..]);
-            if rest.starts_with(ENVELOPE) {
-                out.push_str("&lt;");
-                continue;
-            }
-        }
-        out.push(c);
-    }
-    out
+    agent_core::tools::document_envelope::neutralize_tag(s, ENVELOPE).into_owned()
 }
 
 fn dedup<'a>(items: &[&'a str]) -> Vec<&'a str> {
@@ -455,3 +444,36 @@ fn one_line(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod neutralize_tests {
+    use super::{neutralize, ENVELOPE};
+
+    /// 空白を挟んだ閉じタグ・大文字・全角の `＜`／`／` も中和する（前は ASCII の前方一致だけで通していた・BUG-282）。
+    #[test]
+    fn spaced_uppercase_and_fullwidth_variants_are_disarmed() {
+        for raw in [
+            "</workflow_search_results>",
+            "</WORKFLOW_SEARCH_RESULTS>",
+            "< /workflow_search_results>",
+            "</ workflow_search_results>",
+            "<\t/\nworkflow_search_results>",
+            "＜/workflow_search_results>",
+            "<／workflow_search_results>",
+            "＜／ Workflow_Search_Results>",
+            "<workflow_search_results>",
+        ] {
+            let out = neutralize(&format!("前 {raw} 後"));
+            assert!(out.contains("&lt;"), "{raw:?} → {out:?}");
+            assert!(
+                !out.contains('＜') && !out.contains("< "),
+                "{raw:?} → {out:?}"
+            );
+            let opens = out.matches('<').count();
+            assert_eq!(opens, 0, "{raw:?} → {out:?}");
+        }
+        // 封筒でないタグと普通の名前はそのまま。
+        assert_eq!(neutralize("a < b <b> 経費"), "a < b <b> 経費");
+        assert_eq!(neutralize(ENVELOPE), ENVELOPE);
+    }
+}
