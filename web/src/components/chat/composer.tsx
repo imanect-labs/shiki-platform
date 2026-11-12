@@ -320,12 +320,49 @@ const ScopedComposer = React.memo(function ScopedComposer({
   // 「返答を待たないと次を書けない」体験を作らないための土台。
   const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
 
+  // 「+」の「スキルを検索」で `/` を入れる前の本文（`/` の補完は 1 行目全体で絞るため、
+  // 本文を残したままでは候補が 0 件になる）。選んだら本文へ戻す。
+  const stashedBody = React.useRef<string | null>(null);
+  const inputWrapRef = React.useRef<HTMLDivElement | null>(null);
+
   const pickSuggestion = (s: SlashSuggestion) => {
     setCommand(toActiveCommand(s));
     // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
-    setValue("");
+    setValue(stashedBody.current ?? "");
+    stashedBody.current = null;
     setSlashIndex(0);
   };
+
+  /// 「スキルを検索」: 入力欄に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
+  /// （探す手段を `/` の補完 1 つに揃える）。
+  const startSkillSearch = () => {
+    stashedBody.current = value.trim() ? value : null;
+    setCommand(null);
+    setSlashDismissed(false);
+    setSlashIndex(0);
+    setValue("/");
+    // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の後ろへ置く。
+    requestAnimationFrame(() => {
+      const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      if (el instanceof HTMLTextAreaElement) {
+        el.setSelectionRange(el.value.length, el.value.length);
+      } else {
+        const sel = window.getSelection();
+        sel?.selectAllChildren(el);
+        sel?.collapseToEnd();
+      }
+    });
+  };
+  // `/` を消して検索をやめたら、退避した本文を戻す。
+  React.useEffect(() => {
+    if (stashedBody.current !== null && !value.startsWith("/")) {
+      const body = stashedBody.current;
+      stashedBody.current = null;
+      setValue((v) => (v ? `${v}${body}` : body));
+    }
+  }, [value]);
 
   const submit = () => {
     if (disabled || uploading) return;
@@ -339,6 +376,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
     // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
     const sentAttachments = attachments.map(({ node_id, name }) => ({ node_id, name }));
     const result = onSubmit(text, sentAttachments, takePendingSelection(attachmentTarget) ?? undefined, active ?? undefined);
+    stashedBody.current = null;
     setValue("");
     attachments.forEach((a) => revokePreview(a.preview));
     setAttachments([]);
@@ -604,6 +642,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
 
         {/* 入力欄（DOM では先に置き、Tab の順を見た目の上→下に揃える）。 */}
         <div
+          ref={inputWrapRef}
           className={cn(
             "relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2",
             oneLine && "max-md:col-span-1 max-md:col-start-2 max-md:px-1 max-md:pt-0",
@@ -694,6 +733,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
             onOpenDrive={() => setPickerOpen(true)}
             skills={suggestions}
             onPickSkill={pickSuggestion}
+            onSearchSkills={startSkillSearch}
             // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
             // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
             createParentId={autonomous ? (workspace?.folderId ?? null) : null}

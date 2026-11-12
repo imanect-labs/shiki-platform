@@ -122,7 +122,7 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   expect(body.autonomous).toBe(true);
 });
 
-test("コマンド宣言の無い自作スキルも / と検索から呼べる", async ({ page }) => {
+test("コマンド宣言の無い自作スキルも / と「スキルを検索」から呼べる", async ({ page }) => {
   await loginViaKeycloak(page);
 
   // 画面で作るスキルと同じく command を持たない。`/` 名はスキル名（空白は `-`）になる。
@@ -156,23 +156,24 @@ test("コマンド宣言の無い自作スキルも / と検索から呼べる",
   await expect(page.getByTestId("slash-command-option")).toHaveCount(1, { timeout: 10_000 });
   await input.fill("");
 
-  // 「+」メニューの「スキルを検索」から、説明の語で見つかる（件数に関わらず入口がある）。
+  // 「+」メニューの「スキルを検索」は入力欄に `/` を入れて補完を開く。続けて打てば絞り込める。
+  await input.fill("今週分をまとめて");
   await page.getByRole("button", { name: "追加メニューを開く" }).click();
-  await page.getByTestId("composer-all-skills").click();
-  const browser = page.getByTestId("skill-browser");
-  await expect(browser).toBeVisible();
-  await browser.getByTestId("skill-search").fill(`${name} 週報`);
-  const hit = browser.getByTestId("skill-browser-option");
-  await expect(hit).toHaveCount(1);
-  if (SHOTS) await page.screenshot({ path: `${SHOTS}/skill-browser-own-skill.png` });
-  await hit.click();
+  await page.getByTestId("composer-search-skills").click();
+  await expect(page.getByTestId("slash-command-menu")).toBeVisible();
+  await expect(input).toBeFocused();
+  await page.keyboard.type(token);
+  await expect(page.getByTestId("slash-command-option")).toHaveCount(1);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/skill-search-slash.png` });
+  await page.keyboard.press("Enter");
   await expect(page.getByTestId("slash-command-pill")).toContainText(`/${token}`);
+  // 検索の前に書いていた本文は、選んだあと本文へ戻る。
+  await expect(input).toHaveText("今週分をまとめて");
 
   // 送ると、この発話にだけその skill がピンされる。
   const posted = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
   );
-  await input.fill("今週分をまとめて");
   await page.getByRole("button", { name: "送信" }).click();
   const body = JSON.parse((await posted).postData() ?? "{}") as {
     text?: string;

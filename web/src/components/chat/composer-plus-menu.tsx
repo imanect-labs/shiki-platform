@@ -11,7 +11,7 @@
 /// セクションは `PlusSection` で区切った独立の部品にしてある。新しいセクション（例: 使うツールを
 /// 選ぶ）は、選択状態を Composer の state に持たせ、props で渡してここへ 1 ブロック足せばよい。
 ///
-/// 別の面（ドライブの選択・スキル一覧）を開く項目は、メニュー/シートが閉じきってから
+/// 別の面（ドライブの選択・入力欄の `/` 補完）を開く項目は、メニュー/シートが閉じきってから
 /// 開く。閉じる途中で開くと、閉じる側の後始末（フォーカスを「+」へ戻す）が新しい面の外側操作と
 /// 見なされて即座に閉じてしまう。
 
@@ -25,7 +25,6 @@ import {
   FileText,
   HardDrive,
   ImagePlus,
-  ListChecks,
   NotebookPen,
   Plus,
   Presentation,
@@ -54,19 +53,15 @@ import {
 import { SELECTABLE_TOOLS, useToolChoice } from "@/lib/tool-choice";
 import { useModelSummary } from "./model-picker";
 import {
-  SkillBrowser,
   SkillRow,
-  SkillSearchInput,
-  filterSkills,
   recordRecentSkill,
   useRankedSkills,
 } from "./skill-browser";
 
-/// PC のメニューに並べるスキルの件数（残りは「すべてのスキル」の一覧から）。
+/// PC のメニューに並べるスキルの件数（残りは「スキルを検索」＝入力欄の `/` 補完から）。
 const MAX_MENU_SKILLS = 5;
-/// スマホのシートに並べるスキルの件数（検索中は少し多めに）。
+/// スマホのシートに並べるスキルの件数（残りは「スキルを検索」＝入力欄の `/` 補完から）。
 const SHEET_SKILLS = 3;
-const SHEET_SKILLS_SEARCH = 6;
 
 export type PlusMenuProps = {
   open: boolean;
@@ -81,6 +76,8 @@ export type PlusMenuProps = {
   /// スラッシュコマンドを持つスキル（#387）。選ぶと入力欄へコマンドが確定する。
   skills?: SlashSuggestion[];
   onPickSkill?: (s: SlashSuggestion) => void;
+  /// 「スキルを検索」: 入力欄に `/` を入れて補完を開く（メニューが閉じきってから呼ぶ）。
+  onSearchSkills?: () => void;
   /// スマホのシートに「モデル」の行を出し、押したら選ぶ面を開く（入力欄にモデルを出していないとき）。
   onOpenModel?: () => void;
 };
@@ -100,8 +97,7 @@ function useAfterClose() {
 
 export function PlusMenu(props: PlusMenuProps) {
   const desktop = useMediaQuery("(min-width: 768px)");
-  const [skillsOpen, setSkillsOpen] = React.useState(false);
-  const { open, onOpenChange, skills = [], onPickSkill } = props;
+  const { open, onOpenChange, onPickSkill } = props;
   const pickSkill = React.useCallback(
     (s: SlashSuggestion) => {
       recordRecentSkill(s.key);
@@ -130,7 +126,7 @@ export function PlusMenu(props: PlusMenuProps) {
     </button>
   );
 
-  const shared = { ...props, pickSkill, openSkills: () => setSkillsOpen(true) };
+  const shared = { ...props, pickSkill };
 
   return (
     <>
@@ -142,16 +138,12 @@ export function PlusMenu(props: PlusMenuProps) {
           <PlusSheet {...shared} />
         </>
       )}
-      {skills.length > 0 && onPickSkill ? (
-        <SkillBrowser open={skillsOpen} onOpenChange={setSkillsOpen} skills={skills} onPick={pickSkill} />
-      ) : null}
     </>
   );
 }
 
 type SharedProps = PlusMenuProps & {
   pickSkill: (s: SlashSuggestion) => void;
-  openSkills: () => void;
 };
 
 // ── PC: ドロップダウン ─────────────────────────────────────────────
@@ -166,7 +158,7 @@ function DesktopPlusMenu({
   onPickSkill,
   pickSkill,
   modelScope,
-  openSkills,
+  onSearchSkills,
   button,
 }: SharedProps & {
   button: React.ReactElement;
@@ -236,17 +228,19 @@ function DesktopPlusMenu({
             <DropdownMenuLabel className="uppercase tracking-wide">スキル</DropdownMenuLabel>
             {/* 件数に関わらず常に出し、見出しの直下に置く（メニューが内部スクロールしても見える位置に。
                 数件しか無くても、名前や説明で探す入口が要る）。 */}
+            {onSearchSkills ? (
             <DropdownMenuItem
               className="gap-2.5 px-2.5 py-2"
-              data-testid="composer-all-skills"
+              data-testid="composer-search-skills"
               onSelect={() => {
-                after.pending.current = openSkills;
+                after.pending.current = onSearchSkills;
               }}
             >
               <Search className="text-muted-foreground" aria-hidden />
-              <span className="flex-1">スキルを検索（{skills.length}）</span>
-              <ChevronRight className="size-4 text-muted-foreground" aria-hidden />
+              <span className="flex-1">スキルを検索</span>
+              <kbd className="font-sans text-[11.5px] text-muted-foreground">/</kbd>
             </DropdownMenuItem>
+            ) : null}
             {ranked.slice(0, MAX_MENU_SKILLS).map((s) => (
               <DropdownMenuItem
                 key={s.key}
@@ -263,9 +257,6 @@ function DesktopPlusMenu({
                 </span>
               </DropdownMenuItem>
             ))}
-            <p className="px-2.5 pb-1 pt-1.5 text-[11.5px] text-muted-foreground">
-              入力欄で「/」を打っても呼べます
-            </p>
           </>
         ) : null}
       </DropdownMenuContent>
@@ -357,18 +348,14 @@ function PlusSheet({
   onPickSkill,
   pickSkill,
   modelScope,
-  openSkills,
+  onSearchSkills,
   onOpenModel,
 }: SharedProps) {
   const create = useCreateContent({ parentId: createParentId });
   const modelSummary = useModelSummary(modelScope);
   const after = useAfterClose();
   const ranked = useRankedSkills(skills, open);
-  const [query, setQuery] = React.useState("");
-  React.useEffect(() => {
-    if (!open) setQuery("");
-  }, [open]);
-  const hits = filterSkills(ranked, query).slice(0, query.trim() ? SHEET_SKILLS_SEARCH : SHEET_SKILLS);
+  const hits = ranked.slice(0, SHEET_SKILLS);
 
   /// シートを閉じてから別の面を開く。
   const thenOpen = (fn: () => void) => {
@@ -449,8 +436,7 @@ function PlusSheet({
         {/* ⑤ スキル */}
         {skills.length > 0 && onPickSkill ? (
           <PlusSection title="スキル">
-            <SkillSearchInput value={query} onChange={setQuery} />
-            <div className="mt-1.5">
+            <div>
               {hits.map((s) => (
                 <SkillRow
                   key={s.key}
@@ -462,21 +448,19 @@ function PlusSheet({
                   }}
                 />
               ))}
-              {query.trim() && hits.length === 0 ? (
-                <p className="px-3 py-3 text-sm text-muted-foreground">一致するスキルはありません</p>
-              ) : null}
+              {onSearchSkills ? (
               <button
                 type="button"
-                onClick={() => thenOpen(openSkills)}
-                data-testid="composer-all-skills"
+                onClick={() => thenOpen(onSearchSkills)}
+                data-testid="composer-search-skills"
                 className="flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left text-[15px] transition-colors active:bg-accent"
               >
-                <ListChecks className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
-                <span className="flex-1">すべてのスキル（{skills.length}）</span>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                <Search className="size-[18px] shrink-0 text-muted-foreground" aria-hidden />
+                <span className="flex-1">スキルを検索</span>
+                <kbd className="font-sans text-[13px] text-muted-foreground">/</kbd>
               </button>
+              ) : null}
             </div>
-            <p className="mt-1 px-1 text-[12px] text-muted-foreground">入力欄で「/」を打っても呼べます</p>
           </PlusSection>
         ) : null}
 
