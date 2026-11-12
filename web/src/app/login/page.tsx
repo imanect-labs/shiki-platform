@@ -25,7 +25,9 @@ function safeNext(value: string | null): string {
 /// - `?error=` が付いている、または短時間に何度自動で送っても未ログインのまま戻ってくる場合は
 ///   自動では送らず、失敗メッセージと再試行ボタンを出す（ループ防止・claimAutoLogin）。
 /// - `?error=account_unusable`（BFF の callback が、ID に使えない文字を含むアカウントを断った・D-205）は、
-///   管理者への連絡を促すだけで再試行ボタンを出さない（送り直しても同じ理由で断られるため）。
+///   管理者への連絡を促し、同じアカウントでの再試行ボタンは出さない（送り直しても同じ理由で断られるため）。
+///   代わりに「別のアカウントでログイン」を出す。callback が Keycloak の SSO セッションを終えているので、
+///   Keycloak はログインの画面を出す（共有の端末でほかの人が入れる）。
 function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -86,12 +88,10 @@ function LoginInner() {
                 "ログインに失敗しました。もう一度お試しください。"
               )}
             </p>
-            {accountUnusable ? null : (
-              <Button className="mt-6 w-full" onClick={retry}>
-                <LogIn className="size-4" aria-hidden />
-                もう一度ログイン
-              </Button>
-            )}
+            <Button className="mt-6 w-full" onClick={retry}>
+              <LogIn className="size-4" aria-hidden />
+              {accountUnusable ? "別のアカウントでログイン" : "もう一度ログイン"}
+            </Button>
           </div>
         ) : (
           <div
