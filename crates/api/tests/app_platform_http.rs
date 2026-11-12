@@ -151,6 +151,90 @@ impl AuthzClient for CheckFails {
     }
 }
 
+/// check がいつも false の認可（持ち主でも組織の管理者でもない人）。書き込み・読み出しは AllowAll と同じ。
+struct DenyChecks;
+
+#[async_trait]
+impl AuthzClient for DenyChecks {
+    async fn check(
+        &self,
+        _s: &Subject,
+        _r: Relation,
+        _o: &FgaObject,
+        _c: Consistency,
+    ) -> Result<bool, AuthzError> {
+        Ok(false)
+    }
+    async fn write_tuple(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        AllowAll.write_tuple(s, r, o).await
+    }
+    async fn delete_tuple(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        AllowAll.delete_tuple(s, r, o).await
+    }
+    async fn read_tuples(
+        &self,
+        o: &FgaObject,
+        r: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        AllowAll.read_tuples(o, r).await
+    }
+    async fn list_objects(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        AllowAll.list_objects(s, r, o).await
+    }
+    async fn delete_object_tuples(&self, o: &FgaObject) -> Result<u32, AuthzError> {
+        AllowAll.delete_object_tuples(o).await
+    }
+    async fn read_subject_objects(
+        &self,
+        s: &Subject,
+        o: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        AllowAll.read_subject_objects(s, o).await
+    }
+}
+
+/// `authz` で判定する InstallService に差し替えた同じサーバー（ほかは `state` と同じ）。
+fn with_install_authz(
+    state: &AppState,
+    pool: &PgPool,
+    authz: Arc<dyn AuthzClient>,
+) -> axum::Router {
+    let mut s = state.clone();
+    s.installs = Arc::new(app_platform::InstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        Arc::clone(&s.mini_app_code),
+        Arc::clone(&s.data),
+        authz,
+        None,
+        vec![],
+    ));
+    build_router(s)
+}
+
+/// 要求を 1 つ送り、状態と本文（JSON でなければ null）を返す。
+async fn send(app: &axum::Router, req: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
 struct FakeStore;
 
 #[async_trait]
@@ -499,7 +583,8 @@ async fn manifest_crud_and_publish_over_http() {
         )
         .await
         .unwrap();
-    let app = build_router(state_with(pool, sessions));
+    let state = state_with(pool.clone(), sessions);
+    let app = build_router(state.clone());
     let cookie = "shiki_session=sid-app.default; shiki_csrf=csrf";
 
     // create（POST は CSRF 二重送信が要る）。
@@ -592,6 +677,7 @@ async fn manifest_crud_and_publish_over_http() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_registry_yank_over_http(&app, &state, &pool, cookie, &id).await;
 
     // 語彙照合: 未知スコープは 400。
     let resp = app
@@ -620,6 +706,96 @@ async fn manifest_crud_and_publish_over_http() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
+/// 公開した `app_id` の登録を、一覧の `can_yank`・取り下げの口・取り下げた版のインストールまで HTTP で通す（GAP-69b）。
+///
+/// 一覧は持ち主に `can_yank: true` を添え、判定を読めない（OpenFGA の一時的な障害）ときは `false` で一覧を返す。
+/// 取り下げは 2 回目も 204 で、取り下げた登録は一覧から消え、その版のインストールは code=yanked と理由の 409。
+/// 呼ぶ人の組織に無い登録は 404、持ち主でも組織の管理者でもない人は 403。
+async fn assert_registry_yank_over_http(
+    app: &axum::Router,
+    state: &AppState,
+    pool: &PgPool,
+    cookie: &str,
+    app_id: &str,
+) {
+    let get = || {
+        Request::builder()
+            .uri("/apps/registry")
+            .header(COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let post = |uri: String, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let find = |body: &serde_json::Value| {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["artifact_id"] == app_id)
+            .cloned()
+    };
+
+    let (s, body) = send(app, get()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let entry = find(&body).expect("公開した登録が一覧に出る");
+    assert_eq!(entry["can_yank"], true, "{entry}");
+    assert_eq!(entry["yanked"], false, "{entry}");
+    let entry_id = entry["id"].as_str().unwrap().to_string();
+    let version = entry["version"].as_str().unwrap().to_string();
+    let name = entry["name"].as_str().unwrap().to_string();
+
+    // 取り下げられるかを読めないときも一覧は返し、取り下げの口を出さない。
+    let fga_down = with_install_authz(state, pool, Arc::new(CheckFails));
+    let (s, body) = send(&fga_down, get()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(find(&body).expect("listed")["can_yank"], false, "{body}");
+
+    // 持ち主でも組織の管理者でもない人は 403、呼ぶ人の組織に無い登録は 404。
+    let denied = with_install_authz(state, pool, Arc::new(DenyChecks));
+    let (s, body) = send(&denied, get()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(find(&body).expect("listed")["can_yank"], false, "{body}");
+    let yank = |id: &str| post(format!("/apps/registry/{id}/yank"), serde_json::json!({}));
+    let (s, body) = send(&denied, yank(&entry_id)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    let (s, body) = send(app, yank(&uuid::Uuid::new_v4().to_string())).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{body}");
+
+    // 取り下げる。2 回目も 204 で、一覧から消える。
+    for _ in 0..2 {
+        let (s, body) = send(app, yank(&entry_id)).await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{body}");
+    }
+    let (s, body) = send(app, get()).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert!(
+        find(&body).is_none(),
+        "取り下げた登録は一覧に出さない: {body}"
+    );
+
+    // 取り下げた版のインストールは、画面が見分けられる code と、利用者に見せる文言の 409。
+    let (s, body) = send(
+        app,
+        post(
+            "/apps/installations".into(),
+            serde_json::json!({ "name": name, "version": version, "granted_scopes": ["data.read"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "yanked", "{body}");
+    assert_eq!(body["message"], app_platform::YANKED_VERSION, "{body}");
+}
+
 /// publish → 同意インストール → 一覧 → import → アンインストールの HTTP 一気通貫（Task 9.13b）。
 #[tokio::test]
 async fn install_import_uninstall_over_http() {
@@ -637,19 +813,7 @@ async fn install_import_uninstall_over_http() {
     let state = state_with(pool.clone(), sessions);
     let app = build_router(state.clone());
     // 自動実行の失敗の持ち主の確かめ（OpenFGA）だけが失敗する同じサーバー。
-    let fga_down = {
-        let mut s = state.clone();
-        s.installs = Arc::new(app_platform::InstallService::new(
-            pool.clone(),
-            app_platform::Registry::new(pool.clone()),
-            Arc::clone(&s.mini_app_code),
-            Arc::clone(&s.data),
-            Arc::new(CheckFails),
-            None,
-            vec![],
-        ));
-        build_router(s)
-    };
+    let fga_down = with_install_authz(&state, &pool, Arc::new(CheckFails));
     let cookie = "shiki_session=sid-inst.default; shiki_csrf=csrf";
     let post = |uri: String, body: serde_json::Value| {
         Request::builder()
@@ -1429,6 +1593,21 @@ async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
             .await
             .expect("token after reinstall");
         assert_eq!(whoami(token).await.0, StatusCode::OK);
+
+        // アプリ（アーティファクト）を消すと、消した後の片付けが Keycloak のクライアントを消す（アンインストールは
+        // 無効にするだけ・起動時の照合を待たない）。
+        let (s, body) = call("DELETE", format!("/apps/installations/{app_id}"), None).await;
+        assert!(s.is_success(), "{s} {body}");
+        assert!(
+            realm.client(&client_id).await.is_some(),
+            "アンインストールはクライアントを残す"
+        );
+        let (s, body) = call("DELETE", format!("/artifacts/{app_id}"), None).await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{body}");
+        assert!(
+            realm.client(&client_id).await.is_none(),
+            "アプリを消したらクライアントも消す"
+        );
     };
     let outcome = futures_catch(body).await;
     let _ = call("DELETE", format!("/apps/installations/{app_id}"), None).await;
