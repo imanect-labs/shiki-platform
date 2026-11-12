@@ -179,11 +179,30 @@ impl ArtifactStore {
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
+        // 作成の監査も同じ Tx に入れる（storage の作成と同じ形）。下の区間は呼ぶ側を捨てても commit まで走るので、
+        // 監査を commit の後に別の Tx で書くと、その前に捨てられたとき監査の無い作成が残る。監査に失敗すれば
+        // タプルを書く前に巻き戻る。チェーンはしない（前の `record` と同じ・つなぐとチェーンのロックを OpenFGA の
+        // 往復の間も持つことになる）。
+        let id = row.id;
+        storage::audit::record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: AuditAction::ArtifactCreate,
+                object_type: "artifact",
+                object_id: &id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: json!({ "kind": input.kind, "name": name }),
+            },
+            storage::audit::Chain::No,
+        )
+        .await
+        .map_err(|e| ArtifactError::Internal(format!("audit: {e}")))?;
 
         // 作成者を owner に（FGA）してから commit する（storage の作成と同じ順・BUG-134・7p-10）。commit の後に書くと、
         // その間で呼ぶ側のフューチャが捨てられたとき owner の無い行が残り、誰も読めないのに名前を塞ぎ続ける。区間は
         // 別のタスクで最後まで走り、書き込みに失敗すれば commit せずに巻き戻し、commit に失敗すれば書いたタプルを外す。
-        let id = row.id;
         let owner = TupleKey::new(
             ctx.subject(),
             Relation::Owner,
@@ -196,14 +215,6 @@ impl ArtifactStore {
                 TupleCommitError::Finish(e) => map_db(e),
                 TupleCommitError::Aborted(reason) => ArtifactError::Internal(reason),
             })?;
-        self.record_audit(
-            ctx,
-            AuditAction::ArtifactCreate,
-            &id.to_string(),
-            trace_id,
-            json!({ "kind": input.kind, "name": name }),
-        )
-        .await?;
         row.into_artifact()
     }
 

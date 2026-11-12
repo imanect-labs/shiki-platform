@@ -1,4 +1,4 @@
-//! 作成の冪等の引き当て（`find_own_created_since`・R1）と、作成の owner を commit の前に書く順（7p-10）の結合テスト。
+//! 作成の冪等の引き当て（`find_own_created_since`・R1）と、作成の owner と監査を commit の前に書く順（7p-10）の結合テスト。
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）。認可は owner のタプルを覚えるだけの偽物（owner なら読める）で、
 //! 書き込みを止める・失敗させることができる（呼ぶ側を捨てる区間の試験）。
@@ -194,6 +194,30 @@ async fn live_rows(pool: &PgPool, tenant: &str, name: &str) -> i64 {
     .unwrap()
 }
 
+/// その id の作成の監査の行の数。
+async fn create_audits(pool: &PgPool, tenant: &str, id: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'artifact.create' AND object_id = $2",
+    )
+    .bind(tenant)
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// テナントの作成の監査の行の数（id の分からない巻き戻しの確かめに使う）。
+async fn tenant_create_audits(pool: &PgPool, tenant: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'artifact.create'",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 /// 本人が since 以降に作り、消していない、読めるものだけが見つかる。ほかの人のもの・since より前・別の種類・
 /// 消したもの・ReBAC で読めないもの・ほかのテナントは `None`。
 #[tokio::test]
@@ -265,8 +289,8 @@ async fn finds_only_own_live_readable_creations_since() {
 }
 
 /// 作成の区間（owner を書いて commit する）は、呼ぶ側を owner の書き込みの途中で捨てても最後まで走る。owner のタプルは
-/// commit の前に書くので、書き込みの途中では行はまだ見えず、終わると行と owner がそろう（owner の無い行が名前を
-/// 塞がない・7p-10）。
+/// commit の前に書くので、書き込みの途中では行はまだ見えず、終わると行と owner と作成の監査がそろう（owner の無い行が
+/// 名前を塞がない・監査の無い作成が残らない・7p-10）。
 #[tokio::test]
 async fn dropped_create_leaves_the_row_and_its_owner_together() {
     let Some(pool) = setup().await else { return };
@@ -312,6 +336,11 @@ async fn dropped_create_leaves_the_row_and_its_owner_together() {
         authz.has_owner(&alice.subject(), &alice.ns().artifact(&id.to_string())),
         "行には owner のタプルがある"
     );
+    assert_eq!(
+        create_audits(&pool, &tenant, &id.to_string()).await,
+        1,
+        "捨てた作成にも作成の監査が残る"
+    );
     authz.hold_writes.store(false, Ordering::SeqCst);
     assert_eq!(store.get(&alice, id, None).await.unwrap().id, id);
 }
@@ -335,8 +364,14 @@ async fn failed_owner_write_leaves_no_row() {
         "{err:?}"
     );
     assert_eq!(live_rows(&pool, &tenant, "wf-fail").await, 0);
+    assert_eq!(
+        tenant_create_audits(&pool, &tenant).await,
+        0,
+        "巻き戻した作成の監査は残らない"
+    );
 
     authz.fail_writes.store(false, Ordering::SeqCst);
     let made = store.create(&alice, new_wf("wf-fail"), None).await.unwrap();
     assert_eq!(store.get(&alice, made.id, None).await.unwrap().id, made.id);
+    assert_eq!(create_audits(&pool, &tenant, &made.id.to_string()).await, 1);
 }
