@@ -205,7 +205,7 @@ function NotePageInner() {
     <div className="flex h-full min-h-0 flex-col">
       {shareDialog}
       {/* 分割ビュー: 本ページが一元ホスト（Conversation を再利用・実装は一箇所）。
-          アシスタントは PC では本文の右に浮かぶカード、スマホでは下からのシート。 */}
+          アシスタントは PC では画面右端に縦いっぱい（上部バーも貫通）に浮かぶカード、スマホでは下からのシート。 */}
       <AssistantLayout
         open={Boolean(session) && chatOpen}
         onClose={() => setChatOpen(false)}
