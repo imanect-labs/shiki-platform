@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use app_platform::{MiniAppCodeStore, MiniAppManifest, Registry, TrustTier};
+use app_platform::{InstallService, MiniAppCodeStore, MiniAppManifest, Registry, TrustTier};
 use artifact::{ArtifactKind, ArtifactStore};
 use async_trait::async_trait;
 use authz::{
@@ -199,13 +199,43 @@ async fn publish_is_immutable() {
     assert_ne!(e2.id, entry.id);
 }
 
-/// レジストリの解決系（latest/get）と yank（不変性を保ちつつ新規解決を止める）を検証する。
+struct AnyRef;
+#[async_trait]
+impl data::RefResolver for AnyRef {
+    async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: uuid::Uuid) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// 取り下げの口（[`InstallService::yank`]・D-203）を持つインストールのサービス（authz は AllowAll）。
+fn installs(pool: PgPool, code: MiniAppCodeStore, registry: Registry) -> InstallService {
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    InstallService::new(
+        pool.clone(),
+        registry,
+        Arc::new(code),
+        Arc::new(data::DataStore::new(pool, authz.clone(), Arc::new(AnyRef))),
+        authz,
+        None,
+        vec![],
+    )
+}
+
+/// レジストリの解決系（latest/get）と yank（不変性を保ちつつ新規解決を止める）を検証する。取り下げは
+/// [`InstallService::yank`] を通す（認可と監査を通らない口は無い・GAP-69b）。
 #[tokio::test]
 async fn registry_resolve_and_yank() {
     let Some(pool) = setup().await else { return };
     let artifacts = Arc::new(ArtifactStore::new(pool.clone(), Arc::new(AllowAll)));
     let registry = Registry::new(pool.clone());
     let s = MiniAppCodeStore::new(Arc::clone(&artifacts), registry.clone());
+    let installs = installs(pool.clone(), s.clone(), registry.clone());
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let c = ctx(&tenant, "alice");
     let kind = ArtifactKind::MiniAppCode.as_str();
@@ -242,8 +272,9 @@ async fn registry_resolve_and_yank() {
         .expect("get")
         .is_none());
 
-    // yank は行を残しつつ latest から外す（不変性は保つ）。
-    registry.yank(&c, e2.id).await.expect("yank");
+    // yank は行を残しつつ latest から外す（不変性は保つ）。2 回目も成功で、もう変えない。
+    assert!(installs.yank(&c, e2.id, None).await.expect("yank"));
+    assert!(!installs.yank(&c, e2.id, None).await.expect("2 回目の yank"));
     let after = registry
         .latest(&c, kind, "resolver")
         .await
@@ -263,7 +294,7 @@ async fn registry_resolve_and_yank() {
 
     // 存在しない id の yank は NotFound。
     assert!(matches!(
-        registry.yank(&c, uuid::Uuid::new_v4()).await,
+        installs.yank(&c, uuid::Uuid::new_v4(), None).await,
         Err(app_platform::AppPlatformError::NotFound)
     ));
 }
