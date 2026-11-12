@@ -77,7 +77,7 @@ import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedba
 import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
 import { BranchSwitcher, MessageMoreMenu, UserMessageActions, UserMessageEditor } from "./message-branch";
-import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { MessageCitationsProvider, SourcePanelProvider, useSourcePanel } from "./citations/citation-context";
 import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
@@ -124,7 +124,13 @@ import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
 import type { MetaToolName } from "@/generated/gui-spec";
 import { ApprovalCard, BudgetBanner } from "./agent-progress";
-import { TaskInlineLine, TaskPanelAside, TaskPanelSheet, type TaskActivities } from "./task-panel";
+import {
+  TaskInlineLine,
+  TaskPanelAside,
+  TaskPanelSheet,
+  type TaskActivities,
+  type TaskActivity,
+} from "./task-panel";
 import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
@@ -344,16 +350,27 @@ export function Conversation({
   const hasPlan = latestPlan.length > 0;
   const taskAside = !isPanel && wide;
   const taskPanelOpen = hasPlan && (taskPanelChoice ?? taskAside);
-  const toggleTaskPanel = React.useCallback(() => setTaskPanelChoice(!taskPanelOpen), [taskPanelOpen]);
-  const openTaskPanel = React.useCallback(() => setTaskPanelChoice(true), []);
+  // 右カラムで出典パネルに隠されているか（隠れている間はボタンを「閉じている」として扱う）。
+  const [taskHiddenBySources, setTaskHiddenBySources] = React.useState(false);
+  const taskPanelShown = taskPanelOpen && !(taskAside && taskHiddenBySources);
+  const toggleTaskPanel = React.useCallback(() => {
+    setTaskPanelChoice(!taskPanelShown);
+    if (!taskPanelShown) setTaskOpenRequest((n) => n + 1);
+  }, [taskPanelShown]);
+  // 開く操作の回数（右カラムで出典パネルと排他にする: 開いたら出典を閉じる）。
+  const [taskOpenRequest, setTaskOpenRequest] = React.useState(0);
+  const openTaskPanel = React.useCallback(() => {
+    setTaskPanelChoice(true);
+    setTaskOpenRequest((n) => n + 1);
+  }, []);
   const closeTaskPanel = React.useCallback(() => setTaskPanelChoice(false), []);
   const planDone = latestPlan.filter((t) => t.status === "done").length;
   const headerPlan = React.useMemo(
     () =>
       hasPlan
-        ? { done: planDone, total: latestPlan.length, shown: taskPanelOpen, onToggle: toggleTaskPanel }
+        ? { done: planDone, total: latestPlan.length, shown: taskPanelShown, onToggle: toggleTaskPanel }
         : null,
-    [hasPlan, planDone, latestPlan.length, taskPanelOpen, toggleTaskPanel],
+    [hasPlan, planDone, latestPlan.length, taskPanelShown, toggleTaskPanel],
   );
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
@@ -440,7 +457,8 @@ export function Conversation({
     );
     setLatestActivities(
       taskActivitiesOf(
-        s.tools.map((t) => (t.running ? { ...t, running: false } : t)),
+        // 結果が届かないまま終わった操作は、成功にも失敗にも見せない（途中で止まった）。
+        s.tools.map((t) => (t.running ? { ...t, running: false, interrupted: true } : t)),
         s.taskTools,
       ),
     );
@@ -1365,11 +1383,14 @@ export function Conversation({
         </div>
         {/* 出典パネル: 広い画面のチャットページは右カラム、それ以外（狭い画面・分割ビュー）はシート。 */}
         {sourceAside ? <SourcePanelAside /> : null}
-        {taskAside && taskPanelOpen ? (
-          <TaskPanelAside
+        {taskAside && hasPlan ? (
+          <TaskAsideSlot
+            open={taskPanelOpen}
             tasks={latestPlan}
             activities={latestActivities}
             onClose={closeTaskPanel}
+            openRequest={taskOpenRequest}
+            onHiddenChange={setTaskHiddenBySources}
           />
         ) : null}
       </div>
@@ -2023,11 +2044,43 @@ function runningSubtask(plan: PlanSubtask[]): string | null {
   return title ? `${title}` : null;
 }
 
+/// 右カラムのタスクパネル。出典パネルと並べると会話の幅が潰れるので排他にする: 出典を開いている間は
+/// 出さず、タスクを開く操作（上のバーのボタン）があったら出典を閉じる。
+function TaskAsideSlot({
+  open,
+  tasks,
+  activities,
+  onClose,
+  openRequest,
+  onHiddenChange,
+}: {
+  open: boolean;
+  tasks: PlanSubtask[];
+  activities: TaskActivities;
+  onClose: () => void;
+  openRequest: number;
+  onHiddenChange: (hidden: boolean) => void;
+}) {
+  const sources = useSourcePanel();
+  // 開く操作 1 回につき 1 度だけ閉じる（close は出典の状態が変わるたびに作り直されるので、依存に
+  // 入れると出典を開いた瞬間に閉じてしまう）。
+  const handled = React.useRef(openRequest);
+  React.useEffect(() => {
+    if (openRequest === handled.current) return;
+    handled.current = openRequest;
+    sources?.close();
+  }, [openRequest, sources]);
+  const hidden = Boolean(sources?.state);
+  React.useEffect(() => onHiddenChange(hidden), [hidden, onHiddenChange]);
+  if (!open || hidden) return null;
+  return <TaskPanelAside tasks={tasks} activities={activities} onClose={onClose} />;
+}
+
 /// 計画のメタツール名（語彙の正本は codegen の `MetaToolName`）。
 const PLAN_TOOL: MetaToolName = "plan";
 
 /// ツールの操作をタスクごとに分ける（タスクパネルの詳細）。
-function taskActivitiesOf(tools: ToolActivityItem[], taskTools: Record<string, string>): TaskActivities {
+function taskActivitiesOf(tools: TaskActivity[], taskTools: Record<string, string>): TaskActivities {
   const acts: TaskActivities = {};
   for (const t of tools) {
     // 計画の更新そのものはタスクの中身ではない（パネルの進み具合で見える）。
@@ -2055,10 +2108,12 @@ function reassignTaskTools(s: StreamState, plan: PlanSubtask[]): Record<string, 
       if (id) map[key] = id;
     }
   }
-  const prevDoing = s.plan.find((t) => t.status === "doing")?.id;
-  const doing = plan.find((t) => t.status === "doing")?.id;
+  // id は位置で振られるので、並べ替えで別のタスクが同じ位置で進行中になっても気付けるよう題名で比べる。
+  const prevDoing = s.plan.find((t) => t.status === "doing")?.title;
+  const doingTask = plan.find((t) => t.status === "doing");
+  const doing = doingTask?.id;
   const planCall = [...s.tools].reverse().find((t) => t.name === PLAN_TOOL && !t.viaSubagent);
-  if (doing && doing !== prevDoing && planCall?.step !== undefined) {
+  if (doing && doingTask.title !== prevDoing && planCall?.step !== undefined) {
     map = { ...map };
     for (const t of s.tools) {
       if (!t.viaSubagent && t.name !== PLAN_TOOL && t.step === planCall.step) map[t.key] = doing;

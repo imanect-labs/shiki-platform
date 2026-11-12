@@ -19,7 +19,9 @@ import { cn } from "@/lib/utils";
 import { wasRejected, type ToolActivityItem } from "./tool-activity";
 
 /// タスクごとの操作（ツール呼び出し）。キーはサブタスク id。
-export type TaskActivities = Record<string, ToolActivityItem[]>;
+/// `interrupted`: 結果が届く前に生成が止まった操作（停止・エラー）。成功とも失敗とも言わない。
+export type TaskActivity = ToolActivityItem & { interrupted?: boolean };
+export type TaskActivities = Record<string, TaskActivity[]>;
 
 const STATUS: Record<
   string,
@@ -119,12 +121,16 @@ const TaskList = React.memo(function TaskList({
   );
 });
 
-function ActivityLine({ item }: { item: ToolActivityItem }) {
+function ActivityLine({ item }: { item: TaskActivity }) {
   const d = describeTool(item);
   const Icon = d.icon;
   const rejected = !item.running && wasRejected(item);
-  const failed = !item.running && item.ok === false && !rejected;
-  const text = rejected ? `${d.lead}を却下しました` : withTense(d, item.running, failed);
+  const failed = !item.running && !item.interrupted && item.ok === false && !rejected;
+  const text = item.interrupted
+    ? `${d.lead}${d.verb}の途中で止まりました`
+    : rejected
+      ? `${d.lead}を却下しました`
+      : withTense(d, item.running, failed);
   return (
     <li className="flex items-start gap-1.5 text-[12px] leading-[18px]" data-testid="task-activity">
       {item.running ? (
