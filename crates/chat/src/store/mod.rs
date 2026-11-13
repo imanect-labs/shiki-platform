@@ -34,7 +34,8 @@ pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
 pub use post::{BranchTarget, PostResult};
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
-pub use threads::ThreadOrigin;
+pub use thread_pins::ThreadBuilder;
+pub use threads::{OriginFilter, ThreadOrigin};
 pub(crate) use trial_runs::{TrialKey, TrialRow, STALE_RESERVATION_SECS};
 pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 

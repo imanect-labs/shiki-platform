@@ -64,6 +64,20 @@ pub struct CreateThreadRequest {
     /// 絞る（絞り込みのみ・作成者が閲覧できるフォルダに限る）。
     #[serde(default)]
     pub search_folder_id: Option<Uuid>,
+    /// 会話の対象（ワークフローエディタの「AI に依頼」パネルから作る会話・D-10 T09）。作成者が閲覧できる、
+    /// 指定した種類の artifact に限る。`origin_note_id` とは併用できない。
+    #[serde(default)]
+    pub origin_artifact: Option<OriginArtifactRequest>,
+    /// 会話の目的（/apps の「AI と作る」は `app_builder`）。対象か目的を持つ会話は作成用の予算で動く。
+    #[serde(default)]
+    pub purpose: Option<chat::ThreadPurpose>,
+}
+
+/// 会話の対象の指定（[`CreateThreadRequest::origin_artifact`]）。
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+pub struct OriginArtifactRequest {
+    pub kind: chat::OriginArtifactKind,
+    pub id: Uuid,
 }
 
 /// スレッド一覧レスポンス（keyset ページング）。
@@ -282,6 +296,9 @@ pub struct ListThreadsQuery {
     /// 由来ノートで絞り込む（ノート側の会話一覧・issue #282）。未指定は全件（履歴）。
     #[serde(default)]
     pub origin_note_id: Option<Uuid>,
+    /// 対象（ワークフロー・ミニアプリ）で絞り込む（エディタの会話一覧・D-10 T09）。`origin_note_id` とは併用できない。
+    #[serde(default)]
+    pub origin_artifact_id: Option<Uuid>,
     /// タイトルの部分一致で絞り込む（検索パレット・issue #591）。
     #[serde(default)]
     pub q: Option<String>,

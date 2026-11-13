@@ -76,6 +76,11 @@ impl WorkerSink {
         self
     }
 
+    /// チェックポイントの保存を今から有効にする（作成用の会話・D-10 T09）。
+    pub(crate) fn enable_checkpoints(&mut self) {
+        self.persist_checkpoints = true;
+    }
+
     /// projection として確定した content を取り出す。
     pub(crate) fn content(&self) -> &[ContentBlock] {
         &self.content

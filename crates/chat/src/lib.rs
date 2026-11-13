@@ -49,6 +49,7 @@ pub mod office_create_tool;
 pub mod office_engine_tool;
 pub mod office_live_tool;
 pub mod office_tool;
+pub mod origin;
 pub mod preferences;
 pub mod selection;
 pub(crate) mod skill;
@@ -94,6 +95,7 @@ pub use model::{
     Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StopReason, StreamEvent,
     StreamEventKind, Thread, ThreadRole, UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
+pub use origin::{OriginArtifact, OriginArtifactKind, ThreadPurpose};
 pub use preferences::UserPreferences;
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
@@ -102,8 +104,9 @@ pub use skill_catalog::{
 pub use skill_draft_tool::SaveSkillTool;
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
-    BranchTarget, ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext,
-    ThreadOrigin, YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
+    BranchTarget, ChatStore, ClaimedRun, CurrentRun, MessageFeedback, OriginFilter, PostResult,
+    RunContext, ThreadOrigin, YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE,
+    FEEDBACK_CATEGORIES,
 };
 pub use worker::{
     parse_timezone, with_yui_guide, ChatWorker, TryWaitLimits, WorkerConfig, WorkerDeps,

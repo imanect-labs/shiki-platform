@@ -1992,3 +1992,129 @@ async fn chat_branch_and_fork_over_http() {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
     }
 }
+
+/// 会話の対象（origin_artifact）と目的（D-10 T09）: 作成者が見える artifact で種類が合えば付く・種類が違えば 400・
+/// 文書の会話と同時に指定すると 400・一覧の絞り込み。
+#[tokio::test]
+async fn threads_record_their_origin_artifact_and_purpose() {
+    let Some((state, sessions)) = build_state(true).await else {
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-chat-origin-artifact").await;
+    let app = build_router(state);
+    let auth = (cookie.as_str(), csrf);
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+
+    let (st, skill) = send_json(
+        &app,
+        "POST",
+        "/skills",
+        auth,
+        Some(serde_json::json!({
+            "name": format!("origin-skill-{suffix}"),
+            "body": { "description": "案内", "instructions": "案内する。" },
+        })),
+    )
+    .await;
+    assert!(st.is_success(), "{st}: {skill}");
+    let skill_id = skill["id"].as_str().unwrap().to_string();
+    let (st, mini_app) = send_json(
+        &app,
+        "POST",
+        "/mini-apps",
+        auth,
+        Some(serde_json::json!({
+            "name": format!("origin-app-{suffix}"),
+            "body": { "description": "案内", "screen": "案内です。\n", "workflows": [] },
+        })),
+    )
+    .await;
+    assert!(st.is_success(), "{st}: {mini_app}");
+    let app_id = mini_app["id"].as_str().unwrap().to_string();
+
+    // 種類が合えば付く（名前は解決した時点のもの）。
+    let (st, thread) = send_json(
+        &app,
+        "POST",
+        "/threads",
+        auth,
+        Some(serde_json::json!({
+            "origin_artifact": { "kind": "mini_app", "id": app_id },
+            "purpose": "app_builder",
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{thread}");
+    assert_eq!(thread["origin_artifact_id"], app_id.as_str(), "{thread}");
+    assert_eq!(thread["origin_artifact_kind"], "mini_app", "{thread}");
+    assert_eq!(
+        thread["origin_artifact_name"],
+        format!("origin-app-{suffix}"),
+        "{thread}"
+    );
+    assert_eq!(thread["purpose"], "app_builder", "{thread}");
+    let tid = thread["id"].as_str().unwrap().to_string();
+    let (st, got) = send_json(&app, "GET", &format!("/threads/{tid}"), auth, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(got["origin_artifact_kind"], "mini_app", "{got}");
+
+    // その対象の会話だけに絞れる（両方の絞り込みは 400）。
+    let (st, list) = send_json(
+        &app,
+        "GET",
+        &format!("/threads?origin_artifact_id={app_id}"),
+        auth,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let ids: Vec<&str> = list["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec![tid.as_str()], "{list}");
+    let (st, _) = send_json(
+        &app,
+        "GET",
+        &format!("/threads?origin_artifact_id={app_id}&origin_note_id={app_id}"),
+        auth,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // 種類が違う（skill をワークフローとして指定）と 400。
+    let (st, body) = send_json(
+        &app,
+        "POST",
+        "/threads",
+        auth,
+        Some(serde_json::json!({ "origin_artifact": { "kind": "workflow", "id": skill_id } })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    // 文書の会話と同時には指定できない。
+    let (st, body) = send_json(
+        &app,
+        "POST",
+        "/threads",
+        auth,
+        Some(serde_json::json!({
+            "origin_artifact": { "kind": "mini_app", "id": app_id },
+            "origin_note_id": uuid::Uuid::new_v4(),
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+
+    for path in [
+        format!("/threads/{tid}"),
+        format!("/artifacts/{app_id}"),
+        format!("/artifacts/{skill_id}"),
+    ] {
+        let (st, _) = send_json(&app, "DELETE", &path, auth, None).await;
+        assert!(st.is_success(), "{st} {path}");
+    }
+}

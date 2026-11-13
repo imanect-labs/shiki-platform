@@ -9,6 +9,7 @@
 
 mod approval_policy;
 /// 作成系の道具と、予算の拡張・チェックポイントの保存の条件（T03・D-204・R1）。
+mod builder_origin;
 mod builder_tools;
 /// 古典 RAG 注入経路（generate.rs から分割）。
 mod classic;

@@ -15,7 +15,80 @@ use uuid::Uuid;
 
 use crate::model::SkillPin;
 
+/// スレッドの対象と目的（[`ChatStore::thread_builder`]）。名前は持たない（注記の名前は run の開始時に読み直す）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ThreadBuilder {
+    pub origin: Option<(Uuid, crate::origin::OriginArtifactKind)>,
+    pub purpose: Option<crate::origin::ThreadPurpose>,
+}
+
+impl ThreadBuilder {
+    /// 作成用の会話か（最初から作成用の予算・チェックポイントで動かす）。
+    #[must_use]
+    pub fn is_builder(&self) -> bool {
+        self.origin.is_some() || self.purpose.is_some()
+    }
+}
+
 impl ChatStore {
+    /// スレッドに会話の対象と目的を設定する（作成直後・ワークフローエディタの「AI に依頼」・D-10 T09）。
+    ///
+    /// 対象の存在・種類と**作成者の viewer** は API 層（ArtifactStore）が確かめてから呼ぶこと（検索フォルダの
+    /// 設定 [`Self::set_thread_search_folder`] と同じ分担）。誘導にしか使わないので権限は広げない。
+    /// 後からの付け替えはここではしない（owner の画面から別の入口で行う・ツールからは付け替えない）。
+    pub async fn set_thread_builder(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+        origin: Option<&crate::origin::OriginArtifact>,
+        purpose: Option<crate::origin::ThreadPurpose>,
+    ) -> Result<(), ChatError> {
+        sqlx::query(
+            "UPDATE thread SET origin_artifact_id = $3, origin_artifact_kind = $4, \
+             origin_artifact_name = $5, purpose = $6 \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .bind(origin.map(|o| o.id))
+        .bind(origin.map(|o| o.kind.as_str()))
+        .bind(origin.map(|o| o.name.as_str()))
+        .bind(purpose.map(crate::origin::ThreadPurpose::as_str))
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// スレッドの対象と目的（生成ワーカーが注記・道具・予算を決めるのに使う・無ければ `None`）。
+    pub async fn thread_builder(
+        &self,
+        tenant_id: &str,
+        thread_id: Uuid,
+    ) -> Result<ThreadBuilder, ChatError> {
+        let row: Option<(Option<Uuid>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT origin_artifact_id, origin_artifact_kind, purpose FROM thread \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        let Some((id, kind, purpose)) = row else {
+            return Ok(ThreadBuilder::default());
+        };
+        Ok(ThreadBuilder {
+            origin: id.zip(
+                kind.as_deref()
+                    .and_then(crate::origin::OriginArtifactKind::parse),
+            ),
+            purpose: purpose
+                .as_deref()
+                .and_then(crate::origin::ThreadPurpose::parse),
+        })
+    }
+
     /// スレッドの検索フォルダを設定する（作成直後・ホームの「社内検索」・#965）。
     ///
     /// フォルダの存在・種別と**作成者の viewer** は API 層（StorageService）が確かめてから呼ぶこと

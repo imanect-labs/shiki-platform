@@ -20,8 +20,8 @@ use authz::{
     ReadTupleKey, Relation, Subject,
 };
 use chat::{
-    ChatError, ChatStore, ChatWorker, ContentBlock, DbApprover, Role, RunStatus, StreamEventKind,
-    ThreadOrigin, ThreadRole, WorkerConfig,
+    ChatError, ChatStore, ChatWorker, ContentBlock, DbApprover, OriginFilter, Role, RunStatus,
+    StreamEventKind, ThreadOrigin, ThreadRole, WorkerConfig,
 };
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -277,7 +277,7 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // origin フィルタ = note_a → t1, t2 のみ（通常は出ない）。
     let a_only = store
-        .list_threads(&c, None, None, Some(note_a), None, 50)
+        .list_threads(&c, None, None, Some(OriginFilter::Note(note_a)), None, 50)
         .await
         .unwrap();
     let ids: std::collections::HashSet<_> = a_only.iter().map(|t| t.id).collect();
@@ -289,7 +289,7 @@ async fn thread_origin_note_filter_and_backfill() {
 
     // note_b はまだ空。
     let b_only = store
-        .list_threads(&c, None, None, Some(note_b), None, 50)
+        .list_threads(&c, None, None, Some(OriginFilter::Note(note_b)), None, 50)
         .await
         .unwrap();
     assert!(b_only.is_empty());
@@ -307,7 +307,7 @@ async fn thread_origin_note_filter_and_backfill() {
         .await
         .unwrap();
     let b_after = store
-        .list_threads(&c, None, None, Some(note_b), None, 50)
+        .list_threads(&c, None, None, Some(OriginFilter::Note(note_b)), None, 50)
         .await
         .unwrap();
     assert!(
@@ -317,6 +317,106 @@ async fn thread_origin_note_filter_and_backfill() {
     let got = store.get_thread(&c, plain.id, None).await.unwrap();
     assert_eq!(got.origin_note_id, Some(note_b));
     assert_eq!(got.origin_note_name.as_deref(), Some("B"));
+}
+
+/// 会話の対象（origin_artifact）と目的: 設定・一覧の絞り込み・読み出し・CHECK 制約を検証する（D-10 T09）。
+#[tokio::test]
+async fn thread_origin_artifact_and_purpose() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let wf = uuid::Uuid::new_v4();
+
+    let t1 = store
+        .create_thread(&c, "ワークフロー: 経費", false, None, None)
+        .await
+        .unwrap();
+    let origin = chat::OriginArtifact {
+        kind: chat::OriginArtifactKind::Workflow,
+        id: wf,
+        name: "経費".into(),
+    };
+    store
+        .set_thread_builder(t1.id, &tenant, Some(&origin), None)
+        .await
+        .unwrap();
+    let builder_thread = store
+        .create_thread(&c, "AI と作る", false, None, None)
+        .await
+        .unwrap();
+    store
+        .set_thread_builder(
+            builder_thread.id,
+            &tenant,
+            None,
+            Some(chat::ThreadPurpose::AppBuilder),
+        )
+        .await
+        .unwrap();
+    let plain = store
+        .create_thread(&c, "通常", false, None, None)
+        .await
+        .unwrap();
+
+    let got = store.get_thread(&c, t1.id, None).await.unwrap();
+    assert_eq!(got.origin_artifact_id, Some(wf));
+    assert_eq!(
+        got.origin_artifact_kind,
+        Some(chat::OriginArtifactKind::Workflow)
+    );
+    assert_eq!(got.origin_artifact_name.as_deref(), Some("経費"));
+    assert_eq!(got.purpose, None);
+    assert_eq!(got.origin_note_id, None);
+
+    // 一覧の絞り込み: その対象の会話だけ。
+    let only = store
+        .list_threads(&c, None, None, Some(OriginFilter::Artifact(wf)), None, 50)
+        .await
+        .unwrap();
+    assert_eq!(only.iter().map(|t| t.id).collect::<Vec<_>>(), vec![t1.id]);
+
+    // ワーカーが読む形。
+    let b = store.thread_builder(&tenant, t1.id).await.unwrap();
+    assert_eq!(b.origin, Some((wf, chat::OriginArtifactKind::Workflow)));
+    assert!(b.is_builder());
+    let b = store
+        .thread_builder(&tenant, builder_thread.id)
+        .await
+        .unwrap();
+    assert_eq!(b.origin, None);
+    assert_eq!(b.purpose, Some(chat::ThreadPurpose::AppBuilder));
+    assert!(b.is_builder());
+    assert!(!store
+        .thread_builder(&tenant, plain.id)
+        .await
+        .unwrap()
+        .is_builder());
+    // 別テナントからは読めない（tenant で絞る）。
+    assert!(!store
+        .thread_builder("other-tenant", t1.id)
+        .await
+        .unwrap()
+        .is_builder());
+
+    // 文書の会話と同時には持てない（CHECK）。
+    let note_thread = store
+        .create_thread(
+            &c,
+            "ノート",
+            false,
+            Some(ThreadOrigin {
+                note_id: uuid::Uuid::new_v4(),
+                note_name: "N".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .set_thread_builder(note_thread.id, &tenant, Some(&origin), None)
+        .await
+        .is_err());
 }
 
 /// 空タイトルは既定名に正規化される。

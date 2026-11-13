@@ -427,6 +427,9 @@ use utoipa::{
         crate::routes::org_admin_insights::UpdateInsightSettingsRequest,
         // チャット DTO/イベント型は chat 側の単一定義（フロント chat-api.ts と同型）。
         crate::routes::chat::CreateThreadRequest,
+        crate::routes::chat_dto::OriginArtifactRequest,
+        chat::OriginArtifactKind,
+        chat::ThreadPurpose,
         crate::routes::chat_skills::SetThreadSkillsRequest,
         crate::routes::chat_feedback::FeedbackRating,
         crate::routes::chat_feedback::FeedbackCategory,

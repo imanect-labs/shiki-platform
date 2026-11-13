@@ -11,6 +11,8 @@ use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
+use crate::origin::{OriginArtifactKind, ThreadPurpose};
+
 use crate::model::{
     AutonomousMode, ContentBlock, LastModelChoice, Message, Role, RunStatus, SkillPin, Thread,
 };
@@ -24,7 +26,8 @@ pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode,
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
      FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
-    mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, \
+    mini_app_id, mini_app_version, origin_note_id, origin_note_name, \
+    origin_artifact_id, origin_artifact_kind, origin_artifact_name, purpose, pinned_at, \
     search_folder_id, search_folder_name, created_at, updated_at, \
     (SELECT r.status FROM generation_run r \
      WHERE r.tenant_id = thread.tenant_id AND r.thread_id = thread.id \
@@ -43,6 +46,10 @@ pub(super) struct ThreadRow {
     mini_app_version: Option<i64>,
     origin_note_id: Option<Uuid>,
     origin_note_name: Option<String>,
+    origin_artifact_id: Option<Uuid>,
+    origin_artifact_kind: Option<String>,
+    origin_artifact_name: Option<String>,
+    purpose: Option<String>,
     pinned_at: Option<DateTime<Utc>>,
     search_folder_id: Option<Uuid>,
     search_folder_name: Option<String>,
@@ -64,6 +71,18 @@ impl ThreadRow {
             mini_app_version: self.mini_app_version,
             origin_note_id: self.origin_note_id,
             origin_note_name: self.origin_note_name,
+            // CHECK 制約で閉じている（未知の値は「対象・目的なし」として読む）。種類が読めない対象は id ごと落とす。
+            origin_artifact_id: self
+                .origin_artifact_kind
+                .as_deref()
+                .and_then(OriginArtifactKind::parse)
+                .and(self.origin_artifact_id),
+            origin_artifact_kind: self
+                .origin_artifact_kind
+                .as_deref()
+                .and_then(OriginArtifactKind::parse),
+            origin_artifact_name: self.origin_artifact_name,
+            purpose: self.purpose.as_deref().and_then(ThreadPurpose::parse),
             pinned_at: self.pinned_at,
             search_folder_id: self.search_folder_id,
             search_folder_name: self.search_folder_name,
@@ -118,6 +137,15 @@ fn last_choice_of(
 pub struct ThreadOrigin {
     pub note_id: Uuid,
     pub note_name: String,
+}
+
+/// 会話一覧の絞り込み（どの画面の会話か）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginFilter {
+    /// 文書（ノート・Office・PDF など）の横で作った会話（`origin_note_id`）。
+    Note(Uuid),
+    /// ワークフロー・ミニアプリの画面で作った会話（`origin_artifact_id`）。
+    Artifact(Uuid),
 }
 
 /// message 行。
@@ -186,7 +214,7 @@ impl ChatStore {
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name, title_pending) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) \
-             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at, NULL::text AS run_status",
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, origin_artifact_id, origin_artifact_kind, origin_artifact_name, purpose, pinned_at, search_folder_id, search_folder_name, created_at, updated_at, NULL::text AS run_status",
         )
         .bind(id)
         .bind(ctx.org())
@@ -285,7 +313,8 @@ impl ChatStore {
 
     /// 自分が owner のスレッド一覧（更新日降順・keyset ページング）。
     ///
-    /// `origin_note_id` を渡すと当該ノート由来のスレッドのみに絞る（ノート側の会話一覧・issue #282）。
+    /// `origin` を渡すと当該ノート由来（ノート側の会話一覧・issue #282）・当該の対象の画面から作った（ワークフロー
+    /// エディタの会話一覧・D-10 T09）スレッドのみに絞る。
     /// 未指定（None）はサイドバー履歴の全件（現行挙動）。
     /// `title_query` はタイトルの部分一致（大小無視・ワイルドカードは無害化・#591）。空白のみは無指定扱い。
     /// ピン留めは [`Self::list_pinned_threads`] で別に引く（こちらはピン留めも含めた更新日順）。
@@ -294,7 +323,7 @@ impl ChatStore {
         ctx: &AuthContext,
         before_updated_at: Option<DateTime<Utc>>,
         before_id: Option<Uuid>,
-        origin_note_id: Option<Uuid>,
+        origin: Option<OriginFilter>,
         title_query: Option<&str>,
         limit: i64,
     ) -> Result<Vec<Thread>, ChatError> {
@@ -308,6 +337,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
                AND ($7::uuid IS NULL OR origin_note_id = $7) \
+               AND ($9::uuid IS NULL OR origin_artifact_id = $9) \
                AND ($8::text IS NULL OR title ILIKE $8 ESCAPE '\\') \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         ))
@@ -317,8 +347,15 @@ impl ChatStore {
         .bind(before_updated_at)
         .bind(before_id)
         .bind(limit)
-        .bind(origin_note_id)
+        .bind(match origin {
+            Some(OriginFilter::Note(id)) => Some(id),
+            _ => None,
+        })
         .bind(title_pattern)
+        .bind(match origin {
+            Some(OriginFilter::Artifact(id)) => Some(id),
+            _ => None,
+        })
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

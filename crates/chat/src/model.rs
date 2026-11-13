@@ -340,6 +340,18 @@ pub struct Thread {
     /// 由来ノートの表示名（作成時点の非正規化・リネーム非追随・履歴表示用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_note_name: Option<String>,
+    /// 対象の画面（ワークフロー・ミニアプリの「AI に依頼」）から作った会話の対象（D-10 T09）。
+    /// `origin_note_id` と同時には持たない。対象の画面の会話一覧に使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_artifact_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_artifact_kind: Option<crate::origin::OriginArtifactKind>,
+    /// 対象の表示名（作成時点の非正規化・改名には追随しない・履歴表示用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_artifact_name: Option<String>,
+    /// 会話の目的（/apps の「AI と作る」は `app_builder`・D-10 T09）。通常の会話は無い。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<crate::origin::ThreadPurpose>,
     /// ピン留めした時刻（None＝ピン留めなし）。サイドバー履歴の先頭に出す。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<DateTime<Utc>>,

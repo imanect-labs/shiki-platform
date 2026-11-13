@@ -155,6 +155,12 @@ pub async fn create_thread(
         None
     };
 
+    // 文書の会話と対象の画面の会話は 1 つに決める（DB の CHECK と同じ・解決より前に断る）。
+    if req.origin_note_id.is_some() && req.origin_artifact.is_some() {
+        return Err(ApiError::BadRequest(
+            "origin_note_id と origin_artifact は同時に指定できません".into(),
+        ));
+    }
     // 由来ノートは**発話ユーザーの viewer 権限**で解決する（見えないノートに紐づけられない・
     // 表示名は解決時点の name を非正規化して持つ・issue #282）。fail-closed。
     let origin = if let Some(note_id) = req.origin_note_id {
@@ -165,6 +171,25 @@ pub async fn create_thread(
         Some(chat::ThreadOrigin {
             note_id,
             note_name: node.name,
+        })
+    } else {
+        None
+    };
+
+    // 会話の対象も**作成者の viewer 権限**で解決し、種類を確かめる（見えない対象に紐づけない・名前は解決時点の
+    // 表示名を非正規化して持つ・D-10 T09）。種類が違えば 400。fail-closed。
+    let origin_artifact = if let Some(o) = req.origin_artifact {
+        let meta = state.artifacts.get(&ctx, o.id, trace.as_deref()).await?;
+        if meta.kind != o.kind.artifact_kind() {
+            return Err(ApiError::BadRequest(format!(
+                "会話の対象の種類が違います（{} ではありません）",
+                o.kind.as_str()
+            )));
+        }
+        Some(chat::OriginArtifact {
+            kind: o.kind,
+            id: o.id,
+            name: meta.name,
         })
     } else {
         None
@@ -193,6 +218,22 @@ pub async fn create_thread(
             .set_thread_workspace(thread.id, ctx.tenant_id(), folder, parent)
             .await?;
     }
+    if origin_artifact.is_some() || req.purpose.is_some() {
+        store
+            .set_thread_builder(
+                thread.id,
+                ctx.tenant_id(),
+                origin_artifact.as_ref(),
+                req.purpose,
+            )
+            .await?;
+        if let Some(o) = origin_artifact {
+            thread.origin_artifact_id = Some(o.id);
+            thread.origin_artifact_kind = Some(o.kind);
+            thread.origin_artifact_name = Some(o.name);
+        }
+        thread.purpose = req.purpose;
+    }
     if let Some((folder_id, name)) = search_folder {
         store
             .set_thread_search_folder(thread.id, ctx.tenant_id(), folder_id, &name)
@@ -213,6 +254,7 @@ const MAX_THREAD_QUERY_CHARS: usize = 200;
         ("cursor" = Option<String>, Query, description = "続きのカーソル"),
         ("limit" = Option<i64>, Query, description = "件数（既定 30・上限 100）"),
         ("origin_note_id" = Option<Uuid>, Query, description = "由来ノートで絞り込む（ノート側の会話一覧・#282）"),
+        ("origin_artifact_id" = Option<Uuid>, Query, description = "対象（ワークフロー・ミニアプリ）で絞り込む（エディタの会話一覧・D-10 T09）"),
         ("q" = Option<String>, Query, description = "タイトルの部分一致（大小無視・200 文字まで・#591）"),
         ("pinned" = Option<bool>, Query, description = "true ならピン留めだけ（新しい順・ページングなし）"),
     ),
@@ -245,19 +287,22 @@ pub async fn list_threads(
             "検索語は {MAX_THREAD_QUERY_CHARS} 文字以内で指定してください"
         )));
     }
+    let origin = match (q.origin_note_id, q.origin_artifact_id) {
+        (Some(_), Some(_)) => {
+            return Err(ApiError::BadRequest(
+                "origin_note_id と origin_artifact_id は同時に指定できません".into(),
+            ))
+        }
+        (Some(id), None) => Some(chat::OriginFilter::Note(id)),
+        (None, Some(id)) => Some(chat::OriginFilter::Artifact(id)),
+        (None, None) => None,
+    };
     let (before_ts, before_id) = match &q.cursor {
         Some(c) => decode_cursor(c)?,
         None => (None, None),
     };
     let threads = chat_store(&state)?
-        .list_threads(
-            &ctx,
-            before_ts,
-            before_id,
-            q.origin_note_id,
-            q.q.as_deref(),
-            limit,
-        )
+        .list_threads(&ctx, before_ts, before_id, origin, q.q.as_deref(), limit)
         .await?;
     let next_cursor = if threads.len() as i64 == limit {
         threads.last().map(|t| encode_cursor(t.updated_at, t.id))
