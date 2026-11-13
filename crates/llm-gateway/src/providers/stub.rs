@@ -464,7 +464,37 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     // helpsearch: はヘルプ UI の決定的検証専用（選択品質の評価ではない）。
     if let Some(query) = user_text.strip_prefix("helpsearch:") {
         if has_tool_result(req) {
-            return text_stream("ヘルプの手順を確認してください。[H1]", prompt_tokens);
+            // 結果の 1 件目の「画面:」「図:」とページの URL（`[H1] <URL>`）を、実モデルへの指示と同じ形で使う。
+            let result = req
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } if content.contains("[H1] ") => {
+                        Some(content.as_str())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let first = |prefix: &str| {
+                result
+                    .lines()
+                    .find_map(|l| l.strip_prefix(prefix))
+                    .map(str::to_owned)
+            };
+            let mut text = "ヘルプの手順を確認してください。[H1]".to_owned();
+            if let Some(screen) = first("画面: ") {
+                text.push_str(&format!("\n\n操作する画面: {screen}"));
+            }
+            if let Some(figure) = first("図: ") {
+                text.push_str(&format!("\n\n{figure}"));
+            }
+            if let Some(url) = first("[H1] ") {
+                text.push_str(&format!(
+                    "\n\n詳しくは [ヘルプのページ]({url}) を見てください。"
+                ));
+            }
+            return text_stream(&text, prompt_tokens);
         }
         if let Some(t) = req.tools.iter().find(|t| t.name == "help_search") {
             return tool_call_stream(

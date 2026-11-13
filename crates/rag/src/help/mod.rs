@@ -2,7 +2,9 @@
 mod corpus;
 mod index;
 mod search;
-pub use corpus::{HelpChunk, HelpConfig, HelpManifest, VectorManifest};
-pub use search::{HelpHit, HelpSearchService};
+pub use corpus::{
+    HelpAppLink, HelpChunk, HelpChunkImage, HelpConfig, HelpManifest, VectorManifest,
+};
+pub use search::{HelpHit, HelpHitImage, HelpSearchService};
 #[cfg(test)]
 mod tests;

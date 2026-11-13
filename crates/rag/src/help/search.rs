@@ -23,6 +23,15 @@ pub struct HelpHit {
     pub heading_path: Vec<String>,
     pub snippet: String,
     pub url: String,
+    /// 節の図（設定の origin と同梱コーパスの相対パスから組んだ絶対 URL）。
+    pub images: Vec<HelpHitImage>,
+    /// そのページの操作を行う Shiki の画面（アプリ内のパス）。
+    pub app_links: Vec<super::HelpAppLink>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct HelpHitImage {
+    pub url: String,
+    pub alt: String,
 }
 /// 全顧客共通の公開資産。tenant DB / Qdrant / StorageService への参照を持たない。
 pub struct HelpSearchService {
@@ -30,6 +39,7 @@ pub struct HelpSearchService {
     manifest: HelpManifest,
     chunks: Vec<HelpChunk>,
     urls: Vec<String>,
+    images: Vec<Vec<HelpHitImage>>,
     vectors: Vec<Vec<f32>>,
     vector_manifest: VectorManifest,
     index: HelpIndex,
@@ -74,6 +84,23 @@ impl HelpSearchService {
                     .map_err(|_| invalid("URL"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let images = chunks
+            .iter()
+            .map(|c| {
+                c.images
+                    .iter()
+                    .map(|img| {
+                        Ok(HelpHitImage {
+                            url: base
+                                .join(&img.relative_url)
+                                .map_err(|_| invalid("image URL"))?
+                                .to_string(),
+                            alt: img.alt.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, RagError>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let vm: VectorManifest =
             serde_json::from_slice(&corpus::read(&path.join("vectors.manifest.json"), 65536)?)?;
         if vm.schema_version != 1
@@ -116,6 +143,7 @@ impl HelpSearchService {
             manifest,
             chunks,
             urls,
+            images,
             vectors,
             vector_manifest: vm,
             index,
@@ -218,6 +246,8 @@ impl HelpSearchService {
                     heading_path: c.heading_path.clone(),
                     snippet: c.text.chars().take(self.config.max_result_chars).collect(),
                     url: self.urls[i].clone(),
+                    images: self.images[i].clone(),
+                    app_links: c.app_links.clone(),
                 }
             })
             .collect())

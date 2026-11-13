@@ -37,7 +37,14 @@ base URL は origin のみ。相対 URL は /help/ 配下に限定し traversal 
 - PIT-14: 顧客本文のキャッシュ・索引を持たない。公開ヘルプの不変スナップショットのみ。
 - PIT-55: 実行時に結果 URL を取得しない。利用者・LLM は URL/パス/版を指定できない。
 - PIT-56: タイトル・見出し・抜粋は既存 document 封筒の内側に置き、閉じタグと仮マーカーを中和する。
-- PIT-77: 画像は同梱・推論・回答描画しない。抜粋は plain text として表示する。
+- PIT-77: 画像は同梱・推論しない。チャンクの `images`（`/help/media/` 配下の公開画像の相対 URL と説明）を
+  base URL で絶対 URL にして HelpCitation に持たせ、モデルは結果の「図:」の行を回答に `![説明](URL)` で入れてよい。
+  表示は回答の画像の代理取得（`/threads/{id}/messages/{message_id}/image`）を通り、出所に数えるのは
+  HelpCitation の `images` だけ（抜粋の文に書かれた画像は数えない）。ブラウザから公開ヘルプへ直接は読まない。
+  抜粋は plain text として表示する（2026-11-13 human 指示で「回答に図を出す」へ変更）。
+- 画面リンク: チャンクの `app_links`（原稿の front matter `app_paths` と shiki-hp の `help/app-routes.json`）。
+  1 ページに複数あり得る。読み込み時に同一オリジンの静的パスだけに絞り（`/api`・`/auth`・`/login`・クエリ・
+  `//host` は拒否）、モデルは「画面:」の行を `[名前](パス)` で案内する。回答下にも「この操作を行う画面」として出す。
 
 出典は社内文書の Citation と分離した HelpCitation、checkpoint は専用台帳を保存する。
 公開ヘルプなので共有閲覧の file ReBAC 例外を追加しない。既存 doc_search の二段 authz は変更しない。
