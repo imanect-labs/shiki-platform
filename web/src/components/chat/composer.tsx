@@ -342,6 +342,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
   const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
 
   const inputWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [focusFirstLineKey, setFocusFirstLineKey] = React.useState(0);
 
   const pickSuggestion = (s: SlashSuggestion) => {
     setCommand(toActiveCommand(s));
@@ -366,23 +367,19 @@ const ScopedComposer = React.memo(function ScopedComposer({
     // （足すと、選んだあとに古い `/…` 行が本文の先頭に上がってコマンドとして送られる）。
     // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
     if (!searchingSkill && !body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
-    // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の直後へ置く。
-    requestAnimationFrame(() => {
-      const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
-      if (!el) return;
-      el.focus({ preventScroll: true });
-      if (el instanceof HTMLTextAreaElement) {
+    // キャレットを `/` の行の末尾へ置く。Markdown 入力はエディタが本文の置き換えの後に行う
+    // （`focusFirstLineKey`）。textarea は値がコミットされてから選択範囲を直す。
+    setFocusFirstLineKey((k) => k + 1);
+    if (inputFormat !== "markdown") {
+      requestAnimationFrame(() => {
+        const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
+        if (!(el instanceof HTMLTextAreaElement)) return;
+        el.focus({ preventScroll: true });
         const end = el.value.indexOf("\n");
         const pos = end < 0 ? el.value.length : end;
         el.setSelectionRange(pos, pos);
-        return;
-      }
-      // Markdown 入力（contenteditable）: 先頭のブロックの末尾へ。
-      const first = el.firstElementChild ?? el;
-      const sel = window.getSelection();
-      sel?.selectAllChildren(first);
-      sel?.collapseToEnd();
-    });
+      });
+    }
   };
 
   const submit = () => {
@@ -704,6 +701,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
             <PromptInputEditor
               placeholder={effectivePlaceholder}
               autoFocus={autoFocus}
+              focusFirstLineKey={focusFirstLineKey}
               attributes={{
                 "aria-label": "メッセージを入力",
                 role: slashOpen ? "combobox" : undefined,
