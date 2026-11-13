@@ -2,7 +2,7 @@
   "scenario": "inquiry_triage",
   "app": "APP-02",
   "title": "問い合わせの一次仕分け",
-  "description": "問い合わせの表に行が追加されたら、判定用のモデルで種類・優先度・強い不満を判定し、種類の確からしさがしきい値以上なら振り分けの規則から担当を引いて「仕分け済み」にする。しきい値に届かない・判定に失敗したときは AI の推定を書いて「要確認」にし、人が仕分ける。返信の下書きと社内 FAQ の検索（rag.search）は入れていない（付録 B §5 の T8 の範囲）。",
+  "description": "問い合わせの表に行が追加されたら、判定用のモデルで種類・優先度・強い不満を判定し、種類の確からしさがしきい値以上なら振り分けの規則から担当を引いて「仕分け済み」にする。しきい値に届かない・判定に失敗した・振り分けの規則で担当を決められない（規則に無い種類・規則を引けない）ときは AI の推定を書いて「要確認」にし、人が仕分ける（「受付」のまま残さない）。返信の下書きと社内 FAQ の検索（rag.search）は入れていない（付録 B §5 の T8 の範囲）。",
   "dataset": "inquiry_triage",
   "theta": 0.6,
   "prompt_version": "v3",
@@ -345,7 +345,8 @@
             },
             "limit": 1
           }
-        }
+        },
+        "on_error": "continue"
       },
       {
         "id": "shape",
@@ -365,7 +366,8 @@
               "path": "/items/0/data"
             }
           }
-        }
+        },
+        "on_error": "continue"
       },
       {
         "id": "assign",
@@ -450,6 +452,41 @@
         }
       },
       {
+        "id": "unrouted",
+        "type": "control.join",
+        "label": "規則で担当を決められない",
+        "params": {
+          "mode": "any"
+        }
+      },
+      {
+        "id": "unrouted_note",
+        "type": "data.record.update",
+        "label": "担当を決められない理由を書く",
+        "params": {
+          "table": "{{table.inquiries}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "ai_guess": {
+              "$template": "種類は {category} と推定（振り分けの規則で担当を決められない）・優先度は {priority}",
+              "vars": {
+                "category": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/category/value"
+                },
+                "priority": {
+                  "$from": "nodes.triage.output",
+                  "path": "/answers/priority/level"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
         "id": "unsure",
         "type": "control.join",
         "label": "人が仕分ける",
@@ -500,11 +537,29 @@
         "to": "failed_note"
       },
       {
+        "from": "rule",
+        "from_port": "error",
+        "to": "unrouted"
+      },
+      {
+        "from": "shape",
+        "from_port": "error",
+        "to": "unrouted"
+      },
+      {
+        "from": "unrouted",
+        "to": "unrouted_note"
+      },
+      {
         "from": "guess",
         "to": "unsure"
       },
       {
         "from": "failed_note",
+        "to": "unsure"
+      },
+      {
+        "from": "unrouted_note",
         "to": "unsure"
       },
       {
