@@ -215,8 +215,8 @@ impl BugReportService {
         if !case.report_intent {
             return Err(Error::Conflict);
         }
-        // 確認後、案内の直後の本人発話への回答でのみ使う。話題を後の turn へ持ち越さない。
-        let valid: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM message a JOIN message u ON u.id=a.parent_id AND u.tenant_id=$1 AND u.org=$2 AND u.thread_id=$3 JOIN generation_run r ON r.message_id=a.id AND r.tenant_id=$1 AND r.org=$2 JOIN help_resolution_case c ON c.tenant_id=$1 AND c.org=$2 AND c.id=$5 WHERE a.tenant_id=$1 AND a.org=$2 AND a.thread_id=$3 AND a.id=$4 AND u.role='user' AND u.parent_id=c.guidance_message_id AND r.created_at>=c.report_intent_at)")
+        // case・thread のロック保持中に、案内直後への回答が現在枝の祖先であることを確認する。
+        let valid: bool = sqlx::query_scalar("WITH RECURSIVE path AS (SELECT m.id,m.parent_id,0 depth FROM thread t JOIN message m ON m.id=t.active_message_id AND m.tenant_id=$1 AND m.org=$2 AND m.thread_id=$3 WHERE t.tenant_id=$1 AND t.org=$2 AND t.id=$3 UNION ALL SELECT m.id,m.parent_id,p.depth+1 FROM message m JOIN path p ON m.id=p.parent_id WHERE m.tenant_id=$1 AND m.org=$2 AND m.thread_id=$3 AND p.depth<10000) SELECT EXISTS (SELECT 1 FROM message a JOIN message u ON u.id=a.parent_id AND u.tenant_id=$1 AND u.org=$2 AND u.thread_id=$3 JOIN generation_run r ON r.message_id=a.id AND r.tenant_id=$1 AND r.org=$2 JOIN help_resolution_case c ON c.tenant_id=$1 AND c.org=$2 AND c.id=$5 WHERE a.tenant_id=$1 AND a.org=$2 AND a.thread_id=$3 AND a.id=$4 AND u.role='user' AND u.parent_id=c.guidance_message_id AND r.created_at>=c.report_intent_at AND EXISTS (SELECT 1 FROM path WHERE id=a.id))")
             .bind(ctx.tenant_id()).bind(ctx.org()).bind(thread).bind(message).bind(id).fetch_one(&mut *tx).await?;
         if !valid {
             return Err(Error::Conflict);

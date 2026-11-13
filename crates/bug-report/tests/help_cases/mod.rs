@@ -206,6 +206,32 @@ async fn help_first_requires_durable_search_guidance_and_personal_buttons() {
             .is_err());
         sqlx::query("UPDATE help_resolution_case SET expires_at=now()+interval '1 hour' WHERE tenant_id=$1 AND org=$2 AND id=$3")
             .bind(ctx.tenant_id()).bind(ctx.org()).bind(case).execute(&db).await.unwrap();
+        // 案内を共有する別枝に切り替えても、旧枝の run は取消されず実行中のまま。
+        // case の案内は現在枝に残るため、回答自体の祖先検査がなければ下書きが作られる。
+        let (_sibling_run, _) = run(&db, &ctx, thread, Some(guidance)).await;
+        assert!(service.help_case(&ctx, thread, case).await.is_ok());
+        assert!(matches!(
+            service
+                .create_ai_draft(&ctx, &draft_run, case, content(), "old-branch")
+                .await,
+            Err(Error::Conflict)
+        ));
+        assert!(service
+            .help_case(&ctx, thread, case)
+            .await
+            .unwrap()
+            .report_id
+            .is_none());
+        sqlx::query(
+            "UPDATE thread SET active_message_id=$4 WHERE tenant_id=$1 AND org=$2 AND id=$3",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(thread)
+        .bind(answer)
+        .execute(&db)
+        .await
+        .unwrap();
         let report = service
             .create_ai_draft(&ctx, &draft_run, case, content(), "test")
             .await
