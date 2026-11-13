@@ -18,9 +18,20 @@ import { CitationCardBody } from "@/components/chat/citations/citation-marker";
 import { CitationSources } from "@/components/chat/citations/citation-sources";
 import { EvidenceTable } from "@/components/chat/citations/evidence-table";
 import { SourcePanelAside, SourcePanelView } from "@/components/chat/citations/source-panel";
+import { HelpCitationsProvider, HelpSources } from "@/components/chat/help-sources";
 import { linkifyCitations } from "@/lib/citation";
+import { linkifyHelpCitations } from "@/lib/help-citation";
 import type { Citation } from "@/lib/chat-api";
-import { ANSWER, ANSWER_NO_MARKERS, CITATIONS, METAS, MIXED_ANSWER, MIXED_CITATIONS } from "./fixtures";
+import {
+  ANSWER,
+  ANSWER_NO_MARKERS,
+  CITATIONS,
+  HELP_ANSWER,
+  HELP_CITATIONS,
+  METAS,
+  MIXED_ANSWER,
+  MIXED_CITATIONS,
+} from "./fixtures";
 
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
@@ -51,6 +62,20 @@ function Answer({
         {children}
       </div>
     </MessageCitationsProvider>
+  );
+}
+
+/// 製品ヘルプの出典だけで答えた回答（`[Hn]` は押すとヘルプを新しいタブで開く）。
+function HelpAnswer({ defaultOpen = false }: { defaultOpen?: boolean }) {
+  return (
+    <HelpCitationsProvider citations={HELP_CITATIONS}>
+      <div className="rounded-xl border border-border bg-background px-6 py-5">
+        <div className="text-[15px] leading-relaxed">
+          <Markdown>{linkifyHelpCitations(HELP_ANSWER, HELP_CITATIONS)}</Markdown>
+        </div>
+        <HelpSources defaultOpen={defaultOpen} />
+      </div>
+    </HelpCitationsProvider>
   );
 }
 
@@ -161,6 +186,14 @@ export default function CitationGalleryPage() {
               <Answer messageKey="web-evidence" text={MIXED_ANSWER} citations={MIXED_CITATIONS}>
                 <EvidenceTable />
               </Answer>
+            </Cell>
+
+            <Cell id="help" title="製品ヘルプの出典（[Hn]・押すとヘルプを開く。回答下に 1 行で畳む）">
+              <HelpAnswer />
+            </Cell>
+
+            <Cell id="help-expanded" title="製品ヘルプの出典を開いた状態（ページごとに引用箇所）">
+              <HelpAnswer defaultOpen />
             </Cell>
 
             <Cell id="unresolved" title="ファイル名が解決できない（読み込み中・権限なし）">

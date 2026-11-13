@@ -1,5 +1,5 @@
 "use client";
-import { HelpSources } from "./help-sources";
+import { HelpCitationsProvider, HelpSources } from "./help-sources";
 import type { HelpCitation } from "@/lib/chat-api";
 
 import * as React from "react";
@@ -1827,6 +1827,10 @@ const AssistantRow = React.memo(function AssistantRow({
   const skillDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft",
   );
+  const helpCitations = React.useMemo(
+    () => blocks.filter((b): b is HelpCitation => b.type === "help_citation"),
+    [blocks],
+  );
   const documentRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
   );
@@ -1837,9 +1841,9 @@ const AssistantRow = React.memo(function AssistantRow({
 
   return (
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
+      <HelpCitationsProvider citations={helpCitations}>
       <Message className="group justify-start">
         <div className="w-full min-w-0">
-          <HelpSources citations={blocks.filter((b): b is HelpCitation => b.type === "help_citation")} />
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
               <MessageTimeline
@@ -1878,6 +1882,7 @@ const AssistantRow = React.memo(function AssistantRow({
           ))}
           <ArtifactFiles files={files} />
           <CitationSources />
+          <HelpSources />
           {evidenceOpen ? <EvidenceTable /> : null}
           {text || translations.length > 0 ? (
             <MessageFooter text={text} pinned={latest}>
@@ -1907,6 +1912,7 @@ const AssistantRow = React.memo(function AssistantRow({
           ) : null}
         </div>
       </Message>
+      </HelpCitationsProvider>
     </MessageCitationsProvider>
   );
 });
@@ -1971,9 +1977,9 @@ function StreamingRow({
   });
   return (
     <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
+      <HelpCitationsProvider citations={stream.helpCitations}>
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
-          <HelpSources citations={stream.helpCitations} />
           {planInline && stream.plan.length > 0 ? (
             <TaskInlineLine tasks={stream.plan} onOpen={onOpenTasks} />
           ) : null}
@@ -2029,8 +2035,10 @@ function StreamingRow({
           ))}
           <DocumentRefList raws={stream.documentRefs} />
           <ArtifactFiles files={stream.files} />
+          <HelpSources />
         </div>
       </Message>
+      </HelpCitationsProvider>
     </MessageCitationsProvider>
   );
 }

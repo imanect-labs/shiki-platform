@@ -3,7 +3,7 @@
 /// 想定: 「育休の取得条件と申請期限を教えて」に doc_search を 2 回呼んで答えた。
 /// 引用は到着順に 8 件（1 回目 4 件・2 回目 4 件）。本文はそのうち 1,2,5,6,7 を引用し、
 /// 3,4,8 は検索したが使わなかった。番号は応答内の通し番号（サーバ側の採番修正後の姿）。
-import type { Citation } from "@/lib/chat-api";
+import type { Citation, HelpCitation } from "@/lib/chat-api";
 import type { NodeMeta } from "@/lib/node-name-cache";
 
 const F_RULES = "f-rules";
@@ -166,3 +166,46 @@ export const MIXED_ANSWER =
   "社内の規程では、子が1歳に達するまで育児休業を取得できます[1]。\n\n" +
   "法改正により、2025年4月から子の看護休暇の対象が小学校3年生修了までに広がりました[3]。" +
   "男性の育休取得率は 2024 年度に 40.5% と過去最高になっています[4]。";
+
+/// 製品ヘルプの出典（`help_search`・`[Hn]`）。社内文書とは番号の台帳が別。
+export const HELP_CITATIONS: HelpCitation[] = [
+  {
+    type: "help_citation",
+    cite_id: 1,
+    corpus_version: "b1d9b53e934f",
+    chunk_id: "help-1",
+    title: "パスワードを設定・変更する",
+    heading_path: ["パスワードを設定・変更する", "手順"],
+    snippet:
+      "右側の「パスワード」の欄で「パスワードを変更」（①）を押します。本人確認と設定の画面へ移動します。未設定なら「パスワードを設定」を押します。",
+    url: "https://shiki.imanect.app/help/account/security/password/#%E6%89%8B%E9%A0%86",
+  },
+  {
+    type: "help_citation",
+    cite_id: 2,
+    corpus_version: "b1d9b53e934f",
+    chunk_id: "help-2",
+    title: "パスワードを設定・変更する",
+    heading_path: ["パスワードを設定・変更する", "始める前に"],
+    snippet:
+      "個人設定の左側で「ログイン方法」を押します。会社のアカウントでログインする SSO を利用している場合は、組織のパスワード変更の案内を確認してください。",
+    url: "https://shiki.imanect.app/help/account/security/password/#%E5%A7%8B%E3%82%81%E3%82%8B%E5%89%8D%E3%81%AB",
+  },
+  {
+    type: "help_citation",
+    cite_id: 3,
+    corpus_version: "b1d9b53e934f",
+    chunk_id: "help-3",
+    title: "パスワードでログインする",
+    heading_path: ["パスワードでログインする", "手順"],
+    snippet: "ログイン画面でユーザー名とパスワードを入力し、「ログイン」を押します。",
+    url: "https://shiki.imanect.app/help/getting-started/sign-in/password/#%E6%89%8B%E9%A0%86",
+  },
+];
+
+export const HELP_ANSWER =
+  "Shiki でパスワードを変更する手順は次のとおりです。\n\n" +
+  "1. 個人設定の左側で「ログイン方法」を押します。[H2]\n" +
+  "2. 右側の「パスワード」欄で「パスワードを変更」を押します。[H1]\n" +
+  "3. 次回からは新しいパスワードでログインします。[H3]\n\n" +
+  "会社のアカウント（SSO）でログインしている場合は、組織の案内に従ってください。[H2]";

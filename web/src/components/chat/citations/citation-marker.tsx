@@ -32,7 +32,7 @@ import {
 const OPEN_DELAY_MS = 160;
 const CLOSE_DELAY_MS = 220;
 
-const CHIP =
+export const CHIP =
   "mx-px inline-flex h-[1.25em] min-w-[1.25em] -translate-y-[0.3em] items-center justify-center rounded-[5px] px-1 align-baseline text-[0.68em] font-semibold leading-none tabular-nums";
 
 export function CitationMarker({ n, children }: { n: number; children: React.ReactNode }) {
