@@ -412,3 +412,26 @@ export async function grantTableEditor(
   };
 }
 
+
+/// 操作ログの表示（設定 → チャット「操作ログの表示」）を変え、元の値に戻す関数を返す。
+///
+/// 既定の「シンプル」はツールごとの行（「ドライブで「…」を検索しました」など）をチャットに出さないので、
+/// その行を確かめる spec は「詳細」にしてから送る。設定はアカウント単位なので、終わったら必ず戻す
+/// （ほかの spec の表示に残さない）。
+export async function setActivityDetail(
+  page: Page,
+  detail: "simple" | "detailed",
+): Promise<() => Promise<void>> {
+  const headers = {
+    "X-CSRF-Token": (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "",
+  };
+  const current = await page.request.get("/api/me/preferences");
+  expect(current.status(), await current.text()).toBe(200);
+  const original = ((await current.json()) as { preferences: Record<string, unknown> }).preferences;
+  const put = async (preferences: Record<string, unknown>) => {
+    const res = await page.request.put("/api/me/preferences", { headers, data: preferences });
+    expect(res.status(), await res.text()).toBe(200);
+  };
+  await put({ ...original, activity_detail: detail });
+  return () => put(original);
+}

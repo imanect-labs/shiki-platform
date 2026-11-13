@@ -20,6 +20,7 @@ type PrefsResponse = components["schemas"]["UserPreferencesResponse"];
 export type SubmitKey = components["schemas"]["SubmitKey"];
 export type InputFormat = components["schemas"]["InputFormat"];
 export type TimeFormat = components["schemas"]["TimeFormat"];
+export type ActivityDetail = components["schemas"]["ActivityDetail"];
 export type DefaultModelChoice = components["schemas"]["DefaultModelChoice"];
 
 /// 欠けたフィールドを既定値で埋めた形（生成型では既定値のある項目は任意）。
@@ -31,6 +32,7 @@ export type UserPreferences = {
   default_autonomous_mode: NonNullable<Body["default_autonomous_mode"]>;
   expand_reasoning: boolean;
   time_format: TimeFormat;
+  activity_detail: ActivityDetail;
 };
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
@@ -41,6 +43,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   default_autonomous_mode: "require_approval",
   expand_reasoning: false,
   time_format: "absolute",
+  activity_detail: "simple",
 };
 
 function prefsOf(b: Body): UserPreferences {
@@ -52,6 +55,7 @@ function prefsOf(b: Body): UserPreferences {
     default_autonomous_mode: b.default_autonomous_mode ?? DEFAULT_PREFERENCES.default_autonomous_mode,
     expand_reasoning: b.expand_reasoning ?? false,
     time_format: b.time_format ?? DEFAULT_PREFERENCES.time_format,
+    activity_detail: b.activity_detail ?? DEFAULT_PREFERENCES.activity_detail,
   };
 }
 

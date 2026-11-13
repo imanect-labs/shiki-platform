@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, uniqueName, setActivityDetail } from "./helpers";
 
 /// AI によるドライブの保存先指定・移動（#942）の E2E（前提: LLM=stub）。
 ///
@@ -9,6 +9,21 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// - 由来ノートのある会話の下書きは、そのノートと同じフォルダが保存先の初期値になる。
 ///
 /// stub 駆動: `calltool:<ツール名> <入力 JSON>` でツールを決定的に呼ぶ / `savenote:<name>` → save_note。
+///
+/// ツールごとの行（「ドライブで「…」を検索しました」）を確かめるので、操作ログの表示を「詳細」にして回す。
+
+let restoreActivityDetail: (() => Promise<void>) | null = null;
+
+/// ログインして、操作ログの表示を「詳細」にする（afterEach で元に戻す）。
+async function login(page: Page) {
+  await loginViaKeycloak(page);
+  restoreActivityDetail = await setActivityDetail(page, "detailed");
+}
+
+test.afterEach(async () => {
+  await restoreActivityDetail?.();
+  restoreActivityDetail = null;
+});
 
 async function csrf(page: Page): Promise<string> {
   return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -59,7 +74,7 @@ async function sendFromHome(page: Page, text: string) {
 }
 
 test("drive.find でフォルダを探し、drive.move は承認してから移動する", async ({ page }) => {
-  await loginViaKeycloak(page);
+  await login(page);
   const folderName = uniqueName("移動先");
   const folderId = await createFolder(page, folderName);
   const noteId = await createNote(page, uniqueName("移動するメモ"));
@@ -93,7 +108,7 @@ test("drive.find でフォルダを探し、drive.move は承認してから移�
 });
 
 test("下書き: AI が指定した保存先が保存ダイアログの初期値になる", async ({ page }) => {
-  await loginViaKeycloak(page);
+  await login(page);
   const folderName = uniqueName("AI指定先");
   const folderId = await createFolder(page, folderName);
   const noteName = uniqueName("指定先つき下書き");
@@ -121,7 +136,7 @@ test("下書き: AI が指定した保存先が保存ダイアログの初期値
 test("下書き: 由来ノートのある会話はそのノートのフォルダが保存先の初期値になる", async ({
   page,
 }) => {
-  await loginViaKeycloak(page);
+  await login(page);
   const folderName = uniqueName("由来フォルダ");
   const folderId = await createFolder(page, folderName);
   const noteId = await createNote(page, uniqueName("由来ノート"), folderId);
@@ -151,7 +166,7 @@ test("下書き: 由来ノートのある会話はそのノートのフォルダ
 test("下書き: 保存先の解決中は保存できず、AI の \"root\" 指定は由来ノートのフォルダより優先する", async ({
   page,
 }) => {
-  await loginViaKeycloak(page);
+  await login(page);
   const folderName = uniqueName("由来フォルダ2");
   const folderId = await createFolder(page, folderName);
   const noteId = await createNote(page, uniqueName("由来ノート2"), folderId);

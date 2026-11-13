@@ -196,6 +196,22 @@ function CitationChips({
   );
 }
 
+/// シンプル表示の進み具合（ツール名を出さず、何をしているかの種類だけを言う）。
+function simplePhase(items: ToolActivityItem[], toolsRunning: boolean, waitingLabel: string | null): string {
+  if (!toolsRunning) return waitingLabel ?? "次の手順を考えています";
+  const running = items.filter((it) => it.running);
+  const category = describeTool(running[running.length - 1]).category;
+  switch (category) {
+    case "search":
+      return "調べています";
+    case "read":
+    case "browse":
+      return "資料を読んでいます";
+    default:
+      return "作業しています";
+  }
+}
+
 export function ToolActivity({
   items,
   streaming = false,
@@ -207,6 +223,10 @@ export function ToolActivity({
   waitingLabel = null,
   /// 開閉を覚えておく鍵（ChainOfThought から）。確定で行が作り直されても開閉を保つ。
   memoryKey = null,
+  /// 操作ログ「シンプル」（設定）。見出しは実行中なら進み具合（「調べています」）、終わったら「操作の詳細」
+  /// だけにし、個々のツール名・件数・失敗は出さない（AI に慣れていない人が「失敗」の文字で不安に
+  /// ならないよう）。押して開いた一覧には失敗も含めて全部を出す。
+  simple = false,
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
@@ -214,6 +234,7 @@ export function ToolActivity({
   citations?: Citation[];
   waitingLabel?: string | null;
   memoryKey?: string | null;
+  simple?: boolean;
 }) {
   // 開閉は**自動で変えない**。既定は直近 3 件の窓（実行中はロールし、終わっても残す）で、
   // ヘッダを押すと全件のタイムラインになる。実行状態から開閉を導くと、ツールを使った瞬間に
@@ -239,6 +260,50 @@ export function ToolActivity({
   const elapsed = useElapsed(running);
 
   if (!hasTools && citations.length === 0) return null;
+
+  if (simple && hasTools) {
+    // シンプル表示: 見出しには種類だけ（実行中）か「操作の詳細」（終了後）を出し、ツール名・件数・失敗は
+    // 出さない。押して開いた一覧（詳細な行動ログ）には、失敗も含めて全部を出す。
+    const label = running
+      ? (phaseOverride ?? simplePhase(items, toolsRunning, waitingLabel))
+      : "操作の詳細";
+    return (
+      <div className="mb-2.5" data-testid="tool-activity" data-simple="">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="group flex w-full items-center gap-2 rounded-lg py-1 text-left text-[13px] transition-colors hover:bg-accent/30"
+        >
+          {running ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+          ) : (
+            <Check className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          )}
+          <Ticker
+            tickerKey={label}
+            animate={streaming}
+            className={running ? "font-medium shiki-text-shimmer" : "text-muted-foreground"}
+          >
+            {label}
+          </Ticker>
+          {running ? (
+            <span className="shrink-0 tabular-nums text-muted-foreground">・ {formatElapsed(elapsed)}</span>
+          ) : null}
+          <CitationChips citations={citations} nodeNames={nodeNames} />
+          <ChevronDown
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              "duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+              open && "rotate-180",
+            )}
+            aria-hidden
+          />
+        </button>
+        {open ? <ExpandedTimeline items={items} nodeNames={nodeNames} /> : null}
+      </div>
+    );
+  }
 
   // ツール呼び出しが無く citation だけ届いた経路（pre-filter 等）。チップだけ出す。
   // 進行表示は ChainOfThought が担うので、ここではステータス行を重ねない。

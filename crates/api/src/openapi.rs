@@ -301,6 +301,7 @@ use utoipa::{
         chat::preferences::SubmitKey,
         chat::preferences::InputFormat,
         chat::preferences::TimeFormat,
+        chat::preferences::ActivityDetail,
         crate::routes::me_security::SecurityOverview,
         crate::routes::me_security::PasswordInfo,
         crate::routes::me_security::CredentialInfo,

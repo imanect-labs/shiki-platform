@@ -4,14 +4,33 @@
 "use client";
 
 import * as React from "react";
-import { Brain, ChevronDown, ChevronRight } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import { usePreferences } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
 import { useRememberedOpen } from "./disclosure-memory";
+import { isSkillInvocation, SkillInvocationRow } from "./skill-invocation-row";
 import { ToolActivity, type ToolActivityItem } from "./tool-activity";
+
+/// まとまりの中の並び（起きた順）。スキルの読み込みは 1 件ずつ独立した行にし、それ以外の
+/// 連続する操作は従来どおり 1 行（ToolActivity）に束ねる。
+type ToolChunk =
+  | { kind: "skill"; item: ToolActivityItem }
+  | { kind: "tools"; items: ToolActivityItem[] };
+
+/// ツールの列をスキルの行と操作の束に分ける。
+export function chunkTools(tools: ToolActivityItem[]): ToolChunk[] {
+  const out: ToolChunk[] = [];
+  for (const t of tools) {
+    const last = out[out.length - 1];
+    if (isSkillInvocation(t)) out.push({ kind: "skill", item: t });
+    else if (last?.kind === "tools") last.items.push(t);
+    else out.push({ kind: "tools", items: [t] });
+  }
+  return out;
+}
 
 export function ChainOfThought({
   thinking,
@@ -36,7 +55,7 @@ export function ChainOfThought({
   // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。押した後の開閉は、確定で
   // 行が作り直されても保つ。
   const [open, setOpen] = useRememberedOpen(memoryKey && `${memoryKey}:thinking`, null);
-  const expandByDefault = usePreferences().prefs.expand_reasoning;
+  const { expand_reasoning: expandByDefault, activity_detail } = usePreferences().prefs;
   const [showDetail, setShowDetail] = useRememberedOpen(memoryKey && `${memoryKey}:detail`);
 
   const hasThinking = thinking.trim().length > 0;
@@ -115,17 +134,93 @@ export function ChainOfThought({
         </div>
       ) : null}
 
-      {/* ツール実行（フェーズ行＋ローリング＋展開）。生成中でなくても履歴として残す。
-          citations はフェーズ行のチップとして表示するため渡す（展開セクションは廃止）。 */}
-      <ToolActivity
-        items={tools}
-        streaming={streaming}
-        phaseOverride={phase}
+      <ToolChunks
+        tools={tools}
         citations={citations}
+        streaming={streaming}
+        phase={phase}
         waitingLabel={waitingLabel}
-        memoryKey={memoryKey && `${memoryKey}:tools`}
+        memoryKey={memoryKey}
+        simple={activity_detail === "simple"}
       />
     </div>
+  );
+}
+
+/// ツール実行を起きた順に描く。スキルの読み込みは独立した行、それ以外はフェーズ行＋ローリング＋展開
+/// （ToolActivity）。生成中でなくても履歴として残す。生きている表示（回転・待ちの文言・計画の
+/// サブタスク）は末尾の束だけが受け持つ。citations は最初の束のチップとして出す。
+function ToolChunks({
+  tools,
+  citations,
+  streaming,
+  phase,
+  waitingLabel,
+  memoryKey,
+  simple,
+}: {
+  tools: ToolActivityItem[];
+  citations: Citation[];
+  streaming: boolean;
+  phase: string | null;
+  waitingLabel: string | null;
+  memoryKey: string | null;
+  /// 操作ログ「シンプル」（設定）。各束の ToolActivity へそのまま渡す。
+  simple: boolean;
+}) {
+  const chunks = chunkTools(tools);
+  // 生きている表示を受け持つ位置（ツールがまだ無ければ、引用のチップだけを出す空の束）。
+  const lastIndex = chunks.length - 1;
+  const last = chunks[lastIndex];
+  // 操作の束が 1 つも無ければ、引用のチップだけを出す空の束を置く（従来の表示を保つ）。
+  if (!chunks.some((c) => c.kind === "tools")) chunks.push({ kind: "tools", items: [] });
+  const firstTools = chunks.findIndex((c) => c.kind === "tools");
+  // スキルを読み込み終えて次の操作を待つ間も、生きていることが分かるようにする（束の側の待ちの
+  // 文言は、末尾が束のときにしか出ない）。
+  const waitingAfterSkill = streaming && last?.kind === "skill" && !last.item.running;
+  let toolsSeen = 0;
+  let skillsSeen = 0;
+  return (
+    <>
+      {chunks.map((c, i) => {
+        const live = streaming && (i === lastIndex || lastIndex < 0);
+        if (c.kind === "skill") {
+          // 開閉の鍵は「まとまりの中で何番目のスキルか」。呼び出しの key は生成中と確定後で変わるので
+          // 使わない（確定で行が作り直されると、開いて読んでいた中身が閉じる）。
+          const n = skillsSeen++;
+          return (
+            <SkillInvocationRow
+              key={`skill-${n}`}
+              item={c.item}
+              memoryKey={memoryKey && `${memoryKey}:skill${n}`}
+            />
+          );
+        }
+        // 最初の束の鍵は従来の `:tools` のまま（確定前後・既存の開閉の記憶を保つ）。
+        const n = toolsSeen++;
+        return (
+          <ToolActivity
+            key={`tools-${n}`}
+            items={c.items}
+            streaming={live}
+            phaseOverride={live ? phase : null}
+            citations={i === firstTools ? citations : []}
+            waitingLabel={live ? waitingLabel : null}
+            memoryKey={memoryKey && (n === 0 ? `${memoryKey}:tools` : `${memoryKey}:tools${n}`)}
+            simple={simple}
+          />
+        );
+      })}
+      {waitingAfterSkill ? (
+        <p className="flex items-center gap-1.5 py-0.5 text-[13px] text-muted-foreground" aria-live="polite">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+          {/* 計画のサブタスク（自律 run）があればそれを優先する（束の見出しと同じ順位）。 */}
+          <span className="font-medium">
+            {phase ?? (waitingLabel ? `${waitingLabel}…` : "手順に沿って進めています…")}
+          </span>
+        </p>
+      ) : null}
+    </>
   );
 }
 
