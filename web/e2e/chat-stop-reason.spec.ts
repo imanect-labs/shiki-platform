@@ -4,8 +4,9 @@ import { loginViaKeycloak } from "./helpers";
 
 /// 回答が途中で止まったとき、回答の下に理由と続け方の注記を出す（GAP-106）。
 ///
-/// 前提: LLM=stub。`truncate:<本文>` は「回答: <本文>」を返して出力の上限で終える。`loop:` は毎ターン
-/// 最初のツールを呼び続けるので、手数の上限（通常チャットの max_steps）で止まる。
+/// 前提: LLM=stub。`truncate:<本文>` は「回答: <本文>」を返して出力の上限で終える。`loop:drive.find` は毎ターン
+/// ドライブの検索を呼び続けるので、手数の上限（通常チャットの max_steps）で止まる。先頭のツール（`loop:`）は
+/// ファイルの複製で、承認が要るため承認待ちで止まり、手数の上限まで届かない。
 /// 注記は生成の直後（done イベントの理由）と、読み直したとき（メッセージの理由）の両方で出る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -72,7 +73,7 @@ test.describe("途中で止まった回答の注記", () => {
     await loginViaKeycloak(page);
     await page.goto("/");
 
-    await send(page, "loop:");
+    await send(page, "loop:drive.find");
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     await waitIdle(page);
 

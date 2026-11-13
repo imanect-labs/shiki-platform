@@ -13,7 +13,8 @@
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
-//!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
+//!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。`loop:<ツール名>` は
+//!     tools[0] の代わりにその名前のツールを呼ぶ（提示されていなければ tools[0]）。
 //! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
 //! - 既存のワークフローを直す `fixwf:<語>` … `list_workflows` で探し、先頭を `read_workflow` で読み、説明を書き換えて
@@ -390,13 +391,15 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
             prompt_tokens,
         );
     }
-    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
-    if !req.tools.is_empty() && user_text.starts_with("loop:") {
-        return tool_call_stream(
-            req.tools[0].name.clone(),
-            serde_json::json!({}),
-            prompt_tokens,
-        );
+    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。
+    //     `loop:<ツール名>`（空白を挟まない）はその名前のツールを呼ぶ（先頭が承認の要るツールの構成でも、
+    //     承認待ちで止めずに手数を積む）。 ---
+    if let Some(rest) = user_text.strip_prefix("loop:") {
+        if let Some(first) = req.tools.first() {
+            let named = rest.split(char::is_whitespace).next().unwrap_or("");
+            let tool = req.tools.iter().find(|t| t.name == named).unwrap_or(first);
+            return tool_call_stream(tool.name.clone(), serde_json::json!({}), prompt_tokens);
+        }
     }
     // --- 出力上限で切れたツール呼び出し `truncatecall:`: 1 ターン目だけ tools[0] の引数の途中で
     //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動・#1196）。
@@ -706,6 +709,31 @@ mod tests {
         }
         assert_eq!(tool_name.as_deref(), Some("web_search"));
         assert_eq!(input.unwrap()["query"], "rust");
+    }
+
+    /// `loop:<ツール名>` は名前のツールを、`loop:` と `loop: 説明` は先頭のツールを毎ターン呼ぶ。
+    #[tokio::test]
+    async fn stub_loop_calls_named_tool_or_first() {
+        for (text, want) in [
+            ("loop:drive.find", "drive.find"),
+            ("loop:", "drive.copy"),
+            ("loop: drive.find を呼び続ける", "drive.copy"),
+            ("loop:無い名前", "drive.copy"),
+        ] {
+            let mut req = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+            for name in ["drive.copy", "drive.find"] {
+                req.tools
+                    .push(crate::model::ToolDef::new(name, "d", serde_json::json!({})));
+            }
+            let mut s = StubProvider::new().stream(&req).await.unwrap();
+            let mut tool_name = None;
+            while let Some(ev) = s.next().await {
+                if let StreamDelta::ToolUseStart { name, .. } = ev.unwrap() {
+                    tool_name = Some(name);
+                }
+            }
+            assert_eq!(tool_name.as_deref(), Some(want), "{text}");
+        }
     }
 
     #[tokio::test]
