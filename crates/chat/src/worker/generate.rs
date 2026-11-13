@@ -35,8 +35,9 @@ pub(super) struct ThreadHistory {
     pub tools_in_use: Vec<String>,
 }
 
-/// 出力上限で切れたまま run が終わったときに本文の末尾へ足す注記。
-const TRUNCATED_NOTICE: &str = "\n\n（応答が 1 回の出力上限に達して途中で止まりました。\
+/// 出力上限で切れたまま run が終わったときに本文の末尾へ足す注記。本文の切れは agent-core が
+/// 同じ run の中で数回まで続きを書かせるので、ここに来るのはそれでも書き切れなかったときだけ。
+const TRUNCATED_NOTICE: &str = "\n\n（回答が長すぎて、出力の上限に達したところで止まりました。\
      「続けて」と送ると、ここまでの内容から続けます。）";
 
 impl ChatWorker {

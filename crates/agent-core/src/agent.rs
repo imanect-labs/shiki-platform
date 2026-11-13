@@ -418,6 +418,7 @@ async fn run_step(
     let mut ordered: Vec<Block> = Vec::new();
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
+    let continuing = crate::agent_observation::is_text_continuation(&state.messages);
 
     loop {
         // 黙っている間も停止を見張り、止まったらストリームを drop して上流を手放す（#602）。
@@ -438,7 +439,12 @@ async fn run_step(
                 sink.emit(AgentEvent::Text(text)).await?;
             }
             StreamDelta::ThinkingDelta { text } => {
-                sink.emit(AgentEvent::Thinking(text)).await?;
+                // 本文の続きを書く生成では思考を画面へ流さない。思考が挟まると直前の本文と
+                // 別ブロックになり、表の行・```ブロックの途中から続く本文が別の Markdown として
+                // 描画されて壊れる（chat の sink・画面は思考を本文の区切りにする）。
+                if !continuing {
+                    sink.emit(AgentEvent::Thinking(text)).await?;
+                }
             }
             StreamDelta::ToolUseStart { id, name } => {
                 pending_names.insert(id, name);
@@ -567,6 +573,24 @@ async fn run_step(
             return Ok(StepOutcome::Continue);
         }
         return Ok(StepOutcome::Stop(AgentStop::Truncated));
+    }
+
+    // 本文の途中で出力上限に達した: 完了ではないので、同じ run のまま続きを書かせる。
+    // 次のステップへ進める予算が無ければ続けない（進んでも予算で止まり、未完の本文が
+    // `Budget` の正常終了に見えてしまう。Truncated のまま畳んで中断の案内を出させる）。
+    let can_continue = matches!(
+        opts.budget.check(&state.spent, Instant::now()),
+        BudgetCheck::Ok | BudgetCheck::Warn(..)
+    );
+    if final_stop == StopReason::MaxTokens
+        && calls.is_empty()
+        && !text_acc.is_empty()
+        && can_continue
+    {
+        if let Some(nudge) = crate::agent_observation::text_continuation(&state.messages) {
+            state.messages.push(nudge);
+            return Ok(StepOutcome::Continue);
+        }
     }
 
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
