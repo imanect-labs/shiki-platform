@@ -124,3 +124,12 @@ test("承認必須のON/OFFと設定の409を表示する", async ({ page }) => 
   );
   await expect(approval).not.toBeChecked();
 });
+
+test("管理ホームと未一致パスはホームセクションに判定する", async () => {
+  const { ADMIN_SECTIONS, sectionFor } = await import("../src/components/admin/admin-nav");
+  expect(ADMIN_SECTIONS[0].key).toBe("home");
+  expect(sectionFor("/admin").key).toBe("home");
+  expect(sectionFor("/admin/unknown").key).toBe("home");
+  expect(sectionFor("/admin/bug-reports").key).toBe("bug-reports");
+  expect(sectionFor("/admin/bug-reports/settings").key).toBe("bug-reports");
+});

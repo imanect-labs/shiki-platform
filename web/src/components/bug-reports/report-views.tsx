@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { components } from "@/generated/api";
 import { apiFetch } from "@/lib/api";
@@ -39,7 +39,7 @@ class RequestError extends Error {
   constructor(public status: number) {
     super(
       status === 409
-        ? "別の画面で内容が更新されました。最新の内容を読み直しました。確認してから操作してください。"
+        ? "別の画面で内容が更新されました。最新の内容を確認してから操作してください。"
         : status === 400
           ? "入力内容を確認してください。URL・HTML・パスワードやAPIキーは記入できません。"
           : status === 403
@@ -129,9 +129,24 @@ function useRefresh(load: () => Promise<void>) {
 export function ReportList({ admin = false }: { admin?: boolean }) {
   const [data, setData] = useState<Schema["ReportPage"] | null>(null);
   const [error, setError] = useState("");
+  const expanded = useRef(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const load = useCallback(async () => {
     try {
-      setData(await request(admin ? "/org-admin/bug-reports" : "/bug-reports"));
+      const first = await request<Schema["ReportPage"]>(
+        admin ? "/org-admin/bug-reports" : "/bug-reports",
+      );
+      setData((previous) => {
+        if (!previous || !expanded.current) return first;
+        const ids = new Set(first.items.map((item) => item.id));
+        return {
+          items: [
+            ...first.items,
+            ...previous.items.filter((item) => !ids.has(item.id)),
+          ],
+          next_cursor: previous.next_cursor,
+        };
+      });
       setError("");
     } catch (e) {
       setData(null);
@@ -182,17 +197,29 @@ export function ReportList({ admin = false }: { admin?: boolean }) {
       {data?.next_cursor ? (
         <Button
           variant="outline"
+          disabled={loadingMore}
           onClick={async () => {
+            setLoadingMore(true);
             try {
               const next = await request<Schema["ReportPage"]>(
                 `${admin ? "/org-admin" : ""}/bug-reports?cursor=${data.next_cursor}`,
               );
-              setData({
-                items: [...data.items, ...next.items],
-                next_cursor: next.next_cursor,
+              expanded.current = true;
+              setData((previous) => {
+                const items = previous?.items ?? [];
+                const ids = new Set(items.map((item) => item.id));
+                return {
+                  items: [
+                    ...items,
+                    ...next.items.filter((item) => !ids.has(item.id)),
+                  ],
+                  next_cursor: next.next_cursor,
+                };
               });
             } catch (e) {
               setError(message(e));
+            } finally {
+              setLoadingMore(false);
             }
           }}
         >
@@ -317,28 +344,33 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
   const [draft, setDraft] = useState<Report | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const reload = useCallback(async (id?: string) => {
+    const [latestPolicy, detail] = await Promise.all([
+      request<Schema["ReporterPolicy"]>("/bug-reports/policy"),
+      id ? request<Detail>(`/bug-reports/${id}`) : Promise.resolve(null),
+    ]);
+    setPolicy(latestPolicy);
+    if (detail) {
+      setDraft(detail.report);
+      setContent(detail.report.content);
+      setConsent(false);
+    }
+  }, []);
   const load = useCallback(async () => {
     try {
-      setPolicy(await request("/bug-reports/policy"));
+      await reload(reportId);
     } catch (e) {
       setError(message(e));
     }
-  }, []);
+  }, [reload, reportId]);
   useEffect(() => {
     void load();
-    if (reportId) {
-      void request<Detail>(`/bug-reports/${reportId}`)
-        .then((d) => {
-          setDraft(d.report);
-          setContent(d.report.content);
-        })
-        .catch((e) => setError(message(e)));
-    }
-  }, [load, reportId]);
+  }, [load]);
   async function submit() {
     if (!policy || busy) return;
     setBusy(true);
     setError("");
+    let currentId = draft?.id;
     try {
       let current =
         draft ??
@@ -365,6 +397,7 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
               },
         });
       setDraft(current);
+      currentId = current.id;
       await request(`/bug-reports/${current.id}/submit`, "POST", {
         expected_rev: current.rev,
         policy_rev: policy.policy.rev,
@@ -382,8 +415,16 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
     } catch (e) {
       setError(message(e));
       if (e instanceof RequestError && e.status === 409) {
-        await load();
-        if (draft) router.push(`/bug-reports/${draft.id}`);
+        try {
+          await reload(currentId);
+          setError(
+            "別の画面で内容が更新されました。最新の内容を読み直しました。確認してから操作してください。",
+          );
+        } catch (reloadError) {
+          setError(
+            `最新の内容を読み込めませんでした。もう一度読み込んでください。${message(reloadError)}`,
+          );
+        }
       }
       setConfirm(false);
     } finally {

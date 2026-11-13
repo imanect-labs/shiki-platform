@@ -97,6 +97,40 @@ mod tests {
         assert!(serde_json::from_value::<ReportContent>(serde_json::json!({"category":"bug","title":"x","symptom":"","steps_tried":"","expected_behavior":"","attachment":"x"})).is_err());
     }
     #[test]
+    fn api_key_validation_respects_boundaries_and_length() {
+        for text in [
+            "disk-full",
+            "task-list",
+            "mask-image",
+            "sk-short",
+            "sk-",
+            "sk-!!!!!!!!!!",
+            "task-abcdefghijklmnopqrstuvwxyz",
+        ] {
+            let mut c = content();
+            c.title = text.into();
+            c.symptom = text.into();
+            assert!(c.validate().is_ok(), "{text}");
+        }
+        for text in [
+            "sk-abcdefghij",
+            "APIキー: sk-proj-abcdefghijklmnopqrstuvwxyz",
+            "(sk-1234567890)",
+            "キーはsk-abcdefghijです",
+        ] {
+            for field in 0..4 {
+                let mut c = content();
+                match field {
+                    0 => c.title = text.into(),
+                    1 => c.symptom = text.into(),
+                    2 => c.steps_tried = text.into(),
+                    _ => c.expected_behavior = text.into(),
+                }
+                assert!(c.validate().is_err(), "{text} in field {field}");
+            }
+        }
+    }
+    #[test]
     fn consent_approval_and_terminal_states() {
         use BugReportStatus::*;
         let mut p = BugReportPolicy::default();

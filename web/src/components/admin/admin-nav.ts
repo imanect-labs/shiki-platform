@@ -65,6 +65,14 @@ export function canOpen(
 
 export const ADMIN_SECTIONS: AdminSection[] = [
   {
+    key: "home",
+    label: "ホーム",
+    icon: Home,
+    href: "/admin",
+    prefix: "/admin",
+    access: "admin",
+  },
+  {
     key: "bug-reports",
     label: "不具合報告",
     icon: Bug,
@@ -80,14 +88,6 @@ export const ADMIN_SECTIONS: AdminSection[] = [
         ],
       },
     ],
-  },
-  {
-    key: "home",
-    label: "ホーム",
-    icon: Home,
-    href: "/admin",
-    prefix: "/admin",
-    access: "admin",
   },
   {
     key: "access",

@@ -65,9 +65,10 @@ impl ReportContent {
             &self.steps_tried,
             &self.expected_behavior,
         ] {
-            if ["sk-", "ghp_", "github_pat_", "-----BEGIN", "Bearer "]
+            if ["ghp_", "github_pat_", "-----BEGIN", "Bearer "]
                 .iter()
                 .any(|prefix| text.contains(prefix))
+                || contains_api_key(text)
                 || text.chars().count() > 2000
                 || text.contains(['<', '>'])
                 || text.contains("://")
@@ -191,4 +192,19 @@ pub struct ReporterPolicy {
     pub policy: BugReportPolicy,
     pub destination_available: bool,
     pub destination_version: Option<i64>,
+}
+
+// キーの開始境界と接尾部の長さを確認し、disk-full 等の通常語を除外する。
+fn contains_api_key(text: &str) -> bool {
+    text.match_indices("sk-").any(|(index, _)| {
+        let boundary = text[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+        let length = text[index + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            .count();
+        boundary && length >= 10
+    })
 }

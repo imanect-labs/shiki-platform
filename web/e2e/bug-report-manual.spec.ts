@@ -141,3 +141,90 @@ test("読み込み・エラー状態を表示して再試行できる", async ({
   ).toBeVisible();
   await shot(page, "error");
 });
+
+test("下書きの競合後に本文とrevisionを読み直し再提出できる", async ({ page }) => {
+  await loginReport(page);
+  let current = { ...report, status: "draft", rev: 1 };
+  let patches = 0;
+  let submitted = false;
+  await page.route(/\/api\/bug-reports(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/policy"))
+      return route.fulfill({ json: { policy, destination_available: false, destination_version: null } });
+    if (route.request().method() === "PATCH") {
+      patches++;
+      if (route.request().postDataJSON().expected_rev !== current.rev)
+        return route.fulfill({ status: 409, json: {} });
+      current = { ...current, content: route.request().postDataJSON().content, rev: current.rev + 1 };
+      return route.fulfill({ json: current });
+    }
+    if (path.endsWith("/submit")) {
+      expect(route.request().postDataJSON().expected_rev).toBe(current.rev);
+      submitted = true;
+      current = { ...current, status: "held" };
+      return route.fulfill({ json: current });
+    }
+    return route.fulfill({ json: { report: current, submission: null } });
+  });
+  await page.goto(`/bug-reports/${report.id}`);
+  await expect(page.getByLabel("題名（必須）")).toHaveValue(content.title);
+  await page.getByLabel("題名（必須）").fill("このタブの編集");
+  await page.getByRole("checkbox").check();
+  current = { ...current, rev: 2, content: { ...content, title: "別タブで更新した題名", symptom: "別タブで更新した症状" } };
+  await page.getByRole("button", { name: "送信内容を確認" }).click();
+  await page.getByRole("button", { name: "この内容で報告する" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "読み直しました" })).toBeVisible();
+  await expect(page.getByLabel("題名（必須）")).toHaveValue(current.content.title);
+  await expect(page.getByLabel("どのようなことが起きましたか")).toHaveValue(current.content.symptom);
+  await expect(page.getByRole("checkbox")).not.toBeChecked();
+  await page.getByRole("alert").filter({ hasText: "読み直しました" }).scrollIntoViewIfNeeded();
+  await shot(page, "draft-conflict");
+  await page.getByRole("checkbox").check();
+  await page.getByRole("button", { name: "送信内容を確認" }).click();
+  await page.getByRole("button", { name: "この内容で報告する" }).click();
+  await expect.poll(() => submitted).toBe(true);
+  await expect(page.getByText("報告を受け付けました", { exact: true })).toBeVisible();
+  expect(patches).toBe(2);
+  await page.reload();
+  await expect(page.getByText("保留（外部には未送信）", { exact: true })).toBeVisible();
+});
+
+for (const admin of [false, true]) {
+  test(`${admin ? "管理者" : "本人"}一覧は追加ページとカーソルを自動更新後も保持する`, async ({ page }) => {
+    await loginReport(page);
+    await page.clock.install();
+    const items = Array.from({ length: 120 }, (_, i) => ({
+      id: `report-${i}`, title: `報告 ${i}`, status: "pending_approval", rev: 1,
+    }));
+    let refreshes = 0;
+    await page.route(`**/api/${admin ? "org-admin/" : ""}bug-reports*`, async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      const start = cursor === "page-2" ? 50 : cursor === "page-3" ? 100 : 0;
+      if (!cursor) refreshes++;
+      return route.fulfill({ json: {
+        items: items.slice(start, start + 50),
+        next_cursor: start === 0 ? "page-2" : start === 50 ? "page-3" : null,
+      } });
+    });
+    await page.goto(`${admin ? "/admin" : ""}/bug-reports`);
+    const reports = page.locator('main li a[href*="/bug-reports/report-"]');
+    await expect(reports).toHaveCount(50);
+    await page.getByRole("button", { name: "続きを表示" }).click();
+    await expect(reports).toHaveCount(100);
+    items[0] = { ...items[0], title: "更新された報告" };
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(reports.first()).toContainText("更新された報告");
+    await expect(reports).toHaveCount(100);
+    const before = refreshes;
+    await page.clock.fastForward(30_000);
+    await expect.poll(() => refreshes).toBeGreaterThan(before);
+    await expect(reports).toHaveCount(100);
+    await page.getByRole("button", { name: "続きを表示" }).click();
+    await expect(reports).toHaveCount(120);
+    await expect(page.getByRole("button", { name: "続きを表示" })).toHaveCount(0);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect.poll(() => refreshes).toBeGreaterThan(before + 1);
+    await expect(reports).toHaveCount(120);
+    await expect(page.getByRole("button", { name: "続きを表示" })).toHaveCount(0);
+  });
+}
