@@ -435,7 +435,7 @@ async fn thinking_only_response_is_retried_with_lower_effort() {
     let gateway = stub_gateway(pool);
     let c = ctx(&tenant);
     let calls = Arc::new(AtomicUsize::new(0));
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::clone(&calls)))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool("sheet_edit", Arc::clone(&calls)))];
     let mut sink = TestSink::default();
     let mut opts = AgentOptions::autonomous(10, None, 1_000_000_000, 1_000_000_000);
     opts.effort = Some(llm_gateway::Effort::High);
@@ -494,7 +494,10 @@ async fn thinking_only_retries_are_bounded() {
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let gateway = stub_gateway(pool);
     let c = ctx(&tenant);
-    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::new(AtomicUsize::new(0))))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(
+        "sheet_edit",
+        Arc::new(AtomicUsize::new(0)),
+    ))];
     let mut sink = TestSink::default();
 
     let outcome = run_agent(
@@ -511,9 +514,10 @@ async fn thinking_only_retries_are_bounded() {
     .expect("run_agent 成功");
 
     assert_eq!(outcome.stop, AgentStop::Truncated);
-    // 呼び出し 1 + 思考だけ（初回＋書き直し 2 回）+ 空応答の催促 1 回。
+    // 呼び出し 1 + 思考だけ（初回＋書き直し 2 回）。催促を使い切った思考だけの応答には空応答の催促
+    // （「本文として書いて」）を送らず、そのまま打ち切りで畳む。
     assert_eq!(
-        outcome.checkpoint.spent.steps, 5,
+        outcome.checkpoint.spent.steps, 4,
         "{:?}",
         outcome.checkpoint.spent
     );
