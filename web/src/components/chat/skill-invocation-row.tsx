@@ -11,9 +11,11 @@
 /// （`redact_tool_results_for_viewer`）ので、そのときは見られない旨だけを出す。
 
 import * as React from "react";
-import { AlertTriangle, ChevronRight, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, ChevronDown, Loader2, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { seasonVar } from "@/lib/season";
+import { seasonIndexFor } from "@/lib/tool-display";
 import { useRememberedOpen } from "./disclosure-memory";
 import type { ToolActivityItem } from "./tool-activity";
 
@@ -56,6 +58,9 @@ export function SkillInvocationRow({
   // 実行中は中身がまだ無いので開けない。
   const expandable = !item.running;
 
+  // 色と並びは隣の操作の行（ToolActivity の見出し）に揃える: 状態の印 → 文言 → 版 → 右端の開閉。
+  const season = seasonVar(seasonIndexFor("meta", item.running));
+
   return (
     <div className="mb-2.5" data-testid="skill-invocation">
       <button
@@ -65,40 +70,52 @@ export function SkillInvocationRow({
         aria-expanded={expandable ? open : undefined}
         aria-controls={expandable ? panelId : undefined}
         className={cn(
-          "flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-left text-[13px] transition-colors",
+          "group flex w-full items-center gap-2 rounded-lg py-1 text-left text-[13px] transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          failed ? "text-destructive" : "text-muted-foreground hover:text-foreground",
-          !expandable && "cursor-default hover:text-muted-foreground",
+          expandable ? "hover:bg-accent/30" : "cursor-default",
         )}
       >
         {item.running ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+          <Loader2 className="size-3.5 shrink-0 animate-spin" style={{ color: season }} aria-hidden />
         ) : failed ? (
-          <AlertTriangle className="size-3.5 shrink-0" aria-hidden />
+          <AlertTriangle className="size-3.5 shrink-0 text-destructive" aria-hidden />
         ) : (
-          <Sparkles className="size-3.5 shrink-0 text-primary" aria-hidden />
+          <Sparkles className="size-3.5 shrink-0" style={{ color: season }} aria-hidden />
         )}
-        <span className="min-w-0 truncate font-medium" aria-live="polite">
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate font-medium",
+            item.running ? "shiki-text-shimmer" : failed ? "text-destructive" : "text-foreground/85",
+          )}
+          aria-live="polite"
+        >
           {status}
         </span>
         {item.skillVersion !== undefined ? (
           <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">v{item.skillVersion}</span>
         ) : null}
         {expandable ? (
-          <ChevronRight
-            className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")}
+          <ChevronDown
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              "duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+              open && "rotate-180",
+            )}
             aria-hidden
           />
         ) : null}
       </button>
 
       {expandable && open ? (
-        <div id={panelId} className="mt-2 border-l-2 border-border pl-3">
+        // 中身の左端は見出しの文言に揃える（印の幅＋間隔・ToolActivity の展開と同じ字下げ）。
+        <div id={panelId} className="mt-1 pl-[1.375rem]">
           {body ? (
+            // 作者が書いた指示文の原文。整形せず、原文と分かる等幅で出す（リンク・画像・```ui を動かさない）。
             <pre
               className={cn(
-                "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md p-2.5 font-sans text-[12px] leading-relaxed",
-                failed ? "bg-destructive/5 text-destructive" : "bg-muted/40 text-muted-foreground",
+                "max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-card/40 p-3",
+                "font-mono text-[12px] leading-relaxed",
+                failed ? "text-destructive" : "text-foreground/80",
               )}
               data-testid="skill-invocation-content"
             >
