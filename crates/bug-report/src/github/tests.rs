@@ -134,6 +134,49 @@ async fn success_and_fixed_payload() {
     assert!(request.contains("x-github-api-version: 2022-11-28"));
     assert!(!request.contains("@alice"));
     assert!(!request.contains("tenant"));
+    assert!(request.contains("## 種別\\n不具合"));
+}
+#[tokio::test]
+async fn token_stage_failures_are_retryable_before_issue_post() {
+    // token 取得のタイムアウトは Issue POST 前なので結果不明にしない。
+    let (sink, mut rx) = stub(vec!["timeout".into()]).await;
+    *sink.token.lock().await = None;
+    assert_eq!(
+        sink.dispatch(&report(), &identity()).await,
+        Dispatch::Retry {
+            after: 60,
+            code: "credential_unavailable"
+        }
+    );
+    assert!(rx
+        .recv()
+        .await
+        .unwrap()
+        .starts_with("POST /app/installations/2/access_tokens "));
+    assert!(rx.try_recv().is_err());
+    // token エンドポイントの rate limit は待機時間を尊重する。
+    let (sink, _) = stub(vec![response(429, "Retry-After: 120\r\n", "")]).await;
+    *sink.token.lock().await = None;
+    assert_eq!(
+        sink.dispatch(&report(), &identity()).await,
+        Dispatch::Retry {
+            after: 120,
+            code: "rate_limit"
+        }
+    );
+    // 資格情報の拒否は止める。
+    let (sink, _) = stub(vec![response(401, "", "")]).await;
+    *sink.token.lock().await = None;
+    assert_eq!(
+        sink.dispatch(&report(), &identity()).await,
+        Dispatch::Failed("credential")
+    );
+}
+#[test]
+fn every_category_has_a_label() {
+    assert_eq!(category_label(crate::Category::Bug), "不具合");
+    assert_eq!(category_label(crate::Category::Usage), "使い方");
+    assert_eq!(category_label(crate::Category::Other), "その他");
 }
 #[tokio::test]
 async fn http_failures_and_retry() {

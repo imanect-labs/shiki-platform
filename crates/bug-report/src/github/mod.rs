@@ -70,10 +70,14 @@ impl GitHubIssueSink {
             "/app/installations/{}/access_tokens",
             self.config.installation_id
         );
-        let (status, _, bytes) = self.request(reqwest::Method::POST, &path, &jwt,
+        let (status, headers, bytes) = self.request(reqwest::Method::POST, &path, &jwt,
             Some(serde_json::json!({"repositories":[self.config.repo],"permissions":{"issues":"write","metadata":"read"}}))).await?;
         if status != 201 {
-            return Err(Dispatch::Failed("credential"));
+            // rate limit は待機時間を尊重して再試行。それ以外は資格情報の不備として止める。
+            return Err(match classify(status, &headers) {
+                retry @ Dispatch::Retry { .. } => retry,
+                _ => Dispatch::Failed("credential"),
+            });
         }
         #[derive(Deserialize)]
         struct Response {
@@ -120,11 +124,19 @@ impl GitHubIssueSink {
         }
         let token = match self.token().await {
             Ok(t) => t,
+            // Issue 作成の POST 前なので結果不明にはしない（照合で見つからず永久に未配送になる）。
+            Err(Dispatch::Unknown) => {
+                return Dispatch::Retry {
+                    after: 60,
+                    code: "credential_unavailable",
+                }
+            }
             Err(e) => return e,
         };
         let c = &report.content;
         let body = format!(
-            "## 症状\n{}\n\n## 試した手順\n{}\n\n## 期待動作\n{}\n\n## 環境情報\n未収集\n\n{}",
+            "## 種別\n{}\n\n## 症状\n{}\n\n## 試した手順\n{}\n\n## 期待動作\n{}\n\n## 環境情報\n未収集\n\n{}",
+            category_label(c.category),
             literal(&c.symptom),
             literal(&c.steps_tried),
             literal(&c.expected_behavior),
@@ -198,6 +210,14 @@ fn read_key(config: &GitHubConfig) -> Result<jsonwebtoken::EncodingKey, Error> {
         return Err(Error::Invalid);
     }
     jsonwebtoken::EncodingKey::from_rsa_pem(&bytes).map_err(|_| Error::Invalid)
+}
+fn category_label(category: crate::Category) -> &'static str {
+    // 本文を共有しない報告でも、許可された唯一の情報である種別は配送する。
+    match category {
+        crate::Category::Bug => "不具合",
+        crate::Category::Usage => "使い方",
+        crate::Category::Other => "その他",
+    }
 }
 fn marker(identity: &DeliveryIdentity) -> String {
     format!("<!-- shiki-delivery:{} -->", identity.id)
