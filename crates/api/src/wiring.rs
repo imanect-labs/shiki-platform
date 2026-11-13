@@ -669,6 +669,16 @@ pub(crate) fn wire_bug_report(
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn authz::AuthzClient>,
 ) -> anyhow::Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>> {
+    let retention = shiki_bug_report::retention::Retention::new(db.clone());
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
+        loop {
+            interval.tick().await;
+            if retention.run_batch().await.is_err() {
+                tracing::warn!("bug-report retention batch failed");
+            }
+        }
+    });
     if !config.enabled {
         return Ok(None);
     }

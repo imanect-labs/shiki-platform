@@ -49,7 +49,7 @@ impl DeliveryWorker {
             begin_cross_tenant_tx(&self.pool, "bug-report delivery tenant enumeration only")
                 .await?;
         // tenant-sql: allow(本文を含まない有界の配送対象 tenant/org 列挙。以降は tenant tx)
-        let scopes: Vec<(String,String)> = sqlx::query_as("SELECT d.tenant_id,d.org FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) GROUP BY d.tenant_id,d.org ORDER BY min(d.next_attempt_at),d.tenant_id,d.org LIMIT 8")
+        let scopes: Vec<(String,String)> = sqlx::query_as("SELECT d.tenant_id,d.org FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE NOT EXISTS (SELECT 1 FROM tenant t WHERE t.tenant_id=d.tenant_id AND t.status<>'active') AND s.body_purged_at IS NULL AND s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) GROUP BY d.tenant_id,d.org ORDER BY min(d.next_attempt_at),d.tenant_id,d.org LIMIT 8")
             .fetch_all(&mut *enumeration).await?;
         enumeration.commit().await?;
         let mut done = 0;
@@ -70,6 +70,16 @@ impl DeliveryWorker {
     }
     pub(crate) async fn claim(&self, tenant: &TenantId, org: &str) -> Result<Option<Claim>, Error> {
         let mut tx = begin_tenant_tx(&self.pool, tenant).await?;
+        // 台帳のない固定 onprem tenant は従来どおり扱う。撤去済みは fail closed。
+        let stopped: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tenant WHERE tenant_id=$1 AND status<>'active')",
+        )
+        .bind(tenant.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        if stopped {
+            return Ok(None);
+        }
         // 全 tenant/replica で共有する installation quota。本文を読む経路は tenant tx のまま。
         let cooling: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bug_report_destination_cooldown WHERE installation_id=$1 AND next_attempt_at>now())")
             .bind(self.sink.installation_id()).fetch_one(&mut *tx).await?;
@@ -81,7 +91,7 @@ impl DeliveryWorker {
             .bind(format!("bug-report:{tenant}:{org}"))
             .execute(&mut *tx)
             .await?;
-        let row = sqlx::query("SELECT d.id,d.report_id,d.submission_rev,d.fence,d.outcome,d.attempt_count,(d.created_at>now()-interval '24 hours') AS within_deadline,s.principal,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.content_consent,s.approved_by FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE d.tenant_id=$1 AND d.org=$2 AND s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED")
+        let row = sqlx::query("SELECT d.id,d.report_id,d.submission_rev,d.fence,d.outcome,d.attempt_count,(d.created_at>now()-interval '24 hours') AS within_deadline,s.principal,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.content_consent,s.approved_by FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE d.tenant_id=$1 AND d.org=$2 AND s.body_purged_at IS NULL AND s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED")
             .bind(tenant.as_str()).bind(org).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(None) };
         let principal: Principal =
@@ -257,6 +267,7 @@ impl DeliveryWorker {
         save(&mut tx, ctx, &mut report).await?;
         audit(&mut tx, ctx, action, &report.id.to_string(), "delivery", serde_json::json!({"actor":"worker","delivery_id":claim.identity.id,"outcome":outcome,"error_code":code}), Chain::Yes).await?;
         tx.commit().await?;
+        tracing::info!(outcome, error_code = code, "bug-report delivery completed");
         Ok(())
     }
 }
