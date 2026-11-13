@@ -243,7 +243,7 @@ impl StorageService {
                     let kind = NodeKind::parse(&cand.kind).unwrap_or(NodeKind::File);
                     if can[i] {
                         match self
-                            .purge_locked(ctx, cand.id, kind, trace_id, &mut budget)
+                            .purge_locked(ctx, cand.id, kind, Some(upper), trace_id, &mut budget)
                             .await
                         {
                             Ok(PurgeOutcome::Purged(r)) => {

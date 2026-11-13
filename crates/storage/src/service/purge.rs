@@ -148,7 +148,7 @@ impl StorageService {
             return Err(StorageError::Forbidden);
         }
         let mut budget = INLINE_CLEANUP_MAX;
-        self.purge_locked(ctx, root_id, kind, trace_id, &mut budget)
+        self.purge_locked(ctx, root_id, kind, None, trace_id, &mut budget)
             .await
     }
 
@@ -195,12 +195,16 @@ impl StorageService {
 
     /// 認可を済ませた根を、配下ごと完全に削除する（`purge_node` と「空にする」の共通の本体）。
     ///
+    /// `deleted_by` は「空にする」の上限（押した時刻）。根を押さえた後の削除の時刻がそれより後なら、候補を選んで
+    /// から押さえるまでの間に元に戻してゴミ箱へ入れ直したものなので消さず、[`PurgeOutcome::NotInTrash`]（押した
+    /// 時点のゴミ箱には無い）を返す（D-221）。
     /// `cleanup_budget` は commit の後にその場で片付ける片付け待ちの行の残りの数で、使った分を減らす。
     pub(crate) async fn purge_locked(
         &self,
         ctx: &AuthContext,
         root_id: Uuid,
         kind: NodeKind,
+        deleted_by: Option<DateTime<Utc>>,
         trace_id: Option<&str>,
         cleanup_budget: &mut usize,
     ) -> Result<PurgeOutcome, StorageError> {
@@ -210,6 +214,21 @@ impl StorageService {
             Ok(locked) => locked,
             Err(refused) => return Ok(refused),
         };
+        if let Some(upper) = deleted_by {
+            // 根は上で押さえているので、確かめた削除の時刻のまま消える。
+            let within: bool = sqlx::query_scalar(
+                "SELECT deleted_at <= $4 FROM node WHERE org = $1 AND tenant_id = $2 AND id = $3",
+            )
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(root_id)
+            .bind(upper)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !within {
+                return Ok(PurgeOutcome::NotInTrash);
+            }
+        }
         let audit = PurgeAudit {
             action: purge_action(kind),
             extra: json!({}),

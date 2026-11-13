@@ -336,6 +336,64 @@ async fn empty_trash_continuation_keeps_what_was_trashed_after_the_first_call() 
     assert!(!node_exists(&c, late.id).await, "呼び直せば消せる");
 }
 
+/// 「空にする」が候補を選んでから根を押さえるまでの間に、元に戻してゴミ箱へ入れ直したものは消さない（押した時刻
+/// より後に入れたものになる・D-221）。その隙間は、根の行を別の Tx で押さえて作り、待っている間に削除の時刻を
+/// 押した後へ置き直す（元に戻して入れ直すのと同じ行になる）。
+#[tokio::test]
+async fn empty_trash_keeps_what_was_trashed_again_after_it_started() {
+    let Some(c) = setup().await else { return };
+    let (alice, _) = new_org(&c).await;
+    let file = write(&c, &alice, "again.txt", b"purge-conc-it trashed again").await;
+    wait_check(
+        &c,
+        &alice,
+        Relation::Editor,
+        &alice.ns().file(&file.id.to_string()),
+    )
+    .await;
+    c.service
+        .soft_delete_file(&alice, file.id, None)
+        .await
+        .unwrap();
+
+    let mut hold = c.pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM node WHERE tenant_id = $1 AND id = $2 FOR UPDATE")
+        .bind(TENANT)
+        .bind(file.id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    let empty = {
+        let (service, alice) = (c.service.clone(), alice.clone());
+        tokio::spawn(async move { service.empty_trash(&alice, None, None).await })
+    };
+    // 「空にする」が候補を選び、根の行を待つまで。
+    for _ in 0..200 {
+        if empty.is_finished() || waiting_on_row(&c, "FOR UPDATE OF n").await {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    sqlx::query("UPDATE node SET deleted_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2")
+        .bind(TENANT)
+        .bind(file.id)
+        .execute(&mut *hold)
+        .await
+        .unwrap();
+    hold.commit().await.unwrap();
+    let out = tokio::time::timeout(Duration::from_secs(60), empty)
+        .await
+        .expect("止まらない")
+        .unwrap()
+        .unwrap();
+    assert_eq!(out.purged, 0, "押した後に入れ直したものは消さない: {out:?}");
+    assert!(node_exists(&c, file.id).await);
+
+    let again = c.service.empty_trash(&alice, None, None).await.unwrap();
+    assert_eq!(again.purged, 1, "呼び直せば消せる: {again:?}");
+    assert!(!node_exists(&c, file.id).await);
+}
+
 /// 完全削除がノードの行を押さえて消している間の redeem は、完全削除の commit を待ってから断られる（消した
 /// ノードに台帳の行と via_link のタプルを残さない）。完全削除の DB の側は、`purge` と同じ順に行を押さえて
 /// 消す Tx で模す（commit の前に redeem を走らせるため）。
