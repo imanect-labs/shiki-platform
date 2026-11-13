@@ -112,7 +112,9 @@ impl BugReportService {
         content.validate()?;
         let mut tx = begin_tenant_tx(&self.store.pool, ctx.tenant()).await?;
         store::lock(&mut tx, ctx).await?;
-        if !store::policy(&mut tx, ctx).await?.enabled {
+        let policy = store::policy(&mut tx, ctx).await?;
+        check_content_sharing(&policy, &content)?;
+        if !policy.enabled {
             return Err(Error::Disabled);
         }
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM bug_report WHERE tenant_id=$1 AND org=$2 AND reporter_id=$3 AND created_at > now() - interval '1 day'")
@@ -187,6 +189,7 @@ impl BugReportService {
         if report.rev != expected_rev || report.status != Status::Draft {
             return Err(Error::Conflict);
         }
+        check_content_sharing(&store::policy(&mut tx, ctx).await?, &content)?;
         report.content = content;
         save(&mut tx, ctx, &mut report).await?;
         audit(
@@ -446,4 +449,11 @@ async fn approve_submission(
     } else {
         Status::Held
     })
+}
+
+fn check_content_sharing(policy: &BugReportPolicy, content: &ReportContent) -> Result<(), Error> {
+    if !policy.allow_content_sharing && *content != content.metadata_only() {
+        return Err(Error::Forbidden);
+    }
+    Ok(())
 }

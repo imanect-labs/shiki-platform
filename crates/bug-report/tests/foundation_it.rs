@@ -92,6 +92,10 @@ async fn setup() -> Option<(PgPool, Arc<OpenFgaClient>, BugReportService, AuthCo
         .await
         .unwrap();
     let service = BugReportService::new(BugReportStore::new(runtime), fga.clone());
+    // 自由記述を使う fixture org はサービスで明示許可する。
+    let mut policy = service.policy(&ctx, "fixture").await.unwrap();
+    policy.allow_content_sharing = true;
+    service.set_policy(&ctx, policy, "fixture").await.unwrap();
     Some((db, fga, service, ctx))
 }
 fn submit(id: Uuid, rev: i64, policy_rev: i64, consent: bool, key: &str) -> CommandRequest {
@@ -164,7 +168,7 @@ async fn authorization_revision_gates_and_idempotency() {
         ));
     }
     assert!(matches!(
-        svc.command(&ctx, submit(r.id, 0, 0, true, "stale"), "submit")
+        svc.command(&ctx, submit(r.id, 0, 1, true, "stale"), "submit")
             .await,
         Err(Error::Conflict)
     ));
@@ -174,19 +178,19 @@ async fn authorization_revision_gates_and_idempotency() {
         Err(Error::Conflict)
     ));
     let r = svc
-        .command(&ctx, submit(r.id, 1, 0, true, "once"), "submit")
+        .command(&ctx, submit(r.id, 1, 1, true, "once"), "submit")
         .await
         .unwrap();
     assert_eq!(r.status, Status::Held);
     assert_eq!(
-        svc.command(&ctx, submit(r.id, 1, 0, true, "once"), "replay")
+        svc.command(&ctx, submit(r.id, 1, 1, true, "once"), "replay")
             .await
             .unwrap()
             .rev,
         r.rev
     );
     assert!(matches!(
-        svc.command(&ctx, submit(r.id, 1, 0, false, "once"), "different")
+        svc.command(&ctx, submit(r.id, 1, 1, false, "once"), "different")
             .await,
         Err(Error::Conflict)
     ));
@@ -206,7 +210,7 @@ async fn authorization_revision_gates_and_idempotency() {
     ));
     assert_eq!(
         svc.get(&admin, r.id, "view").await.unwrap().content.symptom,
-        ""
+        "秘密の本文"
     );
     let mut policy = svc.policy(&ctx, "policy").await.unwrap();
     policy.allow_content_sharing = true;
@@ -262,7 +266,7 @@ async fn draft_daily_limit_and_revision_race() {
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     let r = svc.get(&ctx, r.id, "get").await.unwrap();
     let r = svc
-        .command(&ctx, submit(r.id, r.rev, 0, true, "submit"), "submit")
+        .command(&ctx, submit(r.id, r.rev, 1, true, "submit"), "submit")
         .await
         .unwrap();
     let r = svc
@@ -341,7 +345,7 @@ async fn audit_failure_rolls_back_submission_and_runtime_rls_is_strict() {
     sqlx::query(&ddl).execute(&db).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION {function}() ")).execute(&db).await.unwrap();
     let result = svc
-        .command(&ctx, submit(r.id, 1, 0, true, "rollback"), "submit")
+        .command(&ctx, submit(r.id, 1, 1, true, "rollback"), "submit")
         .await;
     sqlx::query(&format!("DROP TRIGGER {function} ON audit_log"))
         .execute(&db)
@@ -364,7 +368,7 @@ async fn audit_failure_rolls_back_submission_and_runtime_rls_is_strict() {
     .unwrap();
     assert_eq!(n, 0);
     assert_eq!(
-        svc.command(&ctx, submit(r.id, 1, 0, true, "rollback"), "retry")
+        svc.command(&ctx, submit(r.id, 1, 1, true, "rollback"), "retry")
             .await
             .unwrap()
             .status,
@@ -382,7 +386,7 @@ async fn daily_submission_limit_counts_all_revisions() {
         r = svc
             .command(
                 &ctx,
-                submit(r.id, r.rev, 0, true, &format!("submit{n}")),
+                submit(r.id, r.rev, 1, true, &format!("submit{n}")),
                 "submit",
             )
             .await
@@ -404,7 +408,7 @@ async fn daily_submission_limit_counts_all_revisions() {
         sqlx::query("UPDATE bug_report_submission SET consent_at=now()-interval '2 hours' WHERE tenant_id=$1 AND org=$2 AND report_id=$3").bind(ctx.tenant_id()).bind(ctx.org()).bind(r.id).execute(&db).await.unwrap();
     }
     assert!(matches!(
-        svc.command(&ctx, submit(r.id, r.rev, 0, true, "twenty-first"), "limit")
+        svc.command(&ctx, submit(r.id, r.rev, 1, true, "twenty-first"), "limit")
             .await,
         Err(Error::RateLimited)
     ));
@@ -442,7 +446,7 @@ async fn approval_rejection_policy_and_cancel_guards() {
         let mut r = svc
             .command(
                 &ctx,
-                submit(r.id, 1, policy.rev, true, &r.id.to_string()),
+                submit(r.id, 1, policy.rev, false, &r.id.to_string()),
                 "submit",
             )
             .await
@@ -626,4 +630,35 @@ async fn list_detail_keep_drafts_private_and_recheck_admin() {
         .detail(&ctx, report.id, false, "trace")
         .await
         .is_ok());
+}
+
+#[tokio::test]
+async fn content_sharing_prohibition_rejects_new_text_at_service_boundary() {
+    let Some((_db, _fga, svc, ctx)) = setup().await else {
+        return;
+    };
+    let report = svc
+        .create(&ctx, content(), "before-policy-change")
+        .await
+        .unwrap();
+    let mut policy = svc.policy(&ctx, "policy").await.unwrap();
+    policy.allow_content_sharing = false;
+    svc.set_policy(&ctx, policy, "policy").await.unwrap();
+    assert!(matches!(
+        svc.create(&ctx, content(), "forbidden").await,
+        Err(Error::Forbidden)
+    ));
+    assert!(matches!(
+        svc.update(&ctx, report.id, report.rev, content(), "forbidden")
+            .await,
+        Err(Error::Forbidden)
+    ));
+    let metadata = ReportContent {
+        category: Category::Bug,
+        title: "不具合報告（カテゴリのみ）".into(),
+        symptom: String::new(),
+        steps_tried: String::new(),
+        expected_behavior: String::new(),
+    };
+    assert!(svc.create(&ctx, metadata, "metadata-only").await.is_ok());
 }
