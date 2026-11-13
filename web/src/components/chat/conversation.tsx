@@ -447,13 +447,16 @@ export function Conversation({
   // 1 レンダー分古いまま onDone に入り、最後のバッチ（下書き・参照など）が確定から
   // 欠落する（stub LLM の高速バーストで顕在化）。ref を同期更新して確実に拾う。
   const streamRef = React.useRef<StreamState | null>(null);
+  // 終わり方が cancelled / failed だった run（onDone の確定でタスクを中断扱いにする）。
+  const runInterruptedRef = React.useRef(false);
   // 生成の終わり（完了・停止・エラー）で、タスクパネルを最後の状態に揃える。最後の計画イベントと
   // 完了が同じ描画にまとまると、上の effect は計画を拾えない。実行中のままの表示も止める
-  // （停止・エラーなら進行中のタスクは保留にする）。
+  // （停止・エラー・キャンセル・失敗なら進行中のタスクは保留にする。正常に終わった run で進行中のまま
+  // 残ったタスクは、エージェントが完了の印を付け忘れただけなので完了として扱う。未着手には戻さない）。
   const settleTasks = (s: StreamState, interrupted: boolean) => {
     if (s.plan.length === 0) return;
     setLatestPlan(
-      s.plan.map((t) => (t.status === "doing" ? { ...t, status: interrupted ? "blocked" : "todo" } : t)),
+      s.plan.map((t) => (t.status === "doing" ? { ...t, status: interrupted ? "blocked" : "done" } : t)),
     );
     setLatestActivities(
       taskActivitiesOf(
@@ -480,7 +483,8 @@ export function Conversation({
     finishRestoreRef.current();
     const s = streamRef.current;
     if (s) finalizeStream(s, setMessages, provisional);
-    if (s) settleTasks(s, provisional === "stopped");
+    if (s) settleTasks(s, provisional === "stopped" || runInterruptedRef.current);
+    runInterruptedRef.current = false;
     streamRef.current = null;
     setStream(null);
   }, []);
@@ -718,6 +722,7 @@ export function Conversation({
         if (status === "failed") setError("生成に失敗しました。");
         // 中断した run の保留遷移は捨てる（次の run の完了時に横取りされないように）。
         if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
+        runInterruptedRef.current = status === "cancelled" || status === "failed";
       },
       onDone: () => {
         // 本文の ```ui の図を含む応答はサーバ確定の message id が要る（ボタンの照合先・
@@ -2100,11 +2105,23 @@ function reassignTaskTools(s: StreamState, plan: PlanSubtask[]): Record<string, 
   const sameShape =
     plan.length === s.plan.length && plan.every((t, i) => t.id === s.plan[i]?.id && t.title === s.plan[i]?.title);
   if (!sameShape) {
-    const titleOf = new Map(s.plan.map((t) => [t.id, t.title]));
-    const idOf = new Map(plan.map((t) => [t.title, t.id]));
+    // 同じ題名のタスクが複数あっても混ぜないよう、題名ごとの出現順で対応させる（n 番目の「調査」→
+    // 新しい計画の n 番目の「調査」）。
+    const keyOf = (list: PlanSubtask[]) => {
+      const seen = new Map<string, number>();
+      return new Map(
+        list.map((t) => {
+          const n = seen.get(t.title) ?? 0;
+          seen.set(t.title, n + 1);
+          return [t.id, `${n}\u0000${t.title}` as string] as const;
+        }),
+      );
+    };
+    const oldKey = keyOf(s.plan);
+    const idOf = new Map([...keyOf(plan)].map(([id, k]) => [k, id]));
     map = {};
     for (const [key, oldId] of Object.entries(s.taskTools)) {
-      const id = idOf.get(titleOf.get(oldId) ?? "");
+      const id = idOf.get(oldKey.get(oldId) ?? "");
       if (id) map[key] = id;
     }
   }

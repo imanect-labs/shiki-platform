@@ -2,7 +2,7 @@
 
 /// エージェントのタスク（計画のサブタスク）パネル。
 ///
-/// - 広い画面: 会話の右カラム（本文に重ねない・開閉で本文の位置を動かさない）。
+/// - 広い画面: 会話の右カラム（本文に重ねない。開くと本文の列がパネルの幅だけ狭まる）。
 /// - 狭い画面・分割ビュー: 右（スマホは下）から出るシート。
 ///
 /// 各タスクの下に「そのタスクの間に何をしたか」（ツールの操作）を出す。着手したタスクは開いたまま、
@@ -155,7 +155,12 @@ function PanelHeader({ tasks }: { tasks: PlanSubtask[] }) {
   return (
     <div className="flex items-baseline gap-2">
       <span className="text-[14px] font-semibold text-foreground">タスク</span>
-      <span className="text-[12px] tabular-nums text-muted-foreground" data-testid="task-progress">
+      <span
+        className="text-[12px] tabular-nums text-muted-foreground"
+        data-testid="task-progress"
+        role="status"
+        aria-live="polite"
+      >
         <span data-testid="plan-progress">
           {done}/{total}
         </span>{" "}
@@ -245,6 +250,10 @@ export function TaskInlineLine({ tasks, onOpen }: { tasks: PlanSubtask[]; onOpen
     >
       {current?.status === "doing" ? (
         <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
+      ) : current?.status === "blocked" ? (
+        <PauseCircle className="size-3.5 shrink-0" aria-hidden />
+      ) : current ? (
+        <Circle className="size-3.5 shrink-0" aria-hidden />
       ) : (
         <CheckCircle2 className="size-3.5 shrink-0" aria-hidden />
       )}
