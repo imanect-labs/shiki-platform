@@ -193,6 +193,40 @@ pub(super) fn append_attachment_readers(
     append_system_section(opts, attachment_readers_section(attachments, &offered));
 }
 
+/// スキルを先に読み込ませる案内（`skill` が提示されているときだけ）。
+///
+/// 基本の system プロンプトは「社内固有の情報は社内文書を検索」としか言わないため、本人の
+/// スキル（例: 旅費申請書の作成手順）が一覧にあっても、モデルは doc_search へ直行していた
+/// （プレビューの実測）。依頼に合うスキルがあれば、調べ始める前に読み込ませる。
+/// 一覧の外を探せる `skill_search` は、提示されているときだけ名前を出す。
+pub(super) fn skill_guidance_section(offered: &[&str]) -> Option<String> {
+    let skill = agent_core::ToolName::Skill.as_str();
+    if !offered.contains(&skill) {
+        return None;
+    }
+    let search = agent_core::ToolName::SkillSearch.as_str();
+    let search_hint = if offered.contains(&search) {
+        format!("一覧に見当たらなくても、それらしい作業なら {search} で探してください。")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "\n\n{skill} ツールの一覧には、社内やユーザー自身が用意した作業手順（スキル）が載っています。\
+         依頼がそのいずれかの作業に当てはまるときは、doc_search などで調べ始める前に、\
+         まず {skill} ツールでそのスキルを読み込み、返ってきた手順に従ってください。\
+         {search_hint}（適用済み）と書かれたスキルは読み込み済みです。"
+    ))
+}
+
+/// スキルを先に読み込ませる案内を system へ足す。照合先は提示の最終形（`tools`）。
+pub(super) fn append_skill_guidance(
+    opts: &mut AgentOptions,
+    tools: &[std::sync::Arc<dyn agent_core::Tool>],
+) {
+    let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+    append_system_section(opts, skill_guidance_section(&offered));
+}
+
 /// system プロンプトの末尾へ節を足す（`None` なら何もしない）。
 pub(super) fn append_system_section(opts: &mut AgentOptions, section: Option<String>) {
     let Some(section) = section else {
@@ -276,6 +310,23 @@ mod tests {
             node_id: node_id.into(),
             name: name.into(),
         }
+    }
+
+    /// skill が提示されているときだけ、調べ始める前にスキルを読み込ませる（旅費申請の取りこぼし）。
+    #[test]
+    fn skill_guidance_only_when_skill_tool_is_offered() {
+        assert_eq!(skill_guidance_section(&["doc_search"]), None);
+        let section = skill_guidance_section(&["doc_search", "skill"]).expect("節がある");
+        assert!(
+            section.contains("まず skill ツールでそのスキルを読み込み"),
+            "{section}"
+        );
+        assert!(
+            !section.contains("skill_search"),
+            "提示の無いツールは案内しない: {section}"
+        );
+        let section = skill_guidance_section(&["skill", "skill_search"]).expect("節がある");
+        assert!(section.contains("skill_search で探して"), "{section}");
     }
 
     /// 索引の無い大きな CSV 等を、提示済みの読み取りツールへ案内する（#962）。
