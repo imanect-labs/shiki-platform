@@ -1,6 +1,14 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { cleanupQueue, deleteTableApi, loginAs, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./helpers";
+import {
+  cleanupQueue,
+  deleteTableApi,
+  loginAs,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  setActivityDetail,
+  uniqueName,
+} from "./helpers";
 
 /// 会話の AI の試運転（try_workflow・T04・D-10・D-197）の E2E（前提: LLM=stub）。
 ///
@@ -20,6 +28,12 @@ const SHOTS = process.env.E2E_SHOTS_DIR;
 
 const cleanup = cleanupQueue();
 test.afterEach(() => cleanup.run());
+
+/// 試運転の結果は道具の行の見出し（「…を試運転しました」）で確かめるので、操作ログの表示を「詳細」にして回す
+/// （既定の「シンプル」は見出しを「操作の詳細」だけにする）。元に戻す手順は片付けに積む。
+async function detailedLog(page: Page): Promise<void> {
+  cleanup.add(await setActivityDetail(page, "detailed"));
+}
 
 async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -116,6 +130,7 @@ test("承認カードに試すものと起きることが出て、承認する�
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
+  await detailedLog(page);
   const s = await setup(page);
   const title = `【試運転】${uniqueName("件名")}`;
 
@@ -187,12 +202,14 @@ test("閲覧だけ共有された人のカードは作成者の名前と閲覧�
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
+  await detailedLog(page);
   const s = await setup(page);
 
   const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   cleanup.add(() => bobCtx.close());
   const bob = await bobCtx.newPage();
   await loginAs(bob, "bob");
+  await detailedLog(bob);
   const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
   const share = await page.request.put(`/api/artifacts/${s.workflowId}/shares`, {
     headers: await csrfHeaders(page),
@@ -251,6 +268,7 @@ test("スクリプトを含む版のカードは中でできることを出し�
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
+  await detailedLog(page);
   const name = uniqueName("e2e-try-script");
   const w = await page.request.post("/api/workflows", {
     headers: await csrfHeaders(page),
@@ -308,6 +326,7 @@ test("名前の指定・無い版・読めない入力・読み込めないと�
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
+  await detailedLog(page);
   const s = await setup(page);
   const card = page.getByTestId("approval-card");
   const summary = card.getByTestId("try-workflow-summary");
