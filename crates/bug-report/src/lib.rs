@@ -74,6 +74,8 @@ mod tests {
         assert!(content().validate().is_ok());
         for bad in [
             "<img>",
+            "sk-test-secret",
+            "ghp_test_secret",
             "https://example.com",
             "![x](x)",
             "www.example.com",

@@ -90,7 +90,7 @@ async fn bug_reports_http_manual_approval_conflicts_and_settings() {
         .0,
         StatusCode::CONFLICT
     );
-    let submit = json!({"expected_rev":report["rev"],"policy_rev":policy["rev"],"consent":true,"notice_version":"bug-report-v1"});
+    let submit = json!({"expected_rev":report["rev"],"policy_rev":policy["rev"],"destination_version":1,"consent":true,"notice_version":"bug-report-v1"});
     let (status, report) = call(&app, "POST", &format!("{path}/submit"), submit.clone()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(report["status"], "pending_approval");
@@ -131,7 +131,7 @@ async fn bug_reports_http_manual_approval_conflicts_and_settings() {
         json!({"expected_rev":rejected["rev"]}),
     )
     .await;
-    let (_,submitted) = call(&app,"POST",&format!("{path}/submit"),json!({"expected_rev":draft["rev"],"policy_rev":policy["rev"],"consent":true,"notice_version":"bug-report-v1"})).await;
+    let (_,submitted) = call(&app,"POST",&format!("{path}/submit"),json!({"expected_rev":draft["rev"],"policy_rev":policy["rev"],"destination_version":1,"consent":true,"notice_version":"bug-report-v1"})).await;
     let (status, approved) = call(
         &app,
         "POST",

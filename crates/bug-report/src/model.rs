@@ -65,7 +65,10 @@ impl ReportContent {
             &self.steps_tried,
             &self.expected_behavior,
         ] {
-            if text.chars().count() > 2000
+            if ["sk-", "ghp_", "github_pat_", "-----BEGIN", "Bearer "]
+                .iter()
+                .any(|prefix| text.contains(prefix))
+                || text.chars().count() > 2000
                 || text.contains(['<', '>'])
                 || text.contains("://")
                 || text.contains("www.")
@@ -175,7 +178,12 @@ pub struct SubmissionDetail {
     pub sink_profile_id: String,
     pub sink_config_version: i64,
     pub notice_version: String,
+    pub policy_rev: i64,
+    pub consent_at: String,
     pub approved_by: Option<String>,
+    pub approved_at: Option<String>,
+    pub rejected_by: Option<String>,
+    pub rejected_at: Option<String>,
     pub rejection_reason: Option<String>,
 }
 #[derive(Debug, Serialize, utoipa::ToSchema)]

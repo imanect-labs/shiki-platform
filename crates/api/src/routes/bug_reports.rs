@@ -62,6 +62,7 @@ pub struct UpdateReport {
 pub struct ReportCommand {
     pub expected_rev: i64,
     pub policy_rev: Option<i64>,
+    pub destination_version: Option<i64>,
     pub consent: Option<bool>,
     pub notice_version: Option<String>,
     pub reason: Option<String>,
@@ -204,6 +205,14 @@ pub async fn submit(
     headers: HeaderMap,
     Json(req): Json<ReportCommand>,
 ) -> Result<Json<BugReport>, Response> {
+    let current = service(&state)
+        .map_err(IntoResponse::into_response)?
+        .reporter_policy(&ctx, trace.0.as_deref().unwrap_or(""))
+        .await
+        .map_err(error)?;
+    if req.destination_version != current.destination_version {
+        return Err(error(shiki_bug_report::Error::Conflict));
+    }
     Ok(Json(
         service(&state)
             .map_err(IntoResponse::into_response)?
