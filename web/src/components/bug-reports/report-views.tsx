@@ -335,7 +335,15 @@ function ContentPreview({ content }: { content: Content }) {
     </dl>
   );
 }
-export function NewReport({ reportId }: { reportId?: string } = {}) {
+export function NewReport({
+  reportId,
+  refreshError = "",
+  retryRefresh,
+}: {
+  reportId?: string;
+  refreshError?: string;
+  retryRefresh?: () => void;
+} = {}) {
   const router = useRouter();
   const [policy, setPolicy] = useState<Schema["ReporterPolicy"] | null>(null);
   const [content, setContent] = useState<Content>(empty);
@@ -366,6 +374,43 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
   useEffect(() => {
     void load();
   }, [load]);
+  async function saveOrCancel(cancel = false) {
+    if (!draft || !policy || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await request<Report>(
+        `/bug-reports/${draft.id}${cancel ? "/cancel" : ""}`,
+        cancel ? "POST" : "PATCH",
+        cancel
+          ? { expected_rev: draft.rev }
+          : {
+              expected_rev: draft.rev,
+              content: policy.policy.allow_content_sharing
+                ? content
+                : {
+                    ...empty,
+                    category: content.category,
+                    title: "不具合報告（カテゴリのみ）",
+                  },
+            },
+      );
+      setDraft(updated);
+      if (cancel) router.push("/bug-reports");
+      else toast({ title: "下書きを保存しました" });
+    } catch (e) {
+      setError(message(e));
+      if (e instanceof RequestError && e.status === 409) {
+        try {
+          await reload(draft.id);
+        } catch (reloadError) {
+          setError(message(reloadError));
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
   async function submit() {
     if (!policy || busy) return;
     setBusy(true);
@@ -433,7 +478,10 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
   }
   return (
     <Frame>
-      <h2 className="text-lg font-medium">新しく報告する</h2>
+      <h2 className="text-lg font-medium">
+        {reportId ? "下書きを編集する" : "新しく報告する"}
+      </h2>
+      <ErrorNotice error={refreshError} retry={retryRefresh} />
       <ErrorNotice error={error} retry={() => void load()} />
       {!policy ? (
         <p role="status">設定を読み込み中…</p>
@@ -503,11 +551,32 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
               ? "送信には管理者の承認が必要です。"
               : "管理者の承認なしで送信します。"}
           </p>
-          <Button type="submit" disabled={busy}>
-            送信内容を確認
-          </Button>
+          <div className="flex flex-wrap gap-3">
+            <Button type="submit" disabled={busy}>
+              送信内容を確認
+            </Button>
+            {draft ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy}
+                onClick={() => void saveOrCancel()}
+              >
+                下書きを保存
+              </Button>
+            ) : null}
+          </div>
         </form>
       )}
+      {draft ? (
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => void saveOrCancel(true)}
+        >
+          報告を取り下げる
+        </Button>
+      ) : null}
       <Dialog open={confirm} onOpenChange={setConfirm}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto">
           <DialogHeader>
@@ -554,7 +623,6 @@ export function ReportDetailView({
   admin?: boolean;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [edited, setEdited] = useState<Content | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState("");
@@ -563,10 +631,18 @@ export function ReportDetailView({
       const d = await request<Detail>(
         `${admin ? "/org-admin" : ""}/bug-reports/${id}`,
       );
-      setDetail(d);
-      setEdited(null);
+      // 下書きフォームは独自の編集状態を保持する。自動更新で再初期化しない。
+      setDetail((previous) =>
+        !admin &&
+        previous?.report.status === "draft" &&
+        d.report.status === "draft"
+          ? previous
+          : d,
+      );
+      setError("");
     } catch (e) {
-      setDetail(null);
+      if (e instanceof RequestError && [403, 404].includes(e.status))
+        setDetail(null);
       setError(message(e));
     }
   }, [id, admin]);
@@ -590,7 +666,14 @@ export function ReportDetailView({
     }
   }
   if (detail && !admin && detail.report.status === "draft")
-    return <NewReport reportId={id} />;
+    return (
+      <NewReport
+        key={id}
+        reportId={id}
+        refreshError={error}
+        retryRefresh={() => void load()}
+      />
+    );
   return (
     <Frame admin={admin}>
       <ErrorNotice error={error} retry={() => void load()} />
@@ -702,36 +785,6 @@ export function ReportDetailView({
             <Button disabled={busy} onClick={() => void act("reopen")}>
               下書きに戻す
             </Button>
-          ) : null}
-          {!admin && detail.report.status === "draft" ? (
-            <form
-              className="space-y-4"
-              onSubmit={async (e) => {
-                e.preventDefault();
-                setBusy(true);
-                try {
-                  await request(`/bug-reports/${id}`, "PATCH", {
-                    expected_rev: detail.report.rev,
-                    content: edited ?? detail.report.content,
-                  });
-                  await load();
-                } catch (e) {
-                  setError(message(e));
-                  if (e instanceof RequestError && e.status === 409)
-                    await load();
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <ContentFields
-                content={edited ?? detail.report.content}
-                setContent={setEdited}
-              />
-              <Button type="submit" disabled={busy}>
-                下書きを保存
-              </Button>
-            </form>
           ) : null}
         </>
       ) : null}

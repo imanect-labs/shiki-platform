@@ -228,3 +228,136 @@ for (const admin of [false, true]) {
     await expect(page.getByRole("button", { name: "続きを表示" })).toHaveCount(0);
   });
 }
+
+test("下書きは自動更新でも編集と同意を保持し保存・取り下げできる", async ({
+  page,
+}) => {
+  await loginReport(page);
+  await page.clock.install();
+  let current = { ...report, status: "draft", rev: 1 };
+  let failure = 0;
+  let gets = 0;
+  let patches = 0;
+  let cancelled = false;
+  await page.route(/\/api\/bug-reports(?:\/.*)?(?:\?.*)?$/, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/policy"))
+      return route.fulfill({
+        json: {
+          policy,
+          destination_available: false,
+          destination_version: null,
+        },
+      });
+    if (path.endsWith("/cancel")) {
+      expect(route.request().postDataJSON().expected_rev).toBe(current.rev);
+      cancelled = true;
+      current = { ...current, status: "cancelled", rev: current.rev + 1 };
+      return route.fulfill({ json: current });
+    }
+    if (route.request().method() === "PATCH") {
+      expect(route.request().postDataJSON().expected_rev).toBe(current.rev);
+      patches++;
+      current = {
+        ...current,
+        rev: current.rev + 1,
+        content: route.request().postDataJSON().content,
+      };
+      return route.fulfill({ json: current });
+    }
+    if (path.endsWith(report.id)) {
+      gets++;
+      if (failure) return route.fulfill({ status: failure, json: {} });
+      return route.fulfill({ json: { report: current, submission: null } });
+    }
+    return route.fulfill({ json: { items: [], next_cursor: null } });
+  });
+  await page.goto(`/bug-reports/${report.id}`);
+  const title = page.getByLabel("題名（必須）");
+  await expect(title).toHaveValue(content.title);
+  await title.fill("未保存の下書き");
+  await page.getByRole("checkbox").check();
+  failure = 503;
+  const before = gets;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => gets).toBeGreaterThan(before);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "読み込み・保存" }),
+  ).toBeVisible();
+  await expect(title).toHaveValue("未保存の下書き");
+  await expect(page.getByRole("checkbox")).toBeChecked();
+  failure = 0;
+  await page.getByRole("button", { name: "もう一度読み込む" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "読み込み・保存" }),
+  ).toHaveCount(0);
+  const timer = gets;
+  await page.clock.fastForward(30_000);
+  await expect.poll(() => gets).toBeGreaterThan(timer);
+  await expect(title).toHaveValue("未保存の下書き");
+  await expect(page.getByRole("checkbox")).toBeChecked();
+  await page.getByRole("button", { name: "下書きを保存", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => patches).toBe(1);
+  expect(current.content.title).toBe("未保存の下書き");
+  await page.reload();
+  await expect(title).toHaveValue("未保存の下書き");
+  await expect(page.getByRole("checkbox")).not.toBeChecked();
+  await title.fill("保存後の編集");
+  await page.getByRole("button", { name: "下書きを保存", exact: true }).click();
+  await expect.poll(() => patches).toBe(2);
+  const shots = process.env.BUG_REPORT_SHOTS;
+  if (shots) {
+    await page.getByRole("button", { name: "閉じる", exact: true }).last().click();
+    await expect(page.getByText("下書きを保存しました", { exact: true })).toHaveCount(0);
+    await page.screenshot({
+      path: `${shots}/draft-edit-${process.env.BUG_REPORT_MOBILE ? "mobile" : "desktop"}-${process.env.BUG_REPORT_DARK ? "dark" : "light"}.png`,
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page.getByRole("heading", { name: "下書きを編集する" }).scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: `${shots}/draft-edit-${process.env.BUG_REPORT_MOBILE ? "mobile" : "desktop"}-${process.env.BUG_REPORT_DARK ? "dark" : "light"}-top.png`,
+      fullPage: true, animations: "disabled",
+    });
+  }
+  await page.getByRole("button", { name: "報告を取り下げる" }).click();
+  await expect(page).toHaveURL(/\/bug-reports$/);
+  expect(cancelled).toBe(true);
+});
+
+for (const status of [403, 404]) {
+  test(`下書きの自動更新が${status}なら表示を解除する`, async ({ page }) => {
+    await loginReport(page);
+    let denied = false;
+    await page.route("**/api/bug-reports/policy", (route) =>
+      route.fulfill({
+        json: {
+          policy,
+          destination_available: false,
+          destination_version: null,
+        },
+      }),
+    );
+    await page.route(`**/api/bug-reports/${report.id}`, (route) =>
+      route.fulfill(
+        denied
+          ? { status, json: {} }
+          : {
+              json: {
+                report: { ...report, status: "draft" },
+                submission: null,
+              },
+            },
+      ),
+    );
+    await page.goto(`/bug-reports/${report.id}`);
+    await expect(page.getByLabel("題名（必須）")).toBeVisible();
+    denied = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(page.getByLabel("題名（必須）")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "下書きを保存" }),
+    ).toHaveCount(0);
+  });
+}

@@ -662,3 +662,90 @@ async fn content_sharing_prohibition_rejects_new_text_at_service_boundary() {
     };
     assert!(svc.create(&ctx, metadata, "metadata-only").await.is_ok());
 }
+
+#[tokio::test]
+async fn admin_cursor_survives_reopen_and_keeps_tenant_org_boundaries() {
+    let Some((db, fga, svc, ctx)) = setup().await else {
+        return;
+    };
+    // 同じ時刻の51件を用意し、idによるタイブレークも検証する。
+    let template = svc.create(&ctx, content(), "template").await.unwrap();
+    let template = svc
+        .command(&ctx, submit(template.id, 1, 1, true, "submit"), "submit")
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO bug_report (tenant_id,org,id,reporter_id,status,rev,snapshot,created_at) SELECT tenant_id,org,gen_random_uuid(),reporter_id,status,rev,snapshot,created_at FROM bug_report CROSS JOIN generate_series(1,50) WHERE tenant_id=$1 AND org=$2 AND id=$3")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(template.id).execute(&db).await.unwrap();
+    sqlx::query("INSERT INTO bug_report_submission (tenant_id,org,report_id,submission_rev,payload,payload_hash,sink_profile_id,sink_config_version,policy_rev,consent_actor,content_consent,notice_version) SELECT r.tenant_id,r.org,r.id,s.submission_rev,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.policy_rev,s.consent_actor,s.content_consent,s.notice_version FROM bug_report r JOIN bug_report_submission s ON s.tenant_id=r.tenant_id AND s.org=r.org AND s.report_id=$3 WHERE r.tenant_id=$1 AND r.org=$2 AND r.id<>$3")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(template.id).execute(&db).await.unwrap();
+    // snapshot 内のidも実際の行に一致させる。
+    sqlx::query("UPDATE bug_report SET snapshot=jsonb_set(snapshot,'{id}',to_jsonb(id::text)) WHERE tenant_id=$1 AND org=$2")
+        .bind(ctx.tenant_id()).bind(ctx.org()).execute(&db).await.unwrap();
+    let first = svc.list(&ctx, true, None, "first").await.unwrap();
+    assert_eq!(first.items.len(), 50);
+    let cursor = first.next_cursor.unwrap();
+    let before = svc.list(&ctx, true, Some(cursor), "before").await.unwrap();
+    assert_eq!(before.items.len(), 1);
+    svc.command(
+        &ctx,
+        CommandRequest {
+            id: cursor,
+            expected_rev: template.rev,
+            key: "reopen-cursor".into(),
+            command: Command::Reopen,
+        },
+        "reopen",
+    )
+    .await
+    .unwrap();
+    let after = svc.list(&ctx, true, Some(cursor), "after").await.unwrap();
+    assert_eq!(after.items.len(), 1);
+    assert_eq!(after.items[0].id, before.items[0].id);
+    assert!(after.next_cursor.is_none());
+    assert!(!svc
+        .list(&ctx, true, None, "hidden")
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .any(|r| r.id == cursor));
+    for other in [
+        context(ctx.tenant_id(), "other-org", "alice"),
+        context("other-tenant", ctx.org(), "alice"),
+    ] {
+        fga.write_tuple(
+            &other.subject(),
+            Relation::Member,
+            &other.ns().organization(other.org()),
+        )
+        .await
+        .unwrap();
+        fga.write_tuple(
+            &other.subject(),
+            Relation::Admin,
+            &other.ns().organization(other.org()),
+        )
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO bug_report (tenant_id,org,id,reporter_id,status,rev,snapshot,created_at) SELECT $4,$5,gen_random_uuid(),reporter_id,status,rev,snapshot,created_at-interval '1 day' FROM bug_report WHERE tenant_id=$1 AND org=$2 AND id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(before.items[0].id)
+            .bind(other.tenant_id()).bind(other.org()).execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO bug_report_submission (tenant_id,org,report_id,submission_rev,payload,payload_hash,sink_profile_id,sink_config_version,policy_rev,consent_actor,content_consent,notice_version) SELECT r.tenant_id,r.org,r.id,s.submission_rev,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.policy_rev,s.consent_actor,s.content_consent,s.notice_version FROM bug_report r JOIN bug_report_submission s ON s.tenant_id=$1 AND s.org=$2 AND s.report_id=$3 WHERE r.tenant_id=$4 AND r.org=$5")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(template.id)
+            .bind(other.tenant_id()).bind(other.org()).execute(&db).await.unwrap();
+        assert_eq!(
+            svc.list(&other, true, None, "visible")
+                .await
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        assert!(svc
+            .list(&other, true, Some(cursor), "boundary")
+            .await
+            .unwrap()
+            .items
+            .is_empty());
+    }
+}
