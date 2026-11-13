@@ -49,7 +49,7 @@ impl DeliveryWorker {
             begin_cross_tenant_tx(&self.pool, "bug-report delivery tenant enumeration only")
                 .await?;
         // tenant-sql: allow(本文を含まない有界の配送対象 tenant/org 列挙。以降は tenant tx)
-        let scopes: Vec<(String,String)> = sqlx::query_as("SELECT tenant_id,org FROM bug_report_delivery WHERE outcome IN ('queued','sending','delivery_unknown') AND next_attempt_at<=now() AND (lease_until IS NULL OR lease_until<now()) GROUP BY tenant_id,org ORDER BY min(next_attempt_at),tenant_id,org LIMIT 8")
+        let scopes: Vec<(String,String)> = sqlx::query_as("SELECT d.tenant_id,d.org FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) GROUP BY d.tenant_id,d.org ORDER BY min(d.next_attempt_at),d.tenant_id,d.org LIMIT 8")
             .fetch_all(&mut *enumeration).await?;
         enumeration.commit().await?;
         let mut done = 0;
@@ -178,6 +178,18 @@ impl DeliveryWorker {
         }))
     }
     pub(crate) async fn finish(&self, claim: &Claim, result: Dispatch) -> Result<(), Error> {
+        // 配送結果・監査が rollback しても待機を残す。tenant tx より先に
+        // 確定し、serial 接続を保持する run_batch でも最大2接続に収める。
+        if let Dispatch::Retry {
+            after,
+            code: "rate_limit",
+        } = &result
+        {
+            let mut cooldown = self.pool.begin().await?;
+            sqlx::query("INSERT INTO bug_report_destination_cooldown (installation_id,next_attempt_at) VALUES ($1,now()+$2*interval '1 second') ON CONFLICT (installation_id) DO UPDATE SET next_attempt_at=GREATEST(bug_report_destination_cooldown.next_attempt_at,EXCLUDED.next_attempt_at)")
+                .bind(self.sink.installation_id()).bind(i64::try_from(*after).unwrap_or(i64::MAX / 1000).min(315_360_000)).execute(&mut *cooldown).await?;
+            cooldown.commit().await?;
+        }
         let ctx = &claim.ctx;
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         store::lock(&mut tx, ctx).await?;
@@ -186,15 +198,6 @@ impl DeliveryWorker {
         let Some((attempt, within_deadline)) = row else {
             return Err(Error::Conflict);
         };
-        // 回数上限で当該行を停止する場合も、配送先全体の待機は失わない。
-        if let Dispatch::Retry {
-            after,
-            code: "rate_limit",
-        } = &result
-        {
-            sqlx::query("INSERT INTO bug_report_destination_cooldown (installation_id,next_attempt_at) VALUES ($1,now()+$2*interval '1 second') ON CONFLICT (installation_id) DO UPDATE SET next_attempt_at=GREATEST(bug_report_destination_cooldown.next_attempt_at,EXCLUDED.next_attempt_at)")
-                .bind(self.sink.installation_id()).bind(i64::try_from(*after).unwrap_or(i64::MAX / 1000).min(315_360_000)).execute(&mut *tx).await?;
-        }
         let mut delay: i64 = 0;
         let mut external_id = None;
         let mut url = None;

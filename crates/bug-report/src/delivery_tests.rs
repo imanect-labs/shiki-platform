@@ -454,13 +454,43 @@ async fn bounded_batch_runs_as_runtime_role_and_stops_at_retry_limit() {
     .execute(&db)
     .await
     .unwrap();
-    let bad = queued(&svc, &ctx).await;
-    sqlx::query("UPDATE bug_report_submission SET principal=NULL WHERE report_id=$1")
-        .bind(bad.id)
-        .execute(&db)
+    // 上限8件を超える不正 scope が先行しても、正常な scope を列挙する。
+    // SQL NULL と JSON null の両方を除外する。
+    for i in 0..10 {
+        let bad_ctx = context(ctx.tenant_id(), &format!("legacy-{i}"), "alice");
+        for relation in [Relation::Member, Relation::Admin] {
+            fga.write_tuple(
+                &bad_ctx.subject(),
+                relation,
+                &bad_ctx.ns().organization(bad_ctx.org()),
+            )
+            .await
+            .unwrap();
+        }
+        svc.set_policy(
+            &bad_ctx,
+            crate::BugReportPolicy {
+                require_approval: false,
+                allow_content_sharing: true,
+                ..Default::default()
+            },
+            "p",
+        )
         .await
         .unwrap();
-    // 他 tenant の正常行は、不正行と同じバッチでも送れる。
+        let bad = queued(&svc, &bad_ctx).await;
+        sqlx::query("UPDATE bug_report_submission SET principal=$2 WHERE report_id=$1")
+            .bind(bad.id)
+            .bind(if i % 2 == 0 {
+                None
+            } else {
+                Some(serde_json::Value::Null)
+            })
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+    // 後続の別 tenant の正常行を送れる。
     let other = context(&format!("t{}", Uuid::new_v4().simple()), "org", "bob");
     for relation in [Relation::Member, Relation::Admin] {
         fga.write_tuple(
@@ -556,6 +586,117 @@ async fn bounded_batch_runs_as_runtime_role_and_stops_at_retry_limit() {
         Status::DeliveryUnknown
     );
     assert!(w.claim(ctx.tenant(), ctx.org()).await.unwrap().is_none());
+    // 待機期限を独立 commit した後に監査が失敗しても、別 replica は送信しない。
+    sqlx::query(
+        "UPDATE bug_report_destination_cooldown SET next_attempt_at=now()-interval '1 second'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let failing = queued(&svc, &ctx).await;
+    let waiting_after_failure = queued(&svc, &other).await;
+    let function = format!("bug_delivery_fail_{}", Uuid::new_v4().simple());
+    let ddl = format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id='{}' AND NEW.action='bug_report.failed' THEN RAISE EXCEPTION 'audit failure'; END IF; RETURN NEW; END $$", ctx.tenant_id());
+    sqlx::query(&ddl).execute(&db).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON audit_log FOR EACH ROW EXECUTE FUNCTION {function}()"))
+        .execute(&db).await.unwrap();
+    let (sink, mut rate_requests) = stub(vec![response(429, "Retry-After: 600\r\n", "{}")]).await;
+    let rate_worker = worker(&runtime, fga.clone(), sink);
+    // serial 接続を保持した実バッチを pool=2 で走らせ、接続の三重取得を検出。
+    let failed =
+        tokio::time::timeout(std::time::Duration::from_secs(10), rate_worker.run_batch()).await;
+    sqlx::query(&format!("DROP TRIGGER {function} ON audit_log"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP FUNCTION {function}()"))
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(matches!(failed.unwrap(), Err(Error::Audit(_))));
+    assert!(rate_requests.recv().await.unwrap().starts_with("POST "));
+    assert_eq!(
+        svc.get(&ctx, failing.id, "get").await.unwrap().status,
+        Status::Sending
+    );
+    let cooling: bool = sqlx::query_scalar("SELECT next_attempt_at>now()+interval '590 seconds' FROM bug_report_destination_cooldown WHERE installation_id='2'")
+        .fetch_one(&db).await.unwrap();
+    assert!(cooling);
+    assert_eq!(replica.run_batch().await.unwrap(), 0);
+    assert!(replica
+        .claim(other.tenant(), other.org())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        svc.get(&other, waiting_after_failure.id, "get")
+            .await
+            .unwrap()
+            .status,
+        Status::Queued
+    );
+    // 待機保存自体が失敗した場合、そのバッチの以降の配送へ進まない。
+    sqlx::query(
+        "UPDATE bug_report_destination_cooldown SET next_attempt_at=now()-interval '1 second'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let later_ctx = context(ctx.tenant_id(), "after-cooldown-failure", "alice");
+    for relation in [Relation::Member, Relation::Admin] {
+        fga.write_tuple(
+            &later_ctx.subject(),
+            relation,
+            &later_ctx.ns().organization(later_ctx.org()),
+        )
+        .await
+        .unwrap();
+    }
+    svc.set_policy(
+        &later_ctx,
+        crate::BugReportPolicy {
+            require_approval: false,
+            allow_content_sharing: true,
+            ..Default::default()
+        },
+        "p",
+    )
+    .await
+    .unwrap();
+    let later = queued(&svc, &later_ctx).await;
+    sqlx::query(&format!("CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cooldown failure'; END $$"))
+        .execute(&db).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT OR UPDATE ON bug_report_destination_cooldown FOR EACH ROW EXECUTE FUNCTION {function}()"))
+        .execute(&db).await.unwrap();
+    let (sink, mut blocked_requests) =
+        stub(vec![response(429, "Retry-After: 600\r\n", "{}")]).await;
+    let blocked_worker = worker(&runtime, fga.clone(), sink);
+    let failed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        blocked_worker.run_batch(),
+    )
+    .await;
+    sqlx::query(&format!(
+        "DROP TRIGGER {function} ON bug_report_destination_cooldown"
+    ))
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(&format!("DROP FUNCTION {function}()"))
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(matches!(failed.unwrap(), Err(Error::Database(_))));
+    assert!(blocked_requests.recv().await.unwrap().starts_with("POST "));
+    assert_eq!(
+        svc.get(&later_ctx, later.id, "get").await.unwrap().status,
+        Status::Queued
+    );
+    let attempts: i32 = sqlx::query_scalar("SELECT attempt_count FROM bug_report_delivery WHERE tenant_id=$1 AND org=$2 AND report_id=$3")
+        .bind(later_ctx.tenant_id()).bind(later_ctx.org()).bind(later.id).fetch_one(&db).await.unwrap();
+    assert_eq!(attempts, 0);
+    drop(blocked_worker);
+    drop(rate_worker);
     drop(replica);
     runtime.close().await;
     db.close().await;

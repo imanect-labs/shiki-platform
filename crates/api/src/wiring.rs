@@ -665,7 +665,7 @@ pub(crate) fn wire_bug_report(
     config: &shiki_bug_report::BugReportConfig,
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn authz::AuthzClient>,
-) -> Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>, shiki_bug_report::Error> {
+) -> anyhow::Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>> {
     if !config.enabled {
         return Ok(None);
     }
@@ -676,7 +676,7 @@ pub(crate) fn wire_bug_report(
     if config.backend == shiki_bug_report::BugReportBackend::Github {
         // 直列化 transaction のほかに claim/finish 用の接続が必要。
         if db.options().get_max_connections() < 2 {
-            return Err(shiki_bug_report::Error::Invalid);
+            anyhow::bail!("bug_report GitHub delivery requires database.max_connections >= 2");
         }
         // AppConfig::validate と起動時の鍵検証に成功した構成だけを配線する。
         let github = config
@@ -756,7 +756,13 @@ mod tests {
             .max_connections(1)
             .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
             .unwrap();
-        assert!(super::wire_bug_report(&config, &single, &authz).is_err());
+        assert_eq!(
+            super::wire_bug_report(&config, &single, &authz)
+                .err()
+                .unwrap()
+                .to_string(),
+            "bug_report GitHub delivery requires database.max_connections >= 2"
+        );
         config.github.as_mut().unwrap().repo = "shiki-platform".into();
         assert!(super::wire_bug_report(&config, &db, &authz).is_err());
     }

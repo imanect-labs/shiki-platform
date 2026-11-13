@@ -27,10 +27,18 @@ PR3/PR4 の本人確認・管理画面が揃うまで、この sink を運用で
 
 Compose の任意追加例は `deploy/compose/docker-compose.bug-report-github.example.yml`。
 通常 compose はこのファイルを読まない。PEM が未配備・不正なら起動を拒否する。
-鍵のローテーションは、新鍵を生成→secretファイルを原子的に差し替え→旧 installation token の
-期限経過を待つ→旧鍵を GitHub で失効、の順。token 再取得時に鍵を再読込する。
-Compose 例は単一ファイルの bind mount のため、鍵交換後はコンテナを再作成する
-（`docker compose -f docker-compose.yml -f docker-compose.bug-report-github.example.yml up -d --force-recreate shiki-server`）。単なるプロセス再起動では mount の inode は更新されない。
+鍵のローテーションは、次の順序で行う。
+
+1. GitHub App に新鍵を追加する。
+2. secret ファイルを新鍵で原子的に差し替える。
+3. コンテナを再作成する。
+   Compose 例は単一ファイルの bind mount のため、
+   `docker compose -f docker-compose.yml -f docker-compose.bug-report-github.example.yml up -d --force-recreate shiki-server`
+   を実行する。単なるプロセス再起動では mount の inode は更新されない。
+4. 再作成したコンテナで、新鍵を使って installation token を取得できることを確認する。
+5. 確認後に旧鍵を GitHub で失効する。
+
+token 再取得時に鍵を再読込する。
 即時失効が必要なら App installation を停止し、配送サーバを再起動してメモリtokenを破棄する。
 鍵・JWT・installation token は Debug/Serialize の対象にせず、外部エラー本文も記録しない。
 
