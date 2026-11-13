@@ -10,12 +10,15 @@
 
 mod app;
 mod ask;
+mod guide;
 mod inputs;
 mod ir;
 mod shown;
 mod text;
 mod values;
 
+pub use app::{FieldKindSpec, FIELD_KINDS};
+pub use guide::{app_guide, APP_GUIDE_EXAMPLE, APP_KEY_CHARS};
 pub use inputs::{check_inputs, InputHint, InputProblem, WorkflowInputs};
 pub use ir::{
     ActionTarget, AppAction, AppField, AppSection, AskOption, AskQuestion, Base, ChoiceOption,

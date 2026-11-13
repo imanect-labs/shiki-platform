@@ -6,6 +6,8 @@
 //! - 入力の手がかり（エディタの部品の候補）は、呼んだ人が読めるワークフローだけ返す。読めないワークフローは
 //!   `readable: false` で、保存のときにも突き合わせない（共同編集者が読めない部品を言わない）。
 //! - 入力項目を決めていないワークフローは突き合わせない。
+//! - AI が作る道具の保存（`SaveMode::Agent`・D-10 T07）は、同じ食い違いを誤りとして止める（保存しない）。会話の回答を
+//!   保存する経路（`SaveMode::Strict`）は止めない。読めないワークフローは Agent でも突き合わせない。
 //!
 //! テストで作った行（テナントごと）と OpenFGA のストアは、落ちても最後に消す。
 
@@ -170,6 +172,43 @@ async fn body(pool: PgPool, fga: Arc<dyn AuthzClient>, tenant: String) {
         "書き損じではない（公開を止めない）"
     );
 
+    // AI が作る道具の保存は、同じ食い違いを全件、誤りとして返して保存しない。
+    let codes = |e: gui::GuiError| -> Vec<String> {
+        match e {
+            gui::GuiError::Validation(errors) => errors.into_iter().map(|e| e.code).collect(),
+            other => panic!("検証の誤りのはず: {other:?}"),
+        }
+    };
+    let rejected = apps
+        .create(&alice, "inputs-app-ai", &app, SaveMode::Agent, None)
+        .await
+        .expect_err("AI の経路では食い違いを止める");
+    assert_eq!(
+        codes(rejected),
+        vec![
+            "miniapp.missing_input",
+            "miniapp.input_type",
+            "miniapp.input_required",
+            "miniapp.unknown_input"
+        ]
+    );
+    // 会話の回答を保存する経路は、書き損じだけを止め、食い違いは注意のまま。
+    let strict = apps
+        .create(&alice, "inputs-app-strict", &app, SaveMode::Strict, None)
+        .await
+        .expect("食い違いでは止めない");
+    assert_eq!(strict.input_warnings.len(), 4);
+    // 食い違いを直せば AI の経路でも保存できる（同じ名前で作れる＝止めた保存は何も作っていない）。
+    let fixed_screen = "```ui\napp 経費の申請\n件名 = text 必須 as title\n金額 = number 必須 as amount\nbutton 申請する -> workflow expense\n```\n\n\
+                        ```ui\napp 連絡\n本文 = textarea as body\nbutton 送る -> workflow free\n```\n";
+    let mut fixed = app.clone();
+    fixed["screen"] = json!(fixed_screen);
+    let ai = apps
+        .create(&alice, "inputs-app-ai", &fixed, SaveMode::Agent, None)
+        .await
+        .expect("食い違いの無い画面は保存できる");
+    assert!(ai.input_warnings.is_empty() && ai.warnings.is_empty());
+
     // 入力の手がかり: 入力項目の並びの順。入力項目を決めていないワークフローは null。
     let pins = [
         ComponentPin {
@@ -215,4 +254,8 @@ async fn body(pool: PgPool, fga: Arc<dyn AuthzClient>, tenant: String) {
         "{:?}",
         edited.input_warnings
     );
+    // AI の経路でも、保存する人に読めないワークフローは突き合わせない（止めない）。
+    apps.update(&bob, saved.id, &app, Some(2), SaveMode::Agent, None)
+        .await
+        .expect("読めない部品は突き合わせない");
 }

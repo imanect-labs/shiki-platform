@@ -40,9 +40,20 @@ use crate::validate::GuiValidationError;
 pub enum SaveMode {
     /// 人が画面から保存する（下書き）。画面の書き損じは注意（[`SavedMiniApp::warnings`]）として返し、保存する。
     Draft,
-    /// AI の経路（会話の回答をアプリとして保存する・AI が作る道具）。画面の書き損じも誤りとして止める
+    /// AI が書いた画面を保存する（会話の回答をアプリとして保存する）。画面の書き損じも誤りとして止める
     /// （公開の前の確かめと同じ・[`crate::miniapp_publish`]）。
     Strict,
+    /// AI が作る道具（`miniapp_create` / `miniapp_update`・D-10 T07）。[`SaveMode::Strict`] に加えて、画面の部品と
+    /// 束ねたワークフローの入力項目の食い違い（[`SavedMiniApp::input_warnings`] と同じ突き合わせ）も誤りとして止める。
+    /// 保存する人に読めないワークフローは、人の経路と同じく突き合わせない（BUG-122）。
+    Agent,
+}
+
+impl SaveMode {
+    /// 画面の書き損じを誤りにするか。
+    fn rejects_screen_problems(self) -> bool {
+        matches!(self, SaveMode::Strict | SaveMode::Agent)
+    }
 }
 
 /// 保存した版（下書き）。
@@ -153,8 +164,8 @@ impl MiniAppStore {
         mode: SaveMode,
         trace_id: Option<&str>,
     ) -> Result<SavedMiniApp, GuiError> {
-        let (body, warnings) = self.check_body(ctx, raw_body, None, mode, trace_id).await?;
-        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
+        let (body, warnings, input_warnings) =
+            self.check_body(ctx, raw_body, None, mode, trace_id).await?;
         let artifact = self
             .artifacts
             .create(
@@ -216,10 +227,9 @@ impl MiniAppStore {
             Err(ArtifactError::NotFound) => None,
             Err(e) => return Err(e.into()),
         };
-        let (body, warnings) = self
+        let (body, warnings, input_warnings) = self
             .check_body(ctx, raw_body, previous.as_ref(), mode, trace_id)
             .await?;
-        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
         let version = self
             .artifacts
             .append_version(ctx, id, raw_body.clone(), Some(base), trace_id)
@@ -234,8 +244,9 @@ impl MiniAppStore {
         })
     }
 
-    /// 保存の前の確かめ（構造・画面の書き損じ・ピン）。画面の書き損じは、下書きなら注意として返し、
-    /// [`SaveMode::Strict`] なら誤りに加える。
+    /// 保存の前の確かめ（構造・画面の書き損じ・ピン・入力の突き合わせ）。画面の書き損じは、下書きなら注意として
+    /// 返し、[`SaveMode::Strict`]・[`SaveMode::Agent`] なら誤りに加える。入力の食い違いは [`SaveMode::Agent`] だけ
+    /// 誤りにする（構造・ピンの誤りがあれば突き合わせず、それを先に返す）。
     async fn check_body(
         &self,
         ctx: &AuthContext,
@@ -243,22 +254,31 @@ impl MiniAppStore {
         previous: Option<&MiniAppBody>,
         mode: SaveMode,
         trace_id: Option<&str>,
-    ) -> Result<(MiniAppBody, Vec<GuiValidationError>), GuiError> {
+    ) -> Result<
+        (
+            MiniAppBody,
+            Vec<GuiValidationError>,
+            Vec<GuiValidationError>,
+        ),
+        GuiError,
+    > {
         let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
         let problems = screen_problems(&body);
         let mut errors = self.validate_pins(ctx, &body, previous, trace_id).await;
-        let warnings = match mode {
-            SaveMode::Draft => problems,
-            SaveMode::Strict => {
-                errors.extend(problems);
-                Vec::new()
-            }
-        };
-        if errors.is_empty() {
-            Ok((body, warnings))
+        let warnings = if mode.rejects_screen_problems() {
+            errors.extend(problems);
+            Vec::new()
         } else {
-            Err(GuiError::Validation(errors))
+            problems
+        };
+        if !errors.is_empty() {
+            return Err(GuiError::Validation(errors));
         }
+        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
+        if mode == SaveMode::Agent && !input_warnings.is_empty() {
+            return Err(GuiError::Validation(input_warnings));
+        }
+        Ok((body, warnings, input_warnings))
     }
 
     /// ミニアプリを解決する（本体 viewer → 部品はバンドル権限で読み込み・再検証）。

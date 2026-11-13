@@ -5,7 +5,10 @@ use crate::text::{
     cap, caps, clip, is_match, js_len, js_number, js_slice, nfkc, parse_option, re, replace_first,
     strip_list_marker, Diags, Line,
 };
-use crate::text::{APP_FIELDS, APP_LABEL, APP_SECTIONS, APP_SECTION_ACTIONS, APP_SECTION_FIELDS};
+use crate::text::{
+    APP_CHOICE_OPTIONS, APP_FIELDS, APP_LABEL, APP_SECTIONS, APP_SECTION_ACTIONS,
+    APP_SECTION_FIELDS,
+};
 use serde_json::Value;
 
 re!(FIELD, r"^([^=＝]+?)\s*[=＝]\s*(\S+)\s*(.*)$");
@@ -69,25 +72,105 @@ fn split_unescaped(s: &str, seps: &[char]) -> Vec<String> {
         .collect()
 }
 
+/// 入力の部品の種類 1 つ（パーサーと案内 [`crate::app_guide`] が読む単一の表）。
+#[derive(Debug, Clone, Copy)]
+pub struct FieldKindSpec {
+    pub kind: FieldKind,
+    /// 書ける語（先頭が代表の名前）。NFKC・小文字にした語と比べる。
+    pub words: &'static [&'static str],
+    /// オプションの書き方（案内に載せる）。
+    pub syntax: &'static str,
+    /// 1 行の例（`app` の図の中で診断 0 件になることをテストで確かめる）。
+    pub example: &'static str,
+}
+
+/// 入力の部品の種類の表（Yui の app の部品・`@imanect/yui` の kinds/app.ts と同じ語）。
+pub const FIELD_KINDS: [FieldKindSpec; 11] = [
+    FieldKindSpec {
+        kind: FieldKind::Text,
+        words: &["text", "文字", "テキスト"],
+        syntax: "1 行の文字。`例 …` で入力例、`初期 …` で初期値",
+        example: "件名 = text 必須 例 4月 大阪出張の交通費 as title",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Textarea,
+        words: &["textarea", "longtext", "文章"],
+        syntax: "複数行の文章。`例 …`・`初期 …` は text と同じ",
+        example: "内容 = textarea 例 経緯を書いてください as body",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Number,
+        words: &["number", "数値"],
+        syntax: "数値。`最小..最大` で範囲（両方を書く）、続けて単位、`step 刻み`、`初期 数`",
+        example: "金額 = number 1..1000000 円 必須 as amount",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Slider,
+        words: &["slider", "スライダー"],
+        syntax: "つまみで選ぶ数値。`最小..最大` が必須、続けて単位、`step 刻み`、`初期 数`",
+        example: "割合 = slider 0..100 % step 5 初期 50 as ratio",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Count,
+        words: &["count", "stepper"],
+        syntax: "＋・－で数える整数。`最小..最大` が必須、`初期 数`",
+        example: "人数 = count 1..20 人 初期 1 as people",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Choice,
+        words: &["choice", "select", "選択"],
+        syntax: "`a | b | c` で選択肢（2 つ以上）。`表示名=値`、`multi` で複数選択（値は配列）、選択肢に `その他` を入れると自由記述も受ける、`初期 a`。選択肢の中の縦棒は `\\|`",
+        example: "区分 = choice 交通費 | 出張費 | 備品 必須 as category",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Date,
+        words: &["date", "日付"],
+        syntax: "日付（YYYY-MM-DD）。`初期 2026-04-01`。`date range` と書くと期間",
+        example: "日付 = date 必須 as day",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Month,
+        words: &["month", "年月"],
+        syntax: "年月（YYYY-MM）。`初期 2026-04`",
+        example: "対象月 = month 必須 as month",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Daterange,
+        words: &["daterange", "期間"],
+        syntax: "期間（値は `開始/終了` の文字）。`初期 2026-04-01〜2026-04-30`",
+        example: "期間 = daterange as period",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Rating,
+        words: &["rating", "評価"],
+        syntax: "星の評価（1〜最大の数値）。`rating 5` で最大（2〜10・既定 5）、`初期 数`",
+        example: "満足度 = rating 5 as score",
+    },
+    FieldKindSpec {
+        kind: FieldKind::Toggle,
+        words: &["toggle", "switch", "checkbox", "オンオフ"],
+        syntax: "オン・オフ（値は true / false）。`初期 オン`",
+        example: "立替 = toggle 初期 オン as advance",
+    },
+];
+
 fn field_kind(word: &str) -> Option<FieldKind> {
-    let w = nfkc(word).to_lowercase();
-    let k = |s: &str| -> Option<FieldKind> {
-        Some(match s {
-            "text" | "文字" | "テキスト" => FieldKind::Text,
-            "textarea" | "longtext" | "文章" => FieldKind::Textarea,
-            "number" | "数値" => FieldKind::Number,
-            "slider" | "スライダー" => FieldKind::Slider,
-            "count" | "stepper" => FieldKind::Count,
-            "choice" | "select" | "選択" => FieldKind::Choice,
-            "date" | "日付" => FieldKind::Date,
-            "month" | "年月" => FieldKind::Month,
-            "daterange" | "期間" => FieldKind::Daterange,
-            "rating" | "評価" => FieldKind::Rating,
-            "toggle" | "switch" | "checkbox" | "オンオフ" => FieldKind::Toggle,
-            _ => return None,
-        })
+    let find = |s: &str| {
+        FIELD_KINDS
+            .iter()
+            .find(|k| k.words.contains(&s))
+            .map(|k| k.kind)
     };
-    k(&w).or_else(|| k(word))
+    find(&nfkc(word).to_lowercase()).or_else(|| find(word))
+}
+
+/// 種類の代表の名前の一覧（`text / textarea / …`・誤りの文と案内で使う）。
+pub(crate) fn kind_names(sep: &str) -> String {
+    FIELD_KINDS
+        .iter()
+        .map(|k| k.words[0])
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 fn label(text: &str, line: usize, diags: &mut Diags) -> String {
@@ -334,7 +417,15 @@ fn read_field(
     diags: &mut Diags,
 ) -> Option<AppField> {
     let Some(mut kind) = field_kind(type_word) else {
-        diags.add(line, "warning", "unrecognized_line", format!("入力の種類が分かりません: {type_word}（text / textarea / number / choice / date / daterange / month / toggle / rating / slider / count）"));
+        diags.add(
+            line,
+            "warning",
+            "unrecognized_line",
+            format!(
+                "入力の種類が分かりません: {type_word}（{}）",
+                kind_names(" / ")
+            ),
+        );
         return None;
     };
     let mut opts = opts.to_string();
@@ -406,7 +497,7 @@ fn read_field(
             );
             return None;
         }
-        options.truncate(20);
+        options.truncate(APP_CHOICE_OPTIONS);
         if let Some(init) = get(&values, "初期").filter(|v| !v.is_empty()) {
             let picked: Vec<String> = split_unescaped(init, &[',', '、', '|'])
                 .into_iter()

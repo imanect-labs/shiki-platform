@@ -49,6 +49,8 @@ pub(crate) const APP_SECTION_FIELDS: usize = 20;
 pub(crate) const APP_FIELDS: usize = 40;
 pub(crate) const APP_SECTION_ACTIONS: usize = 3;
 pub(crate) const APP_LABEL: usize = 40;
+/// 選択肢（choice）の数の上限（超えた分は落とす）。
+pub(crate) const APP_CHOICE_OPTIONS: usize = 20;
 pub(crate) const ASK_QUESTIONS: usize = 8;
 pub(crate) const ASK_OPTIONS: usize = 12;
 pub(crate) const PLAN_STEPS: usize = 12;

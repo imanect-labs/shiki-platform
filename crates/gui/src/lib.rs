@@ -39,6 +39,7 @@ pub mod input_problems;
 pub mod miniapp;
 pub mod miniapp_actions;
 mod miniapp_data;
+mod miniapp_guide;
 pub mod miniapp_inputs;
 pub mod miniapp_pins;
 pub mod miniapp_publish;
@@ -70,6 +71,7 @@ pub use input_problems::{
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
+pub use miniapp_guide::{miniapp_screen_guide, MINIAPP_SCREEN_EXAMPLE};
 pub use miniapp_inputs::{
     input_hints, input_warnings, screen_input_warnings, InputHintType, WorkflowInputHint,
     MAX_CHECK_HINTS,
