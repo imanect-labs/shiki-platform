@@ -105,14 +105,9 @@ fn last_user_text(req: &GenerateRequest) -> String {
         .unwrap_or_default()
 }
 
-/// `truncatetext:` の駆動（本文の途中で出力上限に達した応答の続きを書かせる回復）。
-fn truncated_text_call(
-    req: &GenerateRequest,
-    user_text: &str,
-    prompt_tokens: u64,
-) -> Option<DeltaStream> {
-    let first = req
-        .messages
+/// 最初の user 発話の本文（続きの催促の後でも、最初に送った駆動の語を見るため）。
+fn first_user_text(req: &GenerateRequest) -> Option<&str> {
+    req.messages
         .iter()
         .find(|m| m.role == Role::User)
         .and_then(|m| {
@@ -120,7 +115,16 @@ fn truncated_text_call(
                 Block::Text { text } => Some(text.as_str()),
                 _ => None,
             })
-        })?;
+        })
+}
+
+/// `truncatetext:` の駆動（本文の途中で出力上限に達した応答の続きを書かせる回復）。
+fn truncated_text_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let first = first_user_text(req)?;
     let rest = first.strip_prefix("truncatetext:")?;
     if !user_text.starts_with(crate::CONTINUATION_MARK) {
         return Some(truncated_text_stream("報告の前半です。表の", prompt_tokens));
@@ -416,13 +420,19 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     if let Some(s) = structured_call(req, &user_text, prompt_tokens) {
         return s;
     }
-    // --- 出力の上限での打ち切り `truncate:<本文>`（形の指定が無いとき・GAP-106）。 ---
+    // --- 出力の上限での打ち切り `truncate:<本文>`（形の指定が無いとき・GAP-106）。続きの催促（#1247）には何も
+    //     書かずに上限で止まり、打ち切りのまま run を終える（回答の下の注記を確かめる駆動を保つ）。 ---
     if let Some(body) = user_text.strip_prefix("truncate:") {
         return text_stream_ending(
             &format!("回答: {}", body.trim()),
             StopReason::MaxTokens,
             prompt_tokens,
         );
+    }
+    if user_text.starts_with(crate::CONTINUATION_MARK)
+        && first_user_text(req).is_some_and(|t| t.starts_with("truncate:"))
+    {
+        return text_stream_ending("", StopReason::MaxTokens, prompt_tokens);
     }
     // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。
     //     `loop:<ツール名>`（空白を挟まない）はその名前のツールを呼ぶ（先頭が承認の要るツールの構成でも、
@@ -646,6 +656,31 @@ mod tests {
             }
         }
         assert_eq!(text, "回答: 長い説明");
+        assert_eq!(stop, Some(StopReason::MaxTokens));
+    }
+
+    /// `truncate:` の後の続きの催促（#1247）には本文を書かずに出力の上限で止まる（打ち切りのまま run を終える）。
+    #[tokio::test]
+    async fn stub_truncate_stays_truncated_on_the_continuation() {
+        let req = GenerateRequest::new(vec![
+            Message::text(Role::User, "truncate:長い説明"),
+            Message::text(Role::Assistant, "回答: 長い説明"),
+            Message::text(
+                Role::User,
+                format!("{} 続きを書いてください。", crate::CONTINUATION_MARK),
+            ),
+        ]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        let mut stop = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::TextDelta { text: t } => text.push_str(&t),
+                StreamDelta::Done { stop_reason, .. } => stop = Some(stop_reason),
+                _ => {}
+            }
+        }
+        assert_eq!(text, "");
         assert_eq!(stop, Some(StopReason::MaxTokens));
     }
 
