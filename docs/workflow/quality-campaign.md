@@ -2041,6 +2041,22 @@ bash .claude/skills/pr/scripts/dev-up.sh
   - sqlx::migrate! は migrations/ をコンパイル時に埋め込み、rerun-if-changed が無い。migration を足した・名前を変えたときは、埋め込む側を touch してから、新しい DB の _sqlx_migrations の最大の版を確かめる。
   - 手元の Postgres の /dev/shm（64MB）が、DB の数（163）で埋まり「could not resize shared memory segment」で結合テストが落ちた。§9.4 の手順（pg_ctl stop -m immediate の後に docker start）で戻した。
 
+### 2026-11-13（7p の確かめ・main の 2 回目の取り込み・PR）
+
+- **全体のゲート**（7p のレビューの直しの後・SHIKI_REQUIRE_IT=1・専用の DB）: 28 段のうち落ちたのは 2 段で、どちらもテストの側だった。文書の多い送り直しの並行の試験が実時間で測っていて、機械が混むと揺れた。同時に往復している数の最大で確かめる形にした（6855e635・並行を外すと落ちることを確かめた）。ir_lint のカタログの記録が、出力の項目の absent_if を足す前のままだった。撮り直した（4a8985ed・884 件が通った）。
+- **全 E2E**（`verify-main.sh --all`・4a8985ed・4 時間 34 分・50 回起動し直し）: 189 本のうち、通った 164・流し直すと通った 7・続けて落ちた 5・既知 1（data-sql・next dev）・全部飛ばした 12（実 LLM・Office・画面の比べ）。続けて落ちた 5 本は、どれも製品の不具合ではなかった。
+  - slides・slides-export・selection-ai・workflows-agent: 移った先の重い画面（スライド・ノートの編集・実行履歴）を、next dev が初めて組み立てるのに 18〜19 秒かかり、20 秒の待ちに収まらなかった（記録の通信で、作成の POST は 0.2 秒、移った先の RSC が 18.3〜19.0 秒）。待ちを 60 秒にした（CI は本番ビルドなので待たない）。
+  - chat-stop-reason の「手順の上限」: main の #1179 で、通常の会話の道具の先頭がファイルの複製（`drive.copy`・承認が要る）になった。stub の `loop:` は先頭の道具を呼び続けるので、1 手目で承認待ちになり、手数の上限まで届かなかった。stub に `loop:<ツール名>` を足し（名前のツールを呼び続ける・`loop:` は今までどおり）、spec は `loop:drive.find` にした。
+  - 1 回目で落ちて流し直すと通った 7 本（admin-console・data-table-list-paging・drive-mobile-tabs・skill-editor・workflow-ai-fix・workflow-run-dialog・workflows-history）も、多くは同じ初めての組み立ての待ちだった。
+  - 手摺の限界: 落ちたテストの trace.zip が途中で切れていて開けないものがあった（chat-stop-reason と workflows-agent の、1 回目と流し直しの両方）。中の .trace は zlib で取り出せた。
+- **main の 2 回目の取り込み**（0a99910d・712a5fa8・08fb017d・main の 00953306 まで・#1194・#1204・#1232・#1238 ほか）: 手で直したのは 15 ファイル（文字の衝突と、main で増えた設定の欄 `help` を api の試験に足したもの）。`ToolName.ts` は vocab.rs の並びに合わせて help_search を足した。会話のイベントは HelpCitation と BuilderRef の両方を残した。`composer-plus-menu.tsx` は main の「スキルを検索」を取り、このブランチの BUG-261 の triggerRef（閉じた後に「+」へフォーカスを戻す）を残した。意味の衝突は 1 つ: budget_extension_it がチェックポイントの鍵の一覧を固定していたので、main の help_citations を足した。migration は main の 0117 の後ろのまま（このブランチは 0118〜0156）。
+- **取り込んだ後のゲート**（取り込みが触った agent-core・api・chat・gui・llm-gateway・rag と、全体の clippy・bindings・web）: clippy・bindings・web の lint と build は通った。テストは nextest で 2254 本のうち 2249 本が通り、落ちた 5 本はどれも DB を使う結合テストだった。CI はこれらを nextest で流さない（プロセスごとの実行が、プロセスの中で共有する準備を壊す・`.config/nextest.toml`）ので、6 つの試験のファイルを cargo test で流し直した。5 つは通り、`workflow_document_read_it` の `script_failures_keep_the_host_code` だけが、web の build と重なった（負荷 6.4・2 CPU）ときに、スクリプトのブロックの 30 秒の上限を過ぎて落ちた。単独で流すと 7 本とも 26.6 秒で通った（取り込みの前と同じ）。
+- **取り込んだ後の E2E**（`verify-main.sh --specs`・e21aa1f1・15 分 42 秒）: 直した 5 本（chat-stop-reason・slides・slides-export・selection-ai・workflows-agent）と、取り込みで入った画面にかかわる 5 本（slash-command・chat・chat-builder-ref・composer-create・help-search）を流し、9 本が通った。help-search は同梱のコーパスが要るので飛んだ（HELP_CORPUS_E2E・この環境には無い）。チェックリストのページに、main の「スキルを検索」（#1232・#1238）の項目 ai-chat-20 を足した（120 件）。
+- **PR の前の独立レビュー**（7p の直し以降 756317dd.. と、取り込みで手で直した所・4 つの観点と main のコードとのかみ合わせ・反証）: CONFIRMED 1 件は、nextest の無い手元で ts-rs の書き出しの検査が型が合っていても落ちる件で、cargo test で回すようにした（fff00229）。REFUTED 1 件。docs の食い違い 7 件のうち、4 件は提案、1 件は skills の直し（gates.md の拡張子の差の原因・fff00229）、2 件は main 側の #1204 によるもので #1241 に切った。
+- **public リポジトリの語の確かめ**（G8 の拒否リスト）: ブランチの差分に 1 か所あった。main の #1196 のテストのファイル名の見本と、このブランチがそれを写した PIT-84 の試験の行で、3 か所とも架空の名前に置き換えた。リポジトリの全体で 0 件。
+- **docs の提案**（PR 前の独立レビュー・human の承認待ち）: 8f4a5056（design.md §4.5 の BUG-225 の項を D-220 の書き直しに）・3bb05357（D-204 の段落とモデルの窓に、広げた上限を窓に収めること）・a83271ac（AGENTS.md の検証コマンドに check-ts-bindings.sh）・724ddd45（phase-0.md の型生成の項を、書き出しを commit する運用に）。これで承認待ちは 23 件。
+- **Issue**: #1241（ヘルプの原稿を外に移した後も、help/ とコーパス取得の失敗の扱いが正本に古いまま残っている・main の #1204）。
+
 ## 11. 前倒し機能の設計（第 1 弾・2026-10-25）
 設計 4 本を書き、それぞれに反証レビュー（セキュリティ・実現性・業務の 3 観点で誤りを探す）を当てた。4 本とも「要修正」で、指摘を反映した改訂版を正とする。全文は付録 A。human の判断は §8 の D-21〜D-32。
 
