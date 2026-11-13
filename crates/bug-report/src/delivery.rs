@@ -91,6 +91,18 @@ impl DeliveryWorker {
             .bind(format!("bug-report:{tenant}:{org}"))
             .execute(&mut *tx)
             .await?;
+        // lock 待ちの間に撤去が始まった場合に備え、台帳行を FOR SHARE で押さえて再確認する。
+        // 撤去（mark_deleting の UPDATE）はこの claim の commit まで待つため、撤去開始後に
+        // 新たな claim が成立しない。commit 済みの claim による送信は巻き戻せない（運用ガイド参照）。
+        // active の行もロックするため、状態での絞り込みはロック後に行う。
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM tenant WHERE tenant_id=$1 FOR SHARE")
+                .bind(tenant.as_str())
+                .fetch_optional(&mut *tx)
+                .await?;
+        if status.is_some_and(|s| s != "active") {
+            return Ok(None);
+        }
         let row = sqlx::query("SELECT d.id,d.report_id,d.submission_rev,d.fence,d.outcome,d.attempt_count,(d.created_at>now()-interval '24 hours') AS within_deadline,s.principal,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.content_consent,s.approved_by FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE d.tenant_id=$1 AND d.org=$2 AND s.body_purged_at IS NULL AND s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED")
             .bind(tenant.as_str()).bind(org).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(None) };

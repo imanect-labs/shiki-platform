@@ -228,3 +228,41 @@ async fn admin_detail_rejects_report_whose_submission_body_was_purged() {
         Err(Error::NotFound)
     ));
 }
+
+#[tokio::test]
+async fn tenant_stop_during_claim_lock_wait_blocks_claim() {
+    let Some((db, fga, svc, ctx)) = setup().await else {
+        return;
+    };
+    let _queued = queued(&svc, &ctx).await;
+    let (sink, _) = stub(vec![]).await;
+    let w = std::sync::Arc::new(worker(&db, fga, sink));
+    sqlx::query(
+        "INSERT INTO tenant (tenant_id,org,display_name,status) VALUES ($1,$2,'dummy','active')",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .execute(&db)
+    .await
+    .unwrap();
+    // org lock を先に握り、claim を「active 確認後・lock 待ち」の位置で止める。
+    let mut holder = db.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("bug-report:{}:{}", ctx.tenant(), ctx.org()))
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+    let claim = {
+        let (w, tenant, org) = (w.clone(), ctx.tenant().clone(), ctx.org().to_owned());
+        tokio::spawn(async move { w.claim(&tenant, &org).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // lock 待ちの間に撤去を開始して commit する。
+    sqlx::query("UPDATE tenant SET status='deleting' WHERE tenant_id=$1")
+        .bind(ctx.tenant_id())
+        .execute(&db)
+        .await
+        .unwrap();
+    holder.commit().await.unwrap();
+    assert!(claim.await.unwrap().unwrap().is_none());
+}
