@@ -31,7 +31,9 @@
 //! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
 //!   「回答: 」を付けない）。
 //! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
-//!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
+//!   `refuse:` / `truncate:`（[`super::stub_structured`]・語はどの行の頭に置いてもよい）。
+//! - `fail:`（形の指定が無いとき・どの行の頭に置いてもよい）… 送り直されない誤り（`LlmError::BadRequest`）で失敗する
+//!   （ワークフローの llm.invoke の、再試行しない失敗の出口の検証用・[`super::stub_structured::failure_call`]）。
 //! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
 //!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
 //! - `truncatecall:`（ツールがあるとき）… 1 ターン目に tools[0] の呼び出しを引数の途中で切って `MaxTokens` で
@@ -53,7 +55,7 @@ use super::stub_stream::{
     text_stream, text_stream_ending, tool_call_stream, tool_calls_stream, truncated_text_stream,
     truncated_tool_call_stream,
 };
-use super::stub_structured::structured_call;
+use super::stub_structured::{failure_call, structured_call};
 use super::stub_triggers::{
     conversation_title_call, echo_effort_call, echo_history_call, echo_system_call, echo_tool_call,
     fix_workflow_call, generic_tool_call, note_suggest_call, note_tool_call, tool_search_call,
@@ -418,6 +420,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     }
     // --- 構造化出力（GAP-13）: 形の指定があればスキーマに合う値・`json:` 等の駆動で返す。 ---
     if let Some(s) = structured_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 形の指定が無い呼び出しの失敗 `fail:`（送り直されない誤り・ワークフローの失敗の出口）。 ---
+    if let Some(s) = failure_call(&user_text) {
         return s;
     }
     // --- 出力の上限での打ち切り `truncate:<本文>`（形の指定が無いとき・GAP-106）。続きの催促（#1247）には何も

@@ -4,18 +4,27 @@
 //! 形の指定（`response_format`、または prompt・json_object モードで system に足された指示）が
 //! あるときだけ働く:
 //! - 既定: スキーマに合う最小の値を返す（文字列の enum は本文に現れた値を優先し、無ければ先頭）。
-//! - `json:<本文>` … 直近の user の本文をそのまま返す（不正な JSON・形の合わない出力の試験。
+//! - `json:<本文>` … 直近の user の本文を返す（不正な JSON・形の合わない出力の試験。
 //!   修復の依頼〔直近の user が変わる〕には既定の最小値で答えるので、修復で直る経路になる）。
-//! - `jsonalways:<本文>` … 最初の user の本文を、修復の依頼にも毎回そのまま返す（修復しても直らない経路）。
+//! - `jsonalways:<本文>` … 最初の user の本文を、修復の依頼にも毎回返す（修復しても直らない経路）。
 //! - `refuse:` … 拒否（[`StopReason::Refusal`]）で終える。
 //! - `truncate:` … JSON の途中で max_tokens（[`StopReason::MaxTokens`]）に達して終える。
+//!
+//! 駆動の語は、本文の頭だけでなく、どの行の頭に置いてもよい（[`line_driver`]・最初に見つかった行の語を使う）。
+//! 資料の本文（PDF の「〔p.1〕」など）や前置きを先に並べた、本物に近い prompt でも駆動できるようにする。
+//! `json:`・`jsonalways:` は、語の後ろが JSON の値で始まれば、その最初の値だけを返して続く文を捨てる。
+//! 始まらなければ、語の後ろから本文の終わりまでを返す（[`json_body`]）。
+//!
+//! 形の指定が無い呼び出しの失敗の駆動 `fail:`（[`failure_call`]）もここに置く。拾い方は同じく、どの行の頭でもよい。
+//! チャットの `truncate:`（形の指定が無いとき・`stub.rs`）は本文の頭だけを見る（続きの催促〔#1247〕の判定が
+//! 最初の発話の頭を見ているので、拾い方を揃えておく）。
 
 use futures::stream::{self, StreamExt};
 use serde_json::{Map, Value};
 
 use super::stub_stream::text_stream;
 use crate::model::{Block, GenerateRequest, ResponseFormat, Role, StopReason, StreamDelta, Usage};
-use crate::provider::DeltaStream;
+use crate::provider::{DeltaStream, LlmError};
 use crate::structured::schema_in_system;
 
 /// 形の指定があれば構造化出力の応答を返す（無ければ `None`・通常の stub の応答へ）。
@@ -25,25 +34,56 @@ pub(super) fn structured_call(
     prompt_tokens: u64,
 ) -> Option<DeltaStream> {
     let schema = requested_schema(req)?;
-    if let Some(body) = first_user_text(req).strip_prefix("jsonalways:") {
-        return Some(text_stream(body.trim(), prompt_tokens));
+    if let Some(rest) = line_driver(&first_user_text(req), "jsonalways:") {
+        return Some(text_stream(json_body(rest), prompt_tokens));
     }
-    if let Some(body) = user_text.strip_prefix("json:") {
-        return Some(text_stream(body.trim(), prompt_tokens));
+    if let Some(rest) = line_driver(user_text, "json:") {
+        return Some(text_stream(json_body(rest), prompt_tokens));
     }
-    if user_text.starts_with("refuse:") {
+    if line_driver(user_text, "refuse:").is_some() {
         return Some(ending(
             "この依頼にはお答えできません。",
             StopReason::Refusal,
             prompt_tokens,
         ));
     }
-    if user_text.starts_with("truncate:") {
+    if line_driver(user_text, "truncate:").is_some() {
         return Some(ending("{\"", StopReason::MaxTokens, prompt_tokens));
     }
     let hints = all_user_text(req);
     let value = minimal_value(&schema, &hints, 0);
     Some(text_stream(&value.to_string(), prompt_tokens))
+}
+
+/// `fail:`（形の指定が無い呼び出し）… 送り直されない誤り（[`LlmError::BadRequest`]）で失敗する。ワークフローの
+/// llm.invoke では、再試行しない失敗（`invalid`）になる。一時障害（`Unavailable`）にすると、gateway の送り直し
+/// （#743・D-151）や step の再試行に掛かり、失敗の出口を 1 回で通せない。形の指定があるときは [`structured_call`] が先に
+/// 答える（形の指定がある呼び出しの失敗は `refuse:`・`truncate:`・`jsonalways:` で通す）。
+pub(super) fn failure_call(user_text: &str) -> Option<DeltaStream> {
+    line_driver(user_text, "fail:")?;
+    Some(
+        stream::iter([Err(LlmError::BadRequest(
+            "stub: fail: の駆動で失敗させた".into(),
+        ))])
+        .boxed(),
+    )
+}
+
+/// 本文のどこかの行の頭にある駆動の語 `word` の後ろ（最初に見つかった行の語から、本文の終わりまで）。
+fn line_driver<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .find_map(|start| text[start..].strip_prefix(word))
+}
+
+/// `json:`・`jsonalways:` の後ろ `rest` から返す本文。JSON の値で始まれば最初の値だけ（書いたままの文字）、
+/// 始まらなければ全体（前後の空白は外す）。
+fn json_body(rest: &str) -> &str {
+    let mut values = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+    match values.next() {
+        Some(Ok(_)) => rest[..values.byte_offset()].trim(),
+        _ => rest.trim(),
+    }
 }
 
 /// 求められた形のスキーマ（`response_format` → system の指示の順・スキーマなしは空のオブジェクト）。
@@ -315,5 +355,101 @@ mod tests {
     fn without_a_format_the_stub_answers_as_usual() {
         let r = GenerateRequest::new(vec![Message::text(Role::User, "json:{}")]);
         assert!(structured_call(&r, "json:{}", 1).is_none());
+    }
+
+    /// 駆動の語は、資料の本文や前置きの後ろの行の頭に置いてもよい。`json:` は最初の JSON の値だけを返す。
+    #[tokio::test]
+    async fn drivers_work_at_the_head_of_any_line() {
+        let page = "〔p.1〕問い合わせの本文です。\n";
+        let mut r = req(
+            &format!("{page}json:{{\"category\": 1}} 以下は資料の続き\n次の行"),
+            triage(),
+        );
+        assert_eq!(run(&r).await.0, "{\"category\": 1}");
+        // 修復の依頼には最小値で答える（前の行の語は、直近の user が変われば見ない）。
+        r.messages
+            .push(Message::text(Role::Assistant, "{\"category\": 1}"));
+        r.messages
+            .push(Message::text(Role::User, "形式に合いません"));
+        let v: Value = serde_json::from_str(&run(&r).await.0).unwrap();
+        assert_eq!(v["category"], "billing");
+
+        let mut r = req(
+            &format!("{page}jsonalways:{{\"category\":\"refund\"}}\n資料の続き"),
+            triage(),
+        );
+        r.messages
+            .push(Message::text(Role::Assistant, "{\"category\":\"refund\"}"));
+        r.messages
+            .push(Message::text(Role::User, "形式に合いません"));
+        assert_eq!(run(&r).await.0, "{\"category\":\"refund\"}");
+
+        let (_, stop) = run(&req(&format!("{page}refuse:"), triage())).await;
+        assert_eq!(stop, StopReason::Refusal);
+        let (text, stop) = run(&req(&format!("{page}truncate:長い出力"), triage())).await;
+        assert_eq!(stop, StopReason::MaxTokens);
+        assert!(serde_json::from_str::<Value>(&text).is_err());
+    }
+
+    /// `json:` の後ろが JSON の値で始まらなければ、語の後ろから本文の終わりまでを返す（今までと同じ）。
+    /// 行の途中の語は駆動ではない。
+    #[tokio::test]
+    async fn json_body_falls_back_to_the_rest_and_mid_line_words_are_text() {
+        let (text, _) = run(&req("前置き\njson:申し訳ありません\n続き", triage())).await;
+        assert_eq!(text, "申し訳ありません\n続き");
+        assert_eq!(json_body(" {\"a\":[1,2]}{\"b\":2}"), "{\"a\":[1,2]}");
+        assert_eq!(json_body("not json {}"), "not json {}");
+        let (text, stop) = run(&req(
+            "本文の途中の json:{} と refuse: は語ではない",
+            triage(),
+        ))
+        .await;
+        assert_eq!(stop, StopReason::EndTurn);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["category"], "billing");
+    }
+
+    async fn plain(text: &str) -> Vec<Result<StreamDelta, LlmError>> {
+        use crate::provider::LlmProvider as _;
+        let r = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+        let s = super::super::stub::StubProvider::new()
+            .stream(&r)
+            .await
+            .unwrap();
+        s.collect().await
+    }
+
+    /// 形の指定が無い `fail:`（どの行の頭でもよい）は、送り直されない誤り（BadRequest）だけを返す。形の指定が
+    /// あれば構造化出力の応答が先に答える。
+    #[tokio::test]
+    async fn fail_driver_ends_a_plain_call_with_a_permanent_error() {
+        for text in ["fail:", "〔p.1〕資料の本文\nfail: 失敗の出口を通す"] {
+            let items = plain(text).await;
+            assert_eq!(items.len(), 1, "{text}");
+            assert!(
+                matches!(&items[0], Err(LlmError::BadRequest(_))),
+                "{text}: {:?}",
+                items[0]
+            );
+        }
+        let (text, stop) = run(&req("fail:", triage())).await;
+        assert_eq!(stop, StopReason::EndTurn);
+        assert!(serde_json::from_str::<Value>(&text).is_ok(), "{text}");
+        // 行の途中の語は駆動ではない。
+        assert!(plain("本文の fail: は語ではない")
+            .await
+            .iter()
+            .all(Result::is_ok));
+    }
+
+    /// 形の指定が無い `truncate:` は本文の頭だけを見る（チャットの続きの催促〔#1247〕と揃える）。
+    #[tokio::test]
+    async fn plain_truncate_still_needs_the_head_of_the_text() {
+        let items = plain("前置き\ntruncate:長い説明").await;
+        let stop = items.iter().find_map(|d| match d {
+            Ok(StreamDelta::Done { stop_reason, .. }) => Some(*stop_reason),
+            _ => None,
+        });
+        assert_eq!(stop, Some(StopReason::EndTurn));
     }
 }
