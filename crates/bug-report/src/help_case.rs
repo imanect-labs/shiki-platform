@@ -88,7 +88,7 @@ impl BugReportService {
         ctx: &AuthContext,
         run: &HelpRun,
     ) -> Result<(Uuid, Uuid), Error> {
-        sqlx::query_as("SELECT thread_id,message_id FROM generation_run r WHERE r.tenant_id=$1 AND r.org=$2 AND r.actor=$3 AND r.run_id=$4 AND r.fencing_token=$5 AND r.status='running' AND NOT r.cancel_requested AND r.lease_until>now() AND NOT r.autonomous AND r.mini_app_id IS NULL AND r.skill_pins='[]'::jsonb AND NOT EXISTS (SELECT 1 FROM generation_event e WHERE e.run_id=r.run_id AND e.type='skill_invoked')")
+        sqlx::query_as("SELECT thread_id,message_id FROM generation_run r WHERE r.tenant_id=$1 AND r.org=$2 AND r.actor=$3 AND r.run_id=$4 AND r.fencing_token=$5 AND r.status='running' AND NOT r.cancel_requested AND r.lease_until>now() AND NOT r.autonomous AND r.mini_app_id IS NULL AND r.skill_pins='[]'::jsonb AND NOT EXISTS (SELECT 1 FROM generation_event e WHERE e.run_id=r.run_id AND e.type='skill_invoked') FOR SHARE OF r")
             .bind(ctx.tenant_id()).bind(ctx.org()).bind(&ctx.principal().id).bind(run.run_id).bind(run.fencing)
             .fetch_optional(conn).await?.ok_or(Error::NotFound)
     }
@@ -147,6 +147,12 @@ impl BugReportService {
         let mut tx = begin_tenant_tx(&self.store.pool, ctx.tenant()).await?;
         let case = load_case(&mut tx, ctx, thread, id).await?;
         eligible(&case)?;
+        let current: bool = sqlx::query_scalar("SELECT COALESCE(active_message_id,(SELECT id FROM message WHERE tenant_id=$1 AND org=$2 AND thread_id=$3 ORDER BY created_at DESC,id DESC LIMIT 1))=$4 FROM thread WHERE tenant_id=$1 AND org=$2 AND id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(thread).bind(case.guidance_message_id).fetch_one(&mut *tx).await?;
+        if !current {
+            return Err(Error::Conflict);
+        }
+
         sqlx::query("UPDATE help_resolution_case SET report_intent_at=COALESCE(report_intent_at,now()) WHERE tenant_id=$1 AND org=$2 AND reporter_id=$3 AND id=$4")
             .bind(ctx.tenant_id()).bind(ctx.org()).bind(&ctx.principal().id).bind(id).execute(&mut *tx).await?;
         crate::service::audit(

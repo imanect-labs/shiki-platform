@@ -153,7 +153,7 @@ async fn authorization_revision_gates_and_idempotency() {
     ));
     for other in [
         context(ctx.tenant_id(), "other", "alice"),
-        context("other-tenant", ctx.org(), "alice"),
+        context(&format!("other-{}", ctx.tenant_id()), ctx.org(), "alice"),
     ] {
         fga.write_tuple(
             &other.subject(),
@@ -711,7 +711,7 @@ async fn admin_cursor_survives_reopen_and_keeps_tenant_org_boundaries() {
         .any(|r| r.id == cursor));
     for other in [
         context(ctx.tenant_id(), "other-org", "alice"),
-        context("other-tenant", ctx.org(), "alice"),
+        context(&format!("other-{}", ctx.tenant_id()), ctx.org(), "alice"),
     ] {
         fga.write_tuple(
             &other.subject(),
