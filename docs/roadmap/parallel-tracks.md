@@ -683,12 +683,12 @@
 
 | ID | タイトル | area | 依存 |
 |----|---------|------|------|
-| AB.1 | `BrowserEngine` トレイト・`BrowserSession`・共通スナップショット形式（`crates/browser`） | agent | 5.x |
+| AB.1 | `BrowserEngine` トレイト・`BrowserSession`・共通スナップショット形式（`crates/browser`）・`public_fetch` / `decode` の下位クレートへの移動 | agent | 5.x |
 | AB.2 | テキストエンジン（public_fetch 経由・リダイレクト毎検証・フォーム・cookie jar） | agent | AB.1 |
 | AB.3 | `browser` ツール（読む操作）＋承認・egress・出所による URL の絞り込み | agent / chat | AB.2 |
 | AB.4 | Chromium エンジン（隔離実行・egress の公開 Web モード・資源上限） | sandbox | AB.1, 4.x |
 | AB.5 | ハイブリッド切替（`needs_js`・cookie の受け渡し・主文書の受け渡し） | agent | AB.2, AB.4 |
-| AB.6 | `browser_act`（POST 送信・JS ボタン）と承認ダイアログ | agent / frontend | AB.3, AB.5 |
+| AB.6 | `browser_act`（出所の無い URL・別オリジン宛て・POST・JS ボタン・Chromium での入力）と承認ダイアログ | agent / frontend | AB.3, AB.5 |
 | AB.7 | 評価セット `eval/agent-browser/`（評価サイト・注入ページ・実サイト測定） | agent | AB.3 |
 | AB.8 | ログイン（シークレット参照の入力）とプロファイルの持ち越し（後続） | agent | AB.6, 10.x（secrets） |
 
@@ -711,7 +711,7 @@
 - **area**: agent / chat / **path**: `crates/agent-core/src/tools/`, `crates/chat/`
 - **仕様**: browser.md §6。語彙追加・`is_egress`・`READ_ONLY`・`RESEARCH_TOOLS`・同一ホストの直列化。
 - **受け入れ条件**:
-  - [ ] 出所に無い URL の `navigate` が承認なしに通信しない（PIT-79）
+  - [ ] 出所に無い URL の `navigate`・別オリジン宛ての GET フォームを `browser` が拒否し、承認なしに通信しない（PIT-79）
   - [ ] スナップショットが `<web_page>` 封筒に包まれ、ページ由来の値が封筒の外に出ない（PIT-56）
 
 ### Task AB.4: Chromium エンジン
@@ -726,7 +726,8 @@
 - **仕様**: browser.md §5。
 - **受け入れ条件**:
   - [ ] ログイン後に JS が要るページへ切り替えて操作を続けられる
-  - [ ] host-only・Secure・HttpOnly の属性が切替で失われない／主文書の要求が 2 回届かない（PIT-80）
+  - [ ] host-only・Secure・HttpOnly の属性が切替で失われない／往復で別ホストの cookie が消えずログアウトが復活しない／
+        D のクロスサイト送信に Strict の cookie が付かない／切替と `back` で主文書の要求が 2 回届かない（PIT-80）
 
 ### Task AB.6: `browser_act`
 - **area**: agent / frontend
