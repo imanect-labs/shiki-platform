@@ -32,6 +32,8 @@ pub struct AppConfig {
     pub rag: rag::RagConfig,
     #[serde(default)]
     pub help: rag::help::HelpConfig,
+    #[serde(default)]
+    pub bug_report: shiki_bug_report::BugReportConfig,
     /// チャット（生成ワーカー・接続非依存生成・Phase 3）。既定は無効。
     #[serde(default)]
     pub chat: ChatConfig,

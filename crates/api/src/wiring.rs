@@ -695,6 +695,20 @@ fn wire_help(
     Ok(help_search)
 }
 
+/// 本番未決を含め、PR1 はローカル held 受付だけを配線する。
+pub(crate) fn wire_bug_report(
+    config: &shiki_bug_report::BugReportConfig,
+    db: &sqlx::PgPool,
+    authz: &std::sync::Arc<dyn authz::AuthzClient>,
+) -> Option<std::sync::Arc<shiki_bug_report::BugReportService>> {
+    config.enabled.then(|| {
+        std::sync::Arc::new(shiki_bug_report::BugReportService::new(
+            shiki_bug_report::BugReportStore::new(db.clone()),
+            authz.clone(),
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{non_empty, primary_provider, provider_kind};

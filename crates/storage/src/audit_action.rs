@@ -154,6 +154,16 @@ impl std::fmt::Display for AuditAction {
 
 // 記録する文字列は変えない（古い行と食い違う）。足すときは分類と表示名も一緒に決める。
 audit_actions! {
+    BugReportDraftCreate = "bug_report.draft_create", "不具合報告の下書きを作成", Chat;
+    BugReportDraftUpdate = "bug_report.draft_update", "不具合報告の下書きを編集", Chat;
+    BugReportSubmit = "bug_report.submit", "不具合報告を提出", Chat;
+    BugReportApprove = "bug_report.approve", "不具合報告を承認", Admin;
+    BugReportReject = "bug_report.reject", "不具合報告を却下", Admin;
+    BugReportCancel = "bug_report.cancel", "不具合報告を取り下げ", Chat;
+    BugReportReopen = "bug_report.reopen", "不具合報告を下書きに戻す", Chat;
+    BugReportPolicyUpdate = "bug_report.policy_update", "不具合報告の設定を変更", Admin;
+    BugReportRead = "bug_report.read", "不具合報告を参照", Chat;
+
     AgentApprovalDecide = "agent.approval.decide", "承認の判断（権限確認）", Agent;
     AgentApprovalDecision = "agent.approval.decision", "承認を判断", Agent;
     AppBundlePut = "app.bundle.put", "アプリの部品を登録", App;

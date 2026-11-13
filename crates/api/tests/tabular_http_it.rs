@@ -198,6 +198,7 @@ fn runner_path() -> Option<PathBuf> {
 
 fn config(db_url: &str) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
@@ -530,6 +531,7 @@ fn build_app(
         Arc::clone(authz),
     ));
     let state = AppState {
+        bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),

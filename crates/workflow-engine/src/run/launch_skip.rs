@@ -242,7 +242,7 @@ mod tests {
     /// 理由の code は記録の表の check と同じ集合で、文は内部の言葉（委譲・コード）を出さない（GAP-67・付録 C の P1）。
     #[test]
     fn causes_match_the_table_and_speak_plainly() {
-        let migration = include_str!("../../../../migrations/0142_workflow_launch_skip.sql");
+        let migration = include_str!("../../../../migrations/0143_workflow_launch_skip.sql");
         let check = migration
             .split("check (code in (")
             .nth(1)

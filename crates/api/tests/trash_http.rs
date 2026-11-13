@@ -49,6 +49,7 @@ use uuid::Uuid;
 
 fn config(db_url: &str, tenant: &str) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
@@ -723,6 +724,7 @@ fn build_state(
         Arc::clone(authz),
     ));
     AppState {
+        bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),

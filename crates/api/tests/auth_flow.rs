@@ -285,6 +285,7 @@ async fn spawn_idp(
 
 fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
@@ -465,6 +466,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         tabular::Quotas::default(),
     ));
     AppState {
+        bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),

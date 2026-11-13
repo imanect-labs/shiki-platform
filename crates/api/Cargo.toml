@@ -39,6 +39,7 @@ shiki-sandbox-client.workspace = true
 shiki-artifact.workspace = true
 shiki-gui.workspace = true
 shiki-secrets.workspace = true
+shiki-bug-report.workspace = true
 shiki-workflow-engine.workspace = true
 shiki-script-runtime.workspace = true
 # ファイルの文章の文字コードの判定（ファイルを読む・AI エージェントの窓読み・GAP-45）。

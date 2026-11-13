@@ -533,7 +533,7 @@ pub async fn disable_workflow(
 /// ワークフローを消したあとで止める（`DELETE /artifacts/{id}` の kind=workflow・BUG-128・D-105）。
 ///
 /// 論理削除の commit の後に、「権限も取り消す」と同じ経路で委譲を取り消し、自動実行をオフにし、動いている run を
-/// すべて取り消す（承認の依頼も取り下げる）。DB の側は論理削除のトリガ（migration 0130）が済ませているので、ここが
+/// すべて取り消す（承認の依頼も取り下げる）。DB の側は論理削除のトリガ（migration 0131）が済ませているので、ここが
 /// 失敗しても動き出さない。失敗は削除の結果を変えず、ログに残す（外せなかった委譲は scheduler の掃除が取り消す）。
 pub(crate) async fn after_workflow_deleted(
     state: &AppState,

@@ -6,7 +6,7 @@
 -- として扱う。テナントと組織はトークンのクレームではなく、この行から決める。同じ B2 が交換した利用者のトークン
 -- （sub は利用者）は一致しないので、利用者のまま扱う。
 --
--- インストールのときと、起動時のクライアントの照合（oauth_client_spec が今の形と違う行・migration 0137）が書く。
+-- インストールのときと、起動時のクライアントの照合（oauth_client_spec が今の形と違う行・migration 0138）が書く。
 -- 空（NULL）は、B2 が無いか、まだ照合していない（この migration より前のインストール）。
 
 alter table app_installation add column b2_service_sub text;

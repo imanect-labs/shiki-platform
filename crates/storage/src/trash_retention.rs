@@ -31,7 +31,7 @@ use crate::service::{PurgeOutcome, PurgeReport, StorageService};
 
 /// 保持日数の下限（1 日）。
 pub const MIN_TRASH_RETENTION_DAYS: i32 = 1;
-/// 保持日数の上限（10 年・打ち間違いの検出）。DB の CHECK（migration 0155）と同じ。
+/// 保持日数の上限（10 年・打ち間違いの検出）。DB の CHECK（migration 0156）と同じ。
 pub const MAX_TRASH_RETENTION_DAYS: i32 = 3650;
 
 /// 1 回の掃除で完全に削除する根の上限（残りは次の回に回す）。
@@ -350,7 +350,7 @@ impl StorageService {
 ///
 /// 期限 `greatest(deleted_at, since) + days <= now` は、`deleted_at <= now - days` かつ
 /// `since <= now - days`（since が null なら猶予なし）と同じ。テナントごとに部分索引 `node_trash_idx`
-/// （migration 0155）を古い順に読み、全体でも古い順に並べ直す。
+/// （migration 0156）を古い順に読み、全体でも古い順に並べ直す。
 async fn due_roots(
     conn: &mut PgConnection,
     now: DateTime<Utc>,

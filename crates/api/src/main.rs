@@ -359,7 +359,9 @@ async fn run() -> anyhow::Result<()> {
         },
         &config.membership_reconcile,
     );
+    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz);
     let state = AppState {
+        bug_report,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には

@@ -203,6 +203,7 @@ impl storage::object_store::ObjectStore for FakeStore {
 
 fn base_config(db_url: &str) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "127.0.0.1".into(),
             port: 0,
@@ -467,6 +468,7 @@ async fn setup() -> Option<Harness> {
         tabular::Quotas::default(),
     ));
     let state = AppState {
+        bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),

@@ -642,7 +642,7 @@ sequenceDiagram
   復元可能な間はタプルを残す（復元と対称）。
 - **完全削除（1 件ずつ `purge_node`・ゴミ箱を空にする `empty_trash`・保持期間の自動削除）は、消したノードの直接のタプルを外す**
   （`service/purge.rs`）。ノード・版・blob などの行を 1 つの Tx で消し、**同じ Tx で**消したノードごとの「タプルを外す仕事」
-  を片付け待ち `storage_purge_pending`（migration 0154）に積む（`enqueue_tuples`）。commit の後に、根の行から先に
+  を片付け待ち `storage_purge_pending`（migration 0155）に積む（`enqueue_tuples`）。commit の後に、根の行から先に
   その場で `delete_object_tuples` で外す（`drain_cleanup` → `cleanup_one`。根から継いでいた閲覧を先に閉じる）。
   その場で外しきれなかった分・失敗した分は、中断アップロードの回収タイマの周の掃除 `sweep_purge_pending`
   （`service/purge_pending.rs`・`upload_gc_timer.rs`）がやり直す。`upload_gc.enabled=false` だと掃除は回らない
@@ -913,7 +913,7 @@ flowchart LR
   位置を進めない。Keycloak が 403 を返したら（provisioner に利用者を読む権限が無い）、1 行の warn でその回を止める
   （位置を進めない。権限の誤りはどの人でも同じなので、人ごとの warn を出し続けない）。
 - **回し方**: `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（`membership_reconcile_cursor`
-  の `cursor_tenant_id`・`cursor_user_id`・migration 0148）から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに
+  の `cursor_tenant_id`・`cursor_user_id`・migration 0149）から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに
   ceil(N / batch_size) 回。1 人につき OpenFGA の読み 1〜2 回と Keycloak の読み 1〜2 回（直接タプルの無い人は Keycloak を
   読まない）。サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める: advisory lock を取れた 1 台が、最後に照合を
   始めた時刻（`last_run_at`・DB の時刻）から間隔の 9 割が経っていなければ何もしない（各サーバーのタイマーのずれで

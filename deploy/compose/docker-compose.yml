@@ -659,6 +659,8 @@ services:
       # SHIKI__EGRESS__PROXY_USERNAME: shiki
       # SHIKI__EGRESS__PROXY_PASSWORD_FILE: /run/secrets/egress-proxy-password
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
+      SHIKI__BUG_REPORT__ENABLED: ${SHIKI_BUG_REPORT_ENABLED:-false}
+      SHIKI__BUG_REPORT__BACKEND: ${SHIKI_BUG_REPORT_BACKEND:-disabled}
       SHIKI__HELP__ENABLED: ${SHIKI__HELP__ENABLED:-true}
       SHIKI__HELP__DATA_PATH: ${SHIKI__HELP__DATA_PATH:-/opt/shiki/help}
       SHIKI__HELP__BASE_URL: ${SHIKI__HELP__BASE_URL:-https://shiki.imanect.app}

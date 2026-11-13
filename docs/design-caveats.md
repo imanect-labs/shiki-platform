@@ -1754,3 +1754,12 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
   （`get_message_path`）と相手の分岐（`fork_thread`）にも出ないこと（同じ 2 つの試験の中）。共有の相手がいる会話の作業記録に
   結果の本文が載らないこと（`history_work_log` の `shared_threads_keep_results_out_of_the_log` と、`later_share` の
   `echohistory:` の確かめ）。絞った形にどの欄の目印も出ないことは単体テスト（`workflow_try_tool/shared_tests.rs`）。
+
+## 🔴 PIT-85: 不具合報告の同意・宛先・配送不明・下書き漏洩（#1251 追加提案）
+
+- 組織許可と本人同意は AND。管理者承認は代替にならない。提出 snapshot と宛先版を固定し、承認後の宛先差し替えを禁止。
+- GitHub 作成の exactly-once は保証しない。POST 後 timeout/crash は unknown、照合不明は人間判断。盲目的な再 POST を禁止。
+- held は送り先決定後も自動配送せず本人に再確認。承認 OFF への変更も pending の自動配送を許可しない。
+- shared thread の参加者や admin に他人の draft を返さない。admin に返す本文も提出 snapshot のみ。
+- help citation は検索成功・未解決・報告希望の証拠にならない。PR4 の receipt/case と本人ボタンをサーバで検証。
+- PR1 受入れ: runtime role の RLS 未設定拒否・tenant/org 越境拒否、他人draft拒否、監査失敗rollback、revision/冪等競合、二重ゲートとheld・上限。

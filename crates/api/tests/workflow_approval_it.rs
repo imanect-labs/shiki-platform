@@ -245,6 +245,7 @@ impl storage::object_store::ObjectStore for NoopStore {
 
 fn config(db_url: &str, tenant: &str) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
@@ -593,6 +594,7 @@ fn build_app(
     ));
     let directory = Arc::new(storage::DirectoryStore::new(pool.clone()));
     let state = AppState {
+        bug_report: None,
         config: Arc::new(config),
         insights: Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),
