@@ -468,7 +468,8 @@ jobs:
     needs: [changes, tabular-runner]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # 全量（main・テストを選べない PR）は計装ビルドと結合テストで 33〜40 分かかる（PR #1242 で 40 分の上限に当たった）。
+    timeout-minutes: 60
     # カバレッジ表を PR にコメントするため pull-requests:write を昇格付与する。
     permissions:
       contents: read
