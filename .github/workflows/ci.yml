@@ -969,6 +969,12 @@ jobs:
     name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # spec が 650 本を超え、1 ジョブ（1 worker）では 30 分に収まらなくなった。4 つに分けて並べる（各ジョブが自分の
+    # compose を立てるので、前の spec の残したデータも分かれる）。落ちた spec の記録は rglob で集める（selection-gap）。
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # gen:api の生成物は gen-api ジョブから受け取る（Rust ツールチェーンも rust-cache も要らない）。
     needs: [changes, build-server, tabular-runner, gen-api]
     if: needs.changes.outputs.compose == 'true'
@@ -1051,12 +1057,14 @@ jobs:
         run: |
           # 引数は語分割させる（changes ジョブが組んだ spec の正規表現・空白を含まない）。
           # shellcheck disable=SC2086
-          pnpm exec playwright test --reporter=github,list,json $E2E_ARGS
-      - name: upload failed specs (main)
-        if: failure() && github.event_name != 'pull_request'
+          pnpm exec playwright test --reporter=github,list,json --shard=${{ matrix.shard }}/4 $E2E_ARGS
+      # PR でも残す（github の報告は最後にまとめて出すので、途中で止まると落ちた理由が残らない）。selection-gap は
+      # main・マージキューだけで読む。
+      - name: upload failed specs
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-failures-e2e
+          name: ci-failures-e2e-${{ matrix.shard }}
           path: web/e2e-results.json
           if-no-files-found: ignore
           retention-days: 7
