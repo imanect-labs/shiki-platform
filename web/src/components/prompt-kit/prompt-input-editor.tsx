@@ -145,6 +145,9 @@ export type PromptInputEditorProps = {
   attributes?: Record<string, string | undefined>;
   /// 本文（ProseMirror の要素）の見た目。
   className?: string;
+  /// 値が変わるたびに、フォーカスしてキャレットを 1 行目の末尾へ置く（「スキルを検索」で入れた
+  /// `/` の直後から打てるように）。本文の置き換えと同じコミットで、置き換えの後に行う。
+  focusFirstLineKey?: number;
 };
 
 export function PromptInputEditor({
@@ -156,6 +159,7 @@ export function PromptInputEditor({
   firstLineIndent,
   attributes,
   className,
+  focusFirstLineKey,
 }: PromptInputEditorProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } = usePromptInput();
   // Enter のキー表示（送信 / 改行）。タッチでは Enter が改行なので「改行」を出す。
@@ -278,6 +282,17 @@ export function PromptInputEditor({
     emitted.current = value;
     editor.commands.setContent(docFromMarkdown(value), { emitUpdate: false });
   }, [editor, value]);
+
+  // 1 行目の末尾へフォーカス。**上の本文の置き換えより後に宣言する**（同じコミットの effect は宣言順に
+  // 走るので、置き換え後の文書で位置を決められる）。DOM の選択を直接いじると ProseMirror の内部の
+  // 選択と食い違い、直後の打鍵が古い位置（本文の末尾）へ入る。
+  const focusedKey = React.useRef(focusFirstLineKey);
+  React.useEffect(() => {
+    if (!editor || editor.isDestroyed || focusFirstLineKey === focusedKey.current) return;
+    focusedKey.current = focusFirstLineKey;
+    const first = editor.state.doc.firstChild;
+    editor.commands.focus(first ? 1 + first.content.size : "end", { scrollIntoView: false });
+  }, [editor, focusFirstLineKey]);
 
   React.useEffect(() => {
     editor?.setEditable(!disabled, false);

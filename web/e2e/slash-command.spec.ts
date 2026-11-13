@@ -168,6 +168,8 @@ test("コマンド宣言の無い自作スキルも / と「スキルを検索�
   await page.getByRole("button", { name: "追加メニューを開く" }).click();
   await page.getByTestId("composer-search-skills").click();
   await expect(page.getByTestId("slash-command-menu")).toBeVisible();
+  // フォーカスは「+」メニューが閉じきってから入力欄へ移る。移る前のキーは入力欄に届かない。
+  await expect(input).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
   await expect(input).toHaveText("今週分をまとめて");
