@@ -665,13 +665,36 @@ pub(crate) fn wire_bug_report(
     config: &shiki_bug_report::BugReportConfig,
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn authz::AuthzClient>,
-) -> Option<std::sync::Arc<shiki_bug_report::BugReportService>> {
-    config.enabled.then(|| {
-        std::sync::Arc::new(shiki_bug_report::BugReportService::new(
-            shiki_bug_report::BugReportStore::new(db.clone()),
-            authz.clone(),
-        ))
-    })
+) -> Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>, shiki_bug_report::Error> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let mut service = shiki_bug_report::BugReportService::new(
+        shiki_bug_report::BugReportStore::new(db.clone()),
+        authz.clone(),
+    );
+    if config.backend == shiki_bug_report::BugReportBackend::Github {
+        // AppConfig::validate と起動時の鍵検証に成功した構成だけを配線する。
+        let github = config
+            .github
+            .clone()
+            .ok_or(shiki_bug_report::Error::Invalid)?;
+        let version = github.config_version;
+        let sink = std::sync::Arc::new(shiki_bug_report::github::GitHubIssueSink::new(github)?);
+        service = service.with_github_destination(version);
+        let worker =
+            shiki_bug_report::delivery::DeliveryWorker::new(db.clone(), authz.clone(), sink);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                if worker.run_batch().await.is_err() {
+                    tracing::warn!("bug-report delivery batch failed");
+                }
+            }
+        });
+    }
+    Ok(Some(std::sync::Arc::new(service)))
 }
 
 #[cfg(test)]

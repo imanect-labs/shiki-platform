@@ -378,6 +378,9 @@ impl AppConfig {
 
     /// 値の整合性を検証する（必須 URL のパース可否など）。
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.bug_report
+            .validate()
+            .map_err(|_| ConfigError::Invalid("bug_report 設定が不正です".into()))?;
         Self::check_tenancy_supported(&self.auth)?;
         if self.auth.issuer.trim().is_empty() {
             return Err(ConfigError::Invalid("auth.issuer が空です".into()));

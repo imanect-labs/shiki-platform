@@ -1,5 +1,7 @@
 //! 本人提出の報告集約。HTTP・会話本文・外部通信を所有しない。
 mod config;
+pub mod delivery;
+pub mod github;
 pub use config::*;
 mod model;
 mod service;
@@ -62,7 +64,7 @@ mod tests {
     #[test]
     fn validation_and_production_config_fail_closed() {
         assert!(!BugReportConfig::default().enabled);
-        for backend in ["github", "stub", "unknown"] {
+        for backend in ["stub", "unknown"] {
             assert!(serde_json::from_value::<BugReportConfig>(
                 serde_json::json!({"enabled":true,"backend":backend})
             )
@@ -153,3 +155,6 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod delivery_tests;
