@@ -9,7 +9,7 @@ const guidance = "42345678-1234-4234-8234-123456789abc";
 for (const mode of ["hits", "no_hits", "not_searched", "search_failed"] as const) {
   test(`AI報告: ${mode}`, async ({ page }) => {
     await loginReport(page);
-    let resolution = "unknown", intent = false, drafted = false, submitted = false;
+    let resolution = "unknown", intent = false, drafted = false, submitted = false, attempts = 0;
     const receipt = mode === "hits" || mode === "no_hits";
     const caseValue = () => ({ id: caseId, guidance_message_id: guidance, hit_count: mode === "hits" ? 1 : 0, resolution, report_intent: intent, report_id: drafted ? report.id : null });
     await page.route(new RegExp(`/api/threads/${thread}(?:/.*)?$`), async (route) => {
@@ -25,7 +25,10 @@ for (const mode of ["hits", "no_hits", "not_searched", "search_failed"] as const
       }
       if (path.endsWith("/messages")) {
         if (route.request().method() === "POST") {
-          expect(intent).toBe(true); drafted = true;
+          expect(intent).toBe(true);
+          attempts++;
+          if (attempts === 1) return route.fulfill({ status: 503, json: { error: "一時的な送信失敗" } });
+          drafted = true;
           return route.fulfill({ json: { run_id: "r", user_message_id: "u2", assistant_message_id: "a2" } });
         }
         return route.fulfill({ json: { messages: [{ id: "u", role: "user", content: [{ type: "text", text: "保存できません。使い方を教えてください。" }], created_at: "2026-11-14T00:00:00Z" }, { id: guidance, role: "assistant", content: [{ type: "text", text: mode === "search_failed" ? "ヘルプを検索できませんでした。" : mode === "not_searched" ? "まだヘルプを検索していません。" : "ヘルプを調べました。保存した後で画面を再読み込みしてください。" }, ...(receipt ? [{ type: "help_case_ref", case_id: caseId }] : [])], created_at: "2026-11-14T00:00:01Z" }, ...(drafted ? [{ id: "a2", role: "assistant", content: [{ type: "text", text: "報告の下書きを作成しました。" }, { type: "bug_report_draft", report_id: report.id, rev: 1 }], created_at: "2026-11-14T00:00:02Z" }] : [])], active_run_id: null } });
@@ -58,7 +61,14 @@ for (const mode of ["hits", "no_hits", "not_searched", "search_failed"] as const
     await expect(page.getByText("不具合として報告しますか？", { exact: true })).toBeVisible();
     await shot(page, `ai-${mode}-proposal`);
     await page.getByRole("button", { name: "下書きを作る" }).click();
+    await expect(page.getByRole("button", { name: "下書きの作成を再試行" })).toBeEnabled();
+    await shot(page, `ai-${mode}-retry`);
+    // report_intent は保存済み。再読み込み後も要求を再送できる。
+    await page.reload();
+    await page.getByRole("button", { name: "下書きの作成を再試行" }).focus();
+    await page.keyboard.press("Enter");
     await expect(page.getByRole("link", { name: "要約を確認・編集する", exact: true })).toBeVisible();
+    expect(attempts).toBe(2);
     await shot(page, `ai-${mode}-draft`);
     await page.getByRole("link", { name: "要約を確認・編集する", exact: true }).click();
     await expect(page.getByLabel("どのようなことが起きましたか")).toHaveValue(content.symptom);

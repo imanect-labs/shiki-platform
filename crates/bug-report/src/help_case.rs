@@ -194,9 +194,23 @@ impl BugReportService {
         content.validate()?;
         let mut tx = begin_tenant_tx(&self.store.pool, ctx.tenant()).await?;
         store::lock(&mut tx, ctx).await?;
-        let (thread, message) = self.help_run(&mut tx, ctx, run).await?;
+        // run はここでは参照だけに留め、削除・finalize と同じ thread → run 順にロックする。
+        let thread: Uuid = sqlx::query_scalar(
+            "SELECT thread_id FROM generation_run WHERE tenant_id=$1 AND org=$2 AND run_id=$3",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(run.run_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::NotFound)?;
         self.thread_viewer(ctx, thread).await?;
         let case = load_case(&mut tx, ctx, thread, id).await?;
+        // thread のロック待ち中に取り消し・lease/fencing が変わり得るため、取得後に再検証する。
+        let (run_thread, message) = self.help_run(&mut tx, ctx, run).await?;
+        if run_thread != thread {
+            return Err(Error::NotFound);
+        }
         eligible(&case)?;
         if !case.report_intent {
             return Err(Error::Conflict);

@@ -43,7 +43,10 @@ export function HelpResolutionCard({ threadId, caseId }: { threadId: string; cas
   if (privateOnly) return <p className="text-xs text-muted-foreground">相談した本人用の確認カードです。</p>;
   return <section className="my-3 space-y-3 rounded-xl border p-4" aria-label="ヘルプの解決確認" aria-busy={busy}>
     {error && <p role="alert" className="text-sm text-destructive">{error} <button className="underline" onClick={() => void load().catch((e: Error) => setError(e.message))}>再読み込み</button></p>}
-    {!value ? <p role="status">確認状態を読み込み中…</p> : value.report_id ? <Link href={`/bug-reports/${value.report_id}`} className="text-sm underline">報告の要約を確認・編集する</Link> : value.resolution === "resolved" ? <p className="text-sm">解決済みです。</p> : value.report_intent ? <p className="text-sm">報告の下書きを準備します。要約が届いたら、内容を確認して送信してください。</p> : value.hit_count > 0 && value.resolution !== "unresolved" ? <>
+    {!value ? <p role="status">確認状態を読み込み中…</p> : value.report_id ? <Link href={`/bug-reports/${value.report_id}`} className="text-sm underline">報告の要約を確認・編集する</Link> : value.resolution === "resolved" ? <p className="text-sm">解決済みです。</p> : value.report_intent ? <>
+      <p className="text-sm">報告を希望しています。要約が届かない場合は、下書きの作成を再試行してください。</p>
+      <Button size="sm" disabled={busy || !createDraft} onClick={() => createDraft?.()}>下書きの作成を再試行</Button>
+    </> : value.hit_count > 0 && value.resolution !== "unresolved" ? <>
       <p className="text-sm font-medium">この手順で解決しましたか？</p>
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={() => void act("resolution", "resolved")}>解決した</Button><Button size="sm" variant="outline" disabled={busy} onClick={() => void act("resolution", "unresolved")}>解決しなかった</Button></div>
     </> : <>

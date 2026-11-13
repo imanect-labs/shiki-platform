@@ -248,3 +248,89 @@ async fn help_first_requires_durable_search_guidance_and_personal_buttons() {
             .is_err());
     }
 }
+
+#[tokio::test]
+async fn draft_waiting_for_thread_deletion_does_not_hold_run_lock() {
+    let Some((db, fga, service, ctx)) = setup().await else {
+        return;
+    };
+    let thread = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO thread (id,tenant_id,org,owner,title) VALUES ($1,$2,$3,$4,'並行削除')",
+    )
+    .bind(thread)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(&ctx.principal().id)
+    .execute(&db)
+    .await
+    .unwrap();
+    fga.write_tuple(
+        &ctx.subject(),
+        Relation::Owner,
+        &ctx.ns().thread(&thread.to_string()),
+    )
+    .await
+    .unwrap();
+    let (source, guidance) = run(&db, &ctx, thread, None).await;
+    let case = service
+        .record_help_receipt(
+            &ctx,
+            &source,
+            "search",
+            HelpReceipt {
+                hit_count: 0,
+                corpus_versions: vec![],
+                chunk_ids: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    finish(&db, &ctx, &source, guidance).await;
+    service
+        .help_report_intent(&ctx, thread, case)
+        .await
+        .unwrap();
+    let (draft_run, _) = run(&db, &ctx, thread, Some(guidance)).await;
+
+    // ChatStore::delete_thread と同じ SQL/順序。thread を更新した所で下書きを割り込ませる。
+    // FGA の共有剥奪はロック順に関与しないので、このテストでは DB 区間を再現する。
+    let mut deletion = db.begin().await.unwrap();
+    let deletion_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *deletion)
+        .await
+        .unwrap();
+    sqlx::query("SET LOCAL statement_timeout='5s'")
+        .execute(&mut *deletion)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE thread SET deleted_at=now(), pinned_at=NULL WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL")
+        .bind(thread).bind(ctx.tenant_id()).execute(&mut *deletion).await.unwrap();
+    let tenant = ctx.tenant_id().to_string();
+    let draft = tokio::spawn(async move {
+        service
+            .create_ai_draft(&ctx, &draft_run, case, content(), "concurrent-delete")
+            .await
+    });
+    // 下書きが thread 行を待つまで待機し、偶然の逐次実行での偽陽性を避ける。
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT COALESCE(active_message_id,%' AND query LIKE '%FOR UPDATE' AND $1=ANY(pg_blocking_pids(pid)))")
+                .bind(deletion_pid).fetch_one(&db).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("下書きが thread ロックで待機すること");
+    // 旧順序なら下書きが run の SHARE を持っているため、ここでデッドロックする。
+    sqlx::query("UPDATE generation_run SET cancel_requested=true, updated_at=now() WHERE thread_id=$1 AND tenant_id=$2 AND status IN ('queued','running','waiting_approval')")
+        .bind(thread).bind(tenant).execute(&mut *deletion).await.unwrap();
+    deletion.commit().await.unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), draft)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(result, Err(Error::NotFound)),
+        "削除後の下書きは拒否: {result:?}"
+    );
+}
