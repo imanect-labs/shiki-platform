@@ -5220,6 +5220,7 @@ dependencies = [
  "shiki-app-platform",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-bug-report",
  "shiki-chat",
  "shiki-collab",
  "shiki-data",
@@ -5347,6 +5348,24 @@ dependencies = [
  "tokio",
  "tracing",
  "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "shiki-bug-report"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "shiki-authz",
+ "shiki-storage",
+ "shiki-testenv",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
