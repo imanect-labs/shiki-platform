@@ -438,7 +438,13 @@ async fn run_step(
         system: opts.system.clone(),
         messages: state.messages.clone(),
         tools: tool_defs.to_vec(),
-        effort: opts.effort,
+        // 思考だけで出力上限に達した直後の書き直しは思考を絞る（同じ深さで考え直すと、また
+        // 上限を使い切って止まる）。
+        effort: if crate::agent_observation::thinking_was_exhausted(&state.messages) {
+            Some(llm_gateway::Effort::Low)
+        } else {
+            opts.effort
+        },
         max_tokens: budget.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
@@ -609,9 +615,22 @@ async fn run_step(
     // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
     // 積まない（content が空のメッセージを拒否するプロバイダがある）。
     //
-    // ただし出力の上限で切れた応答は催促しない。思考だけで上限を使い切った応答は空で返したのではなく、
-    // 「本文として書いて」と促すと誤った指示になる。空の assistant も積まずに打ち切りで止める。
-    // 引数の途中で切れた呼び出し（`cut`）がある応答は、下で「切れた」と返して書き直させる。
+    // 思考だけで出力上限に達した（本文もツール呼び出しも無い）: 作業の途中で手が止まっただけで、
+    // 完了でも「本文の続き」でもない。思考を切り上げて次の手を出させる（何も積まずに次へ・main の #1261）。
+    // 催促を使い切っても思考だけで止まるなら、空応答の催促（「本文として書いて」）は誤った指示になるので、
+    // 空の assistant を積まずに打ち切りで止める。引数の途中で切れた呼び出し（`cut`）がある応答は、
+    // 下で「切れた」と返して書き直させる。
+    if final_stop == StopReason::MaxTokens
+        && calls.is_empty()
+        && cut.is_empty()
+        && text_acc.trim().is_empty()
+        && crate::agent_observation::nudge_thinking_exhausted(
+            &mut state.messages,
+            budget.max_tokens,
+        )
+    {
+        return Ok(StepOutcome::Continue);
+    }
     if text_acc.is_empty() && calls.is_empty() && cut.is_empty() {
         if final_stop == StopReason::MaxTokens {
             return Ok(StepOutcome::Stop(AgentStop::Truncated));

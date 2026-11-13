@@ -52,8 +52,8 @@ use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, stub_tool_call_id,
-    text_stream, text_stream_ending, tool_call_stream, tool_calls_stream, truncated_text_stream,
-    truncated_tool_call_stream,
+    text_stream, text_stream_ending, thinking_only_stream, tool_call_stream, tool_calls_stream,
+    truncated_text_stream, truncated_tool_call_stream,
 };
 use super::stub_structured::{failure_call, structured_call};
 use super::stub_triggers::{
@@ -126,8 +126,7 @@ fn truncated_text_call(
     user_text: &str,
     prompt_tokens: u64,
 ) -> Option<DeltaStream> {
-    let first = first_user_text(req)?;
-    let rest = first.strip_prefix("truncatetext:")?;
+    let rest = first_user_text(req)?.strip_prefix("truncatetext:")?;
     if !user_text.starts_with(crate::CONTINUATION_MARK) {
         return Some(truncated_text_stream("報告の前半です。表の", prompt_tokens));
     }
@@ -141,6 +140,43 @@ fn truncated_text_call(
         prompt_tokens,
         64,
         Duration::ZERO,
+    ))
+}
+
+/// `thinkonly:` の駆動（ツール結果を受けた後の応答が思考だけで出力上限に達する回復）。
+///
+/// 1 手目は tools[0] を呼ぶ。結果を受けた応答は思考だけで `MaxTokens` 停止し、催促
+/// （[`crate::THINKING_EXHAUSTED_MARK`]）を受けたら本文を返す。本文には受け取った effort を
+/// 書く（催促後の生成で思考を絞っていることをテストが確かめる）。`thinkonly:forever` は
+/// 催促にも思考だけで止まり続ける。
+fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<DeltaStream> {
+    let rest = first_user_text(req)?.strip_prefix("thinkonly:")?;
+    if !has_tool_result(req) {
+        let tool = req.tools.first()?;
+        return Some(tool_call_stream(
+            tool.name.clone(),
+            serde_json::json!({}),
+            prompt_tokens,
+        ));
+    }
+    let nudged = req.messages.last().is_some_and(|m| {
+        m.content.iter().any(|b| match b {
+            Block::ToolResult { content: t, .. } | Block::Text { text: t } => {
+                t.contains(crate::THINKING_EXHAUSTED_MARK)
+            }
+            _ => false,
+        })
+    });
+    if nudged && rest.trim() != "forever" {
+        let effort = req.effort.map_or("none", |e| e.as_str());
+        return Some(text_stream(
+            &format!("集計を終えました。回答です（effort={effort}）。"),
+            prompt_tokens,
+        ));
+    }
+    Some(thinking_only_stream(
+        "どの列を数えるかを考え続ける",
+        prompt_tokens,
     ))
 }
 
@@ -469,6 +505,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     // --- 本文の途中で出力上限 `truncatetext:`: 最初の応答は本文の途中で `MaxTokens` 停止し、
     //     続きの催促には続きを返す（`truncatetext:forever` は催促にも切れ続ける）。 ---
     if let Some(s) = truncated_text_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 思考だけで出力上限 `thinkonly:`: ツール結果の後の応答が思考だけで `MaxTokens` 停止する。 ---
+    if let Some(s) = thinking_exhausted_call(req, prompt_tokens) {
         return s;
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---

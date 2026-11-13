@@ -2,7 +2,7 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BugReportStatus {
     Draft,
@@ -38,7 +38,7 @@ impl BugReportStatus {
 }
 
 /// 添付・会話参照・任意環境 JSON は受け取らない閉じた DTO。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReportContent {
     pub category: Category,
@@ -47,7 +47,7 @@ pub struct ReportContent {
     pub steps_tried: String,
     pub expected_behavior: String,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Bug,
@@ -65,7 +65,11 @@ impl ReportContent {
             &self.steps_tried,
             &self.expected_behavior,
         ] {
-            if text.chars().count() > 2000
+            if ["ghp_", "github_pat_", "-----BEGIN", "Bearer "]
+                .iter()
+                .any(|prefix| text.contains(prefix))
+                || contains_api_key(text)
+                || text.chars().count() > 2000
                 || text.contains(['<', '>'])
                 || text.contains("://")
                 || text.contains("www.")
@@ -93,7 +97,7 @@ impl ReportContent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BugReportPolicy {
     pub enabled: bool,
@@ -111,7 +115,7 @@ impl Default for BugReportPolicy {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BugReport {
     pub id: Uuid,
     pub reporter_id: String,
@@ -120,7 +124,7 @@ pub struct BugReport {
     pub submission_rev: i64,
     pub content: ReportContent,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Submit {
@@ -129,6 +133,7 @@ pub enum Command {
         notice_version: String,
     },
     Approve,
+    Retry,
     Reject {
         reason: String,
     },
@@ -147,4 +152,59 @@ impl BugReportPolicy {
             BugReportStatus::Queued
         }
     }
+}
+
+/// 一覧には本文を含めない。
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportSummary {
+    pub id: Uuid,
+    pub status: BugReportStatus,
+    pub rev: i64,
+    pub title: String,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportPage {
+    pub items: Vec<ReportSummary>,
+    pub next_cursor: Option<Uuid>,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportDetail {
+    pub report: BugReport,
+    pub submission: Option<SubmissionDetail>,
+}
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct SubmissionDetail {
+    pub content: ReportContent,
+    pub content_consent: bool,
+    pub sink_profile_id: String,
+    pub sink_config_version: i64,
+    pub notice_version: String,
+    pub policy_rev: i64,
+    pub consent_at: String,
+    pub approved_by: Option<String>,
+    pub approved_at: Option<String>,
+    pub rejected_by: Option<String>,
+    pub rejected_at: Option<String>,
+    pub rejection_reason: Option<String>,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReporterPolicy {
+    pub policy: BugReportPolicy,
+    pub destination_available: bool,
+    pub destination_version: Option<i64>,
+}
+
+// キーの開始境界と接尾部の長さを確認し、disk-full 等の通常語を除外する。
+fn contains_api_key(text: &str) -> bool {
+    text.match_indices("sk-").any(|(index, _)| {
+        let boundary = text[..index]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+        let length = text[index + 3..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            .count();
+        boundary && length >= 10
+    })
 }

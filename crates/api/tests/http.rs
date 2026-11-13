@@ -1938,3 +1938,6 @@ async fn search_ingest_refuses_when_search_is_disabled() {
     let (status, _) = send_with_session(member, "POST", "/org-admin/search/backfill", None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+#[path = "http/bug_reports.rs"]
+mod bug_reports;

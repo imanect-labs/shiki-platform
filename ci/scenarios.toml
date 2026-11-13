@@ -427,3 +427,8 @@ e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.
 paths = ["web/e2e/campaign/**"]
 crates = ["shiki-data", "shiki-rag", "shiki-tabular", "shiki-yui"]
 e2e = ["campaign-app11.spec.ts"]
+
+[scenario.bug_reports]
+pages = ["web/src/app/(auth)/bug-reports/**", "web/src/app/(admin)/admin/bug-reports/**"]
+crates = ["shiki-bug-report"]
+e2e = ["bug-report-manual.spec.ts", "bug-report-approval.spec.ts"]

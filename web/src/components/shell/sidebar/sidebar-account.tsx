@@ -158,6 +158,7 @@ export function SidebarAccount({
               設定
             </Link>
           </DropdownMenuItem>
+          <DropdownMenuItem asChild><Link href="/bug-reports" onClick={onNavigate}>不具合を報告する</Link></DropdownMenuItem>
           {adminEntry(data) ? (
             <DropdownMenuItem asChild>
               <Link href={adminEntry(data) ?? "/admin"} onClick={onNavigate}>

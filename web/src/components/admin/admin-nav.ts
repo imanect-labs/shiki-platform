@@ -1,4 +1,12 @@
-import { Database, Home, type LucideIcon, ScrollText, Sparkles, Users } from "lucide-react";
+import {
+  Bug,
+  Database,
+  Home,
+  type LucideIcon,
+  ScrollText,
+  Sparkles,
+  Users,
+} from "lucide-react";
 
 import type { MeResponse } from "@/lib/api";
 
@@ -14,8 +22,14 @@ export type AdminMenuItem = {
 };
 
 /// パスがこの項目（またはその配下）か。
-export function isMenuItemActive(item: AdminMenuItem, pathname: string): boolean {
-  return pathname === item.href || (!item.exact && pathname.startsWith(`${item.href}/`));
+export function isMenuItemActive(
+  item: AdminMenuItem,
+  pathname: string,
+): boolean {
+  return (
+    pathname === item.href ||
+    (!item.exact && pathname.startsWith(`${item.href}/`))
+  );
 }
 
 export type AdminMenuGroup = { label: string; items: AdminMenuItem[] };
@@ -41,13 +55,40 @@ export type AdminAccess = "admin" | "audit";
 /// 管理コンソールの入口に必要な権限（`/me` の値）。
 export type AdminPermissions = Pick<MeResponse, "is_admin" | "can_view_audit">;
 
-export function canOpen(access: AdminAccess, me: AdminPermissions | null | undefined): boolean {
+export function canOpen(
+  access: AdminAccess,
+  me: AdminPermissions | null | undefined,
+): boolean {
   if (!me) return false;
   return access === "audit" ? me.can_view_audit : me.is_admin;
 }
 
 export const ADMIN_SECTIONS: AdminSection[] = [
-  { key: "home", label: "ホーム", icon: Home, href: "/admin", prefix: "/admin", access: "admin" },
+  {
+    key: "home",
+    label: "ホーム",
+    icon: Home,
+    href: "/admin",
+    prefix: "/admin",
+    access: "admin",
+  },
+  {
+    key: "bug-reports",
+    label: "不具合報告",
+    icon: Bug,
+    href: "/admin/bug-reports",
+    prefix: "/admin/bug-reports",
+    access: "admin",
+    menu: [
+      {
+        label: "不具合報告",
+        items: [
+          { label: "受信箱", href: "/admin/bug-reports", exact: true },
+          { label: "受付設定", href: "/admin/bug-reports/settings" },
+        ],
+      },
+    ],
+  },
   {
     key: "access",
     label: "アクセス管理",
@@ -125,12 +166,16 @@ export const ADMIN_SECTIONS: AdminSection[] = [
 ];
 
 /// その人が開けるセクション（レール・モバイルのメニューに出すもの）。
-export function visibleSections(me: AdminPermissions | null | undefined): AdminSection[] {
+export function visibleSections(
+  me: AdminPermissions | null | undefined,
+): AdminSection[] {
   return ADMIN_SECTIONS.filter((s) => canOpen(s.access, me));
 }
 
 /// 管理コンソールの入口（管理者はホーム、監査閲覧者だけの人は監査ログ）。どちらでもなければ null。
-export function adminEntry(me: AdminPermissions | null | undefined): string | null {
+export function adminEntry(
+  me: AdminPermissions | null | undefined,
+): string | null {
   if (me?.is_admin) return "/admin";
   if (me?.can_view_audit) return "/admin/audit";
   return null;

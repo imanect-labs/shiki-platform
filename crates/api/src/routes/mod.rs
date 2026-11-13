@@ -68,3 +68,6 @@ pub mod ui_actions;
 pub mod workflows;
 
 pub use me::get_me;
+
+pub mod bug_reports;
+pub mod org_admin_bug_reports;

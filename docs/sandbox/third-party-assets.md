@@ -28,6 +28,8 @@
 - **pandas 2.3.3**（＋ python-dateutil Apache-2.0/BSD-3-Clause デュアル / pytz MIT / six MIT /
   tzdata Apache-2.0）— BSD-3-Clause。
 - **openpyxl 3.1.5**（＋ et-xmlfile 2.0.0）— MIT。添付 xlsx を `pandas.read_excel` で読むため（#384）。
+- **pytest 8.4.2**（＋ pluggy 1.7.0 MIT / iniconfig 2.3.1 MIT / packaging 26.3 Apache-2.0/BSD-2-Clause
+  デュアル / pygments 2.21.0 BSD-2-Clause）— MIT。作ったコードのテストをエージェントが自分で実行するため。
 
 ## ゲストコマンドスイート（`registry/native` から wasm32-wasip1 ビルド）
 
