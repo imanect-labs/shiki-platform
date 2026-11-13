@@ -446,10 +446,12 @@ function FileRefCard({
         ? `やり直しました（v${st.version}）`
         : undefined;
   const multi = group.versions.length > 1;
+  // 作成してから編集したものも、複数回なら回数を出す（「作成し、編集しました」だけだと 1 回に見える）。
   const edited =
     status ??
-    createdStatus ??
-    (multi ? `この回答で ${group.versions.length} 回編集しました（v${doc.version}）` : undefined);
+    (multi
+      ? `${createdStatus ? "作成し、" : ""}この回答で ${group.versions.length} 回編集しました（v${doc.version}）`
+      : createdStatus);
   if (!canEdit) {
     // 編集権限が無い（または未確認）なら操作は出さない。
     return <DocumentRefCard raw={raw} status={edited} />;
