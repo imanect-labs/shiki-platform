@@ -32,6 +32,12 @@ use storage::{
 };
 use uuid::Uuid;
 
+/// 期限切れの共有リンクを外す掃除（`revoke_expired_share_links`）は DB の全部を見る。掃除を呼ぶ試験どうしが並んで
+/// 走ると、未来の時刻での掃除が、ほかの試験の作ったばかりの期限つきのリンクまで外す（解錠が Forbidden になる）。
+/// 掃除を呼ぶ試験はこの鍵で順に走らせる。
+static EXPIRY_SWEEP: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 struct Ctx {
     service: StorageService,
     pool: PgPool,
@@ -3637,6 +3643,7 @@ async fn share_link_password_redeem() {
 /// 有効期限: 遅延失効（get_metadata 前段）とイベント駆動タイマの明示剥奪、次回起床時刻。
 #[tokio::test]
 async fn share_link_expiry() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx {
@@ -5085,6 +5092,7 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
 /// UPDATE を per-user 剥奪より先に行い、0 行だったリンクには触れてはならない。
 #[tokio::test]
 async fn share_link_expire_race_with_extend_keeps_grants() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx {
@@ -5321,6 +5329,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
 /// next_expiry が過去時刻を返し続け、タイマが全速ループに入るため（kind IN ('file','folder') 除外）。
 #[tokio::test]
 async fn share_link_sweep_ignores_poison_kind() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx { service, pool, .. } = ctx;
