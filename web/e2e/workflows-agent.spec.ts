@@ -81,7 +81,8 @@ test("AI エージェント: 依頼を書き、道具を選んで保存・実行
     // 実行 → 実行履歴で成功し、ブロックを開くとエージェントの回答が出る（依頼を Python として実行しない）。
     await page.getByRole("button", { name: "実行", exact: true }).click();
     await page.getByRole("button", { name: "実行する" }).click();
-    await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });
+    // 実行履歴の画面は、手元の next dev では初めての組み立てに 20 秒近くかかる（CI の本番ビルドでは組み立て済み）。
+    await page.waitForURL(/\/runs\?run=/, { timeout: 60_000 });
     const sheet = page.locator('[role="dialog"]');
     await expect(sheet.locator("h2").getByText("成功")).toBeVisible({ timeout: 90_000 });
     await sheet.getByRole("button", { name: /AI エージェント/ }).first().click();
