@@ -395,7 +395,13 @@ async fn run_step(
         system: opts.system.clone(),
         messages: state.messages.clone(),
         tools: tool_defs.to_vec(),
-        effort: opts.effort,
+        // 思考だけで出力上限に達した直後の書き直しは思考を絞る（同じ深さで考え直すと、また
+        // 上限を使い切って止まる）。
+        effort: if crate::agent_observation::thinking_was_exhausted(&state.messages) {
+            Some(llm_gateway::Effort::Low)
+        } else {
+            opts.effort
+        },
         max_tokens: opts.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
@@ -534,6 +540,16 @@ async fn run_step(
     // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。
     // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
     // 積まない（content が空のメッセージを拒否するプロバイダがある）。
+    // 思考だけで出力上限に達した（本文もツール呼び出しも無い）: 作業の途中で手が止まっただけで、
+    // 完了でも「本文の続き」でもない。思考を切り上げて次の手を出させる（何も積まずに次へ）。
+    if final_stop == StopReason::MaxTokens
+        && calls.is_empty()
+        && text_acc.trim().is_empty()
+        && crate::agent_observation::nudge_thinking_exhausted(&mut state.messages, opts.max_tokens)
+    {
+        return Ok(StepOutcome::Continue);
+    }
+
     if text_acc.is_empty() && calls.is_empty() && nudge_empty_response(&mut state.messages) {
         return Ok(StepOutcome::Continue);
     }

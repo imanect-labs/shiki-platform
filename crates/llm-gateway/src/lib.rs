@@ -63,4 +63,7 @@ pub const WORK_LOG_MARK: &str = "[システムが付けた記録]";
 ///
 /// 文言は agent-core が持つ。ここに置くのは、決定的 stub がこの発話を見分けて続きを返すため。
 pub const CONTINUATION_MARK: &str = "[出力上限で中断]";
+/// 応答が**思考だけで**出力上限に達したとき、思考を短くして手を進めさせる催促の印
+/// （agent-core が最後のツール結果か user 発話へ書き足す）。置き場所の理由は [`CONTINUATION_MARK`] と同じ。
+pub const THINKING_EXHAUSTED_MARK: &str = "[思考で出力上限]";
 pub use usage_report::{UsageBreakdown, UsageDay, UsageFilter, UsageReport, UsageTotals};

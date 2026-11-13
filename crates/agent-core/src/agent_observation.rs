@@ -180,6 +180,80 @@ fn is_continuation_nudge(m: &LlmMessage) -> bool {
         })
 }
 
+/// 1 run で「思考だけで出力上限に達した」応答を書き直させる回数の上限。超えたら従来どおり
+/// 空応答の催促・Truncated へ落とす（思考を絞っても書けないモデルで予算を空費しない）。
+const MAX_THINKING_RETRIES: usize = 2;
+
+/// **思考だけで出力上限（`max_tokens`）に達した**応答（本文もツール呼び出しも無い）への催促。
+/// 上限回数を超えた、または添える先が無ければ `false`。
+///
+/// 集計の多い作業で、ツール結果を受けた後の思考が 1 回の上限を使い切り、何も出さずに
+/// 止まることがある（実測: プレビューのエージェントモードで、欠損チェックの SQL が拒否された
+/// 直後に思考だけで 8192 トークンを使い切り、「続けて」の案内で run が畳まれた）。
+/// 空応答の催促（[`EMPTY_RESPONSE_NUDGE`]）は「本文として書け」なので、作業の途中では
+/// 筋が違う（まだ書く材料がそろっていない）。思考を切り上げて**次の手を出せ**と返し、
+/// 次の生成は effort を下げて走らせる（[`thinking_was_exhausted`]）。
+///
+/// 添える先は履歴の**最後のメッセージ**（ツール結果か user 発話）。切れた応答は履歴へ積まない
+/// （思考だけの assistant を送り返す意味は無く、content が空のメッセージを拒否するプロバイダもある）
+/// ので、直後の生成で必ず最後に見える。
+pub(crate) fn nudge_thinking_exhausted(
+    messages: &mut [LlmMessage],
+    max_tokens: Option<u32>,
+) -> bool {
+    let tried: usize = messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(block_text)
+        .map(|t| t.matches(llm_gateway::THINKING_EXHAUSTED_MARK).count())
+        .sum();
+    if tried >= MAX_THINKING_RETRIES {
+        return false;
+    }
+    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    let note = format!(
+        "\n\n{} 直前の応答は思考だけで出力上限{limit}に達し、本文もツール呼び出しも\
+         出せませんでした（何も実行していません。利用者の発話ではなくシステムからの連絡です）。\
+         思考は短く切り上げ、次のツール呼び出しか回答の本文をすぐに出してください。\
+         大きな処理は小さく分けて 1 手ずつ進めてください。",
+        llm_gateway::THINKING_EXHAUSTED_MARK
+    );
+    let Some(last) = messages.last_mut() else {
+        return false;
+    };
+    let is_user = last.role == llm_gateway::Role::User;
+    let target = last.content.iter_mut().rev().find_map(|b| match b {
+        Block::ToolResult { content, .. } => Some(content),
+        Block::Text { text } if is_user => Some(text),
+        _ => None,
+    });
+    match target {
+        Some(t) => {
+            t.push_str(&note);
+            true
+        }
+        None => false,
+    }
+}
+
+/// 次の生成が「思考だけで上限に達した」直後の書き直しか（履歴の最後に催促がある）。
+pub(crate) fn thinking_was_exhausted(messages: &[LlmMessage]) -> bool {
+    messages.last().is_some_and(|m| {
+        m.content
+            .iter()
+            .filter_map(block_text)
+            .any(|t| t.contains(llm_gateway::THINKING_EXHAUSTED_MARK))
+    })
+}
+
+fn block_text(b: &Block) -> Option<&str> {
+    match b {
+        Block::ToolResult { content, .. } => Some(content),
+        Block::Text { text } => Some(text),
+        _ => None,
+    }
+}
+
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
 pub(crate) fn nudge_empty_response(messages: &mut [LlmMessage]) -> bool {
     let already = last_tool_result(messages).is_some_and(|c| c.contains(EMPTY_RESPONSE_NUDGE));
@@ -213,6 +287,40 @@ fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
 mod tests {
     use super::*;
     use llm_gateway::Role as LlmRole;
+
+    /// 思考だけの応答への催促は、最後のメッセージ（ツール結果か user 発話）へ添え、上限回数で打ち切る。
+    #[test]
+    fn thinking_exhausted_nudge_goes_to_the_last_message_and_is_bounded() {
+        // 1 手目から思考だけ: 添える先は user 発話。
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "集計して")];
+        assert!(!thinking_was_exhausted(&messages));
+        assert!(nudge_thinking_exhausted(&mut messages, Some(8192)));
+        assert!(thinking_was_exhausted(&messages));
+        assert_eq!(messages.len(), 1, "user の連続を作らない");
+        // ツール結果の後: 添える先はツール結果。
+        messages.push(LlmMessage::text(LlmRole::Assistant, "調べます"));
+        messages.push(LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![Block::tool_result(
+                "c1".to_string(),
+                "ok".to_string(),
+                false,
+            )],
+        });
+        assert!(
+            !thinking_was_exhausted(&messages),
+            "催促は直前の 1 回だけを見る"
+        );
+        assert!(nudge_thinking_exhausted(&mut messages, Some(8192)));
+        assert!(
+            matches!(&messages[2].content[0], Block::ToolResult { content, .. }
+                if content.starts_with("ok") && content.contains("8192 トークン"))
+        );
+        assert!(
+            !nudge_thinking_exhausted(&mut messages, Some(8192)),
+            "上限で打ち切る"
+        );
+    }
 
     /// 本文の続きの催促は assistant の直後に user として足し、上限回数で打ち切る。
     #[test]

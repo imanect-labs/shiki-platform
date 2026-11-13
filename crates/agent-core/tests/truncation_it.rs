@@ -116,6 +116,8 @@ fn stub_gateway(pool: PgPool) -> LlmGateway {
             default_model: "m".into(),
             models: vec![ModelEntry {
                 id: "m".into(),
+                // effort を落とさず stub へ届ける（思考を絞った書き直しを確かめる）。
+                supports_effort: Some(true),
                 ..Default::default()
             }],
         },
@@ -329,4 +331,98 @@ async fn text_continuation_keeps_truncated_without_budget() {
 
     assert_eq!(outcome.stop, AgentStop::Truncated);
     assert_eq!(outcome.checkpoint.spent.steps, 1);
+}
+
+/// ツール結果を受けた応答が**思考だけで**出力上限に達しても run を畳まず、思考を絞って
+/// 次の手を出させて完了する（実測: 集計の途中で思考だけで 8192 トークンを使い切り、
+/// 「続けて」の案内で止まった）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_only_response_is_retried_with_lower_effort() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::clone(&calls)))];
+    let mut sink = TestSink::default();
+    let mut opts = AgentOptions::autonomous(10, None, 1_000_000_000, 1_000_000_000);
+    opts.effort = Some(llm_gateway::Effort::High);
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(LlmRole::User, "thinkonly: 欠損を数えて")],
+        &run_context(&c),
+        &opts,
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Completed, "{:?}", sink.events);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let text: String = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("回答です（effort=low）"),
+        "書き直しは effort を下げて生成する: {text}"
+    );
+    assert!(
+        !text.contains(llm_gateway::THINKING_EXHAUSTED_MARK),
+        "{text}"
+    );
+    // 思考だけの応答は履歴へ積まない（空の assistant を送り返さない）。
+    assert!(
+        outcome
+            .checkpoint
+            .messages
+            .iter()
+            .all(|m| m.role != LlmRole::Assistant || !m.content.is_empty()),
+        "{:?}",
+        outcome.checkpoint.messages
+    );
+    assert_eq!(
+        outcome.checkpoint.spent.steps, 3,
+        "呼び出し・思考だけ・書き直し"
+    );
+}
+
+/// 書き直させても思考だけで止まり続けるモデルは、上限回数の後に Truncated で畳む。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thinking_only_retries_are_bounded() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::new(AtomicUsize::new(0))))];
+    let mut sink = TestSink::default();
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(LlmRole::User, "thinkonly:forever")],
+        &run_context(&c),
+        &AgentOptions::autonomous(20, None, 1_000_000_000, 1_000_000_000),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Truncated);
+    // 呼び出し 1 + 思考だけ（初回＋書き直し 2 回）+ 空応答の催促 1 回。
+    assert_eq!(
+        outcome.checkpoint.spent.steps, 5,
+        "{:?}",
+        outcome.checkpoint.spent
+    );
 }
