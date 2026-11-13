@@ -95,6 +95,10 @@ impl ChatWorker {
             .rev()
             .nth(super::history_work_log::WORK_LOG_TURNS - 1)
             .unwrap_or(0);
+        // 直前の assistant ターン（作業記録を細かく残す・history_work_log::Detail）。
+        let latest_turn = msgs
+            .iter()
+            .rposition(|m| m.role == Role::Assistant && m.id != assistant_message_id);
         let mut pending_log: Option<String> = None;
         for (i, m) in msgs.into_iter().enumerate() {
             if m.id == assistant_message_id {
@@ -120,7 +124,12 @@ impl ChatWorker {
                 _ => continue,
             };
             if role == LlmRole::Assistant && i >= logged_from {
-                pending_log = super::history_work_log::work_log(&m.content);
+                let detail = if Some(i) == latest_turn {
+                    super::history_work_log::Detail::LATEST
+                } else {
+                    super::history_work_log::Detail::OLDER
+                };
+                pending_log = super::history_work_log::work_log(&m.content, detail);
             }
             let mut text = message_text_with(
                 &m.content,
