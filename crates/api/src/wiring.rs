@@ -674,6 +674,10 @@ pub(crate) fn wire_bug_report(
         authz.clone(),
     );
     if config.backend == shiki_bug_report::BugReportBackend::Github {
+        // 直列化 transaction のほかに claim/finish 用の接続が必要。
+        if db.options().get_max_connections() < 2 {
+            return Err(shiki_bug_report::Error::Invalid);
+        }
         // AppConfig::validate と起動時の鍵検証に成功した構成だけを配線する。
         let github = config
             .github
@@ -722,6 +726,7 @@ mod tests {
         );
         // DB への接続に失敗する構成。起動した worker が外部 HTTP へ到達することはない。
         let db = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
             .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
             .unwrap();
         let mut config = shiki_bug_report::BugReportConfig::default();
@@ -742,11 +747,16 @@ mod tests {
             profile: "preview".into(),
             config_version: 1,
             private_key_file: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../bug-report/tests/fixtures/test-only.pem"),
+                .join("../app-gateway/tests/fixtures/test_rsa_priv.pem"),
         });
         assert!(super::wire_bug_report(&config, &db, &authz)
             .unwrap()
             .is_some());
+        let single = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
+            .unwrap();
+        assert!(super::wire_bug_report(&config, &single, &authz).is_err());
         config.github.as_mut().unwrap().repo = "shiki-platform".into();
         assert!(super::wire_bug_report(&config, &db, &authz).is_err());
     }

@@ -70,12 +70,18 @@ impl DeliveryWorker {
     }
     pub(crate) async fn claim(&self, tenant: &TenantId, org: &str) -> Result<Option<Claim>, Error> {
         let mut tx = begin_tenant_tx(&self.pool, tenant).await?;
+        // 全 tenant/replica で共有する installation quota。本文を読む経路は tenant tx のまま。
+        let cooling: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM bug_report_destination_cooldown WHERE installation_id=$1 AND next_attempt_at>now())")
+            .bind(self.sink.installation_id()).fetch_one(&mut *tx).await?;
+        if cooling {
+            return Ok(None);
+        }
         // org lock の順序は command/set_policy と共通。
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("bug-report:{tenant}:{org}"))
             .execute(&mut *tx)
             .await?;
-        let row = sqlx::query("SELECT d.id,d.report_id,d.submission_rev,d.fence,d.outcome,d.attempt_count,(d.created_at>now()-interval '24 hours') AS within_deadline,s.principal,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.content_consent,s.approved_by FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE d.tenant_id=$1 AND d.org=$2 AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED")
+        let row = sqlx::query("SELECT d.id,d.report_id,d.submission_rev,d.fence,d.outcome,d.attempt_count,(d.created_at>now()-interval '24 hours') AS within_deadline,s.principal,s.payload,s.payload_hash,s.sink_profile_id,s.sink_config_version,s.content_consent,s.approved_by FROM bug_report_delivery d JOIN bug_report_submission s USING (tenant_id,org,report_id,submission_rev) WHERE d.tenant_id=$1 AND d.org=$2 AND s.principal IS NOT NULL AND s.principal <> 'null'::jsonb AND d.outcome IN ('queued','sending','delivery_unknown') AND d.next_attempt_at<=now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.next_attempt_at,d.id LIMIT 1 FOR UPDATE OF d SKIP LOCKED")
             .bind(tenant.as_str()).bind(org).fetch_optional(&mut *tx).await?;
         let Some(row) = row else { return Ok(None) };
         let principal: Principal =
@@ -180,6 +186,15 @@ impl DeliveryWorker {
         let Some((attempt, within_deadline)) = row else {
             return Err(Error::Conflict);
         };
+        // 回数上限で当該行を停止する場合も、配送先全体の待機は失わない。
+        if let Dispatch::Retry {
+            after,
+            code: "rate_limit",
+        } = &result
+        {
+            sqlx::query("INSERT INTO bug_report_destination_cooldown (installation_id,next_attempt_at) VALUES ($1,now()+$2*interval '1 second') ON CONFLICT (installation_id) DO UPDATE SET next_attempt_at=GREATEST(bug_report_destination_cooldown.next_attempt_at,EXCLUDED.next_attempt_at)")
+                .bind(self.sink.installation_id()).bind(i64::try_from(*after).unwrap_or(i64::MAX / 1000).min(315_360_000)).execute(&mut *tx).await?;
+        }
         let mut delay: i64 = 0;
         let mut external_id = None;
         let mut url = None;
@@ -202,6 +217,18 @@ impl DeliveryWorker {
                     "queued",
                     Some(code),
                     AuditAction::BugReportFailed,
+                )
+            }
+            Dispatch::Retry { after, .. } if claim.reconcile => {
+                // 照合の rate limit でも再 POST せず、結果不明のまま待つ。
+                delay = i64::try_from(after)
+                    .unwrap_or(315_360_000)
+                    .clamp(3600, 315_360_000);
+                (
+                    Status::DeliveryUnknown,
+                    "delivery_unknown",
+                    Some("rate_limit"),
+                    AuditAction::BugReportReconcile,
                 )
             }
             Dispatch::Unknown => {

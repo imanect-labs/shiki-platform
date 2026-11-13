@@ -250,7 +250,7 @@ async fn retry_limit_unknown_and_database_failure_preserve_lease() {
         &claim,
         Dispatch::Retry {
             after: 600,
-            code: "rate_limit",
+            code: "connect",
         },
     )
     .await
@@ -321,7 +321,7 @@ async fn bounded_batch_runs_as_runtime_role_and_stops_at_retry_limit() {
     let (db, fga, svc, ctx) = setup_at(target.as_str(), &fga_url).await.unwrap();
     let r = queued(&svc, &ctx).await;
     let runtime = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(2)
         .after_connect(|conn, _| {
             Box::pin(async move {
                 sqlx::query("SET ROLE shiki_runtime").execute(conn).await?;
@@ -406,6 +406,157 @@ async fn bounded_batch_runs_as_runtime_role_and_stops_at_retry_limit() {
         svc.get(&ctx, approved.id, "get").await.unwrap().status,
         Status::Failed
     );
+    // 旧 submission の NULL principal は approve しても held、配送行を作らない。
+    let draft = svc.create(&ctx, content(), "legacy").await.unwrap();
+    let pending = svc
+        .command(
+            &ctx,
+            submit(draft.id, draft.rev, p.rev, true, "legacy-submit"),
+            "submit",
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE bug_report_submission SET principal=NULL WHERE report_id=$1")
+        .bind(pending.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let held = svc
+        .command(
+            &ctx,
+            CommandRequest {
+                id: pending.id,
+                expected_rev: pending.rev,
+                key: "legacy-approve".into(),
+                command: Command::Approve,
+            },
+            "approve",
+        )
+        .await
+        .unwrap();
+    assert_eq!(held.status, Status::Held);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM bug_report_delivery WHERE report_id=$1")
+            .bind(held.id)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+
+    let mut policy = svc.policy(&ctx, "p").await.unwrap();
+    policy.require_approval = false;
+    svc.set_policy(&ctx, policy, "p").await.unwrap();
+    // ここからは配送の検証。先行シナリオの提出を時間上限の窓から外す。
+    sqlx::query(
+        "UPDATE bug_report_submission SET consent_at=now()-interval '2 hours' WHERE tenant_id=$1",
+    )
+    .bind(ctx.tenant_id())
+    .execute(&db)
+    .await
+    .unwrap();
+    let bad = queued(&svc, &ctx).await;
+    sqlx::query("UPDATE bug_report_submission SET principal=NULL WHERE report_id=$1")
+        .bind(bad.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    // 他 tenant の正常行は、不正行と同じバッチでも送れる。
+    let other = context(&format!("t{}", Uuid::new_v4().simple()), "org", "bob");
+    for relation in [Relation::Member, Relation::Admin] {
+        fga.write_tuple(
+            &other.subject(),
+            relation,
+            &other.ns().organization(other.org()),
+        )
+        .await
+        .unwrap();
+    }
+    svc.set_policy(
+        &other,
+        crate::BugReportPolicy {
+            require_approval: false,
+            allow_content_sharing: true,
+            ..Default::default()
+        },
+        "p",
+    )
+    .await
+    .unwrap();
+    let healthy = queued(&svc, &other).await;
+    let (sink, mut requests) = stub(vec![response(201, "", &issue(21, ""))]).await;
+    let replica = worker(&runtime, fga.clone(), sink);
+    assert_eq!(replica.run_batch().await.unwrap(), 1);
+    assert!(requests.recv().await.unwrap().starts_with("POST "));
+    assert_eq!(
+        svc.get(&other, healthy.id, "get").await.unwrap().status,
+        Status::Sent
+    );
+
+    let first = queued(&svc, &ctx).await;
+    let claim = w.claim(ctx.tenant(), ctx.org()).await.unwrap().unwrap();
+    assert_eq!(claim.identity.report_id, first.id);
+    // 最終試行でも共有待機を保存する。
+    sqlx::query("UPDATE bug_report_delivery SET attempt_count=5 WHERE id=$1")
+        .bind(claim.identity.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    w.finish(
+        &claim,
+        Dispatch::Retry {
+            after: 600,
+            code: "rate_limit",
+        },
+    )
+    .await
+    .unwrap();
+    let waiting = queued(&svc, &other).await;
+    assert!(replica
+        .claim(other.tenant(), other.org())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(replica.run_batch().await.unwrap(), 0);
+    sqlx::query(
+        "UPDATE bug_report_destination_cooldown SET next_attempt_at=now()-interval '1 second'",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    let resumed = replica
+        .claim(other.tenant(), other.org())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(resumed.identity.report_id, waiting.id);
+    replica.finish(&resumed, Dispatch::Unknown).await.unwrap();
+    sqlx::query("UPDATE bug_report_delivery SET next_attempt_at=now() WHERE id=$1")
+        .bind(resumed.identity.id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let reconcile = replica
+        .claim(other.tenant(), other.org())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(reconcile.reconcile);
+    replica
+        .finish(
+            &reconcile,
+            Dispatch::Retry {
+                after: 600,
+                code: "rate_limit",
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        svc.get(&other, waiting.id, "get").await.unwrap().status,
+        Status::DeliveryUnknown
+    );
+    assert!(w.claim(ctx.tenant(), ctx.org()).await.unwrap().is_none());
+    drop(replica);
     runtime.close().await;
     db.close().await;
     drop(svc);

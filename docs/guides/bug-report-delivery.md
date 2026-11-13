@@ -14,8 +14,8 @@ PR3/PR4 の本人確認・管理画面が揃うまで、この sink を運用で
    App ID と installation ID を控える。利用者の OAuth/PAT は使用しない。
 3. Generate a private key で生成した PEM を運用の secret 管理へ保存し、サーバだけが読める
    ファイルとして mount する。リポジトリ、TOML、DB、ログ、ブラウザ、LLM に鍵本文を渡さない。
-   同梱の `tests/fixtures/test-only.pem` はローカルスタブ専用の無効なテスト鍵であり配備に使わない。
-4. `SHIKI__BUG_REPORT__BACKEND=github`、`__ENABLED=true` と、以下の `__GITHUB__` 項目を設定する。
+   同梱の `crates/app-gateway/tests/fixtures/test_rsa_priv.pem` はローカルスタブ専用の無効なテスト鍵であり配備に使わない。
+4. `SHIKI__BUG_REPORT__BACKEND=github`、`SHIKI__BUG_REPORT__ENABLED=true` と、以下の `SHIKI__BUG_REPORT__GITHUB__` に続く項目を設定する。
 
 | 項目 | 値 |
 | --- | --- |
@@ -29,6 +29,8 @@ Compose の任意追加例は `deploy/compose/docker-compose.bug-report-github.e
 通常 compose はこのファイルを読まない。PEM が未配備・不正なら起動を拒否する。
 鍵のローテーションは、新鍵を生成→secretファイルを原子的に差し替え→旧 installation token の
 期限経過を待つ→旧鍵を GitHub で失効、の順。token 再取得時に鍵を再読込する。
+Compose 例は単一ファイルの bind mount のため、鍵交換後はコンテナを再作成する
+（`docker compose -f docker-compose.yml -f docker-compose.bug-report-github.example.yml up -d --force-recreate shiki-server`）。単なるプロセス再起動では mount の inode は更新されない。
 即時失効が必要なら App installation を停止し、配送サーバを再起動してメモリtokenを破棄する。
 鍵・JWT・installation token は Debug/Serialize の対象にせず、外部エラー本文も記録しない。
 
@@ -40,9 +42,12 @@ submit/approve は同じDB transactionで配送IDを作成し、HTTPは実行し
 組織の共有禁止・承認ON・無効化は未着手配送を同じtransactionでheldに止める。
 設定を戻してもheldを自動再開せず、本人が再確認して再提出する。
 
-接続失敗とrate limitだけ、最大5回・24時間以内で指数backoff＋jitterを行う。
-Retry-After（秒/HTTP日時）とrate resetを尊重する。24時間以上の待機指定は自動停止する。
-401/403/404/422は自動停止し、App installation・権限・設定を運用者が確認する。
+GitHub 配送時は database.max_connections を2以上にする（直列化用と処理用）。
+接続失敗・token取得の一時障害・rate limit は、最大5回・24時間以内で指数backoff＋jitterを行う。
+Retry-After（秒/HTTP日時）と、remaining=0 のときのrate resetの大きい方を尊重する。
+rate limit 待機は installation 単位でDBに保存し、全テナント・replicaで共有する。
+secondary rate limit の403はヘッダがなくても最低60秒待つ。24時間以上の待機指定は自動停止する。
+401/403（rate limitを除く）/404/422は自動停止し、App installation・権限・設定を運用者が確認する。
 本文・GitHub応答エラー本文を監査に入れない。監査actionはdispatch/sent/failed/reconcile。
 
 timeout・不確定5xx・sendingのlease切れはdelivery_unknown。公開用のランダムUUID markerを

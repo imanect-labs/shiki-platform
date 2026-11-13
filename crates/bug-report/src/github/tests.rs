@@ -356,3 +356,84 @@ async fn sink_trait_adapts_results_without_credentials_in_errors() {
         ReconcileOutcome::Inconclusive
     );
 }
+
+#[tokio::test]
+async fn token_server_errors_retry_without_posting_issue() {
+    for code in [500, 502, 503] {
+        let (sink, mut rx) = stub(vec![response(code, "", "private error")]).await;
+        *sink.token.lock().await = None;
+        assert_eq!(
+            sink.dispatch(&report(), &identity()).await,
+            Dispatch::Retry {
+                after: 60,
+                code: "credential_unavailable"
+            }
+        );
+        assert!(rx
+            .recv()
+            .await
+            .unwrap()
+            .starts_with("POST /app/installations/2/access_tokens "));
+        assert!(rx.try_recv().is_err());
+    }
+}
+#[tokio::test]
+async fn secondary_limits_and_primary_reset_respect_longer_wait() {
+    for message in [
+        "You have exceeded a secondary rate limit.",
+        "Resource not accessible by integration",
+    ] {
+        let body = serde_json::json!({"message":message}).to_string();
+        let (sink, _) = stub(vec![response(403, "", &body)]).await;
+        let expected = if message.contains("secondary") {
+            Dispatch::Retry {
+                after: 60,
+                code: "rate_limit",
+            }
+        } else {
+            Dispatch::Failed("forbidden")
+        };
+        assert_eq!(sink.dispatch(&report(), &identity()).await, expected);
+    }
+    for (retry, reset) in [(30, 600), (900, 60)] {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", retry.to_string().parse().unwrap());
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert(
+            "x-ratelimit-reset",
+            (Utc::now().timestamp() + reset)
+                .to_string()
+                .parse()
+                .unwrap(),
+        );
+        assert!(matches!(classify(403, &headers, b""),
+            Dispatch::Retry { after, code: "rate_limit" }
+            if after >= u64::try_from(retry.max(reset) - 1).unwrap()));
+    }
+    assert_eq!(
+        classify(429, &reqwest::header::HeaderMap::new(), b""),
+        Dispatch::Retry {
+            after: 60,
+            code: "rate_limit"
+        }
+    );
+}
+
+#[tokio::test]
+async fn reconcile_rate_limit_is_shared_without_reposting() {
+    let (sink, mut requests) = stub(vec![response(
+        403,
+        "",
+        r#"{"message":"You have exceeded a secondary rate limit."}"#,
+    )])
+    .await;
+    assert_eq!(
+        sink.lookup(&identity()).await,
+        Dispatch::Retry {
+            after: 60,
+            code: "rate_limit"
+        }
+    );
+    assert!(requests.recv().await.unwrap().starts_with("GET "));
+    assert!(requests.try_recv().is_err());
+}

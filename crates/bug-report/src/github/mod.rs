@@ -47,6 +47,9 @@ impl GitHubIssueSink {
             stub: None,
         })
     }
+    pub(crate) fn installation_id(&self) -> String {
+        self.config.installation_id.to_string()
+    }
     pub fn config_version(&self) -> i64 {
         self.config.config_version
     }
@@ -73,9 +76,13 @@ impl GitHubIssueSink {
         let (status, headers, bytes) = self.request(reqwest::Method::POST, &path, &jwt,
             Some(serde_json::json!({"repositories":[self.config.repo],"permissions":{"issues":"write","metadata":"read"}}))).await?;
         if status != 201 {
-            // rate limit は待機時間を尊重して再試行。それ以外は資格情報の不備として止める。
-            return Err(match classify(status, &headers) {
+            // Issue POST 前の一時障害は配送の回数・期限上限内で再試行する。
+            return Err(match classify(status, &headers, &bytes) {
                 retry @ Dispatch::Retry { .. } => retry,
+                Dispatch::Unknown => Dispatch::Retry {
+                    after: 60,
+                    code: "credential_unavailable",
+                },
                 _ => Dispatch::Failed("credential"),
             });
         }
@@ -152,7 +159,7 @@ impl GitHubIssueSink {
             .await
         {
             Ok((201, _, bytes)) => self.issue(&bytes).unwrap_or(Dispatch::Unknown),
-            Ok((status, headers, _)) => classify(status, &headers),
+            Ok((status, headers, bytes)) => classify(status, &headers, &bytes),
             Err(e) => e,
         }
     }
@@ -164,19 +171,34 @@ impl GitHubIssueSink {
         }
     }
     async fn lookup_pages(&self, identity: &DeliveryIdentity) -> Dispatch {
-        let Ok(token) = self.token().await else {
-            return Dispatch::Unknown;
+        let token = match self.token().await {
+            Ok(token) => token,
+            Err(
+                retry @ Dispatch::Retry {
+                    code: "rate_limit", ..
+                },
+            ) => return retry,
+            Err(_) => return Dispatch::Unknown,
         };
         for page in 1..=3 {
             let path = format!(
                 "{}?state=all&sort=created&direction=desc&per_page=100&page={page}",
                 self.issue_path()
             );
-            let Ok((200, _, bytes)) = self
+            let bytes = match self
                 .request(reqwest::Method::GET, &path, &token, None)
                 .await
-            else {
-                return Dispatch::Unknown;
+            {
+                Ok((200, _, bytes)) => bytes,
+                Ok((status, headers, bytes)) => {
+                    return match classify(status, &headers, &bytes) {
+                        retry @ Dispatch::Retry {
+                            code: "rate_limit", ..
+                        } => retry,
+                        _ => Dispatch::Unknown,
+                    }
+                }
+                Err(_) => return Dispatch::Unknown,
             };
             let Ok(issues) = serde_json::from_slice::<Vec<Issue>>(&bytes) else {
                 return Dispatch::Unknown;
@@ -245,7 +267,7 @@ fn literal(text: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-fn classify(status: u16, headers: &reqwest::header::HeaderMap) -> Dispatch {
+fn classify(status: u16, headers: &reqwest::header::HeaderMap, bytes: &[u8]) -> Dispatch {
     let retry = headers
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
@@ -261,15 +283,22 @@ fn classify(status: u16, headers: &reqwest::header::HeaderMap) -> Dispatch {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<i64>().ok())
         .and_then(|t| u64::try_from((t - Utc::now().timestamp()).max(0)).ok());
-    if status == 429
-        || (status == 403
-            && (retry.is_some()
-                || headers
-                    .get("x-ratelimit-remaining")
-                    .is_some_and(|v| v == "0")))
-    {
+    // 本文は分類にだけ使用し、ログ・監査・エラーには渡さない。
+    let secondary = status == 403
+        && serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| v.get("message")?.as_str().map(str::to_ascii_lowercase))
+            .is_some_and(|message| message.contains("secondary rate limit"));
+    let exhausted = headers
+        .get("x-ratelimit-remaining")
+        .is_some_and(|v| v == "0");
+    if status == 429 || (status == 403 && (retry.is_some() || exhausted || secondary)) {
         return Dispatch::Retry {
-            after: retry.or(reset).unwrap_or(60),
+            after: retry
+                .unwrap_or(if exhausted || secondary { 0 } else { 60 })
+                .max(if exhausted { reset.unwrap_or(60) } else { 0 })
+                .max(if secondary { 60 } else { 0 })
+                .max(1),
             code: "rate_limit",
         };
     }

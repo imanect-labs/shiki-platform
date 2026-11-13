@@ -287,9 +287,12 @@ impl BugReportService {
                 }
                 sqlx::query("UPDATE bug_report_submission SET approved_by=$5,approved_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
                     .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(&ctx.principal().id).execute(&mut *tx).await?;
+                let has_principal: bool = sqlx::query_scalar("SELECT principal IS NOT NULL AND principal <> 'null'::jsonb FROM bug_report_submission WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
+                    .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).fetch_one(&mut *tx).await?;
+                // 旧提出は本人の再同意が必要。承認だけでは配送行を作らない。
                 // 承認は snapshot を変更しない。宛先の再検証は worker が行う。
                 (
-                    if self.destination_version.is_some() {
+                    if self.destination_version.is_some() && has_principal {
                         Status::Queued
                     } else {
                         Status::Held
