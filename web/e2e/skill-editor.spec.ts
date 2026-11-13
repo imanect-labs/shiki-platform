@@ -263,7 +263,8 @@ test("参照のラベルの括弧は、保存してもリンクを壊さない",
   const instructions = `次を参照: [旧\\[規程\\]](shiki://drive/folder/${folderId})`;
   const id = await createSkill(page, uniqueName("bracket-skill"), { instructions });
   await page.goto(`/skills/${id}`);
-  await expect(page.getByTestId("skill-body-editor").getByTestId("drive-ref-chip")).toHaveCount(1);
+  // 本文はスキルを読んでから組む。起動し直した直後のサーバーでは読み込みに 5 秒を超えることがある。
+  await expect(page.getByTestId("skill-body-editor").getByTestId("drive-ref-chip")).toHaveCount(1, { timeout: 15_000 });
   await focusBodyEnd(page);
   await page.keyboard.type("x");
   await page.getByTestId("skill-save-button").click();
@@ -274,7 +275,7 @@ test("参照のラベルの括弧は、保存してもリンクを壊さない",
   expect(saved).toContain(`[旧\\[規程\\]](shiki://drive/folder/${folderId})`);
   await page.reload();
   const body = page.getByTestId("skill-body-editor");
-  await expect(body.getByTestId("drive-ref-chip")).toHaveCount(1);
+  await expect(body.getByTestId("drive-ref-chip")).toHaveCount(1, { timeout: 15_000 });
   await expect(body).not.toContainText("shiki://");
 });
 
