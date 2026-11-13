@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+utoipa.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 sqlx.workspace = true
