@@ -7,7 +7,7 @@
 /// （条件・並べ替えはピンした版のビュー）。行・列は**閲覧者本人の権限**で評価される。列の型・表示名は
 /// テーブルのスキーマ（閲覧者本人の viewer）から、列の順・見出し・幅・非表示はビューの表示設定から決める。
 
-import { AlertTriangle, Inbox, Loader2, MoveHorizontal, RotateCcw, Table2 } from "lucide-react";
+import { AlertTriangle, Inbox, Loader2, MoveHorizontal, RotateCcw, Sigma, Table2 } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -172,28 +172,32 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   }
   const grid = first?.display.kind === "grid" ? first.display : null;
   const columns = table ? resolveColumns(table.schema.fields, grid, masked).filter((c) => !c.hidden) : [];
-  const empty = first !== null && (first.result.items ?? []).length === 0 && !first.result.next_cursor;
+  // 集計のビュー（件数や合計をまとめるビュー）は、レコードでなくまとめた結果（groups）を返す。この表は
+  // レコードしか描けないので、何も言わずに「0 件」と見せず、表示できないことを言う。
+  const aggregate = first !== null && first.result.groups != null;
+  const empty = !aggregate && first !== null && (first.result.items ?? []).length === 0 && !first.result.next_cursor;
   // 先頭ページの前に待ちになったときはスキーマが無いので、列名（参照名）は出さずに一般の文言にする。
   const label = waiting ? columns.find((c) => c.key === waiting.field)?.label : undefined;
   // 列の合計幅が枠より広い（スマホ幅で 2 列ほどしか見えない）ときは、横に続くことを示す（C P3）。
   const totalWidth = columns.reduce((n, c) => n + c.width, 0);
-  const overflows = frameWidth > 0 && totalWidth > frameWidth + 1;
+  // 行を描かないとき（準備中・集計のビュー・0 件）は横に続くものが無いので出さない。
+  const overflows = !waiting && !aggregate && !empty && frameWidth > 0 && totalWidth > frameWidth + 1;
   return (
     <figure ref={frameRef} className="my-4 overflow-hidden rounded-xl border bg-card" data-testid={`miniapp-data-grid-${alias}`}>
       <figcaption className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
-        <Table2 className="size-3.5" aria-hidden />
-        <span className="font-medium text-foreground">{table?.name ?? alias}</span>
+        <Table2 className="size-3.5 shrink-0" aria-hidden />
+        <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">{table?.name ?? alias}</span>
         {overflows ? (
-          <span className="ml-auto inline-flex items-center gap-1 text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
             <MoveHorizontal className="size-3.5" aria-hidden />
             横にスクロールできます
           </span>
         ) : null}
-        <span className={cn("tabular-nums", !overflows && "ml-auto")}>
+        <span className={cn("shrink-0 whitespace-nowrap tabular-nums", !overflows && "ml-auto")}>
           {empty ? "0 件" : status ? `${status.loaded.toLocaleString("ja-JP")}${status.done ? "" : "+"} 件` : ""}
         </span>
       </figcaption>
-      {ownOnly ? (
+      {ownOnly && !aggregate ? (
         <p className="border-b px-3 py-1.5 text-[11px] text-muted-foreground" data-testid="miniapp-data-grid-own-only">
           あなたが追加したレコードだけを表示しています。
         </p>
@@ -206,6 +210,16 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
             {waiting.progress != null ? `（${Math.round(waiting.progress * 100)}%）` : ""}
           </span>
           <span className="text-xs">準備ができたら自動で表示します</span>
+        </div>
+      ) : aggregate ? (
+        <div
+          className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-center text-sm text-muted-foreground"
+          role="note"
+          data-testid="miniapp-data-grid-aggregate"
+        >
+          <Sigma className="size-5" aria-hidden />
+          <span className="text-balance text-foreground">集計のビューは、ここでは表示できません</span>
+          <span className="max-w-sm text-balance text-xs">アプリを作った人が集計しないビューに替えると、表示できます。</span>
         </div>
       ) : empty ? (
         <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-sm text-muted-foreground" data-testid="miniapp-data-grid-empty">
