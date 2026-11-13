@@ -104,6 +104,11 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
     text_stream_ending(reply, StopReason::EndTurn, prompt_tokens)
 }
 
+/// 本文の途中で出力上限に達して止まるストリーム（`MaxTokens`）。
+pub(super) fn truncated_text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
+    text_stream_ending(reply, StopReason::MaxTokens, prompt_tokens)
+}
+
 /// 本文だけを流し、指定の停止理由で終えるストリーム（出力の上限での打ち切り `truncate:` など）。
 pub(super) fn text_stream_ending(reply: &str, stop: StopReason, prompt_tokens: u64) -> DeltaStream {
     let words: Vec<String> = reply

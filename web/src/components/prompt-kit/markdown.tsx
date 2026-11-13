@@ -13,9 +13,11 @@ import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
+import { helpCiteNumberFromHref } from "@/lib/help-citation";
 import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
 import { decideAnswerLink, isAppPath, type LinkSources } from "@/lib/answer-links";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
+import { HelpCitationMarker } from "@/components/chat/help-sources";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
@@ -104,7 +106,7 @@ function rehypeCiteNowrap() {
       const next = node.children[i + 1];
       const href = child?.type === "element" && child.tagName === "a" ? String(child.properties?.href ?? "") : "";
       const punct = next?.type === "text" ? CLOSING_PUNCT.exec(next.value)?.[0] : undefined;
-      if (punct && citeNumberFromHref(href) != null) {
+      if (punct && (citeNumberFromHref(href) != null || helpCiteNumberFromHref(href) != null)) {
         next.value = next.value.slice(punct.length);
         const glued = {
           type: "element",
@@ -484,6 +486,9 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
   // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
   const cite = citeNumberFromHref(url);
   if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
+  // 製品ヘルプの出典（`#help-cite-n`・linkifyCitations が付ける）。押すとヘルプを開く。
+  const helpCite = helpCiteNumberFromHref(url);
+  if (helpCite != null) return <HelpCitationMarker n={helpCite}>{children}</HelpCitationMarker>;
   // その他の内部リンクはクライアント遷移。
   // `//host` や `/\host` は別オリジンへ出るので、アプリ内リンクに含めない（#1143）。
   if (isAppPath(url)) {

@@ -179,6 +179,48 @@ pub(crate) fn truncated_call_results(
     Some(whole.chain(cut).collect())
 }
 
+/// 1 run で「本文の続き」を書かせる回数の上限（1 回の上限 × (この回数 + 1) までの本文を書ける）。
+/// 超えたら Truncated で畳む（同じ所を書き直し続けるモデルで、ステップ予算を空費させない）。
+const MAX_TEXT_CONTINUATIONS: usize = 4;
+
+/// **本文の途中で出力上限（`max_tokens`）に達した**応答の続きを書かせる催促。上限回数を超えたら `None`。
+///
+/// ツール呼び出しの無い長い回答（報告書・表・図の多い分析）は、最後の 1 応答だけで上限を
+/// 使い切ることがある。そこで run を畳むと、利用者が「続けて」と送り直さないと終わらない
+/// （実測: エージェントモードで、長い分析の報告が「## 6.」の見出しで切れて止まった）。
+/// 切れた assistant 応答の直後に user 発話として足し、同じ run のまま続きを生成させる。
+/// 直前が assistant なので user の連続にはならない（冒頭の注記の制約に当たらない）。
+/// 続きの本文は画面で直前の本文ブロックへそのまま連結される（chat の sink）。
+pub(crate) fn text_continuation(messages: &[LlmMessage]) -> Option<LlmMessage> {
+    let continued = messages.iter().filter(|m| is_continuation_nudge(m)).count();
+    if continued >= MAX_TEXT_CONTINUATIONS {
+        return None;
+    }
+    Some(LlmMessage::text(
+        llm_gateway::Role::User,
+        format!(
+            "{} 直前のあなたの応答は 1 回の出力上限に達して途中で切れました（利用者の発話ではなく\
+             システムからの連絡です）。切れた位置の直後から、そのまま続きを書いてください。\
+             前置き・お詫び・ここまでの要約・書いた部分の繰り返しは書かないでください。\
+             文・表の行・```ブロックの途中で切れていれば、その続きの文字から書いてください。\
+             残りが長いときは簡潔にまとめて回答を終えてください。",
+            llm_gateway::CONTINUATION_MARK
+        ),
+    ))
+}
+
+/// 次の生成が**本文の続き**を書く生成か（履歴の最後が続きの催促）。
+pub(crate) fn is_text_continuation(messages: &[LlmMessage]) -> bool {
+    messages.last().is_some_and(is_continuation_nudge)
+}
+
+fn is_continuation_nudge(m: &LlmMessage) -> bool {
+    m.role == llm_gateway::Role::User
+        && m.content.iter().any(|b| {
+            matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
+        })
+}
+
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
 pub(crate) fn nudge_empty_response(messages: &mut [LlmMessage]) -> bool {
     let already = last_tool_result(messages).is_some_and(|c| c.contains(EMPTY_RESPONSE_NUDGE));
@@ -212,6 +254,27 @@ fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
 mod tests {
     use super::*;
     use llm_gateway::Role as LlmRole;
+
+    /// 本文の続きの催促は assistant の直後に user として足し、上限回数で打ち切る。
+    #[test]
+    fn text_continuation_is_a_user_turn_and_bounded() {
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "報告を書いて")];
+        for _ in 0..MAX_TEXT_CONTINUATIONS {
+            messages.push(LlmMessage::text(LlmRole::Assistant, "途中まで"));
+            let nudge = text_continuation(&messages).unwrap();
+            assert_eq!(nudge.role, LlmRole::User);
+            let Block::Text { text } = &nudge.content[0] else {
+                panic!("本文ブロック: {nudge:?}");
+            };
+            assert!(text.starts_with(llm_gateway::CONTINUATION_MARK), "{text}");
+            assert!(text.contains("続き"), "{text}");
+            messages.push(nudge);
+        }
+        assert!(is_text_continuation(&messages), "最後が催促なら続きの生成");
+        messages.push(LlmMessage::text(LlmRole::Assistant, "まだ途中"));
+        assert!(!is_text_continuation(&messages));
+        assert!(text_continuation(&messages).is_none(), "上限回数で打ち切る");
+    }
 
     fn result(id: &str, content: &str) -> Block {
         Block::tool_result(id, content, false)
