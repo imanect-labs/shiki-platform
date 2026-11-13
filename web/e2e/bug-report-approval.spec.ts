@@ -20,44 +20,50 @@ test("管理者の受信箱、競合409、再取得と失権", async ({ page }) 
   let state = "pending_approval";
   let revision = 2;
   let revoked = false;
-  await page.route(
-    /\/api\/org-admin\/bug-reports(?:\/.*)?(?:\?.*)?$/,
-    async (route) => {
-      if (revoked) return route.fulfill({ status: 403, json: {} });
-      const path = new URL(route.request().url()).pathname;
-      if (path.endsWith("/approve")) {
-        state = "queued";
-        revision++;
-        return route.fulfill({ status: 409, json: {} });
-      }
-      await route.fulfill({
-        json: path.endsWith(report.id)
-          ? {
-              report: { ...report, status: state, rev: revision },
-              submission: {
-                content,
-                content_consent: true,
-                sink_profile_id: "github",
-                sink_config_version: 1,
-                notice_version: "bug-report-v1",
-                approved_by: state === "queued" ? "admin" : null,
-                rejection_reason: null,
-              },
-            }
-          : {
-              items: [
-                {
-                  ...report,
-                  title: content.title,
-                  status: state,
-                  rev: revision,
+  await page
+    .context()
+    .route(
+      /\/api\/org-admin\/bug-reports(?:\/.*)?(?:\?.*)?$/,
+      async (route) => {
+        if (revoked) return route.fulfill({ status: 403, json: {} });
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith("/approve")) {
+          if (route.request().postDataJSON().expected_rev !== revision)
+            return route.fulfill({ status: 409, json: {} });
+          state = "queued";
+          revision++;
+          return route.fulfill({
+            json: { ...report, status: state, rev: revision },
+          });
+        }
+        await route.fulfill({
+          json: path.endsWith(report.id)
+            ? {
+                report: { ...report, status: state, rev: revision },
+                submission: {
+                  content,
+                  content_consent: true,
+                  sink_profile_id: "github",
+                  sink_config_version: 1,
+                  notice_version: "bug-report-v1",
+                  approved_by: state === "queued" ? "admin" : null,
+                  rejection_reason: null,
                 },
-              ],
-              next_cursor: null,
-            },
-      });
-    },
-  );
+              }
+            : {
+                items: [
+                  {
+                    ...report,
+                    title: content.title,
+                    status: state,
+                    rev: revision,
+                  },
+                ],
+                next_cursor: null,
+              },
+        });
+      },
+    );
   await page.goto("/admin/bug-reports");
   await shot(page, "admin-inbox");
   await page.getByRole("link", { name: content.title, exact: false }).click();
@@ -65,19 +71,27 @@ test("管理者の受信箱、競合409、再取得と失権", async ({ page }) 
     page.getByText("差し戻しの理由（報告した本人にも表示されます）"),
   ).toBeVisible();
   await shot(page, "admin-detail");
+  const other = await page.context().newPage();
+  await other.goto(page.url());
+  await expect(other.getByRole("button", { name: "承認する" })).toBeVisible();
   await page.getByRole("button", { name: "承認する" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "。" })).toContainText(
-    "別の画面で内容が更新されました",
-  );
   await expect(page.getByText("送信待ち", { exact: true })).toBeVisible();
-  await shot(page, "conflict");
-  await expect(page.getByRole("button", { name: "承認する" })).toHaveCount(0);
+  await other.getByRole("button", { name: "承認する" }).click();
+  await expect(
+    other.getByRole("alert").filter({ hasText: "。" }),
+  ).toContainText("別の画面で内容が更新されました");
+  await expect(other.getByText("送信待ち", { exact: true })).toBeVisible();
+  await shot(other, "conflict");
+  await expect(other.getByRole("button", { name: "承認する" })).toHaveCount(0);
   revoked = true;
-  await page.reload();
-  await expect(page.getByRole("alert").filter({ hasText: "。" })).toContainText(
-    "権限がありません",
+  await other.reload();
+  await expect(
+    other.getByRole("alert").filter({ hasText: "。" }),
+  ).toContainText("権限がありません");
+  await expect(other.getByText(content.symptom, { exact: true })).toHaveCount(
+    0,
   );
-  await expect(page.getByText(content.symptom, { exact: true })).toHaveCount(0);
+  await other.close();
 });
 
 test("承認必須のON/OFFと設定の409を表示する", async ({ page }) => {
