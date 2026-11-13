@@ -8,7 +8,7 @@
 ///
 /// スレッドの名前の変更・ピン留め・削除はサイドバー履歴の行メニューに置く（ここには置かない）。
 
-import { ChartPie, Copy, FileOutput, Settings, Share2, SquarePen } from "lucide-react";
+import { ChartPie, Check, Copy, FileOutput, Settings, Share2, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -36,6 +36,7 @@ export function ChatPageHeaderSlot({
   contextUsage,
   onOpenContext,
   onExport,
+  plan,
 }: {
   title: string;
   onShare: () => void;
@@ -43,6 +44,8 @@ export function ChatPageHeaderSlot({
   onOpenContext: () => void;
   /// 会話全体の書き出しダイアログを開く。書き出せる回答が無ければ渡さない（項目を出さない）。
   onExport?: () => void;
+  /// エージェントの計画があるとき、上のバーにタスクパネルの開閉ボタンを出す。
+  plan?: { done: number; total: number; shown: boolean; onToggle: () => void } | null;
 }) {
   const contextLabel = contextUsage ? contextMenuLabel(contextUsage) : null;
   const router = useRouter();
@@ -64,9 +67,21 @@ export function ChatPageHeaderSlot({
         </Button>
       ),
       actions: (
-        <ChromeIconButton label="新しいチャット" onClick={() => router.push("/")}>
-          <SquarePen aria-hidden />
-        </ChromeIconButton>
+        <>
+          {plan ? (
+            <ChromeIconButton
+              label={`タスク ${plan.done}/${plan.total}${plan.shown ? "（閉じる）" : "（開く）"}`}
+              pressed={plan.shown}
+              onClick={plan.onToggle}
+              data-testid="plan-header-button"
+            >
+              <TaskRing done={plan.done} total={plan.total} />
+            </ChromeIconButton>
+          ) : null}
+          <ChromeIconButton label="新しいチャット" onClick={() => router.push("/")}>
+            <SquarePen aria-hidden />
+          </ChromeIconButton>
+        </>
       ),
       menu: [
         { key: "share", label: "共有", icon: Share2, onSelect: onShare },
@@ -86,7 +101,37 @@ export function ChatPageHeaderSlot({
         },
       ],
     }),
-    [title, onShare, router, contextLabel, onOpenContext, onExport],
+    [title, onShare, router, contextLabel, onOpenContext, onExport, plan],
   );
   return null;
+}
+
+/// タスクの進み具合のリング（上のバーのボタン）。数字を並べず、円の埋まり具合で示す（件数はツールチップ）。
+function TaskRing({ done, total }: { done: number; total: number }) {
+  const r = 8;
+  const c = 2 * Math.PI * r;
+  const ratio = total > 0 ? done / total : 0;
+  const finished = total > 0 && done === total;
+  return (
+    <span className="relative inline-flex size-[19px] items-center justify-center" aria-hidden>
+      <svg viewBox="0 0 20 20" className="absolute inset-0 size-full -rotate-90">
+        <circle cx="10" cy="10" r={r} fill="none" stroke="currentColor" strokeOpacity={0.2} strokeWidth={2} />
+        <circle
+          cx="10"
+          cy="10"
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - ratio)}
+          className={finished ? "text-emerald-600 dark:text-emerald-400" : "text-primary"}
+        />
+      </svg>
+      {finished ? (
+        <Check className="!size-2.5 text-emerald-600 dark:text-emerald-400" strokeWidth={3} />
+      ) : null}
+    </span>
+  );
 }

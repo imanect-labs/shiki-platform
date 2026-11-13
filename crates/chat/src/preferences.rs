@@ -50,6 +50,17 @@ pub enum TimeFormat {
     Relative,
 }
 
+/// チャットに出す操作ログの粒度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityDetail {
+    /// 実行中に「調べています」のような 1 行だけを出す（個々のツール名や失敗は出さない）。
+    #[default]
+    Simple,
+    /// 個々の操作（SQL の実行・ツールの使用・失敗を含む）を出す。
+    Detailed,
+}
+
 /// 新しいチャットの既定のモデル（`None` は Auto）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultModel {
@@ -78,6 +89,9 @@ pub struct UserPreferences {
     pub expand_reasoning: bool,
     #[serde(default)]
     pub time_format: TimeFormat,
+    /// チャットに出す操作ログの粒度。
+    #[serde(default)]
+    pub activity_detail: ActivityDetail,
 }
 
 impl UserPreferences {
@@ -109,6 +123,7 @@ impl UserPreferences {
             default_autonomous_mode: field(&map, "default_autonomous_mode"),
             expand_reasoning: field(&map, "expand_reasoning"),
             time_format: field(&map, "time_format"),
+            activity_detail: field(&map, "activity_detail"),
         }
     }
 
@@ -203,6 +218,7 @@ mod tests {
             default_autonomous_mode: AutonomousMode::Auto,
             expand_reasoning: true,
             time_format: TimeFormat::Relative,
+            activity_detail: ActivityDetail::Detailed,
         };
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(v["default_model"]["effort"], "high");
