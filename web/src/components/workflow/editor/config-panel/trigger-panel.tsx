@@ -33,6 +33,7 @@ import { MISSING, useDriveItem } from "./forms-files";
 import type { InputRefUsage } from "./input-schema-editor";
 import { InputsSection } from "./inputs-section";
 import { triggerErrorView } from "../validation";
+import { AskAiButton } from "@/components/workflow/editor/workflow-assistant";
 
 /// きっかけの中の位置（`scope/folder`・`cron` など）→ 保存時の誤りの文言。
 type FieldErrors = Map<string, string>;
@@ -548,7 +549,10 @@ function TableEventFields({
         </Field>
       ) : null}
       {target === null && trigger.filter ? (
-        <p className="text-[11px] text-muted-foreground">条件（filter）は AI 編集や IR で設定されています</p>
+        <p className="text-[11px] text-muted-foreground">
+          条件（filter）は AI 編集や IR で設定されています。
+          <AskAiButton />
+        </p>
       ) : null}
     </>
   );

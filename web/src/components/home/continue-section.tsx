@@ -174,7 +174,15 @@ export function ContinueSection({ feed }: { feed: HomeFeed }) {
                     key={t.id}
                     className={i >= 3 ? "max-sm:hidden" : undefined}
                     href={threadHref(t)}
-                    icon={d.kind === "note" ? NotebookPen : d.kind === "office" ? FileText : MessageSquareText}
+                    icon={
+                      d.kind === "note"
+                        ? NotebookPen
+                        : d.kind === "office"
+                          ? FileText
+                          : d.kind === "workflow"
+                            ? Workflow
+                            : MessageSquareText
+                    }
                     seasonIndex={i}
                     title={d.title || "無題の会話"}
                     meta={`${d.detail ?? "チャット"}・${relativeTime(t.updatedAt, now)}`}

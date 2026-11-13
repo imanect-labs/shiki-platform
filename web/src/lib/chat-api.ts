@@ -78,6 +78,12 @@ export type Thread = {
   /// 由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。通常チャットは null。
   originNoteId?: string | null;
   originNoteName?: string | null;
+  /// 対象の画面（ワークフローエディタの「AI に依頼」）から作った会話の対象（D-10 T09）。通常チャットは null。
+  originArtifactId?: string | null;
+  originArtifactKind?: OriginArtifactKind | null;
+  originArtifactName?: string | null;
+  /// 会話の目的（/apps の「AI と作る」は app_builder）。通常チャットは null。
+  purpose?: ThreadPurpose | null;
   /// ピン留めした時刻（null＝ピン留めなし）。サイドバー履歴の先頭に出す。
   pinnedAt: string | null;
   /// 検索フォルダ（ホームの「社内検索」でフォルダを選んで始めた会話・#965）。社内文書の検索を
@@ -221,6 +227,10 @@ export function subscribeThreadsChanged(listener: () => void): () => void {
 
 /// スレッドの API 表現（**`crates/chat` の `Thread` から生成**した型）。
 type ApiThread = components["schemas"]["Thread"];
+/// 会話の対象の種類（D-10 T09・サーバの閉集合）。
+export type OriginArtifactKind = components["schemas"]["OriginArtifactKind"];
+/// 会話の目的（D-10 T09・サーバの閉集合）。
+export type ThreadPurpose = components["schemas"]["ThreadPurpose"];
 
 function toThread(t: ApiThread): Thread {
   return {
@@ -236,6 +246,10 @@ function toThread(t: ApiThread): Thread {
     miniAppVersion: t.mini_app_version ?? null,
     originNoteId: t.origin_note_id ?? null,
     originNoteName: t.origin_note_name ?? null,
+    originArtifactId: t.origin_artifact_id ?? null,
+    originArtifactKind: t.origin_artifact_kind ?? null,
+    originArtifactName: t.origin_artifact_name ?? null,
+    purpose: t.purpose ?? null,
     pinnedAt: t.pinned_at ?? null,
     searchFolderId: t.search_folder_id ?? null,
     searchFolderName: t.search_folder_name ?? null,
@@ -269,12 +283,20 @@ async function ok<T>(res: Response): Promise<T> {
 /// `pinned` はピン留めだけ（ピン留めの新しい順・1 ページで全件）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string; q?: string; pinned?: boolean; limit?: number },
+  opts?: {
+    originNoteId?: string;
+    /// 対象（ワークフロー・ミニアプリ）の会話だけ（エディタの会話一覧・D-10 T09）。
+    originArtifactId?: string;
+    q?: string;
+    pinned?: boolean;
+    limit?: number;
+  },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
+  if (opts?.originArtifactId) params.set("origin_artifact_id", opts.originArtifactId);
   if (opts?.q?.trim()) params.set("q", opts.q.trim());
   if (opts?.pinned) params.set("pinned", "true");
   const qs = params.toString() ? `?${params.toString()}` : "";
@@ -297,6 +319,10 @@ export async function createThread(
     originNoteId?: string;
     /// 検索フォルダ（ホームの「社内検索」・#965）。社内文書の検索をこのフォルダの配下に絞る。
     searchFolderId?: string;
+    /// 会話の対象（ワークフローエディタの「AI に依頼」・D-10 T09）。`originNoteId` とは併用できない。
+    originArtifact?: { kind: OriginArtifactKind; id: string };
+    /// 会話の目的（/apps の「AI と作る」・D-10 T09）。
+    purpose?: ThreadPurpose;
   },
 ): Promise<Thread> {
   const toPin = (p?: ArtifactPin) =>
@@ -320,6 +346,8 @@ export async function createThread(
         workspace,
         origin_note_id: pins?.originNoteId,
         search_folder_id: pins?.searchFolderId,
+        origin_artifact: pins?.originArtifact,
+        purpose: pins?.purpose,
       }),
     }),
   );

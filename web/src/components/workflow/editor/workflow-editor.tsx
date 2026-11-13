@@ -56,6 +56,19 @@ type Props = {
   /// 右パネル（設定）とページクローム（上部の操作・スマホの見出し・ダイアログ）の拡張スロット。
   renderSidePanel?: (ctx: EditorContext) => React.ReactNode;
   renderChrome?: (ctx: EditorChromeContext) => React.ReactNode;
+  /// 保存の状態（未保存の変更があるか・保存済みの版）が変わったとき（AI のパネルが読み直しを決めるのに使う・D-10 T10）。
+  onStatusChange?: (status: EditorStatus) => void;
+  /// 外から保存を呼ぶ口（AI のパネルの「保存する」）。
+  handleRef?: React.MutableRefObject<EditorHandle | null>;
+};
+
+/// エディタの保存の状態（[`Props.onStatusChange`]）。
+export type EditorStatus = { dirty: boolean; savedVersion: number };
+
+/// 外から呼べるエディタの操作（[`Props.handleRef`]）。
+export type EditorHandle = {
+  /// 保存する。保存できたら true（変更なし・失敗・保存中は false）。
+  save: () => Promise<boolean>;
 };
 
 export type EditorContext = ReturnType<typeof useEditorState> extends [infer S, infer D]
@@ -86,6 +99,8 @@ export function WorkflowEditor({
   initialLayout,
   renderSidePanel,
   renderChrome,
+  onStatusChange,
+  handleRef,
 }: Props) {
   // 実行履歴などへ移って戻ったとき、未保存の編集を引き継ぐ（同じ版から始めた下書きだけ）。
   const [restored] = React.useState(() => takeDraft(workflowId, initialVersion));
@@ -357,6 +372,18 @@ export function WorkflowEditor({
   }, [dispatch, save]);
 
   const ctx = { state, dispatch, workflowId, save, saving } as EditorContext;
+
+  // 保存の状態と保存の口を外へ渡す（AI のパネル・D-10 T10）。
+  React.useEffect(() => {
+    onStatusChange?.({ dirty: state.dirty, savedVersion: state.savedVersion });
+  }, [onStatusChange, state.dirty, state.savedVersion]);
+  React.useEffect(() => {
+    if (!handleRef) return;
+    handleRef.current = { save };
+    return () => {
+      handleRef.current = null;
+    };
+  }, [handleRef, save]);
 
   const pick = React.useCallback(
     (target: AddTarget, nodeType: string) =>

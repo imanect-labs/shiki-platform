@@ -13,6 +13,7 @@ import {
   PinOff,
   Share2,
   Trash2,
+  Workflow,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -40,7 +41,7 @@ export type ThreadRowActions = {
 
 /// 文書由来の会話の先頭に置く種類アイコン（小さな角丸タイル）。
 function OriginTile({ kind }: { kind: Exclude<ThreadOriginKind, null> }) {
-  const Icon = kind === "note" ? NotebookPen : FileText;
+  const Icon = kind === "note" ? NotebookPen : kind === "workflow" ? Workflow : FileText;
   return (
     <span
       aria-hidden

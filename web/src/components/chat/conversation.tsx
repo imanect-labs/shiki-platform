@@ -189,6 +189,13 @@ type StreamState = {
   collapsePast: boolean;
 };
 
+/// emit_workflow の参照（`{id, name, display_name, version}`）から、保存したワークフローの id と版を取り出す。
+function savedWorkflowOf(raw: unknown): { id: string; version: number } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { id, version } = raw as { id?: unknown; version?: unknown };
+  return typeof id === "string" && typeof version === "number" ? { id, version } : null;
+}
+
 /// 再訪時の送り直しが途切れてから、届き終わったとみなすまでの時間（#1152）。
 const RESTORE_IDLE_MS = 2_000;
 /// 再訪時に送り直しが始まらないまま待つ上限（これを過ぎたら届いた分だけで出す）。
@@ -246,6 +253,7 @@ export function Conversation({
   onSkillDraftOpened,
   adoptSkillDraftOnLoad = false,
   onDocumentCreated,
+  onWorkflowSaved,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
@@ -270,6 +278,9 @@ export function Conversation({
   /// AI が Office 文書を**新規作成**したときの導線（#381）。渡されない場合は
   /// 作成された文書（Collabora）へ遷移する（主線）。編集の参照では発火しない。
   onDocumentCreated?: (href: string) => void;
+  /// AI がワークフローを保存したとき（emit_workflow の参照を受けた時点・ワークフローエディタの読み直し・D-10 T10）。
+  /// 再訪の送り直しでも呼ばれ得るので、受け手は版で冪等に扱う。
+  onWorkflowSaved?: (ref: { id: string; version: number }) => void;
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
@@ -288,6 +299,11 @@ export function Conversation({
   // 届くため、その場で router.push すると Conversation がアンマウントされて SSE 購読が閉じ、
   // 複合依頼の後続ツールの承認カードが出せず run が承認待ちで止まる。
   const pendingOpenRef = React.useRef<string | null>(null);
+  // ワークフローの保存の知らせ先（購読を張り直さないよう ref で持つ・D-10 T10）。
+  const onWorkflowSavedRef = React.useRef(onWorkflowSaved);
+  React.useEffect(() => {
+    onWorkflowSavedRef.current = onWorkflowSaved;
+  }, [onWorkflowSaved]);
   // 読み込み時に下書きスキルを渡したか（`adoptSkillDraftOnLoad`・1 回だけ）。
   const adoptedDraftRef = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -622,10 +638,13 @@ export function Conversation({
       onHelpCitation: (c) => updateStream((s) => (s ? { ...s, helpCitations: [...s.helpCitations, c] } : s)),
       onCitation: (c) => updateStream((s) => (s ? { ...s, citations: [...s.citations, c] } : s)),
       onFileRef: (f) => updateStream((s) => (s ? { ...s, files: [...s.files, f] } : s)),
-      onWorkflowRef: (workflow) =>
+      onWorkflowRef: (workflow) => {
         updateStream((s) =>
           s ? { ...s, workflowRefs: [...s.workflowRefs, workflow] } : s,
-        ),
+        );
+        const saved = savedWorkflowOf(workflow);
+        if (saved) onWorkflowSavedRef.current?.(saved);
+      },
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
       onBuilderRef: (item) =>

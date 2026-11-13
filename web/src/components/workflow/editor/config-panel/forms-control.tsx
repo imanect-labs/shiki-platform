@@ -31,6 +31,7 @@ import { isFromRef } from "./value-refs";
 import type { FormProps } from "./forms-basic";
 import { LIST_SHAPE } from "./value-shape";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
+import { AskAiButton } from "@/components/workflow/editor/workflow-assistant";
 
 const OP_LABELS: [CmpOp, string][] = [
   ["eq", "と等しい"],
@@ -134,7 +135,9 @@ export function ConditionEditor({
   if (flat === null) {
     return (
       <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-        入れ子になった高度な条件が設定されています（AI 編集で変更できます）。ここで編集すると単純な条件に置き換わります。
+        入れ子になった高度な条件が設定されています（AI 編集で変更できます）。
+        <AskAiButton className="mx-1 inline rounded-sm font-medium text-foreground underline underline-offset-2 outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring" />
+        ここで編集すると単純な条件に置き換わります。
         <Button
           variant="outline"
           size="sm"

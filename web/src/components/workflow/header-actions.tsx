@@ -53,6 +53,7 @@ import { getRegistration, type Registration } from "@/lib/workflow-api";
 import type { EditorChromeContext } from "@/components/workflow/editor/workflow-editor";
 import { AddNodeMenu } from "@/components/workflow/editor/add-node-menu";
 import { mapErrors } from "@/components/workflow/editor/validation";
+import { useWorkflowAssistant } from "@/components/workflow/editor/workflow-assistant";
 import { EnableDialog } from "./enable-dialog";
 import { RunNowDialog } from "./run-now-dialog";
 import { WorkflowTabs } from "./workflow-tabs";
@@ -248,6 +249,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
     hasAutomaticTrigger || status === "enabled" || status === "suspended_reconsent";
   const enableLabel = status === "enabled" ? "自動実行の設定" : "自動実行を有効化";
   const runsHref = `/workflows/${workflowId}/runs`;
+  const assistant = useWorkflowAssistant();
 
   const run = React.useCallback(async () => {
     // 実行は保存済みの版で動く。未保存なら先に保存し、保存できたときだけ開く。
@@ -501,9 +503,18 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
           </div>
         ),
         menu,
+        // 「AI に依頼」パネル（D-10 T10）。パネルを持たない画面（新規作成など）では出さない。
+        assistant: assistant
+          ? {
+              active: assistant.open,
+              onToggle: () => assistant.setOpen(!assistant.open),
+              testId: "workflow-assistant-toggle",
+            }
+          : undefined,
       };
     },
     [
+      assistant,
       // save は state.ir を deps に持つため、IR が変わるたび identity が変わる。これを
       // クローム deps に入れることで、ノード params 等の編集でも保存/実行アクションが最新の
       // IR を掴む（stale なクロームで旧 IR を保存/実行する事故を防ぐ）。

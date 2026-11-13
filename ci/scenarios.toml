@@ -319,6 +319,7 @@ e2e = [
     "workflow-decide.spec.ts",
     "workflow-delete-stops.spec.ts",
     "workflow-editor-add-place.spec.ts",
+    "workflow-editor-ai.spec.ts",
     "workflow-editor-narrow-bar.spec.ts",
     "workflow-effort-warning.spec.ts",
     "workflow-file-name-taken.spec.ts",

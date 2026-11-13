@@ -11,6 +11,7 @@ import {
   PenSquare,
   Search,
   X,
+  Workflow,
 } from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
@@ -246,7 +247,8 @@ export function SidebarSearch({
 function SearchResultRow({ thread, onSelect }: { thread: Thread; onSelect: () => void }) {
   // 文書の横で始めた会話は接頭「ノート: 」等を外し、種類アイコンと補足で由来を示す（サイドバーと揃える）。
   const { kind, title, detail } = threadDisplay(thread);
-  const Icon = kind === "note" ? NotebookPen : kind === "office" ? FileText : MessageSquare;
+  const Icon =
+    kind === "note" ? NotebookPen : kind === "office" ? FileText : kind === "workflow" ? Workflow : MessageSquare;
   return (
     <li>
       <button

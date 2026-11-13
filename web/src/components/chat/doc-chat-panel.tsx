@@ -5,6 +5,8 @@
 /// ノート（Yjs meta にアクティブ会話 id）と Office 文書（localStorage にアクティブ会話 id）で
 /// **アクティブ会話の保存先だけが違う**ため、そこを [`ActiveThreadStore`] に抽象化して共有する。
 /// ドキュメント:会話 = 1:N（`origin_note_id` = ドキュメントの node id で会話一覧を引く）。
+/// ワークフローエディタの「AI に依頼」も同じパネルを使う（`originKind="workflow"`・会話の対象は
+/// `origin_artifact`・D-10 T09）。
 /// 会話 UI は既存 [`Conversation`]（variant=panel）を再利用する。
 ///
 /// 会話は**最初の発話を送ったとき**に作る（[`DocChatDraft`]）。パネルを開いただけ・「新しい会話」を
@@ -22,7 +24,14 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { createThread, getThread, listThreads, postMessage, type Thread } from "@/lib/chat-api";
+import {
+  createThread,
+  getThread,
+  listThreads,
+  postMessage,
+  type OriginArtifactKind,
+  type Thread,
+} from "@/lib/chat-api";
 import { moveModelChoice, readModelChoice } from "@/lib/model-choice";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import {
@@ -41,19 +50,34 @@ export interface ActiveThreadStore {
   subscribe: (onChange: () => void) => () => void;
 }
 
+/// 会話の紐づけ先の種類（文書＝ストレージの node・ワークフローなど＝artifact）。
+export type DocOriginKind = "note" | OriginArtifactKind;
+
+/// 会話がこの紐づけ先のものか。
+function belongsTo(t: Thread, kind: DocOriginKind, id: string): boolean {
+  return kind === "note"
+    ? t.originNoteId === id
+    : t.originArtifactId === id && t.originArtifactKind === kind;
+}
+
 export function DocChatPanel({
   store,
   nodeId,
+  originKind = "note",
   title,
   label,
   editable,
   initialThreadId,
   testIdPrefix = "doc",
   hint,
+  notice,
+  onWorkflowSaved,
 }: {
   store: ActiveThreadStore;
-  /// ドキュメントのストレージ node id（origin_note_id に使う）。
+  /// 紐づけ先の id（文書はストレージの node id＝origin_note_id・ワークフローは artifact id）。
   nodeId: string;
+  /// 紐づけ先の種類（既定は文書）。
+  originKind?: DocOriginKind;
   /// 会話タイトルの接頭（例「ノート: 提案書」）。
   title: string;
   /// 一覧見出しの語（例「このノートの会話」「この文書の会話」）。
@@ -66,6 +90,10 @@ export function DocChatPanel({
   testIdPrefix?: string;
   /// 文書種別に合った空の会話の案内。
   hint?: React.ReactNode;
+  /// 会話の上に出す注意（ワークフローエディタの「保存していない変更があります」など）。
+  notice?: React.ReactNode;
+  /// AI がワークフローを保存したとき（emit_workflow の参照・エディタの読み直し・D-10 T10）。
+  onWorkflowSaved?: (ref: { id: string; version: number }) => void;
 }) {
   const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(() =>
     store.read(),
@@ -140,7 +168,7 @@ export function DocChatPanel({
     const startedAt = storageScopeGeneration();
     getThread(initialThreadId)
       .then((t) => {
-        if (!cancelled && t.originNoteId === nodeId) {
+        if (!cancelled && belongsTo(t, originKind, nodeId)) {
           if (t.id !== store.read()) setActive(t.id, startedAt);
           setDrafting(false);
         }
@@ -156,25 +184,28 @@ export function DocChatPanel({
       cancelled = true;
       appliedInitialRef.current = null;
     };
-  }, [initialThreadId, nodeId, store, setActive]);
+  }, [initialThreadId, nodeId, originKind, store, setActive]);
 
   // このドキュメントの会話一覧を origin_note_id で引く。アクティブが一覧に無ければ補う。
   const refreshConversations = React.useCallback(async () => {
     try {
-      const { threads } = await listThreads(undefined, { originNoteId: nodeId });
+      const { threads } = await listThreads(
+        undefined,
+        originKind === "note" ? { originNoteId: nodeId } : { originArtifactId: nodeId },
+      );
       let list = threads;
       const active = store.read();
       if (active && !list.some((t) => t.id === active)) {
         const t = await getThread(active).catch(() => null);
         // 一覧の 1 ページ目に無い古い会話を補う。別文書の会話は混ぜない。
-        if (t && t.originNoteId === nodeId) list = [t, ...list];
+        if (t && belongsTo(t, originKind, nodeId)) list = [t, ...list];
       }
       list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       setConversations(list);
     } catch {
       /* 一覧取得失敗は致命的ではない（アクティブ会話は表示できる）。 */
     }
-  }, [nodeId, store]);
+  }, [nodeId, originKind, store]);
 
   React.useEffect(() => {
     void refreshConversations();
@@ -195,9 +226,13 @@ export function DocChatPanel({
         unsent?.nodeId === nodeId && unsent.generation === startedAt ? unsent.id : null;
       if (!threadId) {
         const n = conversations.length + 1;
-        const thread = await createThread(n <= 1 ? title : `${title} (${n})`, msg.autonomous, {
-          originNoteId: nodeId,
-        });
+        const thread = await createThread(
+          n <= 1 ? title : `${title} (${n})`,
+          msg.autonomous,
+          originKind === "note"
+            ? { originNoteId: nodeId }
+            : { originArtifact: { kind: originKind, id: nodeId } },
+        );
         threadId = thread.id;
       }
       // 待つ間にログアウト（他タブを含む）があれば、前の人の発話・選択を送らない・移さない（#817）。
@@ -230,7 +265,7 @@ export function DocChatPanel({
       setActive(threadId, startedAt);
       setDrafting(false);
     },
-    [conversations.length, title, nodeId, draftScope, setActive, refreshConversations],
+    [conversations.length, title, nodeId, originKind, draftScope, setActive, refreshConversations],
   );
 
   const selectConversation = React.useCallback(
@@ -324,9 +359,15 @@ export function DocChatPanel({
         </div>
       ) : null}
 
+      {notice}
       <div className="min-h-0 flex-1">
         {shownThreadId ? (
-          <Conversation key={shownThreadId} threadId={shownThreadId} variant="panel" />
+          <Conversation
+            key={shownThreadId}
+            threadId={shownThreadId}
+            variant="panel"
+            onWorkflowSaved={onWorkflowSaved}
+          />
         ) : verifyingInitial ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
