@@ -702,6 +702,55 @@ mod tests {
     use super::{non_empty, primary_provider};
     use api::config::{LlmBackend, LlmConfig};
 
+    #[tokio::test]
+    async fn bug_report_disabled_and_github_wiring_validate_startup() {
+        let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
+            return;
+        };
+        let authz: std::sync::Arc<dyn authz::AuthzClient> = std::sync::Arc::new(
+            authz::OpenFgaClient::connect(
+                reqwest::Client::new(),
+                &authz::OpenFgaConfig {
+                    base_url,
+                    store_name: format!("bug-report-wiring-{}", uuid::Uuid::new_v4()),
+                },
+                &serde_json::from_str(include_str!("../../authz/model/authorization-model.json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        // DB への接続に失敗する構成。起動した worker が外部 HTTP へ到達することはない。
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
+            .unwrap();
+        let mut config = shiki_bug_report::BugReportConfig::default();
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_none());
+        config.enabled = true;
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_some());
+        config.backend = shiki_bug_report::BugReportBackend::Github;
+        assert!(super::wire_bug_report(&config, &db, &authz).is_err());
+        config.github = Some(shiki_bug_report::GitHubConfig {
+            app_id: 1,
+            installation_id: 2,
+            owner: "imanect-labs".into(),
+            repo: "shiki-test".into(),
+            profile: "preview".into(),
+            config_version: 1,
+            private_key_file: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../bug-report/tests/fixtures/test-only.pem"),
+        });
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_some());
+        config.github.as_mut().unwrap().repo = "shiki-platform".into();
+        assert!(super::wire_bug_report(&config, &db, &authz).is_err());
+    }
+
     #[test]
     fn primary_provider_carries_display_name() {
         // 既定プロバイダにも表示名を付けられる（#583）。空は未指定（ID の default を出す）。
