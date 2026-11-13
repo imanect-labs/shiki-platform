@@ -161,6 +161,51 @@ async fn help_first_requires_durable_search_guidance_and_personal_buttons() {
             service.available_help_case(&ctx, &draft_run).await.unwrap(),
             case
         );
+        // resolved の撤回・期限切れ・自律/skill run への持ち越しも DB で拒否する。
+        service
+            .resolve_help_case(&ctx, thread, case, HelpResolution::Resolved)
+            .await
+            .unwrap();
+        assert!(service
+            .create_ai_draft(&ctx, &draft_run, case, content(), "test")
+            .await
+            .is_err());
+        service
+            .resolve_help_case(&ctx, thread, case, HelpResolution::Unresolved)
+            .await
+            .unwrap();
+        // 本人の再確認後も、案内直後以外から report-intent を再設定できない。
+        assert!(service
+            .help_report_intent(&ctx, thread, case)
+            .await
+            .is_err());
+        // 以降の冪等検証用に、作成済み run より前の本人 intent を fixture として復元する。
+        sqlx::query("UPDATE help_resolution_case SET report_intent_at=now()-interval '1 minute' WHERE tenant_id=$1 AND org=$2 AND id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(case).execute(&db).await.unwrap();
+        for (autonomous, pins) in [
+            (true, serde_json::json!([])),
+            (
+                false,
+                serde_json::json!([{"skill_id":"x","skill_version":1}]),
+            ),
+        ] {
+            sqlx::query("UPDATE generation_run SET autonomous=$4,skill_pins=$5 WHERE tenant_id=$1 AND org=$2 AND run_id=$3")
+                .bind(ctx.tenant_id()).bind(ctx.org()).bind(draft_run.run_id).bind(autonomous).bind(pins).execute(&db).await.unwrap();
+            assert!(service
+                .create_ai_draft(&ctx, &draft_run, case, content(), "test")
+                .await
+                .is_err());
+        }
+        sqlx::query("UPDATE generation_run SET autonomous=false,skill_pins='[]'::jsonb WHERE tenant_id=$1 AND org=$2 AND run_id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(draft_run.run_id).execute(&db).await.unwrap();
+        sqlx::query("UPDATE help_resolution_case SET expires_at=now()-interval '1 minute' WHERE tenant_id=$1 AND org=$2 AND id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(case).execute(&db).await.unwrap();
+        assert!(service
+            .create_ai_draft(&ctx, &draft_run, case, content(), "test")
+            .await
+            .is_err());
+        sqlx::query("UPDATE help_resolution_case SET expires_at=now()+interval '1 hour' WHERE tenant_id=$1 AND org=$2 AND id=$3")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(case).execute(&db).await.unwrap();
         let report = service
             .create_ai_draft(&ctx, &draft_run, case, content(), "test")
             .await
