@@ -18,7 +18,7 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use chat::preferences::{DefaultModel, InputFormat, SubmitKey, TimeFormat};
+use chat::preferences::{ActivityDetail, DefaultModel, InputFormat, SubmitKey, TimeFormat};
 use chat::{AutonomousMode, ChatError, ChatStore, UserPreferences};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
@@ -163,6 +163,7 @@ async fn saved_preferences_are_scoped_to_the_owner() {
         default_autonomous_mode: AutonomousMode::Auto,
         expand_reasoning: true,
         time_format: TimeFormat::Relative,
+        activity_detail: ActivityDetail::Detailed,
     };
     let saved = store
         .put_preferences(&alice, input.clone(), Some("trace-1"))

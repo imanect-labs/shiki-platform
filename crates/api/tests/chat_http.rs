@@ -1418,6 +1418,7 @@ async fn preferences_round_trip_over_http() {
             "default_autonomous_mode": "require_approval",
             "expand_reasoning": true,
             "time_format": "relative",
+            "activity_detail": "simple",
         })
     );
     assert_eq!(saved["bypass_allowed"], true);
@@ -1475,6 +1476,7 @@ async fn preferences_round_trip_over_http() {
             "default_autonomous_mode": "require_approval",
             "expand_reasoning": false,
             "time_format": "absolute",
+            "activity_detail": "simple",
         })
     );
 

@@ -77,7 +77,7 @@ import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedba
 import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
 import { BranchSwitcher, MessageMoreMenu, UserMessageActions, UserMessageEditor } from "./message-branch";
-import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { MessageCitationsProvider, SourcePanelProvider, useSourcePanel } from "./citations/citation-context";
 import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
@@ -122,7 +122,15 @@ import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
-import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import type { MetaToolName } from "@/generated/gui-spec";
+import { ApprovalCard, BudgetBanner } from "./agent-progress";
+import {
+  TaskInlineLine,
+  TaskPanelAside,
+  TaskPanelSheet,
+  type TaskActivities,
+  type TaskActivity,
+} from "./task-panel";
 import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
@@ -157,6 +165,8 @@ type StreamState = {
   documentRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
+  /// ツール呼び出し（この出現のキー）→ 呼び出した時点で進行中だったサブタスク id（タスクパネルの詳細）。
+  taskTools: Record<string, string>;
   approval: ApprovalRequest | null;
   budget: { kind: string; used: number; limit: number } | null;
   runId: string | null;
@@ -209,6 +219,7 @@ const EMPTY_STREAM: StreamState = {
   skillDrafts: [],
   documentRefs: [],
   plan: [],
+  taskTools: {},
   approval: null,
   budget: null,
   assistantMessageId: null,
@@ -258,6 +269,7 @@ export function Conversation({
   // 出典パネルを右カラムで出せる幅か（サイドバー＋本文＋パネルが並ぶ幅）。
   const wide = useMediaQuery("(min-width: 1200px)");
   const sourceAside = !isPanel && wide;
+  const narrow = !useMediaQuery("(min-width: 768px)");
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
   // 表示中の枝の本当の末尾（サーバ上の id）。描画からは落とす空の回答（生成の失敗・停止）も含める。
   // 送信時の「続ける先」（after）に使う: 描画の末尾（直前の発話）を渡すと、空の回答の兄弟として
@@ -315,6 +327,51 @@ export function Conversation({
   const [contextOpen, setContextOpen] = React.useState(false);
   const openContext = React.useCallback(() => setContextOpen(true), []);
   // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
+  // エージェントのタスク（計画）。計画が届いたら右のパネルを開く（上のバーのボタンで開閉）。
+  // 生成が終わっても次の計画が届くまでは直近の計画を残す（上のバーから見返せるように）。
+  const livePlan = stream?.plan;
+  const liveTools = stream?.tools;
+  const liveTaskTools = stream?.taskTools;
+  const [latestPlan, setLatestPlan] = React.useState<PlanSubtask[]>([]);
+  const [latestActivities, setLatestActivities] = React.useState<TaskActivities>({});
+  React.useEffect(() => {
+    if (!livePlan || livePlan.length === 0) return;
+    setLatestPlan(livePlan);
+    setLatestActivities(taskActivitiesOf(liveTools ?? [], liveTaskTools ?? {}));
+  }, [livePlan, liveTools, liveTaskTools]);
+  // null は「まだ利用者が開閉していない」。右カラムを出せる幅では開いておき、それ以外（シート）は
+  // 上のバーのボタン・回答内の 1 行で開く（勝手にモーダルを出して入力欄を覆わない）。
+  const [taskPanelChoice, setTaskPanelChoice] = React.useState<boolean | null>(null);
+  React.useEffect(() => {
+    setLatestPlan([]);
+    setLatestActivities({});
+    setTaskPanelChoice(null);
+  }, [threadId]);
+  const hasPlan = latestPlan.length > 0;
+  const taskAside = !isPanel && wide;
+  const taskPanelOpen = hasPlan && (taskPanelChoice ?? taskAside);
+  // 右カラムで出典パネルに隠されているか（隠れている間はボタンを「閉じている」として扱う）。
+  const [taskHiddenBySources, setTaskHiddenBySources] = React.useState(false);
+  const taskPanelShown = taskPanelOpen && !(taskAside && taskHiddenBySources);
+  const toggleTaskPanel = React.useCallback(() => {
+    setTaskPanelChoice(!taskPanelShown);
+    if (!taskPanelShown) setTaskOpenRequest((n) => n + 1);
+  }, [taskPanelShown]);
+  // 開く操作の回数（右カラムで出典パネルと排他にする: 開いたら出典を閉じる）。
+  const [taskOpenRequest, setTaskOpenRequest] = React.useState(0);
+  const openTaskPanel = React.useCallback(() => {
+    setTaskPanelChoice(true);
+    setTaskOpenRequest((n) => n + 1);
+  }, []);
+  const closeTaskPanel = React.useCallback(() => setTaskPanelChoice(false), []);
+  const planDone = latestPlan.filter((t) => t.status === "done").length;
+  const headerPlan = React.useMemo(
+    () =>
+      hasPlan
+        ? { done: planDone, total: latestPlan.length, shown: taskPanelShown, onToggle: toggleTaskPanel }
+        : null,
+    [hasPlan, planDone, latestPlan.length, taskPanelShown, toggleTaskPanel],
+  );
   const [exportOpen, setExportOpen] = React.useState(false);
   const openExport = React.useCallback(() => setExportOpen(true), []);
   const canExport = messages.some(
@@ -390,6 +447,26 @@ export function Conversation({
   // 1 レンダー分古いまま onDone に入り、最後のバッチ（下書き・参照など）が確定から
   // 欠落する（stub LLM の高速バーストで顕在化）。ref を同期更新して確実に拾う。
   const streamRef = React.useRef<StreamState | null>(null);
+  // 終わり方が cancelled / failed だった run（onDone の確定でタスクを中断扱いにする）。
+  const runInterruptedRef = React.useRef(false);
+  // 生成の終わり（完了・停止・エラー）で、タスクパネルを最後の状態に揃える。最後の計画イベントと
+  // 完了が同じ描画にまとまると、上の effect は計画を拾えない。実行中のままの表示も止める
+  // （停止・エラー・キャンセル・失敗なら進行中のタスクは保留にする。正常に終わった run で進行中のまま
+  // 残ったタスクは、エージェントが完了の印を付け忘れただけなので完了として扱う。未着手には戻さない）。
+  const settleTasks = (s: StreamState, interrupted: boolean) => {
+    if (s.plan.length === 0) return;
+    setLatestPlan(
+      s.plan.map((t) => (t.status === "doing" ? { ...t, status: interrupted ? "blocked" : "done" } : t)),
+    );
+    setLatestActivities(
+      taskActivitiesOf(
+        // 結果が届かないまま終わった操作は、成功にも失敗にも見せない（途中で止まった）。
+        s.tools.map((t) => (t.running ? { ...t, running: false, interrupted: true } : t)),
+        s.taskTools,
+      ),
+    );
+  };
+
   const updateStream = React.useCallback(
     (fn: (s: StreamState | null) => StreamState | null) => {
       streamRef.current = fn(streamRef.current);
@@ -406,6 +483,8 @@ export function Conversation({
     finishRestoreRef.current();
     const s = streamRef.current;
     if (s) finalizeStream(s, setMessages, provisional);
+    if (s) settleTasks(s, provisional === "stopped" || runInterruptedRef.current);
+    runInterruptedRef.current = false;
     streamRef.current = null;
     setStream(null);
   }, []);
@@ -460,9 +539,11 @@ export function Conversation({
           const text = paragraphBreak(s.text);
           // この出現の一意キー（呼び出し ID はループで再利用され得る）。
           const key = newId();
+          const doing = s.plan.find((t) => t.status === "doing")?.id;
           return {
             ...s,
             text,
+            ...(doing ? { taskTools: { ...s.taskTools, [key]: doing } } : {}),
             segments: appendStreamTool(s.segments, key),
             tools: [
               ...s.tools,
@@ -598,7 +679,11 @@ export function Conversation({
       onAssistantMessageId: (assistantMessageId) =>
         updateStream((s) => (s ? { ...s, assistantMessageId } : s)),
       onPlan: (subtasks) =>
-        updateStream((s) => (s ? { ...s, plan: mergePlan(s.plan, subtasks) } : s)),
+        updateStream((s) => {
+          if (!s) return s;
+          const plan = mergePlan(s.plan, subtasks);
+          return { ...s, plan, taskTools: reassignTaskTools(s, plan) };
+        }),
       onBudgetWarning: (b) => updateStream((s) => (s ? { ...s, budget: b } : s)),
       onContextUsage: setContextUsage,
       onApplied: (seq) => {
@@ -637,6 +722,7 @@ export function Conversation({
         if (status === "failed") setError("生成に失敗しました。");
         // 中断した run の保留遷移は捨てる（次の run の完了時に横取りされないように）。
         if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
+        runInterruptedRef.current = status === "cancelled" || status === "failed";
       },
       onDone: () => {
         // 本文の ```ui の図を含む応答はサーバ確定の message id が要る（ボタンの照合先・
@@ -660,6 +746,7 @@ export function Conversation({
         // 失敗した run の途中成果物へ勝手に飛ばさない（会話に留めてユーザーに判断させる）。
         pendingOpenRef.current = null;
         finishRestore();
+        if (streamRef.current) settleTasks(streamRef.current, true);
         streamRef.current = null;
         setStream(null);
         cancelRef.current = null;
@@ -1090,6 +1177,7 @@ export function Conversation({
               contextUsage={contextUsage}
               onOpenContext={openContext}
               onExport={canExport ? openExport : undefined}
+              plan={headerPlan}
             />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
@@ -1173,8 +1261,13 @@ export function Conversation({
                       onApproval={decideApproval}
                       approvalRef={setApprovalCard}
                       threadId={threadId}
+                      planInline={isPanel}
+                      onOpenTasks={openTaskPanel}
                     />
                   </div>
+                ) : isPanel && hasPlan ? (
+                  // 分割ビューは上のバーが無いので、生成が終わってもここからタスクを開けるようにする。
+                  <TaskInlineLine tasks={latestPlan} onOpen={openTaskPanel} />
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
                 {queued.map((q) => (
@@ -1295,7 +1388,26 @@ export function Conversation({
         </div>
         {/* 出典パネル: 広い画面のチャットページは右カラム、それ以外（狭い画面・分割ビュー）はシート。 */}
         {sourceAside ? <SourcePanelAside /> : null}
+        {taskAside && hasPlan ? (
+          <TaskAsideSlot
+            open={taskPanelOpen}
+            tasks={latestPlan}
+            activities={latestActivities}
+            onClose={closeTaskPanel}
+            openRequest={taskOpenRequest}
+            onHiddenChange={setTaskHiddenBySources}
+          />
+        ) : null}
       </div>
+      {!taskAside && hasPlan ? (
+        <TaskPanelSheet
+          tasks={latestPlan}
+          activities={latestActivities}
+          open={taskPanelOpen}
+          onOpenChange={setTaskPanelChoice}
+          side={narrow ? "bottom" : "right"}
+        />
+      ) : null}
       {!sourceAside ? <SourcePanelSheet /> : null}
       </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
@@ -1825,11 +1937,16 @@ function StreamingRow({
   onApproval,
   approvalRef,
   threadId,
+  planInline,
+  onOpenTasks,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
   approvalRef: (el: HTMLDivElement | null) => void;
   threadId: string;
+  /// 回答内にタスクの 1 行を出すか（上のバーが無い分割ビュー。押すとタスクのシートを開く）。
+  planInline: boolean;
+  onOpenTasks: () => void;
 }) {
   const restoring = stream.restoreUntil !== null;
   const showLoader =
@@ -1857,7 +1974,9 @@ function StreamingRow({
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
           <HelpSources citations={stream.helpCitations} />
-          {stream.plan.length > 0 ? <PlanPanel subtasks={stream.plan} /> : null}
+          {planInline && stream.plan.length > 0 ? (
+            <TaskInlineLine tasks={stream.plan} onOpen={onOpenTasks} />
+          ) : null}
           {/* 本文と操作のまとまりを起きた順に並べ、生成中の表示は末尾に置く（往復する回答で
               「いま何をしているか」が先頭に取り残されない）。 */}
           {restoring ? (
@@ -1928,6 +2047,96 @@ function runningSubtask(plan: PlanSubtask[]): string | null {
   const doing = plan.find((s) => s.status === "doing");
   const title = doing?.title.trim();
   return title ? `${title}` : null;
+}
+
+/// 右カラムのタスクパネル。出典パネルと並べると会話の幅が潰れるので排他にする: 出典を開いている間は
+/// 出さず、タスクを開く操作（上のバーのボタン）があったら出典を閉じる。
+function TaskAsideSlot({
+  open,
+  tasks,
+  activities,
+  onClose,
+  openRequest,
+  onHiddenChange,
+}: {
+  open: boolean;
+  tasks: PlanSubtask[];
+  activities: TaskActivities;
+  onClose: () => void;
+  openRequest: number;
+  onHiddenChange: (hidden: boolean) => void;
+}) {
+  const sources = useSourcePanel();
+  // 開く操作 1 回につき 1 度だけ閉じる（close は出典の状態が変わるたびに作り直されるので、依存に
+  // 入れると出典を開いた瞬間に閉じてしまう）。
+  const handled = React.useRef(openRequest);
+  React.useEffect(() => {
+    if (openRequest === handled.current) return;
+    handled.current = openRequest;
+    sources?.close();
+  }, [openRequest, sources]);
+  const hidden = Boolean(sources?.state);
+  React.useEffect(() => onHiddenChange(hidden), [hidden, onHiddenChange]);
+  if (!open || hidden) return null;
+  return <TaskPanelAside tasks={tasks} activities={activities} onClose={onClose} />;
+}
+
+/// 計画のメタツール名（語彙の正本は codegen の `MetaToolName`）。
+const PLAN_TOOL: MetaToolName = "plan";
+
+/// ツールの操作をタスクごとに分ける（タスクパネルの詳細）。
+function taskActivitiesOf(tools: TaskActivity[], taskTools: Record<string, string>): TaskActivities {
+  const acts: TaskActivities = {};
+  for (const t of tools) {
+    // 計画の更新そのものはタスクの中身ではない（パネルの進み具合で見える）。
+    if (t.name === PLAN_TOOL) continue;
+    const id = taskTools[t.key];
+    if (id) (acts[id] ??= []).push(t);
+  }
+  return acts;
+}
+
+/// 計画が変わったときに、ツールとタスクの対応を付け直す。
+/// - 計画の作り直し（全件）: サブタスク id は位置で振られるので、題名で対応させ直す（消えたタスクの分は落とす）。
+/// - 進行中のタスクが変わった: 計画の更新（`plan` メタツール）と同じステップで呼んだツールは、更新より
+///   先に届いて前のタスクに付いているので、新しく進行中になったタスクへ移す。
+function reassignTaskTools(s: StreamState, plan: PlanSubtask[]): Record<string, string> {
+  let map = s.taskTools;
+  const sameShape =
+    plan.length === s.plan.length && plan.every((t, i) => t.id === s.plan[i]?.id && t.title === s.plan[i]?.title);
+  if (!sameShape) {
+    // 同じ題名のタスクが複数あっても混ぜないよう、題名ごとの出現順で対応させる（n 番目の「調査」→
+    // 新しい計画の n 番目の「調査」）。
+    const keyOf = (list: PlanSubtask[]) => {
+      const seen = new Map<string, number>();
+      return new Map(
+        list.map((t) => {
+          const n = seen.get(t.title) ?? 0;
+          seen.set(t.title, n + 1);
+          return [t.id, `${n}\u0000${t.title}` as string] as const;
+        }),
+      );
+    };
+    const oldKey = keyOf(s.plan);
+    const idOf = new Map([...keyOf(plan)].map(([id, k]) => [k, id]));
+    map = {};
+    for (const [key, oldId] of Object.entries(s.taskTools)) {
+      const id = idOf.get(oldKey.get(oldId) ?? "");
+      if (id) map[key] = id;
+    }
+  }
+  // id は位置で振られるので、並べ替えで別のタスクが同じ位置で進行中になっても気付けるよう題名で比べる。
+  const prevDoing = s.plan.find((t) => t.status === "doing")?.title;
+  const doingTask = plan.find((t) => t.status === "doing");
+  const doing = doingTask?.id;
+  const planCall = [...s.tools].reverse().find((t) => t.name === PLAN_TOOL && !t.viaSubagent);
+  if (doing && doingTask.title !== prevDoing && planCall?.step !== undefined) {
+    map = { ...map };
+    for (const t of s.tools) {
+      if (!t.viaSubagent && t.name !== PLAN_TOOL && t.step === planCall.step) map[t.key] = doing;
+    }
+  }
+  return map;
 }
 
 /// 計画イベントを蓄積する。フル計画（全 title 非空）は置換、単一の空 title は id で status 更新。

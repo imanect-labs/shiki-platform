@@ -55,7 +55,7 @@ export function ChainOfThought({
   // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。押した後の開閉は、確定で
   // 行が作り直されても保つ。
   const [open, setOpen] = useRememberedOpen(memoryKey && `${memoryKey}:thinking`, null);
-  const expandByDefault = usePreferences().prefs.expand_reasoning;
+  const { expand_reasoning: expandByDefault, activity_detail } = usePreferences().prefs;
   const [showDetail, setShowDetail] = useRememberedOpen(memoryKey && `${memoryKey}:detail`);
 
   const hasThinking = thinking.trim().length > 0;
@@ -141,6 +141,7 @@ export function ChainOfThought({
         phase={phase}
         waitingLabel={waitingLabel}
         memoryKey={memoryKey}
+        simple={activity_detail === "simple"}
       />
     </div>
   );
@@ -156,6 +157,7 @@ function ToolChunks({
   phase,
   waitingLabel,
   memoryKey,
+  simple,
 }: {
   tools: ToolActivityItem[];
   citations: Citation[];
@@ -163,6 +165,8 @@ function ToolChunks({
   phase: string | null;
   waitingLabel: string | null;
   memoryKey: string | null;
+  /// 操作ログ「シンプル」（設定）。各束の ToolActivity へそのまま渡す。
+  simple: boolean;
 }) {
   const chunks = chunkTools(tools);
   // 生きている表示を受け持つ位置（ツールがまだ無ければ、引用のチップだけを出す空の束）。
@@ -203,6 +207,7 @@ function ToolChunks({
             citations={i === firstTools ? citations : []}
             waitingLabel={live ? waitingLabel : null}
             memoryKey={memoryKey && (n === 0 ? `${memoryKey}:tools` : `${memoryKey}:tools${n}`)}
+            simple={simple}
           />
         );
       })}
