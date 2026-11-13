@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { components } from "@/generated/api";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { toast } from "@/components/ui/use-toast";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -370,6 +371,12 @@ export function NewReport({ reportId }: { reportId?: string } = {}) {
         destination_version: policy.destination_version,
         consent: policy.policy.allow_content_sharing && consent,
         notice_version: "bug-report-v1",
+      });
+      toast({
+        title: "報告を受け付けました",
+        description: policy.destination_available
+          ? "報告一覧で状況を確認できます。"
+          : "送信先が未設定のため保留しました。外部には送信していません。",
       });
       router.push(`/bug-reports/${current.id}?submitted=1`);
     } catch (e) {
