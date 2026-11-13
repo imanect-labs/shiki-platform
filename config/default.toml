@@ -3,3 +3,13 @@
 [bug_report]
 enabled = false
 backend = "disabled"
+
+# GitHub preview は明示設定のみ。鍵素材を書かず secret mount の絶対パスを指定する。
+# [bug_report.github]
+# profile = "preview"
+# owner = "imanect-labs"
+# repo = "shiki-test"
+# config_version = 1
+# app_id = 123
+# installation_id = 456
+# private_key_file = "/run/secrets/bug-report-github.pem"

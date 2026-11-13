@@ -1,4 +1,4 @@
-//! 会話の AI の試運転の台帳（`workflow_trial_run`・migration 0154・T04・D-197）。
+//! 会話の AI の試運転の台帳（`workflow_trial_run`・migration 0155・T04・D-197）。
 //!
 //! 試運転の道具（[`crate::workflow_try_tool`]）だけが使う。どの SQL もテナントで絞る。
 //!

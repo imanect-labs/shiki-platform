@@ -359,7 +359,7 @@ async fn run() -> anyhow::Result<()> {
         },
         &config.membership_reconcile,
     );
-    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz);
+    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz)?;
     let state = AppState {
         bug_report,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),

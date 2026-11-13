@@ -341,7 +341,7 @@ async fn invisible_nodes_stop_at_the_check_budget_and_the_rest_follows() {
     .await;
 }
 
-/// 上限に届いた経路で候補を引く文（`storage::shared_scan_sql`）は、並びの索引（migration 0139 の
+/// 上限に届いた経路で候補を引く文（`storage::shared_scan_sql`）は、並びの索引（migration 0140 の
 /// `node_shared_scan_idx`）を逆にたどって件数で打ち切る。索引が無いと、引くたびに組織の生きているノードをすべて
 /// 読んで並べ直す計画になる（1 回の頼みで最大 5 回）。小さな表でも索引を選べるかだけを見るため、走査と並べ直しを
 /// 抑えて計画を立てさせる（索引で並びを満たせないと Sort が残る）。続きの位置の有無の両方を見る。行は作らない。

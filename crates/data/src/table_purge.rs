@@ -5,7 +5,7 @@
 //! 届いても切れないが、DB の候補を OpenFGA で絞る遅い経路になる・[`crate::table_list`]）。
 //!
 //! - 削除の commit の後に、その場でタプルを撤去する（[`DataStore::delete_table`]）。撤去を終えた時刻を
-//!   `authz_purged_at` に残す（migration 0133）。
+//!   `authz_purged_at` に残す（migration 0134）。
 //! - 撤去に失敗したもの・この仕組みより前に消したもの（`authz_purged_at` が空のまま）は、
 //!   [`DeletedTableTupleSweeper`] が起動時と一定の間隔で古い順に撤去する（全プール・冪等）。掃除でも撤去に失敗した
 //!   テーブルは、しばらく対象から外す（失敗し続けるテーブルが 1 回の枠を埋めて、後ろのテーブルの撤去が進まなく

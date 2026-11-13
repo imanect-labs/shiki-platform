@@ -162,6 +162,10 @@ audit_actions! {
     BugReportCancel = "bug_report.cancel", "不具合報告を取り下げ", Chat;
     BugReportReopen = "bug_report.reopen", "不具合報告を下書きに戻す", Chat;
     BugReportPolicyUpdate = "bug_report.policy_update", "不具合報告の設定を変更", Admin;
+    BugReportDispatch = "bug_report.dispatch", "不具合報告を配送", Chat;
+    BugReportSent = "bug_report.sent", "不具合報告の配送完了", Chat;
+    BugReportFailed = "bug_report.failed", "不具合報告の配送停止", Chat;
+    BugReportReconcile = "bug_report.reconcile", "不具合報告の配送を照合", Chat;
     BugReportRead = "bug_report.read", "不具合報告を参照", Chat;
 
     AgentApprovalDecide = "agent.approval.decide", "承認の判断（権限確認）", Agent;

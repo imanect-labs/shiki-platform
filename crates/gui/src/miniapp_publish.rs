@@ -71,7 +71,7 @@ pub struct PublishPreview {
 ///
 /// 止めるのは、一度も公開していない版の公開だけ。いま公開している版（公開し直しても何も変えない）と、前に公開していた
 /// 版（公開を戻す先）は止めない。前に公開していた版は使う人が使っていた版で、新しい版に誤りがあったときの逃げ道を
-/// 塞がない（migration 0148 は、書き損じのある版もそのまま公開した版にしている）。
+/// 塞がない（migration 0149 は、書き損じのある版もそのまま公開した版にしている）。
 #[must_use]
 pub fn problems_block_publish(version: i64, published: Option<i64>, previous: Option<i64>) -> bool {
     published != Some(version) && previous != Some(version)

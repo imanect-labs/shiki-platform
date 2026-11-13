@@ -1,7 +1,7 @@
 //! StorageService: 完全削除の片付け待ち（`storage_purge_pending`・GAP-108）の掃除。
 //!
 //! 完全削除は、ノード・版・blob の行を 1 つのトランザクションで消し、DB の外にあるもの（OpenFGA のタプルと、
-//! オブジェクトストアの本体）を消す仕事を同じトランザクションで `storage_purge_pending` に積む（migration 0155）。
+//! オブジェクトストアの本体）を消す仕事を同じトランザクションで `storage_purge_pending` に積む（migration 0156）。
 //! ここは commit の後にそれを片付ける。中断アップロードの回収タイマ（`upload_gc_timer`）の回に相乗りする。
 //!
 //! - `node_tuples`: そのノードに直接張られたタプルをすべて外す（[`AuthzClient::delete_object_tuples`]・冪等）。
