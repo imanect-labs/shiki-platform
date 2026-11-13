@@ -63,6 +63,7 @@ e2e = [
     "agent-tools.spec.ts",
     "ai-insights.spec.ts",
     "ai-workflow.spec.ts",
+    "bug-report-ai.spec.ts",
     "chat-ai-edit-revert.spec.ts",
     "chat-branch.spec.ts",
     "chat-approval-banner.spec.ts",

@@ -98,6 +98,7 @@ import {
 import { Composer } from "./composer";
 import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
+import { BugReportActionContext, HelpResolutionCard, BugReportDraftCard } from "./bug-report-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { TranslationBlock } from "./translation-block";
@@ -150,6 +151,7 @@ type StreamState = {
   /// 保存済みワークフロー参照（Task 10.13・emit_workflow）。
   workflowRefs: unknown[];
   /// 保存済みノート参照（Task 11P.5・save_note）。
+  reportRefs: ContentBlock[];
   noteRefs: unknown[];
   /// 未保存の下書きノート（issue #282・save_note の下書き確定型）。
   noteDrafts: unknown[];
@@ -211,6 +213,7 @@ const EMPTY_STREAM: StreamState = {
   helpCitations: [],
   files: [],
   workflowRefs: [],
+  reportRefs: [],
   noteRefs: [],
   noteDrafts: [],
   translations: [],
@@ -615,6 +618,7 @@ export function Conversation({
         updateStream((s) =>
           s ? { ...s, workflowRefs: [...s.workflowRefs, workflow] } : s,
         ),
+      onReportRef: (block) => updateStream((s) => s ? { ...s, reportRefs: [...s.reportRefs, block] } : s),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
       onTranslation: (raw) =>
@@ -1163,6 +1167,7 @@ export function Conversation({
   }
 
   return (
+    <BugReportActionContext.Provider value={stream ? null : () => send("確認した問題について、不具合報告の下書きを作成してください。", [], false)}>
     <SourcePanelProvider key={threadId}>
       <ThreadFeedbackProvider threadId={threadId}>
       <DisclosureMemoryProvider>
@@ -1412,6 +1417,7 @@ export function Conversation({
       </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
     </SourcePanelProvider>
+    </BugReportActionContext.Provider>
   );
 }
 
@@ -1465,6 +1471,7 @@ function finalizeStream(
   // 保存済みワークフロー参照カード（Task 10.13）。
   for (const workflow of s.workflowRefs) blocks.push({ type: "workflow_ref", workflow });
   // 保存済みノート参照カード（Task 11P.5）。
+  blocks.push(...s.reportRefs);
   for (const note of s.noteRefs) blocks.push({ type: "note_ref", note });
   // 未保存の下書きノートカード（issue #282）。履歴からも下書きへ辿れるよう残す。
   for (const draft of s.noteDrafts) blocks.push({ type: "note_draft", draft });
@@ -1861,6 +1868,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
           ))}
+          {blocks.map((b, i) => b.type === "help_case_ref" ? <HelpResolutionCard key={`help-${i}`} threadId={threadId} caseId={b.case_id} /> : b.type === "bug_report_draft" ? <BugReportDraftCard key={`bug-${i}`} reportId={b.report_id} /> : null)}
           {noteRefs.map((b, i) => (
             <NoteRefCard key={i} raw={b.note} />
           ))}

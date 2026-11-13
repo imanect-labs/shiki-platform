@@ -545,6 +545,7 @@ export type StreamHandlers = {
   /// ツール結果。`content` は観測テキスト（成功要約 or エラー）。UI は成否と要約を出す（#358/#386）。
   onToolResult?: (res: { id: string; ok: boolean; content: string }) => void;
   onCitation?: (c: Citation) => void;
+  onReportRef?: (block: Extract<ContentBlock, { type: "help_case_ref" | "bug_report_draft" }>) => void;
   onHelpCitation?: (c: HelpCitation) => void;
   onFileRef?: (f: Attachment) => void;
   /// 検証済み generative UI スペック（Phase 6・emit_ui）。
@@ -641,6 +642,10 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           ok: kind.ok,
           content: kind.content,
         });
+        break;
+      case "help_case_ref":
+      case "bug_report_draft":
+        handlers.onReportRef?.(kind);
         break;
       case "help_citation":
         handlers.onHelpCitation?.(kind);

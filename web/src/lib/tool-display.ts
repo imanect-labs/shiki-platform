@@ -165,6 +165,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     // ここに固定文字列を置くと「検証」なのに「調査できませんでした」と出る。
     target: quoted("objective", 34),
   },
+  bug_report_draft: {
+    icon: Sparkles,
+    category: "write",
+    lead: () => "本人用の報告下書きを",
+    verb: "作成",
+    suru: true,
+    target: () => null,
+  },
   help_search: {
     icon: Search, category: "search", lead: () => "Shiki ヘルプを",
     verb: "検索", suru: true, target: quoted("query"),
