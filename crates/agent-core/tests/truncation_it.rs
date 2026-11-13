@@ -245,6 +245,15 @@ async fn truncated_text_is_continued_in_the_same_run() {
         !text.contains(llm_gateway::CONTINUATION_MARK),
         "催促は画面に出さない: {text}"
     );
+    // 続きの生成の思考は流さない（流すと本文が別ブロックに割れ、表・```ブロックが壊れる）。
+    assert!(
+        !sink
+            .events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Thinking(_))),
+        "{:?}",
+        sink.events
+    );
     let nudges = outcome
         .checkpoint
         .messages
@@ -289,4 +298,35 @@ async fn text_continuation_is_bounded() {
         "{:?}",
         outcome.checkpoint.spent
     );
+}
+
+/// 次のステップへ進む予算が無ければ続けず、Truncated のまま畳む（未完の本文を
+/// `Budget` の正常終了に見せず、chat が中断の案内を出せるようにする）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_continuation_keeps_truncated_without_budget() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::new(AtomicUsize::new(0))))];
+    let mut sink = TestSink::default();
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(
+            LlmRole::User,
+            "truncatetext: 報告を書いて",
+        )],
+        &run_context(&c),
+        &AgentOptions::autonomous(1, None, 1_000_000_000, 1_000_000_000),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Truncated);
+    assert_eq!(outcome.checkpoint.spent.steps, 1);
 }

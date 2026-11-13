@@ -105,7 +105,14 @@ fn truncated_text_call(
     if rest.trim() == "forever" {
         return Some(truncated_text_stream("まだ途中です。", prompt_tokens));
     }
-    Some(text_stream("続きの行です。回答を終えます。", prompt_tokens))
+    // 実プロバイダと同じく、続きの生成も思考から始まることがある（本文の連結を崩さないこと）。
+    Some(paced_thinking_then_text_stream(
+        "続きを考える",
+        "続きの行です。回答を終えます。",
+        prompt_tokens,
+        64,
+        Duration::ZERO,
+    ))
 }
 
 /// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は

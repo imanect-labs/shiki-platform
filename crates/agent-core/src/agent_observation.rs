@@ -151,15 +151,7 @@ const MAX_TEXT_CONTINUATIONS: usize = 4;
 /// 直前が assistant なので user の連続にはならない（冒頭の注記の制約に当たらない）。
 /// 続きの本文は画面で直前の本文ブロックへそのまま連結される（chat の sink）。
 pub(crate) fn text_continuation(messages: &[LlmMessage]) -> Option<LlmMessage> {
-    let continued = messages
-        .iter()
-        .filter(|m| {
-            m.role == llm_gateway::Role::User
-                && m.content.iter().any(|b| {
-                    matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
-                })
-        })
-        .count();
+    let continued = messages.iter().filter(|m| is_continuation_nudge(m)).count();
     if continued >= MAX_TEXT_CONTINUATIONS {
         return None;
     }
@@ -174,6 +166,18 @@ pub(crate) fn text_continuation(messages: &[LlmMessage]) -> Option<LlmMessage> {
             llm_gateway::CONTINUATION_MARK
         ),
     ))
+}
+
+/// 次の生成が**本文の続き**を書く生成か（履歴の最後が続きの催促）。
+pub(crate) fn is_text_continuation(messages: &[LlmMessage]) -> bool {
+    messages.last().is_some_and(is_continuation_nudge)
+}
+
+fn is_continuation_nudge(m: &LlmMessage) -> bool {
+    m.role == llm_gateway::Role::User
+        && m.content.iter().any(|b| {
+            matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
+        })
 }
 
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
@@ -225,7 +229,9 @@ mod tests {
             assert!(text.contains("続き"), "{text}");
             messages.push(nudge);
         }
+        assert!(is_text_continuation(&messages), "最後が催促なら続きの生成");
         messages.push(LlmMessage::text(LlmRole::Assistant, "まだ途中"));
+        assert!(!is_text_continuation(&messages));
         assert!(text_continuation(&messages).is_none(), "上限回数で打ち切る");
     }
 
