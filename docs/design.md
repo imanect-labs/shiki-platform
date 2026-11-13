@@ -1074,6 +1074,7 @@ held/rejected は本人が draft に戻して再提出する。設定変更だ�
 外部保持・消去手順と保存期間の最終値、本番送り先はリリース前に決定する。
 PR1 は disabled のローカル受付のみ。配送 worker・lease/fence は PR2、HTTP/手動画面は PR3、
 help receipt/case・本人確認カードは PR4、purge/監視は PR5。help_resolution_case は消費経路と整合する PR4 に回す。
+PR2 の設定・App 権限・鍵ローテーション・unknown 対応は [配送運用手順](./guides/bug-report-delivery.md) を参照。
 
 - **フィードバック（テナント境界を跨ぐ唯一のデータフロー）**: 二段構え。
   ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を shiki の SaaS コントロールプレーンの

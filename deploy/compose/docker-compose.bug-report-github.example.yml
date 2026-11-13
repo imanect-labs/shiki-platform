@@ -1,0 +1,20 @@
+# PR3/PR4 の確認後に preview 専用配備でだけ使用する。通常 compose には含めない。
+# docker compose -f docker-compose.yml -f docker-compose.bug-report-github.example.yml config
+services:
+  shiki-server:
+    environment:
+      SHIKI__BUG_REPORT__ENABLED: "true"
+      SHIKI__BUG_REPORT__BACKEND: github
+      SHIKI__BUG_REPORT__GITHUB__PROFILE: preview
+      SHIKI__BUG_REPORT__GITHUB__OWNER: imanect-labs
+      SHIKI__BUG_REPORT__GITHUB__REPO: shiki-test
+      SHIKI__BUG_REPORT__GITHUB__CONFIG_VERSION: "1"
+      SHIKI__BUG_REPORT__GITHUB__APP_ID: ${SHIKI_BUG_REPORT_APP_ID:?App ID is required}
+      SHIKI__BUG_REPORT__GITHUB__INSTALLATION_ID: ${SHIKI_BUG_REPORT_INSTALLATION_ID:?Installation ID is required}
+      SHIKI__BUG_REPORT__GITHUB__PRIVATE_KEY_FILE: /run/secrets/bug-report-github.pem
+    secrets:
+      - source: bug-report-github-key
+        target: bug-report-github.pem
+secrets:
+  bug-report-github-key:
+    file: ${SHIKI_BUG_REPORT_PRIVATE_KEY_FILE:?Absolute mounted private key path is required}
