@@ -1,6 +1,7 @@
 use super::*;
 use shiki_bug_report::{BugReportService, BugReportStore, HelpReceipt, HelpResolution, HelpRun};
 
+#[allow(clippy::too_many_lines)] // 検索証拠から永続化までを一つのシナリオとして検証する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stub_llm_creates_only_a_personal_ref_after_help_confirmation() {
     let Some(pool) = isolated_setup("bug_ai_worker").await else {
@@ -131,10 +132,10 @@ async fn stub_llm_creates_only_a_personal_ref_after_help_confirmation() {
             StreamEventKind::ToolCall { name, input, .. }
                 if name == agent_core::ToolName::BugReportDraft.as_str() =>
             {
-                assert_eq!(input, serde_json::json!({}))
+                assert_eq!(input, serde_json::json!({}));
             }
             StreamEventKind::BugReportDraft { report_id, .. } => {
-                report = Some(uuid::Uuid::parse_str(&report_id).unwrap())
+                report = Some(uuid::Uuid::parse_str(&report_id).unwrap());
             }
             StreamEventKind::Error { message } => panic!("{message}"),
             StreamEventKind::Done { .. } => break,
@@ -152,7 +153,14 @@ async fn stub_llm_creates_only_a_personal_ref_after_help_confirmation() {
         .iter()
         .find(|m| m.id == post.assistant_message_id)
         .unwrap();
-    let json = serde_json::to_string(&answer.content).unwrap();
+    // 汎用 stub は user の calltool fixture を本文へ echo する。
+    // ここで守る境界は、ツール入力・結果・ref に報告本文を永続化しないこと。
+    let structured: Vec<_> = answer
+        .content
+        .iter()
+        .filter(|b| !matches!(b, ContentBlock::Text { .. }))
+        .collect();
+    let json = serde_json::to_string(&structured).unwrap();
     assert!(json.contains("bug_report_draft"));
     assert!(!json.contains("本文に残してはいけない要約"));
     for task in tasks {
