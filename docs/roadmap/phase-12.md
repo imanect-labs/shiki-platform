@@ -84,6 +84,15 @@
   - [ ] 組織ポリシーで内容共有を禁止すると本文チェックと自由記述欄の両方が UI から消える
   - [ ] trace_id でベンダー側テレメトリと突合できる
 
+追加提案 #1251（Task 12.6 の内訳。新番号・優先順位は変更しない）:
+1. PR1: docs 提案、bug-report crate、policy/report/submission/delivery/command、RLS・認可・状態機械・監査、disabled。
+2. PR2: GitHub App sink・配送台帳の lease/fence/unknown 照合・worker。PR1 の delivery は identity/FK のみ。
+3. PR3: 手動画面・本人一覧・管理者受信箱/設定/承認・HTTP/生成型。
+4. PR4: Task 12.7 に依存する help case・未解決/報告希望カード・AI draft（AI は提出しない）。
+5. PR5: 保持/purge・監視・受入れ。下書き30日/本文90日はたたき台、最終値・外部消去手順・本番送り先は未決。
+PR1 のローカル上限は DB の org lock で replica 間共有。配送先未設定では承認 ON/OFF とも held。
+help_resolution_case は検索実行 receipt と UI の検証経路を同時に整える PR4 に回す。
+
 ### Task 12.7: ヘルプ基盤
 - **area**: frontend / **path**: `web/`, `crates/rag`, `crates/agent-core`, `crates/chat`, `scripts/help-corpus/`
 - **仕様（正本の変更提案・人間承認済み）**: private `imanect-labs/shiki-hp/help/` だけを原稿の正本とし、①Cloudflare のヘルプセンター UI ②GHCR コーパスをビルド時に取り込む RAG 組み込みスコープ「shiki-help」
