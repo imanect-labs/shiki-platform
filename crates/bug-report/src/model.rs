@@ -2,7 +2,7 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BugReportStatus {
     Draft,
@@ -38,7 +38,7 @@ impl BugReportStatus {
 }
 
 /// 添付・会話参照・任意環境 JSON は受け取らない閉じた DTO。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReportContent {
     pub category: Category,
@@ -47,7 +47,7 @@ pub struct ReportContent {
     pub steps_tried: String,
     pub expected_behavior: String,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Category {
     Bug,
@@ -93,7 +93,7 @@ impl ReportContent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BugReportPolicy {
     pub enabled: bool,
@@ -111,7 +111,7 @@ impl Default for BugReportPolicy {
         }
     }
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BugReport {
     pub id: Uuid,
     pub reporter_id: String,
@@ -120,7 +120,7 @@ pub struct BugReport {
     pub submission_rev: i64,
     pub content: ReportContent,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Submit {
@@ -129,6 +129,7 @@ pub enum Command {
         notice_version: String,
     },
     Approve,
+    Retry,
     Reject {
         reason: String,
     },
@@ -147,4 +148,39 @@ impl BugReportPolicy {
             BugReportStatus::Queued
         }
     }
+}
+
+/// 一覧には本文を含めない。
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportSummary {
+    pub id: Uuid,
+    pub status: BugReportStatus,
+    pub rev: i64,
+    pub title: String,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportPage {
+    pub items: Vec<ReportSummary>,
+    pub next_cursor: Option<Uuid>,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReportDetail {
+    pub report: BugReport,
+    pub submission: Option<SubmissionDetail>,
+}
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct SubmissionDetail {
+    pub content: ReportContent,
+    pub content_consent: bool,
+    pub sink_profile_id: String,
+    pub sink_config_version: i64,
+    pub notice_version: String,
+    pub approved_by: Option<String>,
+    pub rejection_reason: Option<String>,
+}
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ReporterPolicy {
+    pub policy: BugReportPolicy,
+    pub destination_available: bool,
+    pub destination_version: Option<i64>,
 }

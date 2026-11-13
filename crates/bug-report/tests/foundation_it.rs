@@ -543,3 +543,87 @@ async fn approval_rejection_policy_and_cancel_guards() {
         Err(Error::Forbidden)
     ));
 }
+
+#[tokio::test]
+async fn list_detail_keep_drafts_private_and_recheck_admin() {
+    let Some((_db, fga, service, ctx)) = setup().await else {
+        return;
+    };
+    let bob = context(ctx.tenant_id(), ctx.org(), "bob");
+    fga.write_tuple(
+        &bob.subject(),
+        Relation::Member,
+        &bob.ns().organization(bob.org()),
+    )
+    .await
+    .unwrap();
+    let report = service.create(&ctx, content(), "trace").await.unwrap();
+    assert_eq!(
+        service
+            .list(&ctx, false, None, "trace")
+            .await
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    assert!(service
+        .list(&bob, false, None, "trace")
+        .await
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(service
+        .list(&ctx, true, None, "trace")
+        .await
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(matches!(
+        service.detail(&bob, report.id, false, "trace").await,
+        Err(Error::NotFound)
+    ));
+    let policy = service.reporter_policy(&ctx, "trace").await.unwrap();
+    assert!(!policy.destination_available);
+    let submitted = service
+        .command(
+            &ctx,
+            submit(report.id, 1, policy.policy.rev, false, "submitted"),
+            "trace",
+        )
+        .await
+        .unwrap();
+    assert_eq!(submitted.status, Status::Held);
+    let admin = service.list(&ctx, true, None, "trace").await.unwrap();
+    assert_eq!(admin.items[0].title, "不具合報告（カテゴリのみ）");
+    assert!(service
+        .list(&ctx, false, Some(report.id), "trace")
+        .await
+        .unwrap()
+        .items
+        .is_empty());
+    let detail = service
+        .detail(&ctx, report.id, true, "trace")
+        .await
+        .unwrap();
+    assert!(!detail.submission.unwrap().content_consent);
+    fga.delete_tuple(
+        &ctx.subject(),
+        Relation::Admin,
+        &ctx.ns().organization(ctx.org()),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        service.list(&ctx, true, None, "trace").await,
+        Err(Error::Forbidden)
+    ));
+    assert!(matches!(
+        service.detail(&ctx, report.id, true, "trace").await,
+        Err(Error::Forbidden)
+    ));
+    assert!(service
+        .detail(&ctx, report.id, false, "trace")
+        .await
+        .is_ok());
+}

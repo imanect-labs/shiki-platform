@@ -1365,3 +1365,6 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
     assert_eq!(body["state"], "not_connected");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[path = "http/bug_reports.rs"]
+mod bug_reports;

@@ -4,6 +4,7 @@ pub mod delivery;
 pub mod github;
 pub use config::*;
 mod model;
+mod queries;
 mod service;
 pub mod sink;
 mod store;

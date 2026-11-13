@@ -14,7 +14,7 @@ use storage::{
 use uuid::Uuid;
 
 pub struct BugReportService {
-    store: BugReportStore,
+    pub(crate) store: BugReportStore,
     authz: Arc<dyn AuthzClient>,
     pub(crate) destination_version: Option<i64>,
 }
@@ -32,7 +32,7 @@ impl BugReportService {
         self.destination_version = Some(version);
         self
     }
-    async fn member(&self, ctx: &AuthContext) -> Result<(), Error> {
+    pub(crate) async fn member(&self, ctx: &AuthContext) -> Result<(), Error> {
         if ctx.principal().kind != PrincipalKind::User
             || !self
                 .authz
@@ -48,7 +48,7 @@ impl BugReportService {
         }
         Ok(())
     }
-    async fn admin(&self, ctx: &AuthContext) -> Result<(), Error> {
+    pub(crate) async fn admin(&self, ctx: &AuthContext) -> Result<(), Error> {
         self.member(ctx).await?;
         if !authz::is_org_admin(self.authz.as_ref(), ctx, Consistency::HigherConsistency).await? {
             return Err(Error::Forbidden);
@@ -227,7 +227,10 @@ impl BugReportService {
         store::lock(&mut tx, ctx).await?;
         let mut report = store::report(&mut tx, ctx, request.id).await?;
         // replay 時にも現在の権限を再確認する。
-        if matches!(request.command, Command::Approve | Command::Reject { .. }) {
+        if matches!(
+            request.command,
+            Command::Approve | Command::Reject { .. } | Command::Retry
+        ) {
             self.admin(ctx).await?;
         } else {
             owner(ctx, &report)?;
@@ -285,18 +288,9 @@ impl BugReportService {
                 if old != Status::PendingApproval {
                     return Err(Error::Conflict);
                 }
-                sqlx::query("UPDATE bug_report_submission SET approved_by=$5,approved_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
-                    .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(&ctx.principal().id).execute(&mut *tx).await?;
-                let has_principal: bool = sqlx::query_scalar("SELECT principal IS NOT NULL AND principal <> 'null'::jsonb FROM bug_report_submission WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
-                    .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).fetch_one(&mut *tx).await?;
-                // 旧提出は本人の再同意が必要。承認だけでは配送行を作らない。
-                // 承認は snapshot を変更しない。宛先の再検証は worker が行う。
                 (
-                    if self.destination_version.is_some() && has_principal {
-                        Status::Queued
-                    } else {
-                        Status::Held
-                    },
+                    approve_submission(&mut tx, ctx, &report, self.destination_version.is_some())
+                        .await?,
                     AuditAction::BugReportApprove,
                 )
             }
@@ -310,6 +304,17 @@ impl BugReportService {
                 sqlx::query("UPDATE bug_report_submission SET rejected_by=$5,rejected_at=now(),rejection_reason=$6 WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
                     .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(&ctx.principal().id).bind(reason).execute(&mut *tx).await?;
                 (Status::Rejected, AuditAction::BugReportReject)
+            }
+            Command::Retry => {
+                retry_delivery(
+                    &mut tx,
+                    ctx,
+                    &report,
+                    &policy,
+                    self.destination_version.is_some(),
+                )
+                .await?;
+                (Status::Queued, AuditAction::BugReportDispatch)
             }
             Command::Cancel => (Status::Cancelled, AuditAction::BugReportCancel),
             Command::Reopen => (Status::Draft, AuditAction::BugReportReopen),
@@ -405,4 +410,40 @@ pub(crate) async fn audit(
     )
     .await?;
     Ok(())
+}
+
+async fn retry_delivery(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    report: &BugReport,
+    policy: &BugReportPolicy,
+    destination_available: bool,
+) -> Result<(), Error> {
+    if report.status != Status::Failed || !policy.enabled || !destination_available {
+        return Err(Error::Conflict);
+    }
+    let changed = sqlx::query("UPDATE bug_report_delivery SET outcome='queued' WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4 AND outcome='failed' AND error_code IN ('connect','rate_limit','credential_unavailable') AND attempt_count<5 AND created_at>now()-interval '24 hours'")
+                    .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).execute(conn).await?.rows_affected();
+    if changed != 1 {
+        return Err(Error::Conflict);
+    }
+    Ok(())
+}
+
+async fn approve_submission(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    report: &BugReport,
+    destination_available: bool,
+) -> Result<Status, Error> {
+    sqlx::query("UPDATE bug_report_submission SET approved_by=$5,approved_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(&ctx.principal().id).execute(&mut *conn).await?;
+    let has_principal: bool = sqlx::query_scalar("SELECT principal IS NOT NULL AND principal <> 'null'::jsonb FROM bug_report_submission WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).fetch_one(conn).await?;
+    // 承認は snapshot を変更しない。旧提出は本人の再同意を要求する。
+    Ok(if destination_available && has_principal {
+        Status::Queued
+    } else {
+        Status::Held
+    })
 }
