@@ -29,7 +29,7 @@ use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
-    tool_call_stream, tool_calls_stream, truncated_tool_call_stream,
+    tool_call_stream, tool_calls_stream, truncated_text_stream, truncated_tool_call_stream,
 };
 use super::stub_triggers::{
     conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
@@ -80,6 +80,32 @@ fn last_user_text(req: &GenerateRequest) -> String {
                 .join(" ")
         })
         .unwrap_or_default()
+}
+
+/// `truncatetext:` の駆動（本文の途中で出力上限に達した応答の続きを書かせる回復）。
+fn truncated_text_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let first = req
+        .messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| {
+            m.content.iter().find_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+        })?;
+    let rest = first.strip_prefix("truncatetext:")?;
+    if !user_text.starts_with(crate::CONTINUATION_MARK) {
+        return Some(truncated_text_stream("報告の前半です。表の", prompt_tokens));
+    }
+    if rest.trim() == "forever" {
+        return Some(truncated_text_stream("まだ途中です。", prompt_tokens));
+    }
+    Some(text_stream("続きの行です。回答を終えます。", prompt_tokens))
 }
 
 /// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
@@ -366,6 +392,11 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動）。 ---
     if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("truncate:") {
         return truncated_tool_call_stream(req.tools[0].name.clone(), prompt_tokens);
+    }
+    // --- 本文の途中で出力上限 `truncatetext:`: 最初の応答は本文の途中で `MaxTokens` 停止し、
+    //     続きの催促には続きを返す（`truncatetext:forever` は催促にも切れ続ける）。 ---
+    if let Some(s) = truncated_text_call(req, &user_text, prompt_tokens) {
+        return s;
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {

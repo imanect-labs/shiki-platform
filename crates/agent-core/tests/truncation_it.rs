@@ -200,3 +200,93 @@ async fn truncated_tool_call_is_reported_and_the_run_continues() {
         .collect();
     assert!(text.contains("回答"), "続きの本文が出る: {text}");
 }
+
+/// 本文の途中で出力上限に達しても run を畳まず、同じ run のまま続きを書かせて完了する
+/// （利用者に「続けて」と送り直させない）。続きは直前の本文に連結されて画面に出る。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn truncated_text_is_continued_in_the_same_run() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::new(AtomicUsize::new(0))))];
+    let mut sink = TestSink::default();
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(
+            LlmRole::User,
+            "truncatetext: 報告を書いて",
+        )],
+        &run_context(&c),
+        &AgentOptions::autonomous(10, None, 1_000_000_000, 1_000_000_000),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Completed, "続きを書いて完了する");
+    let text: String = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("報告の前半です。表の") && text.contains("続きの行です。回答を終えます。"),
+        "切れた本文と続きが 1 つの回答として流れる: {text}"
+    );
+    assert!(
+        !text.contains(llm_gateway::CONTINUATION_MARK),
+        "催促は画面に出さない: {text}"
+    );
+    let nudges = outcome
+        .checkpoint
+        .messages
+        .iter()
+        .filter(|m| {
+            m.role == LlmRole::User
+                && m.content.iter().any(|b| {
+                    matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
+                })
+        })
+        .count();
+    assert_eq!(nudges, 1, "{:?}", outcome.checkpoint.messages);
+}
+
+/// 催促しても切れ続けるモデルでは、上限回数で Truncated として畳む（ステップ予算を空費しない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_continuation_is_bounded() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::new(AtomicUsize::new(0))))];
+    let mut sink = TestSink::default();
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(LlmRole::User, "truncatetext:forever")],
+        &run_context(&c),
+        &AgentOptions::autonomous(20, None, 1_000_000_000, 1_000_000_000),
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Truncated);
+    // 最初の応答 + 催促 4 回ぶんの続き。
+    assert_eq!(
+        outcome.checkpoint.spent.steps, 5,
+        "{:?}",
+        outcome.checkpoint.spent
+    );
+}

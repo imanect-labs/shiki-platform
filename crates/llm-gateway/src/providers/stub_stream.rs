@@ -80,6 +80,15 @@ pub(super) fn truncated_tool_call_stream(name: String, prompt_tokens: u64) -> De
 ///
 /// 語単位で TextDelta に割る（実プロバイダのストリーミングと同じ形で UI の逐次描画を通す）。
 pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
+    text_stream_with_stop(reply, prompt_tokens, StopReason::EndTurn)
+}
+
+/// 本文の途中で出力上限に達して止まるストリーム（`MaxTokens`）。
+pub(super) fn truncated_text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
+    text_stream_with_stop(reply, prompt_tokens, StopReason::MaxTokens)
+}
+
+fn text_stream_with_stop(reply: &str, prompt_tokens: u64, stop_reason: StopReason) -> DeltaStream {
     let words: Vec<String> = reply
         .split_inclusive(char::is_whitespace)
         .map(str::to_string)
@@ -90,7 +99,7 @@ pub(super) fn text_stream(reply: &str, prompt_tokens: u64) -> DeltaStream {
         .map(|w| Ok(StreamDelta::TextDelta { text: w }))
         .collect();
     events.push(Ok(StreamDelta::Done {
-        stop_reason: StopReason::EndTurn,
+        stop_reason,
         usage: Usage {
             prompt_tokens,
             completion_tokens,

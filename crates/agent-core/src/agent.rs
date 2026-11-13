@@ -569,6 +569,14 @@ async fn run_step(
         return Ok(StepOutcome::Stop(AgentStop::Truncated));
     }
 
+    // 本文の途中で出力上限に達した: 完了ではないので、同じ run のまま続きを書かせる。
+    if final_stop == StopReason::MaxTokens && calls.is_empty() && !text_acc.is_empty() {
+        if let Some(nudge) = crate::agent_observation::text_continuation(&state.messages) {
+            state.messages.push(nudge);
+            return Ok(StepOutcome::Continue);
+        }
+    }
+
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
         return Ok(StepOutcome::Stop(if final_stop == StopReason::MaxTokens {

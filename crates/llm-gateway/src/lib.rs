@@ -59,4 +59,8 @@ pub use tenant::{
 /// 書式は chat が持つ。ここに置くのは、決定的 stub がこのブロックを利用者の発話として
 /// 読まない（`search:` 等の先頭一致の駆動を崩さない）ために参照するから。
 pub const WORK_LOG_MARK: &str = "[システムが付けた記録]";
+/// 本文が出力上限で切れたとき、続きを書かせる催促（agent-core が足す user 発話）の先頭の印。
+///
+/// 文言は agent-core が持つ。ここに置くのは、決定的 stub がこの発話を見分けて続きを返すため。
+pub const CONTINUATION_MARK: &str = "[出力上限で中断]";
 pub use usage_report::{UsageBreakdown, UsageDay, UsageFilter, UsageReport, UsageTotals};
