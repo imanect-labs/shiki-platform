@@ -12,7 +12,8 @@
 # 型の中身は同じ（.claude/skills/pr/references/gates.md）。
 #
 # 作業ツリーの bindings には書かない（ほかの変更の生成物を書き換えない）。テストの build は、CI の rust ジョブの
-# `cargo nextest run --workspace --all-features` と同じ形で回すので、そのジョブの後ろでは作り直さない。
+# `cargo nextest run --workspace --all-features` と同じ形で回すので、そのジョブの後ろでは作り直さない
+# （nextest が無ければ cargo test で回す。そのときはクレートごとに作り直す）。
 #
 # 使い方: bash scripts/check-ts-bindings.sh   （cargo は呼ぶ側の環境のものを使う。CARGO で差し替えられる）
 set -euo pipefail
@@ -20,6 +21,9 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 CARGO="${CARGO:-cargo}"
+# CI は nextest。無い手元（.claude/skills/pr/scripts/local-gates.sh の cargo test の経路）は cargo test で書き出す。
+NEXTEST=0
+"$CARGO" nextest --version >/dev/null 2>&1 && NEXTEST=1
 
 OUT="$ROOT/target/ts-bindings-check"
 rm -rf "$OUT"
@@ -47,9 +51,15 @@ for dir in "${CRATE_DIRS[@]}"; do
   gen="$OUT/$dir"
   mkdir -p "$gen"
   echo "== $pkg（crates/$dir/bindings）"
-  TS_RS_EXPORT_DIR="$gen" "$CARGO" nextest run --workspace --all-features --no-tests=fail \
-    --status-level fail --final-status-level fail \
-    -E "package($pkg) & test(/export_bindings_/)"
+  if [ "$NEXTEST" = 1 ]; then
+    TS_RS_EXPORT_DIR="$gen" "$CARGO" nextest run --workspace --all-features --no-tests=fail \
+      --status-level fail --final-status-level fail \
+      -E "package($pkg) & test(/export_bindings_/)"
+  else
+    # nextest の無い手元。feature の統合が CI と違って作り直しになるが、変わるのは import の拡張子だけ。
+    # 書き出しのテストが 1 本も走らなければ、下の「commit にあって書き出しに無い」で落ちる。
+    TS_RS_EXPORT_DIR="$gen" "$CARGO" test -p "$pkg" --all-features --lib --bins --quiet -- export_bindings_
+  fi
 
   committed="crates/$dir/bindings"
   # 書き出したもの → commit してあるもの

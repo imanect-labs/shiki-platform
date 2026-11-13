@@ -189,8 +189,9 @@ cargo llvm-cov report --summary-only --ignore-filename-regex '<ci.yml と同じ 
 - **ゲートを回すと追跡済みの生成物が書き換わる。`git add -A` を無条件に使わない。**
   ts-rs のバインディング出力（`crates/*/bindings/*.ts`）はテスト実行時に生成されるため、
   `cargo nextest run --workspace --all-features`（＝ CI と同じコマンド）を回すと
-  リポジトリにコミット済みのファイルが書き換わる。`--all-features` が ts-rs の追加 feature を
-  有効にし、`import ... from "./X"` が `"./X.js"` になるため。
+  リポジトリにコミット済みのファイルが書き換わる。`--workspace` で回すと、vendor/secure-exec の
+  vm-config が ts-rs の `import-esm` を有効にし（feature の統合）、`import ... from "./X"` が
+  `"./X.js"` になるため。
   この状態で `git add -A` すると**無関係な生成物が数十件コミットに混入する**（実際に 82 件混入した）。
   CI も同じコマンドを使う＝ CI 側でも同じ差分が出るだけなので、**CI はこの混入を検出できない**。
   → ゲート実行後は必ず `git status` / `git diff --stat` を見てから、**パスを明示して add する**。
