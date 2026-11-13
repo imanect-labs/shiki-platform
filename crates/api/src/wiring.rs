@@ -665,19 +665,107 @@ pub(crate) fn wire_bug_report(
     config: &shiki_bug_report::BugReportConfig,
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn authz::AuthzClient>,
-) -> Option<std::sync::Arc<shiki_bug_report::BugReportService>> {
-    config.enabled.then(|| {
-        std::sync::Arc::new(shiki_bug_report::BugReportService::new(
-            shiki_bug_report::BugReportStore::new(db.clone()),
-            authz.clone(),
-        ))
-    })
+) -> anyhow::Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let mut service = shiki_bug_report::BugReportService::new(
+        shiki_bug_report::BugReportStore::new(db.clone()),
+        authz.clone(),
+    );
+    if config.backend == shiki_bug_report::BugReportBackend::Github {
+        // 直列化 transaction のほかに claim/finish 用の接続が必要。
+        if db.options().get_max_connections() < 2 {
+            anyhow::bail!("bug_report GitHub delivery requires database.max_connections >= 2");
+        }
+        // AppConfig::validate と起動時の鍵検証に成功した構成だけを配線する。
+        let github = config
+            .github
+            .clone()
+            .ok_or(shiki_bug_report::Error::Invalid)?;
+        let version = github.config_version;
+        let sink = std::sync::Arc::new(shiki_bug_report::github::GitHubIssueSink::new(github)?);
+        service = service.with_github_destination(version);
+        let worker =
+            shiki_bug_report::delivery::DeliveryWorker::new(db.clone(), authz.clone(), sink);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                if worker.run_batch().await.is_err() {
+                    tracing::warn!("bug-report delivery batch failed");
+                }
+            }
+        });
+    }
+    Ok(Some(std::sync::Arc::new(service)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{non_empty, primary_provider};
     use api::config::{LlmBackend, LlmConfig};
+
+    #[tokio::test]
+    async fn bug_report_disabled_and_github_wiring_validate_startup() {
+        let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
+            return;
+        };
+        let authz: std::sync::Arc<dyn authz::AuthzClient> = std::sync::Arc::new(
+            authz::OpenFgaClient::connect(
+                reqwest::Client::new(),
+                &authz::OpenFgaConfig {
+                    base_url,
+                    store_name: format!("bug-report-wiring-{}", uuid::Uuid::new_v4()),
+                },
+                &serde_json::from_str(include_str!("../../authz/model/authorization-model.json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        // DB への接続に失敗する構成。起動した worker が外部 HTTP へ到達することはない。
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
+            .unwrap();
+        let mut config = shiki_bug_report::BugReportConfig::default();
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_none());
+        config.enabled = true;
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_some());
+        config.backend = shiki_bug_report::BugReportBackend::Github;
+        assert!(super::wire_bug_report(&config, &db, &authz).is_err());
+        config.github = Some(shiki_bug_report::GitHubConfig {
+            app_id: 1,
+            installation_id: 2,
+            owner: "imanect-labs".into(),
+            repo: "shiki-test".into(),
+            profile: "preview".into(),
+            config_version: 1,
+            private_key_file: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../app-gateway/tests/fixtures/test_rsa_priv.pem"),
+        });
+        assert!(super::wire_bug_report(&config, &db, &authz)
+            .unwrap()
+            .is_some());
+        let single = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/shiki")
+            .unwrap();
+        assert_eq!(
+            super::wire_bug_report(&config, &single, &authz)
+                .err()
+                .unwrap()
+                .to_string(),
+            "bug_report GitHub delivery requires database.max_connections >= 2"
+        );
+        config.github.as_mut().unwrap().repo = "shiki-platform".into();
+        assert!(super::wire_bug_report(&config, &db, &authz).is_err());
+    }
 
     #[test]
     fn primary_provider_carries_display_name() {

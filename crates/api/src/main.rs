@@ -332,7 +332,7 @@ async fn run() -> anyhow::Result<()> {
     };
     // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
     api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
-    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz);
+    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz)?;
     let state = AppState {
         bug_report,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),

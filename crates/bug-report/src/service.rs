@@ -16,12 +16,22 @@ use uuid::Uuid;
 pub struct BugReportService {
     store: BugReportStore,
     authz: Arc<dyn AuthzClient>,
+    pub(crate) destination_version: Option<i64>,
 }
 impl BugReportService {
     pub fn new(store: BugReportStore, authz: Arc<dyn AuthzClient>) -> Self {
-        Self { store, authz }
+        Self {
+            store,
+            authz,
+            destination_version: None,
+        }
     }
 
+    #[must_use]
+    pub fn with_github_destination(mut self, version: i64) -> Self {
+        self.destination_version = Some(version);
+        self
+    }
     async fn member(&self, ctx: &AuthContext) -> Result<(), Error> {
         if ctx.principal().kind != PrincipalKind::User
             || !self
@@ -78,7 +88,7 @@ impl BugReportService {
         policy.rev += 1;
         sqlx::query("INSERT INTO bug_report_policy (tenant_id,org,settings,rev,updated_by) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tenant_id,org) DO UPDATE SET settings=$3,rev=$4,updated_by=$5,updated_at=now() WHERE bug_report_policy.tenant_id=$1 AND bug_report_policy.org=$2")
             .bind(ctx.tenant_id()).bind(ctx.org()).bind(json(&policy)?).bind(policy.rev).bind(&ctx.principal().id).execute(&mut *tx).await?;
-        // PR1 は queued を作らない。PR2 はここで未着手配送を同じ lock 下で再評価する。
+        crate::delivery::stop_unstarted(&mut tx, ctx, &policy).await?;
         audit(
             &mut tx,
             ctx,
@@ -262,11 +272,14 @@ impl BugReportService {
                     report.content.metadata_only()
                 };
                 report.submission_rev += 1;
-                sqlx::query("INSERT INTO bug_report_submission (tenant_id,org,report_id,submission_rev,payload,payload_hash,sink_profile_id,sink_config_version,policy_rev,consent_actor,content_consent,notice_version) VALUES ($1,$2,$3,$4,$5,$6,'disabled',1,$7,$8,$9,$10)")
+                sqlx::query("INSERT INTO bug_report_submission (tenant_id,org,report_id,submission_rev,payload,payload_hash,sink_profile_id,sink_config_version,policy_rev,consent_actor,content_consent,notice_version,principal) VALUES ($1,$2,$3,$4,$5,$6,$11,$12,$7,$8,$9,$10,$13)")
                     .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(json(&payload)?).bind(hash_content(&payload)?)
-                    .bind(policy.rev).bind(&ctx.principal().id).bind(policy.allow_content_sharing && *consent).bind(notice_version).execute(&mut *tx).await?;
-                // Disabled は承認有無によらず held。設定が変わっても自動送信しない。
-                (policy.submitted_status(false), AuditAction::BugReportSubmit)
+                    .bind(policy.rev).bind(&ctx.principal().id).bind(policy.allow_content_sharing && *consent).bind(notice_version).bind(if self.destination_version.is_some() { "github" } else { "disabled" }).bind(self.destination_version.unwrap_or(1)).bind(json(ctx.principal())?).execute(&mut *tx).await?;
+                // 宛先と版を本人提出時に固定する。
+                (
+                    policy.submitted_status(self.destination_version.is_some()),
+                    AuditAction::BugReportSubmit,
+                )
             }
             Command::Approve => {
                 if old != Status::PendingApproval {
@@ -274,8 +287,18 @@ impl BugReportService {
                 }
                 sqlx::query("UPDATE bug_report_submission SET approved_by=$5,approved_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
                     .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(&ctx.principal().id).execute(&mut *tx).await?;
-                // PR1 は送信先なし。承認しても配送せず、本人の再確認を要求。
-                (Status::Held, AuditAction::BugReportApprove)
+                let has_principal: bool = sqlx::query_scalar("SELECT principal IS NOT NULL AND principal <> 'null'::jsonb FROM bug_report_submission WHERE tenant_id=$1 AND org=$2 AND report_id=$3 AND submission_rev=$4")
+                    .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).fetch_one(&mut *tx).await?;
+                // 旧提出は本人の再同意が必要。承認だけでは配送行を作らない。
+                // 承認は snapshot を変更しない。宛先の再検証は worker が行う。
+                (
+                    if self.destination_version.is_some() && has_principal {
+                        Status::Queued
+                    } else {
+                        Status::Held
+                    },
+                    AuditAction::BugReportApprove,
+                )
             }
             Command::Reject { reason } => {
                 if reason.trim().is_empty() || reason.chars().count() > 2000 {
@@ -295,6 +318,10 @@ impl BugReportService {
             return Err(Error::Conflict);
         }
         report.status = next;
+        if next == Status::Queued {
+            sqlx::query("INSERT INTO bug_report_delivery (tenant_id,org,report_id,submission_rev,id) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tenant_id,org,report_id,submission_rev) DO NOTHING")
+                .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(report.submission_rev).bind(Uuid::new_v4()).execute(&mut *tx).await?;
+        }
         save(&mut tx, ctx, &mut report).await?;
         // command 台帳に本文を複製しない。
         sqlx::query("INSERT INTO bug_report_command (tenant_id,org,actor_id,operation,idempotency_key,request_hash,report_id,result) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
@@ -332,7 +359,7 @@ fn hash(value: &serde_json::Value) -> String {
 fn hash_content(content: &ReportContent) -> Result<String, Error> {
     Ok(hash(&json(content)?))
 }
-async fn save(
+pub(crate) async fn save(
     conn: &mut PgConnection,
     ctx: &AuthContext,
     report: &mut BugReport,
@@ -354,7 +381,7 @@ async fn check_submit_limit(conn: &mut PgConnection, ctx: &AuthContext) -> Resul
     }
     Ok(())
 }
-async fn audit(
+pub(crate) async fn audit(
     conn: &mut PgConnection,
     ctx: &AuthContext,
     action: AuditAction,
