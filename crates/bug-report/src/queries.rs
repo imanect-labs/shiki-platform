@@ -108,9 +108,12 @@ impl BugReportService {
             .transpose()
             .map_err(|_| Error::Invalid)?;
         if admin {
-            if let Some(ref submitted) = submission {
-                report.content = submitted.content.clone();
-            }
+            // 管理者には提出 snapshot だけを見せる。snapshot が消去済みなら、未共有の
+            // 下書き本文（report.content）を返さないよう詳細そのものを拒否する。
+            let Some(ref submitted) = submission else {
+                return Err(Error::NotFound);
+            };
+            report.content = submitted.content.clone();
         }
         audit(
             &mut tx,

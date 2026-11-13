@@ -204,3 +204,22 @@ async fn rolling_daily_submission_limit_and_cancellation_race() {
         }
     }
 }
+
+#[tokio::test]
+async fn admin_detail_rejects_report_whose_submission_body_was_purged() {
+    let Some((db, _fga, svc, ctx)) = setup().await else {
+        return;
+    };
+    // 提出 snapshot だけが保持期限で消え、報告本体（再下書きの本文）は残った状態。
+    let report = queued(&svc, &ctx).await;
+    assert!(svc.detail(&ctx, report.id, true, "before").await.is_ok());
+    sqlx::query("UPDATE bug_report_submission SET payload='{}'::jsonb, body_purged_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).execute(&db).await.unwrap();
+    sqlx::query("UPDATE bug_report SET status='cancelled' WHERE tenant_id=$1 AND org=$2 AND id=$3")
+        .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).execute(&db).await.unwrap();
+    // 未共有の本文を管理者へ返さない。
+    assert!(matches!(
+        svc.detail(&ctx, report.id, true, "after").await,
+        Err(Error::NotFound)
+    ));
+}
