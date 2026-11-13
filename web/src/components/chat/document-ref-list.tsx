@@ -6,9 +6,12 @@
 /// その編集の直前の版を**新しい版として**復元する（`POST /files/{id}/versions/{v}/revert`・履歴は残る）。
 /// 戻した後は「やり直す」＝取り消しで作った版をさらに取り消す。
 ///
-/// - **ファイル単位で 1 つの操作**にする。同じ回答で同じファイルを複数回編集したら、操作はそのファイルの
-///   最後のカードにだけ出し、この回答でそのファイルに作った全版をまとめて戻す（カードごとに別々の状態を
-///   持つと、片方だけ戻した／やり直した表示と実データが食い違うため）。
+/// - **同じファイルは 1 枚**にする。同じ回答で同じファイルを何度も作成・編集しても、カードは最後（＝最新の版）の
+///   1 枚だけを出す（v1・v2… と版ごとに並べると、別々のファイルを作ったように見える）。移動・名前変更は中身の
+///   版とは別の出来事、提案版は current に入っていない別の状態なので、編集のカードとは分けて出す（提案版を
+///   まとめると、編集の「元に戻す」か「採用待ちの提案がある」ことのどちらかが画面から消える）。
+/// - **ファイル単位で 1 つの操作**にする。操作はその 1 枚に出し、この回答でそのファイルに作った全版をまとめて
+///   戻す（カードごとに別々の状態を持つと、片方だけ戻した／やり直した表示と実データが食い違うため）。
 /// - 編集の後に別の内容版（他の人・後の編集）があると、黙って巻き戻さず確認ダイアログを出す
 ///   （判定はサーバが内容版で行う＝名前変更・移動では止めない）。Office エディタで開かれている間は戻さない。
 /// - 操作は**編集権限のある人にだけ**出す（`/collab/docs/{id}/access` の editor＝取り消し API と同じ
@@ -212,6 +215,28 @@ function groupByFile(docs: (DocumentRef | null)[]): FileGroup[] {
   });
 }
 
+/// 同じファイルの参照をまとめたときに出すカードの位置（ファイルごとに最後＝最新の版）。
+/// 移動・名前変更と提案版は編集・作成とは別に数える。形の崩れた参照は位置で残す。
+export function latestRefIndices(docs: (DocumentRef | null)[]): Set<number> {
+  const last = new Map<string, number>();
+  docs.forEach((doc, i) => {
+    const kind = !doc ? null : doc.moved ? "moved" : doc.proposal ? "proposal" : "content";
+    last.set(doc ? `${doc.id}:${kind}` : `#${i}`, i);
+  });
+  return new Set(last.values());
+}
+
+/// この回答で新規作成したファイル（後から編集してまとめたカードでも「作成した」ことを残す）。
+function createdFileIds(docs: (DocumentRef | null)[]): Set<string> {
+  return new Set(docs.filter((d): d is DocumentRef => !!d && d.created && !d.moved).map((d) => d.id));
+}
+
+/// 作成した後に編集したファイルのカードの状態（最後のカードは「編集しました」になるため）。
+function createdThenEdited(doc: DocumentRef, created: Set<string>): string | undefined {
+  if (doc.created || doc.moved || doc.proposal || !created.has(doc.id)) return undefined;
+  return doc.version === null ? "作成し、編集しました" : `作成し、編集しました（v${doc.version}）`;
+}
+
 /// 失敗を利用者向けの文言へ。
 function failureMessage(e: unknown): string {
   if (e instanceof RevertLocked) return e.message;
@@ -267,6 +292,8 @@ async function runRevert(group: FileGroup, mode: "undo" | "redo", force: boolean
 export function DocumentRefList({ raws }: { raws: unknown[] }) {
   const docs = React.useMemo(() => raws.map(parseDocumentRef), [raws]);
   const groups = React.useMemo(() => groupByFile(docs), [docs]);
+  const visible = React.useMemo(() => latestRefIndices(docs), [docs]);
+  const created = React.useMemo(() => createdFileIds(docs), [docs]);
   const [batchBusy, setBatchBusy] = React.useState(false);
   /// 後続の版がある取り消しの確認（どのファイルの、どの操作か）。
   const [conflict, setConflict] = React.useState<{
@@ -323,16 +350,20 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
   return (
     <>
       {docs.map((doc, i) => {
+        if (!visible.has(i)) return null;
         const raw = raws[i];
-        const group = doc ? groups.find((g) => g.fileId === doc.id) : undefined;
-        if (!doc || !group) return <DocumentRefCard key={i} raw={raw} />;
+        const group = doc && !doc.moved ? groups.find((g) => g.fileId === doc.id) : undefined;
+        const createdStatus = doc ? createdThenEdited(doc, created) : undefined;
+        if (!doc || !group || group.lastIndex !== i) {
+          return <DocumentRefCard key={i} raw={raw} status={createdStatus} />;
+        }
         return (
           <FileRefCard
             key={i}
             raw={raw}
             doc={doc}
             group={group}
-            isLast={group.lastIndex === i}
+            createdStatus={createdStatus}
             batchBusy={batchBusy}
             onRun={(mode) => void run(group, mode)}
           />
@@ -374,19 +405,20 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
   );
 }
 
-/// 取り消し対象のファイルのカード。操作はそのファイルの最後のカードにだけ出す。
+/// 取り消し対象のファイルのカード（そのファイルの最後＝最新の版の 1 枚）。
 function FileRefCard({
   raw,
   doc,
   group,
-  isLast,
+  createdStatus,
   batchBusy,
   onRun,
 }: {
   raw: unknown;
   doc: DocumentRef;
   group: FileGroup;
-  isLast: boolean;
+  /// この回答で作成してから編集したときの状態表示。
+  createdStatus: string | undefined;
   batchBusy: boolean;
   onRun: (mode: "undo" | "redo") => void;
 }) {
@@ -401,16 +433,19 @@ function FileRefCard({
       : st.phase === "redone"
         ? `やり直しました（v${st.version}）`
         : undefined;
-  if (!isLast || !canEdit) {
-    // 同じファイルの前のカード: 状態だけ揃え、操作は最後のカードに集める。
-    // 編集権限が無い（または未確認）なら操作は出さない。
-    return <DocumentRefCard raw={raw} status={status} />;
-  }
   const multi = group.versions.length > 1;
+  const edited =
+    status ??
+    createdStatus ??
+    (multi ? `この回答で ${group.versions.length} 回編集しました（v${doc.version}）` : undefined);
+  if (!canEdit) {
+    // 編集権限が無い（または未確認）なら操作は出さない。
+    return <DocumentRefCard raw={raw} status={edited} />;
+  }
   return (
     <DocumentRefCard
       raw={raw}
-      status={status ?? (multi ? `この回答で ${group.versions.length} 回編集しました（v${doc.version}）` : undefined)}
+      status={edited}
       actions={
         st.phase === "reverted" ? (
           st.restoredFrom !== null ? (

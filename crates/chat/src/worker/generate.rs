@@ -356,6 +356,7 @@ impl ChatWorker {
         // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
         self.system_with_origin_document(run, &mut opts).await;
         super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
+        super::opts::append_skill_guidance(&mut opts, &tools);
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
