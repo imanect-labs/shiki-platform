@@ -749,3 +749,5 @@ async fn admin_cursor_survives_reopen_and_keeps_tenant_org_boundaries() {
             .is_empty());
     }
 }
+
+mod help_cases;

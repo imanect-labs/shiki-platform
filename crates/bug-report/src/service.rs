@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 pub struct BugReportService {
     pub(crate) store: BugReportStore,
-    authz: Arc<dyn AuthzClient>,
+    pub(crate) authz: Arc<dyn AuthzClient>,
     pub(crate) destination_version: Option<i64>,
 }
 impl BugReportService {
@@ -111,14 +111,25 @@ impl BugReportService {
         self.member(ctx).await?;
         content.validate()?;
         let mut tx = begin_tenant_tx(&self.store.pool, ctx.tenant()).await?;
-        store::lock(&mut tx, ctx).await?;
-        let policy = store::policy(&mut tx, ctx).await?;
+        let report = self.create_on(&mut tx, ctx, content, trace).await?;
+        tx.commit().await?;
+        Ok(report)
+    }
+    pub(crate) async fn create_on(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        content: ReportContent,
+        trace: &str,
+    ) -> Result<BugReport, Error> {
+        store::lock(conn, ctx).await?;
+        let policy = store::policy(conn, ctx).await?;
         check_content_sharing(&policy, &content)?;
         if !policy.enabled {
             return Err(Error::Disabled);
         }
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM bug_report WHERE tenant_id=$1 AND org=$2 AND reporter_id=$3 AND created_at > now() - interval '1 day'")
-            .bind(ctx.tenant_id()).bind(ctx.org()).bind(&ctx.principal().id).fetch_one(&mut *tx).await?;
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(&ctx.principal().id).fetch_one(&mut *conn).await?;
         if count >= 20 {
             return Err(Error::RateLimited);
         }
@@ -131,9 +142,9 @@ impl BugReportService {
             content,
         };
         sqlx::query("INSERT INTO bug_report (tenant_id,org,id,reporter_id,status,rev,snapshot) VALUES ($1,$2,$3,$4,'draft',1,$5)")
-            .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(&report.reporter_id).bind(json(&report)?).execute(&mut *tx).await?;
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).bind(&report.reporter_id).bind(json(&report)?).execute(&mut *conn).await?;
         audit(
-            &mut tx,
+            conn,
             ctx,
             AuditAction::BugReportDraftCreate,
             &report.id.to_string(),
@@ -142,7 +153,6 @@ impl BugReportService {
             Chain::Yes,
         )
         .await?;
-        tx.commit().await?;
         Ok(report)
     }
     pub async fn get(&self, ctx: &AuthContext, id: Uuid, trace: &str) -> Result<BugReport, Error> {
