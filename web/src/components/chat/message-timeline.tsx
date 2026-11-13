@@ -12,6 +12,7 @@ import * as React from "react";
 
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
+import { useHelpCitations } from "./help-sources";
 import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -182,6 +183,7 @@ export function MessageTimeline({
   /// 1 行（「これまでの N 件の操作」）に畳み、押すとその場で開く。本文は畳まない（読むものなので）。
   collapseBefore?: number;
 }) {
+  const helpCitations = useHelpCitations();
   const [pastOpen, setPastOpen] = React.useState(false);
   const collapsed = (i: number) => !pastOpen && i < collapseBefore && segments[i]?.kind === "work";
   const firstCollapsed = segments.findIndex((_, i) => collapsed(i));
@@ -260,7 +262,7 @@ export function MessageTimeline({
               imageProxy={imageProxy}
               linkSources={linkSources}
             >
-              {linkifyCitations(s.text, citations)}
+              {linkifyCitations(s.text, citations, helpCitations)}
             </Markdown>
           </div>
         );

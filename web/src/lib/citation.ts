@@ -91,21 +91,33 @@ export function visibleCitations(citations: readonly Citation[]): Citation[] {
   return citations.filter((c) => !c.withheld);
 }
 
-/// 本文中の `[n]` 引用マーカーを、引用チップ用のリンクに変換する（Markdown 用）。
-/// 対応する引用が無く、欠けた番号でもない `[n]` はそのまま残す。
+/// 製品ヘルプの出典チップのリンク先（`[Hn]` → `#help-cite-n`）。番号の台帳は社内文書と別。
+export const HELP_CITE_HREF_PREFIX = "#help-cite-";
+
+/// 本文中の `[n]` 引用マーカー（と、製品ヘルプの出典 `[Hn]`）を、引用チップ用のリンクに変換する
+/// （Markdown 用）。対応する引用が無く、欠けた番号でもない `[n]`・出典の無い `[Hn]` はそのまま残す。
+///
+/// 社内文書とヘルプの番号は 1 回で変える。`[H1][1]` のように並んだとき、片方を先にリンクに
+/// すると、もう片方が「直後に `[` / `(` が続く参照リンク」に見えて変換されなくなるため。
 ///
 /// コード（フェンスのコードブロック・インラインコード）の中は変えない。Markdown の解析前に
 /// 文字列で置き換えるので、ここで除かないとコード例の `[1]` が `[1](#cite-1)` に化け、表示と
 /// コピー結果が壊れる。
-export function linkifyCitations(text: string, citations: readonly Citation[]): string {
-  if (citations.length === 0) return text;
+export function linkifyCitations(
+  text: string,
+  citations: readonly Citation[],
+  helpCitations: readonly { cite_id: number }[] = [],
+): string {
+  if (citations.length === 0 && helpCitations.length === 0) return text;
+  const helpIds = new Set(helpCitations.map((c) => c.cite_id));
   return splitByCode(text)
     .map(({ code, s }) =>
       code
         ? s
         : s.replace(CITE_RUN, (run: string) =>
-            run.replace(/\[(\d+)\]/g, (match, digits: string) => {
+            run.replace(/\[(H?)(\d+)\]/g, (match, help: string, digits: string) => {
               const n = Number.parseInt(digits, 10);
+              if (help) return helpIds.has(n) ? `[H${n}](${HELP_CITE_HREF_PREFIX}${n})` : match;
               if (!citationAt(citations, n) && !isWithheldCitation(citations, n)) return match;
               return `[${n}](${CITE_HREF_PREFIX}${n})`;
             }),
@@ -114,10 +126,10 @@ export function linkifyCitations(text: string, citations: readonly Citation[]): 
     .join("");
 }
 
-/// 本文中の `[n]` の並び（`[1][3]` は 1 まとまり）。既存の Markdown リンクの一部は除く:
-/// `[1](url)`・画像 `![1](x)`・参照リンク `[本文][1]` / `[1][ref]`・参照定義 `[1]: url`
+/// 本文中の `[n]` / `[Hn]` の並び（`[1][3]`・`[H1][2]` は 1 まとまり）。既存の Markdown リンクの
+/// 一部は除く: `[1](url)`・画像 `![1](x)`・参照リンク `[本文][1]` / `[1][ref]`・参照定義 `[1]: url`
 /// （ラベルを引用に化けさせない）。
-const CITE_RUN = /(?<![\]!])(?:\[\d+\])+(?![(\[:])/g;
+const CITE_RUN = /(?<![\]!])(?:\[H?\d+\])+(?![(\[:])/g;
 
 /// コード部分の範囲（`[start, end)`・文字列の添字）。
 function codeRanges(text: string): [number, number][] {
