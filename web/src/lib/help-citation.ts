@@ -1,35 +1,10 @@
 /// 製品ヘルプの出典（`help_citation`・`[Hn]`）の本文側の扱い。
 ///
-/// 社内文書の引用（`[n]`・[`linkifyCitations`](./citation.ts)）とは番号の台帳を分けている
-/// （サーバの `HelpCitation` は社内文書の Citation と台帳を共有しない）。本文の `[H1]` を
-/// チップ用のリンクに変え、回答下の出典一覧と同じ番号で結びつける。
+/// 社内文書の引用（`[n]`）とは番号の台帳を分けている（サーバの `HelpCitation` は社内文書の
+/// Citation と台帳を共有しない）。本文の `[H1]` は [`linkifyCitations`](./citation.ts) が
+/// `#help-cite-1` のリンクに変え、回答下の出典一覧と同じ番号で結びつける。
 import type { HelpCitation } from "@/lib/chat-api";
-import { splitByCode } from "@/lib/citation";
-
-export const HELP_CITE_HREF_PREFIX = "#help-cite-";
-
-/// 本文中の `[Hn]` の並び（`[H1][H3]` は 1 まとまり）。既存の Markdown リンクの一部は除く
-/// （`[H1](url)`・`![H1](x)`・参照リンク `[本文][H1]`・参照定義 `[H1]: url`）。
-const HELP_CITE_RUN = /(?<![\]!])(?:\[H\d+\])+(?![(\[:])/g;
-
-/// 本文中の `[Hn]` を出典チップ用のリンクに変える（Markdown 用）。対応する出典が無い番号は
-/// そのまま残す。コード（フェンス・インラインコード）の中は変えない。
-export function linkifyHelpCitations(text: string, citations: readonly HelpCitation[]): string {
-  if (citations.length === 0) return text;
-  const ids = new Set(citations.map((c) => c.cite_id));
-  return splitByCode(text)
-    .map(({ code, s }) =>
-      code
-        ? s
-        : s.replace(HELP_CITE_RUN, (run: string) =>
-            run.replace(/\[H(\d+)\]/g, (match, digits: string) => {
-              const n = Number.parseInt(digits, 10);
-              return ids.has(n) ? `[H${n}](${HELP_CITE_HREF_PREFIX}${n})` : match;
-            }),
-          ),
-    )
-    .join("");
-}
+import { HELP_CITE_HREF_PREFIX, splitByCode } from "@/lib/citation";
 
 /// `#help-cite-n` から番号を取り出す（それ以外は `null`）。
 export function helpCiteNumberFromHref(href: string): number | null {
@@ -66,4 +41,14 @@ export function groupHelpPages(citations: readonly HelpCitation[]): HelpPage[] {
     else pages.set(key, { key, title: c.title, url: url ? key : null, passages: [c] });
   }
   return [...pages.values()];
+}
+
+/// 本文で引いたヘルプの番号（コードの中の `[Hn]` は数えない）。
+export function citedHelpIds(text: string): Set<number> {
+  const ids = new Set<number>();
+  for (const { code, s } of splitByCode(text)) {
+    if (code) continue;
+    for (const m of s.matchAll(/\[H(\d+)\]/g)) ids.add(Number.parseInt(m[1], 10));
+  }
+  return ids;
 }

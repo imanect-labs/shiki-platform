@@ -463,7 +463,7 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
   // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
   const cite = citeNumberFromHref(url);
   if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
-  // 製品ヘルプの出典（`#help-cite-n`・linkifyHelpCitations が付ける）。押すとヘルプを開く。
+  // 製品ヘルプの出典（`#help-cite-n`・linkifyCitations が付ける）。押すとヘルプを開く。
   const helpCite = helpCiteNumberFromHref(url);
   if (helpCite != null) return <HelpCitationMarker n={helpCite}>{children}</HelpCitationMarker>;
   // その他の内部リンクはクライアント遷移。

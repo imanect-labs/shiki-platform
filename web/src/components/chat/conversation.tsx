@@ -1841,7 +1841,7 @@ const AssistantRow = React.memo(function AssistantRow({
 
   return (
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
-      <HelpCitationsProvider citations={helpCitations}>
+      <HelpCitationsProvider citations={helpCitations} text={text}>
       <Message className="group justify-start">
         <div className="w-full min-w-0">
           <YuiActionContext.Provider value={yuiHost}>
@@ -1977,7 +1977,7 @@ function StreamingRow({
   });
   return (
     <MessageCitationsProvider messageKey="streaming" citations={stream.citations} text={stream.text}>
-      <HelpCitationsProvider citations={stream.helpCitations}>
+      <HelpCitationsProvider citations={stream.helpCitations} text={stream.text}>
       <Message className="justify-start">
         <div className="w-full min-w-0 space-y-2">
           {planInline && stream.plan.length > 0 ? (

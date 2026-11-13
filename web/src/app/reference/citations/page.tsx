@@ -20,14 +20,14 @@ import { EvidenceTable } from "@/components/chat/citations/evidence-table";
 import { SourcePanelAside, SourcePanelView } from "@/components/chat/citations/source-panel";
 import { HelpCitationsProvider, HelpSources } from "@/components/chat/help-sources";
 import { linkifyCitations } from "@/lib/citation";
-import { linkifyHelpCitations } from "@/lib/help-citation";
-import type { Citation } from "@/lib/chat-api";
+import type { Citation, HelpCitation } from "@/lib/chat-api";
 import {
   ANSWER,
   ANSWER_NO_MARKERS,
   CITATIONS,
   HELP_ANSWER,
   HELP_CITATIONS,
+  HELP_MIXED_ANSWER,
   METAS,
   MIXED_ANSWER,
   MIXED_CITATIONS,
@@ -65,17 +65,33 @@ function Answer({
   );
 }
 
-/// 製品ヘルプの出典だけで答えた回答（`[Hn]` は押すとヘルプを新しいタブで開く）。
-function HelpAnswer({ defaultOpen = false }: { defaultOpen?: boolean }) {
+/// 製品ヘルプの出典を含む回答（`[Hn]` は押すとヘルプを新しいタブで開く）。社内文書の出典と
+/// 混ざるときは、番号の台帳が別のまま両方のチップと両方の 1 行を出す。
+function HelpAnswer({
+  messageKey,
+  text = HELP_ANSWER,
+  citations = [],
+  helpCitations = HELP_CITATIONS,
+  defaultOpen = false,
+}: {
+  messageKey: string;
+  text?: string;
+  citations?: Citation[];
+  helpCitations?: HelpCitation[];
+  defaultOpen?: boolean;
+}) {
   return (
-    <HelpCitationsProvider citations={HELP_CITATIONS}>
-      <div className="rounded-xl border border-border bg-background px-6 py-5">
-        <div className="text-[15px] leading-relaxed">
-          <Markdown>{linkifyHelpCitations(HELP_ANSWER, HELP_CITATIONS)}</Markdown>
+    <MessageCitationsProvider messageKey={messageKey} citations={citations} text={text}>
+      <HelpCitationsProvider citations={helpCitations} text={text}>
+        <div className="rounded-xl border border-border bg-background px-6 py-5">
+          <div className="text-[15px] leading-relaxed">
+            <Markdown>{linkifyCitations(text, citations, helpCitations)}</Markdown>
+          </div>
+          {citations.length > 0 ? <CitationSources /> : null}
+          <HelpSources defaultOpen={defaultOpen} />
         </div>
-        <HelpSources defaultOpen={defaultOpen} />
-      </div>
-    </HelpCitationsProvider>
+      </HelpCitationsProvider>
+    </MessageCitationsProvider>
   );
 }
 
@@ -189,11 +205,15 @@ export default function CitationGalleryPage() {
             </Cell>
 
             <Cell id="help" title="製品ヘルプの出典（[Hn]・押すとヘルプを開く。回答下に 1 行で畳む）">
-              <HelpAnswer />
+              <HelpAnswer messageKey="help" />
             </Cell>
 
             <Cell id="help-expanded" title="製品ヘルプの出典を開いた状態（ページごとに引用箇所）">
-              <HelpAnswer defaultOpen />
+              <HelpAnswer messageKey="help-expanded" defaultOpen />
+            </Cell>
+
+            <Cell id="help-mixed" title="社内文書とヘルプの出典が並んだ回答（[H1][1] も [1][H1] も両方チップにする）">
+              <HelpAnswer messageKey="help-mixed" text={HELP_MIXED_ANSWER} citations={CITATIONS} />
             </Cell>
 
             <Cell id="unresolved" title="ファイル名が解決できない（読み込み中・権限なし）">

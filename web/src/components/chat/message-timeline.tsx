@@ -12,7 +12,6 @@ import * as React from "react";
 
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
-import { linkifyHelpCitations } from "@/lib/help-citation";
 import { useHelpCitations } from "./help-sources";
 import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { answerLinkSources } from "@/lib/answer-links";
@@ -263,7 +262,7 @@ export function MessageTimeline({
               imageProxy={imageProxy}
               linkSources={linkSources}
             >
-              {linkifyHelpCitations(linkifyCitations(s.text, citations), helpCitations)}
+              {linkifyCitations(s.text, citations, helpCitations)}
             </Markdown>
           </div>
         );
