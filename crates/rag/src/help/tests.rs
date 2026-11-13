@@ -45,10 +45,10 @@ fn context(tenant: &str) -> AuthContext {
     )
 }
 fn fixture() -> (tempfile::TempDir, HelpConfig) {
-    fixture_with(json!({}))
+    fixture_with(&json!({}))
 }
 /// チャンクに項目を足した（上書きした）コーパス。
-fn fixture_with(extra: serde_json::Value) -> (tempfile::TempDir, HelpConfig) {
+fn fixture_with(extra: &serde_json::Value) -> (tempfile::TempDir, HelpConfig) {
     let dir = tempfile::tempdir().unwrap();
     let version = "a".repeat(40);
     let text = "設定からパスキーを登録します。";
@@ -261,7 +261,7 @@ fn rejects_unlisted_chunks_and_vectors_even_with_updated_file_digest() {
 
 #[tokio::test]
 async fn figures_and_app_screens_come_from_the_corpus_and_the_configured_origin() {
-    let (_dir, config) = fixture_with(json!({
+    let (_dir, config) = fixture_with(&json!({
         "images":[{"relative_url":"/help/media/security/images/passkey--add.png","alt":"ログイン方法の画面"}],
         "app_links":[{"path":"/settings/security","label":"個人設定 › ログイン方法"},{"path":"/","label":"ホーム"}]
     }));
@@ -296,7 +296,7 @@ fn rejects_figures_and_app_screens_outside_the_contract() {
         link(""),
         json!({"app_links":[{"path":"/drive","label":""}]}),
     ] {
-        let (_dir, config) = fixture_with(extra.clone());
+        let (_dir, config) = fixture_with(&extra);
         assert!(
             HelpSearchService::load(
                 config,

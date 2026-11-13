@@ -482,17 +482,19 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
                     .find_map(|l| l.strip_prefix(prefix))
                     .map(str::to_owned)
             };
+            use std::fmt::Write as _;
             let mut text = "ヘルプの手順を確認してください。[H1]".to_owned();
             if let Some(screen) = first("画面: ") {
-                text.push_str(&format!("\n\n操作する画面: {screen}"));
+                let _ = write!(text, "\n\n操作する画面: {screen}");
             }
             if let Some(figure) = first("図: ") {
-                text.push_str(&format!("\n\n{figure}"));
+                let _ = write!(text, "\n\n{figure}");
             }
             if let Some(url) = first("[H1] ") {
-                text.push_str(&format!(
+                let _ = write!(
+                    text,
                     "\n\n詳しくは [ヘルプのページ]({url}) を見てください。"
-                ));
+                );
             }
             return text_stream(&text, prompt_tokens);
         }
@@ -601,6 +603,36 @@ mod tests {
             }
         }
         assert!(text.contains("```ui\nask "), "{text}");
+    }
+
+    /// helpsearch: の 2 ターン目は、結果の 1 件目の画面・図・ページを実モデルへの指示と同じ形で使う。
+    #[tokio::test]
+    async fn helpsearch_answer_links_the_screen_figure_and_page() {
+        let result = "見出し\n[H1] https://h.example/help/a/#x\n画面: [ログイン方法](/settings/security)\n図: ![画面](https://h.example/help/media/a.png)\n<document>本文</document>";
+        let req = GenerateRequest::new(vec![
+            Message::text(Role::User, "helpsearch:パスワード"),
+            Message {
+                role: Role::Tool,
+                content: vec![Block::tool_result("t1", result, false)],
+            },
+        ]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        while let Some(ev) = s.next().await {
+            if let StreamDelta::TextDelta { text: t } = ev.unwrap() {
+                text.push_str(&t);
+            }
+        }
+        assert!(text.contains("[H1]"), "{text}");
+        assert!(
+            text.contains("[ログイン方法](/settings/security)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("![画面](https://h.example/help/media/a.png)"),
+            "{text}"
+        );
+        assert!(text.contains("(https://h.example/help/a/#x)"), "{text}");
     }
 
     #[tokio::test]

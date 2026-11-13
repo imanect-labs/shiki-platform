@@ -99,63 +99,58 @@ impl Tool for HelpSearchTool {
             HEADER
         });
         for (i, hit) in hits.into_iter().enumerate() {
-            let label = label(&hit.title, &hit.heading_path);
-            // URL はサーバが同梱コーパスの相対パスと設定の origin から組んだもの（資料の本文ではない）
-            // なので封筒の外に置く。モデルはこれを回答のリンクに使う。
-            // 画面のパスと図の URL もサーバが検証・組み立てたもの。説明・呼び名だけがコーパスの文。
-            write!(out.content, "\n{} {}\n", help_cite::placeholder(i), hit.url)
+            render_hit(&mut out.content, i, &hit)
                 .map_err(|e| ToolError::Internal(e.to_string()))?;
-            for link in &hit.app_links {
-                writeln!(
-                    out.content,
-                    "画面: [{}]({})",
-                    inline_text(&link.label),
-                    link.path
-                )
-                .map_err(|e| ToolError::Internal(e.to_string()))?;
-            }
-            for image in &hit.images {
-                writeln!(
-                    out.content,
-                    "図: ![{}]({})",
-                    inline_text(&image.alt),
-                    image.url
-                )
-                .map_err(|e| ToolError::Internal(e.to_string()))?;
-            }
-            writeln!(
-                out.content,
-                "{}",
-                document_envelope::wrap(&label, &help_cite::defuse(&hit.snippet))
-            )
-            .map_err(|e| ToolError::Internal(e.to_string()))?;
-            out.help_citations.push(HelpCitation {
-                cite_id: 0,
-                corpus_version: hit.corpus_version,
-                chunk_id: hit.chunk_id,
-                title: hit.title,
-                heading_path: hit.heading_path,
-                snippet: hit.snippet,
-                url: hit.url,
-                images: hit
-                    .images
-                    .into_iter()
-                    .map(|i| help_cite::HelpImage {
-                        url: i.url,
-                        alt: i.alt,
-                    })
-                    .collect(),
-                app_links: hit
-                    .app_links
-                    .into_iter()
-                    .map(|l| help_cite::HelpAppLink {
-                        path: l.path,
-                        label: l.label,
-                    })
-                    .collect(),
-            });
+            out.help_citations.push(citation_of(hit));
         }
         Ok(out)
+    }
+}
+
+/// 1 件の結果を書く。先頭行は仮の印とページの URL、続いて「画面:」「図:」、本文は封筒の中。
+/// URL・画面のパス・図の URL はサーバが検証・組み立てたもの（資料の本文ではない）なので封筒の外に置く。
+/// 説明・呼び名だけがコーパスの文なので [`inline_text`] で 1 行にする。
+fn render_hit(out: &mut String, i: usize, hit: &rag::help::HelpHit) -> std::fmt::Result {
+    write!(out, "\n{} {}\n", help_cite::placeholder(i), hit.url)?;
+    for link in &hit.app_links {
+        writeln!(out, "画面: [{}]({})", inline_text(&link.label), link.path)?;
+    }
+    for image in &hit.images {
+        writeln!(out, "図: ![{}]({})", inline_text(&image.alt), image.url)?;
+    }
+    let label = label(&hit.title, &hit.heading_path);
+    writeln!(
+        out,
+        "{}",
+        document_envelope::wrap(&label, &help_cite::defuse(&hit.snippet))
+    )
+}
+
+fn citation_of(hit: rag::help::HelpHit) -> HelpCitation {
+    HelpCitation {
+        cite_id: 0,
+        corpus_version: hit.corpus_version,
+        chunk_id: hit.chunk_id,
+        title: hit.title,
+        heading_path: hit.heading_path,
+        snippet: hit.snippet,
+        url: hit.url,
+        images: hit
+            .images
+            .into_iter()
+            .map(|i| help_cite::HelpImage {
+                url: i.url,
+                alt: i.alt,
+            })
+            .collect(),
+        app_links: hit
+            .app_links
+            .into_iter()
+            .map(|l| help_cite::HelpAppLink {
+                path: l.path,
+                label: l.label,
+            })
+            .collect(),
     }
 }
 
@@ -173,6 +168,54 @@ mod tests {
         assert!(!got.to_ascii_lowercase().contains("</document>"), "{got}");
         assert!(!got.contains("[H9]"), "{got}");
         assert!(got.starts_with("パスキー"), "{got}");
+    }
+
+    fn hit() -> rag::help::HelpHit {
+        rag::help::HelpHit {
+            corpus_version: "v".into(),
+            chunk_id: "c".into(),
+            title: "パスワードを設定・変更する".into(),
+            heading_path: vec!["手順".into()],
+            snippet: "「パスワードを変更」（①）を押します。".into(),
+            url: "https://h.example/help/a/#手順".into(),
+            images: vec![rag::help::HelpHitImage {
+                url: "https://h.example/help/media/a.png".into(),
+                alt: "ログイン方法の画面。[①] を押す".into(),
+            }],
+            app_links: vec![rag::help::HelpAppLink {
+                path: "/settings/security".into(),
+                label: "個人設定 › ログイン方法".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_hit_lists_page_screen_and_figure_outside_the_envelope() {
+        let mut out = String::new();
+        render_hit(&mut out, 0, &hit()).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[1],
+            format!(
+                "{} https://h.example/help/a/#手順",
+                help_cite::placeholder(0)
+            )
+        );
+        assert_eq!(
+            lines[2],
+            "画面: [個人設定 › ログイン方法](/settings/security)"
+        );
+        assert_eq!(
+            lines[3],
+            "図: ![ログイン方法の画面。［①］ を押す](https://h.example/help/media/a.png)"
+        );
+        assert!(lines[4].starts_with("<document"), "{out}");
+        assert!(out.contains("（①）を押します"), "{out}");
+
+        let c = citation_of(hit());
+        assert_eq!(c.images[0].url, "https://h.example/help/media/a.png");
+        assert_eq!(c.app_links[0].path, "/settings/security");
+        assert_eq!(c.cite_id, 0);
     }
 
     #[test]
