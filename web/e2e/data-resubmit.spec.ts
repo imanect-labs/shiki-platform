@@ -104,12 +104,17 @@ async function fixAndResubmit(p: Page, tableId: string, recId: string, amount: s
   const patched = p.waitForResponse((r) => r.url().includes(`/records/${recId}`) && r.request().method() === "PATCH");
   await p.keyboard.press("Enter");
   expect((await patched).status()).toBe(200);
-  // 状態のセル（金額から 2 つ右）を開くと、進め先は「申請中」だけ。
-  await p.mouse.click(cell.x, cell.y);
-  await p.keyboard.press("ArrowRight");
-  await p.keyboard.press("ArrowRight");
-  await p.keyboard.press("Enter");
+  // 状態のセル（金額から 2 つ右）を開くと、進め先は「申請中」だけ。確定の後は編集の欄が閉じて表が描き直されるので、
+  // 閉じきってから開き、描き直しの途中でクリックとキーが届かなかったときは開き直す（速い機械では続けて押すと届かない）。
+  await expect(editor).toHaveCount(0);
   const menu = p.getByTestId("transition-editor");
+  await expect(async () => {
+    await p.mouse.click(cell.x, cell.y);
+    await p.keyboard.press("ArrowRight");
+    await p.keyboard.press("ArrowRight");
+    await p.keyboard.press("Enter");
+    await expect(menu).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
   await expect(menu.getByRole("option")).toHaveText(["申請中"], { timeout: 15_000 });
   if (SHOTS) await p.screenshot({ path: `${SHOTS}/${shot}` });
   const moved = p.waitForResponse((r) => r.url().endsWith(`/records/${recId}/transition`) && r.request().method() === "POST");

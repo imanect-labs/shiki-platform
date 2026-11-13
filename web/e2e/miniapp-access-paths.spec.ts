@@ -304,6 +304,9 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
 
       // 写しのテーブルを「追加だけ」で共有すると、開いたままの画面で押したときに確かめ直して動き、2 件足す。
       await shareTable(page, copies.id, bobId, "submitter");
+      // 押したときの確かめ直しは、前の確かめが 2 秒より新しければ使い回す（二度押しで問い直さない・use-my-access.ts の
+      // RECHECK_ON_PRESS_MS）。速い機械では画面を開いてから 2 秒が経たないうちに押し直すので、その間を空ける。
+      await bob.waitForTimeout(2_100);
       await figure.getByRole("button", { name: "写す" }).click();
       await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
       await expect(figure.getByRole("status").filter({ hasText: "起動しました" })).toBeVisible({ timeout: 15_000 });
