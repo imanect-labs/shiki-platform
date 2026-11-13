@@ -132,6 +132,32 @@ pub struct HelpCitation {
     pub heading_path: Vec<String>,
     pub snippet: String,
     pub url: String,
+    /// 節の図（公開ヘルプの画像の絶対 URL と説明）。回答に `![説明](URL)` で入れてよい図で、
+    /// 表示は回答の画像の代理取得（出所の判定はサーバ・`chat::answer_images`）を通る。
+    /// 図・画面を持たない旧データ（この項目の追加前に保存された回答）は空。
+    #[serde(default)]
+    pub images: Vec<HelpImage>,
+    /// そのページの操作を行う Shiki の画面（アプリ内のパス・1 ページに複数あり得る）。
+    #[serde(default)]
+    pub app_links: Vec<HelpAppLink>,
+}
+
+/// ヘルプの図。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(export)]
+pub struct HelpImage {
+    pub url: String,
+    pub alt: String,
+}
+
+/// ヘルプのページに対応する Shiki の画面。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema, ts_rs::TS)]
+#[ts(export)]
+pub struct HelpAppLink {
+    /// アプリ内のパス（`/settings/security` など。コーパスの読み込みで静的なパスだけに絞っている）。
+    pub path: String,
+    /// 画面の呼び名（`個人設定 › ログイン方法` など）。
+    pub label: String,
 }
 
 #[cfg(test)]
@@ -146,6 +172,8 @@ mod tests {
             heading_path: vec!["手順".into()],
             snippet: "抜粋".into(),
             url: "https://shiki.imanect.app/help/a/#step".into(),
+            images: vec![],
+            app_links: vec![],
         }
     }
     #[test]

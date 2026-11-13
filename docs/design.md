@@ -1093,8 +1093,10 @@ help receipt/case・本人確認カードは PR4、purge/監視は PR5。help_re
   起動時に専用メモリ Tantivy/Lindera 索引を作り、本人 AuthContext の EmbeddingProvider で
   query を埋め込み、dense と BM25 を RRF で融合する。モデル不一致・推論失敗はログとメトリクスを
   残して keyword へ縮退する。未同梱なら help_search は提示しない。
-  出典は専用 HelpCitation/台帳で `[H1]` と表示し、サーバ設定の base URL と検証済み相対 URL
-  から生成した節リンク、題名・見出し・抜粋を保持する。運用手順は `docs/help-corpus.md`。
+  出典は専用 HelpCitation/台帳で `[H1]` と採番し（本文では押すと節を開く番号チップ）、サーバ設定の
+  base URL と検証済み相対 URL から生成した節リンク、題名・見出し・抜粋、節の図（公開ヘルプの画像 URL・
+  回答の画像の代理取得で表示）、そのページの操作を行う Shiki の画面（アプリ内パス・複数可）を保持する。
+  運用手順は `docs/help-corpus.md`。
 - **管理ダッシュボードは2枚**:
   ①**顧客管理者**（shiki web の通常ページ。SaaS/オンプレ共通）: メンバー/ロール・モデルカタログ/予算・
   使用量（org/ユーザー/アプリ/ワークフロー別）・監査ビューア＋エクスポート（管理者とは独立した監査閲覧ロール
