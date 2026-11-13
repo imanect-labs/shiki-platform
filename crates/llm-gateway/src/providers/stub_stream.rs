@@ -88,6 +88,24 @@ pub(super) fn truncated_text_stream(reply: &str, prompt_tokens: u64) -> DeltaStr
     text_stream_with_stop(reply, prompt_tokens, StopReason::MaxTokens)
 }
 
+/// 思考だけを流して出力上限で止まるストリーム（本文もツール呼び出しも無い `MaxTokens`）。
+pub(super) fn thinking_only_stream(thinking: &str, prompt_tokens: u64) -> DeltaStream {
+    stream::iter([
+        Ok(StreamDelta::ThinkingDelta {
+            text: thinking.to_string(),
+        }),
+        Ok(StreamDelta::Done {
+            stop_reason: StopReason::MaxTokens,
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens: 1,
+                ..Default::default()
+            },
+        }),
+    ])
+    .boxed()
+}
+
 fn text_stream_with_stop(reply: &str, prompt_tokens: u64, stop_reason: StopReason) -> DeltaStream {
     let words: Vec<String> = reply
         .split_inclusive(char::is_whitespace)
