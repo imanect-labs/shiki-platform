@@ -148,6 +148,20 @@ pub(crate) async fn emit_tool_events(
         content: outcome.content.clone(),
     })
     .await?;
+    if let Some((report_id, rev)) = &outcome.bug_report_draft {
+        sink.emit(AgentEvent::BugReportDraft {
+            report_id: report_id.clone(),
+            rev: *rev,
+        })
+        .await?;
+    }
+    if let Some(receipt) = &outcome.help_search_receipt {
+        sink.emit(AgentEvent::HelpSearchReceipt {
+            tool_call_id: call.id.clone(),
+            receipt: receipt.clone(),
+        })
+        .await?;
+    }
     for cite in &outcome.help_citations {
         sink.emit(AgentEvent::HelpCitation(cite.clone())).await?;
     }

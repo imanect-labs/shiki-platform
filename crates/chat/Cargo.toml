@@ -10,6 +10,7 @@ version = "0.0.0"
 name = "chat"
 
 [dependencies]
+shiki-bug-report.workspace = true
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 # AI ノート共同編集ツール document.edit / document.read（Task 11P.4）。

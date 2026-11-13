@@ -23,6 +23,7 @@ mod job_lease;
 mod opts;
 mod run_model;
 pub use opts::parse_timezone;
+mod bug_report_tool;
 mod search_scope;
 mod sink;
 /// 生成の枠と承認待ちの保留（検証 C-P1-3）。
@@ -67,6 +68,7 @@ pub struct ChatWorker {
     store: ChatStore,
     gateway: LlmGateway,
     search: Option<Arc<SearchService>>,
+    bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
     help_search: Option<Arc<rag::help::HelpSearchService>>,
     /// サンドボックス（code_interpreter 用）。未配線なら code_interpreter ツールを提示しない。
     sandbox: Option<Arc<dyn agent_core::Sandbox>>,
@@ -152,9 +154,19 @@ impl ChatWorker {
             office_creator,
             office_engine,
             data: None,
+            bug_report: None,
             help_search: None,
             config: Arc::new(config),
         }
+    }
+
+    #[must_use]
+    pub fn with_bug_report(
+        mut self,
+        service: Option<Arc<shiki_bug_report::BugReportService>>,
+    ) -> Self {
+        self.bug_report = service;
+        self
     }
 
     /// 同梱ヘルプがある構成でだけ専用ツールを提示する。
@@ -437,7 +449,8 @@ impl ChatWorker {
             fencing,
             cancel.clone(),
         )
-        .with_checkpoints(run.autonomous);
+        .with_checkpoints(run.autonomous)
+        .with_help(self.bug_report.clone(), &ctx);
 
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
         // ツール発火を裁量する（挨拶等は検索しない・generative UI も通常チャットで出る。issue #102）。

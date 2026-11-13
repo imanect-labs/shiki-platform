@@ -59,6 +59,18 @@ pub enum AgentEvent {
     /// 引用（doc_search）。
     Citation(Citation),
     HelpCitation(crate::help_cite::HelpCitation),
+    /// 内部の検索証拠。chat sink が本人用 case 参照へ変換する。
+    HelpSearchReceipt {
+        tool_call_id: String,
+        receipt: crate::tool::HelpSearchReceipt,
+    },
+    HelpCaseRef {
+        case_id: String,
+    },
+    BugReportDraft {
+        report_id: String,
+        rev: i64,
+    },
     /// ツールが保存した成果物（code_interpreter）。chat 側で FileRef へ写す。
     Artifact {
         tool_call_id: String,

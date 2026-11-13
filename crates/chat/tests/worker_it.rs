@@ -985,3 +985,6 @@ async fn ui_reference_is_offered_only_when_yui_is_enabled() {
         "yui が無効なら ui_reference は提示しない"
     );
 }
+
+#[path = "worker_it/bug_report.rs"]
+mod bug_report;
