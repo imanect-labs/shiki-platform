@@ -89,6 +89,8 @@ pub struct ParamsIssue {
     pub path: String,
     /// 人向けメッセージ（serde の文言は日本語へ直す・型名や英語の文言を含めない）。
     pub message: String,
+    /// 書ける値・項目の候補（serde の「expected one of …」から拾う・LLM 向けの詳細・HD-2）。無ければ空。
+    pub expected: Vec<String>,
 }
 
 /// ノードの params の誤りの上限（1 つのブロックあたり・応答を膨らませない）。
@@ -105,6 +107,7 @@ fn issues_as<T: DeserializeOwned>(
         return faults
             .into_iter()
             .map(|f| ParamsIssue {
+                expected: expected_values(&f.raw),
                 path: format!("/params{}", crate::ir::schema_faults::pointer(&f.at)),
                 message: humanize(&f.raw),
             })
@@ -113,6 +116,7 @@ fn issues_as<T: DeserializeOwned>(
     match parse::<T>(raw) {
         Ok(parsed) => cross(parsed).err().into_iter().collect(),
         Err(message) => vec![ParamsIssue {
+            expected: Vec::new(),
             path: "/params".to_string(),
             message,
         }],
@@ -122,6 +126,30 @@ fn issues_as<T: DeserializeOwned>(
 /// 項目どうしの検査の無い型。
 fn issues_of<T: DeserializeOwned>(raw: &Value) -> Vec<ParamsIssue> {
     issues_as::<T>(raw, |_| Ok(()))
+}
+
+/// 候補の上限（1 件の誤りあたり・応答を膨らませない）。
+pub(crate) const MAX_EXPECTED: usize = 20;
+
+/// serde の「使えない項目・選択肢にない値」の文言から、書ける項目・値の候補を拾う（LLM 向けの詳細・HD-2）。
+///
+/// `unknown field `port`, expected one of `from`, `from_port`` → `["from", "from_port"]`。
+/// `expected `a` or `b`` の形も拾う。型の誤り（`expected a string`）は候補を持たないので空。
+/// 人向けの文言（[`humanize`]）は英語を出さないので、候補はここで別に持ち、AI への観測にだけ添える。
+pub(crate) fn expected_values(raw: &str) -> Vec<String> {
+    let msg = raw.split(" at line ").next().unwrap_or(raw);
+    if !(msg.starts_with("unknown field ") || msg.starts_with("unknown variant ")) {
+        return Vec::new();
+    }
+    let Some((_, list)) = msg.split_once(", expected ") else {
+        return Vec::new();
+    };
+    list.split('`')
+        .skip(1)
+        .step_by(2)
+        .take(MAX_EXPECTED)
+        .map(str::to_string)
+        .collect()
 }
 
 /// serde の英語の文言を利用者向けの日本語へ（項目名だけを拾い、型名・英語の文言を出さない・検証 N11）。
@@ -215,6 +243,7 @@ pub(crate) fn params_issues_with(
             // Stage A は inline のみ（実行時 unsupported を保存時に前倒しで弾く・偽装しない）。
             if p.source.artifact.is_some() {
                 return Err(ParamsIssue {
+                    expected: Vec::new(),
                     path: "/params/source/artifact".to_string(),
                     message: "script.run の artifact 参照は Stage A では未対応です".to_string(),
                 });
@@ -261,6 +290,33 @@ pub fn parse<T: DeserializeOwned>(raw: &Value) -> Result<T, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn expected_values_pick_the_listed_names() {
+        assert_eq!(
+            expected_values("unknown field `port`, expected one of `from`, `from_port`, `to` at line 1 column 9"),
+            vec!["from", "from_port", "to"]
+        );
+        assert_eq!(
+            expected_values("unknown variant `explode`, expected `fail_run` or `continue`"),
+            vec!["fail_run", "continue"]
+        );
+        assert_eq!(
+            expected_values("unknown field `x`, expected `a`"),
+            vec!["a"]
+        );
+        assert!(expected_values("unknown field `x`, there are no fields").is_empty());
+        assert!(expected_values("invalid type: string \"a\", expected u32").is_empty());
+        assert!(expected_values("missing field `prompt`").is_empty());
+        let many = (0..30)
+            .map(|i| format!("`f{i}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            expected_values(&format!("unknown field `x`, expected one of {many}")).len(),
+            MAX_EXPECTED
+        );
+    }
 
     #[test]
     fn unknown_field_reports_pointer_path() {

@@ -114,6 +114,10 @@ fn format_validation_errors(errors: &[ValidationError], ir: &serde_json::Value) 
         } else if let Some(path) = &e.path {
             let _ = write!(out, "（path: {path}）");
         }
+        // serde が挙げる書ける項目・値（人向けの文言には出さない英語の詳細・HD-2）。
+        if !e.candidates.is_empty() {
+            let _ = write!(out, " 書けるもの: {}", e.candidates.join(", "));
+        }
         out.push('\n');
     }
     let hints = guide::validation_hints(errors, ir);
@@ -858,5 +862,26 @@ mod tests {
         let text = format_validation_errors(&errors, &ir);
         assert!(text.contains("[ir.region_leak]"), "{text}");
         assert!(text.contains("（edge: inner -> after）"), "{text}");
+    }
+
+    /// 使えない項目・選択肢にない値の誤りには、serde が挙げる書けるものを添える（線を `port` と書く誤り・T12）。
+    #[test]
+    fn validation_errors_list_the_expected_names() {
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "a", "type": "storage.read", "params": { "file": "x" } },
+                { "id": "b", "type": "storage.read", "params": { "file": "y" } }
+            ],
+            "edges": [{ "from": "a", "port": "out", "to": "b" }]
+        });
+        let errors = workflow_engine::validate(&ir, &Catalog::default()).unwrap_err();
+        let text = format_validation_errors(&errors, &ir);
+        let line = text
+            .lines()
+            .find(|l| l.contains("項目 'port' は使えません"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(line.contains(" 書けるもの: "), "{line}");
+        assert!(line.contains("from_port"), "{line}");
     }
 }

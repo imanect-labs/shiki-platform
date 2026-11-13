@@ -45,6 +45,7 @@ impl CsvQueryParams {
         };
         if too_many_tables(items.len()) {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/tables".to_string(),
                 message: format!(
                     "つなぐ CSV は {MAX_EXTRA_TABLES} 個までです（{} 個あります）。減らしてください。",
@@ -76,6 +77,7 @@ impl CsvQueryParams {
                 }
             };
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: format!("/params/tables/{i}/name"),
                 message: format!(
                     "{} つ目のつなぐ CSV（tables）の SQL での名前「{name}」は使えません。{why}。",

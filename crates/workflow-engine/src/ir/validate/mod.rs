@@ -89,6 +89,14 @@ pub struct ValidationError {
     /// IR 内の位置（`/params/...` の JSON Pointer 風・該当時）。dnd がフォームフィールドへ写像する。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// 書ける値・項目の候補（serde の「expected one of …」から拾う・LLM 向けの詳細・HD-2）。
+    ///
+    /// 人向けの文言は英語や型の名前を出さない（検証 N11）ので、候補は文言に入れず、AI への観測（emit_workflow）
+    /// にだけ添える。API・エディターには出さない（応答の形を変えない）。
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schema(ignore)]
+    pub candidates: Vec<String>,
 }
 
 impl ValidationError {
@@ -99,7 +107,15 @@ impl ValidationError {
             node_id: None,
             edge: None,
             path: None,
+            candidates: Vec::new(),
         }
+    }
+
+    /// 書ける値・項目の候補を添える（AI への観測にだけ出す・HD-2）。
+    #[must_use]
+    pub fn with_candidates(mut self, candidates: Vec<String>) -> Self {
+        self.candidates = candidates;
+        self
     }
 
     #[must_use]
@@ -312,7 +328,8 @@ pub fn validate(
             errors.push(
                 ValidationError::new(v1_schema::SCHEMA_VIOLATION, params_message(&issue.message))
                     .at_node(&node.id)
-                    .at_path(issue.path),
+                    .at_path(issue.path)
+                    .with_candidates(issue.expected),
             );
         }
     }

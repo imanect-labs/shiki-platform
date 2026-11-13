@@ -228,6 +228,7 @@ pub enum RoutedValue<'a> {
 
 fn issue(path: impl Into<String>, message: impl Into<String>) -> ParamsIssue {
     ParamsIssue {
+        expected: Vec::new(),
         path: path.into(),
         message: message.into(),
     }

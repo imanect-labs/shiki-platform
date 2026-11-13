@@ -49,6 +49,7 @@ impl DataQueryParams {
         let max = data::MAX_QUERY_LIMIT;
         match self.query.as_ref().and_then(|q| q.limit) {
             Some(limit) if !(1..=max).contains(&limit) => Err(ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/query/limit".to_string(),
                 message: format!("「読む件数の上限」は 1〜{max} 件にしてください。"),
             }),
@@ -138,6 +139,7 @@ impl DataRecordUpsertParams {
             if let ValueExpr::Literal(Value::Object(m)) = &self.data {
                 if !m.contains_key(key) {
                     return Err(ParamsIssue {
+                        expected: Vec::new(),
                         path: "/params/data".to_string(),
                         message: format!(
                             "「入れる値」に、同じレコードを探す列「{key}」の値を入れてください。"
@@ -170,6 +172,7 @@ fn check_add(
         Some(ValueExpr::Literal(add)) => add,
         Some(ValueExpr::Template(_)) => {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/add".to_string(),
                 message: "「足す数」に文章の組み立ては使えません（組み立てた値は文字になります）。列ごとに数を並べてください。".to_string(),
             });
@@ -181,6 +184,7 @@ fn check_add(
             return Ok(());
         }
         return Err(ParamsIssue {
+            expected: Vec::new(),
             path: "/params/add".to_string(),
             message: "「足す数」は、列ごとに数を並べてください。".to_string(),
         });
@@ -193,12 +197,14 @@ fn check_add(
         let at = format!("/params/add/{k}");
         if match_on == Some(k.as_str()) {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: at,
                 message: format!("同じレコードを探す列「{k}」には足せません。"),
             });
         }
         if written.is_some_and(|m| m.contains_key(k)) {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: at,
                 message: format!(
                     "「{k}」が「{values_label}」と「足す数」の両方にあります。どちらか一方にしてください。"
@@ -211,6 +217,7 @@ fn check_add(
             Ok(ValueExpr::Template(_))
         ) {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: at,
                 message: format!(
                     "「足す数」の「{k}」に文章の組み立ては使えません（組み立てた値は文字になり、足せません）。数か、数を指す参照（入力・前のブロックの出力）にしてください。減らすときは負の数を参照します。"
@@ -223,6 +230,7 @@ fn check_add(
             .is_some_and(|o| o.contains_key("$from") || o.contains_key("$template"));
         if !v.is_number() && !is_expr {
             return Err(ParamsIssue {
+                expected: Vec::new(),
                 path: at,
                 message: format!("「足す数」の「{k}」には数を入れてください。"),
             });

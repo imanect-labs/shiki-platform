@@ -141,6 +141,7 @@ impl HttpRequestParams {
     pub fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
         self.check_headers()?;
         let issue = |message: String| ParamsIssue {
+            expected: Vec::new(),
             path: "/params/url".to_string(),
             message,
         };
@@ -178,6 +179,7 @@ impl HttpRequestParams {
         let secret_header = self.secret_header();
         if let Some(name) = secret_header {
             check_secret_header_on(HeaderSurface::Block, name).map_err(|refused| ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/secret/attach/header".to_string(),
                 message: refused.into_message(),
             })?;
@@ -198,6 +200,7 @@ impl HttpRequestParams {
             .collect();
         check_headers(HeaderSurface::Block, &entries, secret_header).map_err(|refused| {
             ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/headers".to_string(),
                 message: refused.into_message(),
             }
@@ -229,6 +232,7 @@ impl ScriptSourceSpec {
         match (self.inline.is_some(), self.artifact.is_some()) {
             (true, false) | (false, true) => Ok(()),
             _ => Err(ParamsIssue {
+                expected: Vec::new(),
                 path: "/params/source".to_string(),
                 message: "source は inline / artifact のどちらか一方を指定してください".to_string(),
             }),
@@ -275,6 +279,7 @@ mod tests {
 
     fn issue(path: &str, message: &str) -> Result<(), ParamsIssue> {
         Err(ParamsIssue {
+            expected: Vec::new(),
             path: path.to_string(),
             message: message.to_string(),
         })

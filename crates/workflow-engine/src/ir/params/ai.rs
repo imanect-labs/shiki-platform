@@ -76,6 +76,7 @@ impl LlmInvokeParams {
         };
         crate::ir::output_schema::check_saved_output_schema(schema, patterns).map_err(|issue| {
             super::ParamsIssue {
+                expected: Vec::new(),
                 path: format!("/params/output_schema{}", issue.path),
                 message: issue.message,
             }

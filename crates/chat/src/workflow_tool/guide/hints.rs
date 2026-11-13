@@ -56,18 +56,34 @@ pub(in crate::workflow_tool) fn validation_hints(errors: &[ValidationError], ir:
             "ブロックの形: nodes の要素 = {NODE_SHAPE}（? は省略可・それ以外のキーは書けない）。"
         );
     }
+    let mut omitted: Vec<&str> = Vec::new();
     for nt in types {
         if let Some(shape) = params_shape(nt) {
-            let _ = writeln!(
-                out,
-                "{} の params の形（? は省略可）: {}",
+            let line = format!(
+                "{} の params の形（? は省略可）: {}\n",
                 nt.as_str(),
                 shape.render()
             );
+            // 合計の上限を超える種は形を添えず、名前だけを挙げる（観測を膨らませない・HD-2）。
+            if out.chars().count() + line.chars().count() > MAX_HINTS_CHARS {
+                omitted.push(nt.as_str());
+                continue;
+            }
+            out.push_str(&line);
         }
+    }
+    if !omitted.is_empty() {
+        let _ = writeln!(
+            out,
+            "（長くなるため {} の params の形は省きました。上の誤りを直してから、もう一度保存して確かめてください）",
+            omitted.join(", ")
+        );
     }
     out
 }
+
+/// 補足の合計の文字数の上限（形の 1 行がこれを超えるなら、その種の形は添えない・HD-2）。
+const MAX_HINTS_CHARS: usize = 4_000;
 
 /// 位置（ブロックの中の位置）がブロックの設定（params）の下か。
 fn under_params(path: Option<&str>) -> bool {
@@ -226,5 +242,48 @@ mod tests {
         let h = validation_hints(&errors, &ir);
         assert!(h.contains(&format!("nodes の要素 = {NODE_SHAPE}")), "{h}");
         assert!(!h.contains("storage.read の params の形"), "{h}");
+    }
+
+    /// params の形の補足は合計 4,000 字までにし、入らない種は名前だけを挙げる（T12・HD-2）。
+    #[test]
+    fn params_shapes_are_capped_in_total() {
+        // 契約のある種を全部並べる（形の合計は上限を超える）。
+        let types: Vec<&str> = NodeType::ALL
+            .iter()
+            .filter(|nt| params_shape(**nt).is_some())
+            .map(|nt| nt.as_str())
+            .collect();
+        let nodes: Vec<Value> = types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| serde_json::json!({ "id": format!("n{i}"), "type": t, "params": {} }))
+            .collect();
+        let ir = serde_json::json!({ "nodes": nodes });
+        let errors: Vec<ValidationError> = (0..types.len())
+            .map(|i| {
+                ValidationError::new("ir.schema_violation", "x")
+                    .at_node(format!("n{i}"))
+                    .at_path("/params")
+            })
+            .collect();
+        let h = validation_hints(&errors, &ir);
+        let (shapes, note) = h
+            .rsplit_once("（長くなるため ")
+            .unwrap_or_else(|| panic!("{h}"));
+        assert!(
+            shapes.chars().count() <= MAX_HINTS_CHARS,
+            "{}",
+            shapes.chars().count()
+        );
+        let (listed, _) = note
+            .split_once(" の params の形は省きました")
+            .unwrap_or_else(|| panic!("{note}"));
+        let omitted: Vec<&str> = listed.split(", ").collect();
+        assert!(!omitted.is_empty());
+        // 省いた種は形を添えず、名前だけを挙げる（どの種も、形か名前のどちらか一方で 1 回だけ出る）。
+        for t in &types {
+            let shown = shapes.contains(&format!("{t} の params の形"));
+            assert_ne!(shown, omitted.contains(t), "{t}: {h}");
+        }
     }
 }

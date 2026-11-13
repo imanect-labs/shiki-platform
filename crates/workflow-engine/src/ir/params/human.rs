@@ -217,6 +217,7 @@ impl HumanApprovalParams {
     pub fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
         let issue = |path: &str, message: String| {
             Err(ParamsIssue {
+                expected: Vec::new(),
                 path: format!("/params/{path}"),
                 message,
             })

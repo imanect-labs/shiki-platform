@@ -71,6 +71,60 @@ pub(super) fn skill_default_unchecked(name: &str, version: &str, model: &str) ->
     )
 }
 
+/// 参照の候補の上限（secret・skill・応答を膨らませない）。
+const MAX_REF_CANDIDATES: usize = 20;
+
+/// 候補を `見出し: a, b ほか n 件` の 1 文にする（0 件は `none`）。
+fn listed(heading: &str, items: &[String], none: &str) -> String {
+    if items.is_empty() {
+        return none.to_string();
+    }
+    let shown = items
+        .iter()
+        .take(MAX_REF_CANDIDATES)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match items.len().checked_sub(MAX_REF_CANDIDATES) {
+        Some(rest) if rest > 0 => format!("{heading}: {shown} ほか {rest} 件"),
+        _ => format!("{heading}: {shown}"),
+    }
+}
+
+/// 使える secret の参照名（保存する人が登録したもの・[`Catalog::secrets`]）の候補。
+fn secret_candidates(catalog: &Catalog) -> String {
+    let names: Vec<String> = catalog.secrets.keys().cloned().collect();
+    listed(
+        "使える secret",
+        &names,
+        "使える secret がありません。先に secret を登録してください",
+    )
+}
+
+/// インストール済みの skill の参照（`skill:<name>@<version>`）の候補。同じ名前の skill が入っていれば、その版だけを
+/// 挙げる（版の書き誤りを直す）。無ければ全部を挙げる。
+fn skill_candidates(catalog: &Catalog, name: &str) -> String {
+    let refs = |name: &str, versions: &std::collections::BTreeSet<String>| {
+        versions
+            .iter()
+            .map(|v| format!("skill:{name}@{v}"))
+            .collect::<Vec<_>>()
+    };
+    let items = match catalog.skills.get(name) {
+        Some(versions) if !versions.is_empty() => refs(name, versions),
+        _ => catalog
+            .skills
+            .iter()
+            .flat_map(|(n, vs)| refs(n, vs))
+            .collect(),
+    };
+    listed(
+        "インストール済みの skill",
+        &items,
+        "インストール済みの skill はありません",
+    )
+}
+
 /// workflow.start の相手が見つからない（無い・見えない・BUG-107）。
 pub(super) const UNKNOWN_WORKFLOW: &str = "ir.unknown_workflow";
 
@@ -130,7 +184,8 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
                                 "ir.unknown_skill",
                                 format!(
                                     "skill {name}@{version} はインストールされていません\
-                                     （レジストリからインストールしてください）"
+                                     （レジストリからインストールしてください。{}）",
+                                    skill_candidates(catalog, name)
                                 ),
                             )
                             .at_node(&node.id)
@@ -166,8 +221,12 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
         };
         let Some(allowed_hosts) = catalog.secrets.get(name) else {
             errors.push(
-                ValidationError::new("ir.unknown_secret", format!("未知の secret: {name}"))
-                    .at_node(&node.id),
+                ValidationError::new(
+                    "ir.unknown_secret",
+                    format!("未知の secret: {name}（{}）", secret_candidates(catalog)),
+                )
+                .at_node(&node.id)
+                .at_path("/params/secret/name"),
             );
             continue;
         };
@@ -344,5 +403,85 @@ mod tests {
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].code, UNKNOWN_WORKFLOW);
         assert!(start_errors("retry-loop", "other-flow", &["other-flow"]).is_empty());
+    }
+
+    /// 未知の secret は、保存する人が使える secret の名前を候補に挙げ、名前の欄を指す（T12・HD-2）。
+    #[test]
+    fn unknown_secret_lists_the_usable_names() {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["http.egress"],
+            "nodes": [{ "id": "h", "type": "http.request",
+                "params": { "url": "https://api.slack.com/x", "secret": { "name": "slak" } } }],
+            "edges": []
+        }))
+        .unwrap();
+        let mut catalog = Catalog::default();
+        let mut errors = Vec::new();
+        v4_refs(&ir, &catalog, &mut errors);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].message.contains("使える secret がありません"),
+            "{errors:?}"
+        );
+
+        catalog
+            .secrets
+            .insert("slack".into(), vec!["api.slack.com".into()]);
+        catalog
+            .secrets
+            .insert("github".into(), vec!["api.github.com".into()]);
+        let mut errors = Vec::new();
+        v4_refs(&ir, &catalog, &mut errors);
+        assert_eq!(errors[0].code, "ir.unknown_secret");
+        assert_eq!(errors[0].path.as_deref(), Some("/params/secret/name"));
+        assert!(
+            errors[0].message.contains("使える secret: github, slack"),
+            "{errors:?}"
+        );
+    }
+
+    /// 未知の skill は、同じ名前が入っていればその版を、無ければ入っている skill を候補に挙げる（T12・HD-2）。
+    #[test]
+    fn unknown_skill_lists_the_installed_refs() {
+        let mut catalog = Catalog::default();
+        let errs = skill_errors(&catalog);
+        assert!(
+            errs[0]
+                .message
+                .contains("インストール済みの skill はありません"),
+            "{errs:?}"
+        );
+
+        catalog
+            .skills
+            .entry("expense".into())
+            .or_default()
+            .insert("1".into());
+        let errs = skill_errors(&catalog);
+        assert!(
+            errs[0]
+                .message
+                .contains("インストール済みの skill: skill:expense@1"),
+            "{errs:?}"
+        );
+
+        catalog
+            .skills
+            .entry("memo".into())
+            .or_default()
+            .insert("2.0.0".into());
+        let errs = skill_errors(&catalog);
+        assert_eq!(errs[0].code, "ir.unknown_skill");
+        assert!(errs[0].message.contains("skill:memo@2.0.0"), "{errs:?}");
+        assert!(!errs[0].message.contains("expense"), "{errs:?}");
+    }
+
+    /// 候補は 20 件までにし、残りの数を言う。
+    #[test]
+    fn candidates_are_capped() {
+        let items: Vec<String> = (0..25).map(|i| format!("s{i:02}")).collect();
+        let text = listed("使える secret", &items, "");
+        assert!(text.ends_with("s19 ほか 5 件"), "{text}");
+        assert!(!text.contains("s20"), "{text}");
     }
 }

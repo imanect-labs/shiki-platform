@@ -165,12 +165,14 @@ impl WaitParams {
     pub fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
         let deny = |field: &str| {
             Err(ParamsIssue {
+                expected: Vec::new(),
                 path: format!("/params/{field}"),
                 message: format!("wait({}) では {field} は指定できません", self.kind_str()),
             })
         };
         let require = |field: &str| {
             Err(ParamsIssue {
+                expected: Vec::new(),
                 path: format!("/params/{field}"),
                 message: format!("wait({}) には {field} が必要です", self.kind_str()),
             })
@@ -227,6 +229,7 @@ impl WaitParams {
                 if let Some(scope) = &self.scope {
                     if !scope.is_object() {
                         return Err(ParamsIssue {
+                            expected: Vec::new(),
                             path: "/params/scope".to_string(),
                             message: "wait(event) の scope はオブジェクトで指定してください"
                                 .to_string(),

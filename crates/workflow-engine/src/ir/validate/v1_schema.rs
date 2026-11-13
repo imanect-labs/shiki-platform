@@ -15,7 +15,7 @@
 use serde_json::Value;
 
 use super::{params_message, ValidationError};
-use crate::ir::params::{humanize, params_issues_with};
+use crate::ir::params::{expected_values, humanize, params_issues_with};
 use crate::ir::patterns::PatternBudget;
 use crate::ir::schema_faults::{faults_within, pointer, Budget, Fault};
 use crate::ir::{Edge, Node, Trigger, WorkflowIr};
@@ -147,7 +147,8 @@ fn node_errors(
     };
     for f in faults_within::<Node>(n, MAX_PER_PART, budget) {
         out.push(place(
-            ValidationError::new(SCHEMA_VIOLATION, humanize(&f.raw)),
+            ValidationError::new(SCHEMA_VIOLATION, humanize(&f.raw))
+                .with_candidates(expected_values(&f.raw)),
             &pointer(&f.at),
         ));
     }
@@ -162,7 +163,8 @@ fn node_errors(
     let params = n.get("params").cloned().unwrap_or(Value::Null);
     for issue in params_issues_with(nt, &params, patterns) {
         out.push(place(
-            ValidationError::new(SCHEMA_VIOLATION, params_message(&issue.message)),
+            ValidationError::new(SCHEMA_VIOLATION, params_message(&issue.message))
+                .with_candidates(issue.expected),
             &issue.path,
         ));
     }
@@ -171,7 +173,8 @@ fn node_errors(
 /// 全体・線・きっかけの誤り（位置は IR の根から）。
 fn at_absolute(f: &Fault, prefix: &str) -> ValidationError {
     let path = format!("{prefix}{}", pointer(&f.at));
-    let err = ValidationError::new(SCHEMA_VIOLATION, humanize(&f.raw));
+    let err = ValidationError::new(SCHEMA_VIOLATION, humanize(&f.raw))
+        .with_candidates(expected_values(&f.raw));
     if path.is_empty() {
         err
     } else {
@@ -394,5 +397,41 @@ mod tests {
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].code, SCHEMA_VIOLATION);
         assert_eq!(errs[0].path, None);
+    }
+
+    /// 使えない項目・選択肢にない値の誤りには、serde が挙げる候補を AI 向けの詳細として持つ（人向けの文言には
+    /// 出さない・T12・HD-2）。型の誤りは候補を持たない。
+    #[test]
+    fn schema_errors_carry_the_expected_candidates() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "a", "type": "storage.read", "params": { "file": "x", "bogus": 1 } },
+                { "id": "b", "type": "storage.read", "params": { "file": "y" }, "on_error": "explode" }
+            ],
+            "edges": [{ "from": "a", "port": "out", "to": "b" }]
+        });
+        let errs = validate(&ir, &Catalog::default()).unwrap_err();
+        let at = |path: &str| {
+            errs.iter()
+                .find(|e| e.path.as_deref() == Some(path))
+                .expect("その位置の誤りがある")
+        };
+        let edge = at("/edges/0/port");
+        assert!(edge.candidates.iter().any(|c| c == "from_port"), "{edge:?}");
+        assert!(!edge.message.contains("from_port"), "{edge:?}");
+        let param = at("/params/bogus");
+        assert_eq!(param.node_id.as_deref(), Some("a"));
+        assert!(param.candidates.iter().any(|c| c == "file"), "{param:?}");
+        let variant = at("/on_error");
+        assert!(
+            variant.candidates.iter().any(|c| c == "continue"),
+            "{variant:?}"
+        );
+        // 候補は API の応答（JSON）に出さない。
+        assert!(serde_json::to_value(edge)
+            .unwrap()
+            .get("candidates")
+            .is_none());
     }
 }
