@@ -63,10 +63,25 @@ pub(super) fn response_body(bytes: &[u8], secret: Option<&ResolvedSecretView>) -
     Value::String(text)
 }
 
-/// llm_invoke ポートの出力から停止理由を外す（node の出力の形は `{ text, model }`・ポートの任意のキー）。
+/// llm_invoke ポートの出力から停止理由を外す（instructions だけの skill.invoke の出力の形は `{ text, model }`・
+/// ポートの任意のキー）。
 pub(super) fn without_stop_reason(mut out: Value) -> Value {
     if let Value::Object(map) = &mut out {
         map.remove("stop_reason");
+    }
+    out
+}
+
+/// 出力の形の無い llm.invoke の出力に停止理由を必ず置く（ポートが返さなければ自然終了の `end_turn`）。
+///
+/// 打ち切り（`max_tokens`）・拒否（`refusal`）も成功のまま（D-78 (7)）で、後ろの分岐が `/stop_reason` で読み分ける。
+/// 停止理由を返さないポート（既存の fake）や、停止理由を外していた前の版が残した効果の記録（GAP-28）の答えでも、
+/// 参照が解決できるように埋める（カタログの出力の形では、`output_schema` が無ければ必ずある項目）。
+pub(super) fn with_stop_reason(mut out: Value) -> Value {
+    if let Value::Object(map) = &mut out {
+        if !map.get("stop_reason").is_some_and(Value::is_string) {
+            map.insert("stop_reason".into(), Value::String("end_turn".into()));
+        }
     }
     out
 }
@@ -133,10 +148,7 @@ impl CapabilityNodeExecutor {
                     let (out, repaired) = self.invoke_structured(ec, req, schema).await?;
                     Ok((out, Some(repaired)))
                 }
-                None => Ok((
-                    without_stop_reason(self.ports.llm_invoke(ec, req).await?),
-                    None,
-                )),
+                None => Ok((self.ports.llm_invoke(ec, req).await?, None)),
             }
         };
         let (out, called) = super::outbound::llm_once(
@@ -147,6 +159,12 @@ impl CapabilityNodeExecutor {
             call,
         )
         .await?;
+        // 記録した答えを返すときも同じ形にする（停止理由を外していた前の版の記録にも置く）。
+        let out = if schema.is_none() {
+            with_stop_reason(out)
+        } else {
+            out
+        };
         // 記録した結果を返したとき（前の実行が呼んだ）は、監査を残さない（いま呼んでいない）。
         let Some(repaired) = called else {
             return Ok(out);
@@ -436,7 +454,7 @@ pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{attach_secret, is_json_body, parse_body};
+    use super::{attach_secret, is_json_body, parse_body, with_stop_reason, without_stop_reason};
     use crate::ir::params::{SecretAttach, SecretAttachKind};
     use serde_json::json;
 
@@ -536,6 +554,27 @@ mod tests {
         assert_eq!(
             attach_secret(Some(&unnamed), "tok"),
             ("Authorization".to_string(), "tok".to_string())
+        );
+    }
+
+    /// 出力の形の無い llm.invoke の停止理由: ポートの値はそのまま、無い（文字でない）ときは end_turn。
+    #[test]
+    fn plain_llm_output_always_has_a_stop_reason() {
+        let cut = json!({ "text": "途中", "model": "m", "stop_reason": "max_tokens" });
+        assert_eq!(with_stop_reason(cut.clone()), cut);
+        for out in [
+            json!({ "text": "t", "model": "m" }),
+            json!({ "text": "t", "model": "m", "stop_reason": null }),
+        ] {
+            assert_eq!(
+                with_stop_reason(out),
+                json!({ "text": "t", "model": "m", "stop_reason": "end_turn" })
+            );
+        }
+        // skill.invoke（instructions だけ）は従来どおり外す。
+        assert_eq!(
+            without_stop_reason(cut),
+            json!({ "text": "途中", "model": "m" })
         );
     }
 }

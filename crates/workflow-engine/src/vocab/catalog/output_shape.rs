@@ -230,6 +230,14 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                     "output_schema を書いたとき・その形で検証済みの値",
                     present_if = "/output_schema"
                 ),
+                // 出力の形が無ければ、打ち切り・拒否も成功のまま（D-78 (7)）なので、後ろの分岐が読み分ける項目を出す
+                // （ポートが返さなければ end_turn で埋める・`capability_ai::with_stop_reason`）。
+                opt!(
+                    "stop_reason",
+                    "\"end_turn\" | \"max_tokens\" | \"refusal\" | \"other\"",
+                    "output_schema を書いていないとき・max_tokens は答えの長さの上限で途中で切れた答え、refusal は AI が回答を断った答えで、どちらも失敗にはならない",
+                    absent_if = "/output_schema"
+                ),
             ],
             "",
         ),

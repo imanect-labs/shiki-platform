@@ -403,12 +403,20 @@
      "optional": true,
      "present_if": "/output_schema",
      "type": "unknown"
+    },
+    {
+     "absent_if": "/output_schema",
+     "name": "stop_reason",
+     "note": "output_schema を書いていないとき・max_tokens は答えの長さの上限で途中で切れた答え、refusal は AI が回答を断った答えで、どちらも失敗にはならない",
+     "optional": true,
+     "present_if": "",
+     "type": "\"end_turn\" | \"max_tokens\" | \"refusal\" | \"other\""
     }
    ],
    "output_ports": [
     "out"
    ],
-   "output_shape": "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }",
+   "output_shape": "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値）, stop_reason?: \"end_turn\" | \"max_tokens\" | \"refusal\" | \"other\"（output_schema を書いていないとき・max_tokens は答えの長さの上限で途中で切れた答え、refusal は AI が回答を断った答えで、どちらも失敗にはならない） }",
    "port_rule": "static",
    "required_scope": null,
    "step_cache": null,

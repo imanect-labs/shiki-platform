@@ -3005,6 +3005,80 @@ async fn llm_failure_then_success_on_the_same_step_keeps_both_usage_rows() {
     h.cleanup_runs().await;
 }
 
+/// 出力の形の無い llm.invoke は、本番のポートと stub で停止理由を出力に載せ、後ろの分岐が `/stop_reason` で読み分け
+/// られる（上限で切れても成功のまま・D-78 (7)）。stub の `fail:`（資料の後ろの行の頭でもよい）は、再試行しない
+/// 失敗（`invalid`・1 回で確定）になる。
+#[tokio::test]
+async fn llm_plain_output_carries_the_stop_reason_and_fail_is_permanent() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let ir = |name: &str, prompt: &str| {
+        json!({
+            "ir_version": 1, "name": name, "declared_scopes": [],
+            "nodes": [
+                { "id": "ai", "type": "llm.invoke", "params": { "prompt": prompt } },
+                { "id": "br", "type": "control.branch", "params": {
+                    "condition": { "cmp": {
+                        "left": { "$from": "nodes.ai.output", "path": "/stop_reason" },
+                        "op": "eq", "right": "max_tokens" } } } },
+                { "id": "cut", "type": "llm.invoke", "params": { "prompt": "切れた答えを知らせる" } },
+                { "id": "whole", "type": "llm.invoke", "params": { "prompt": "答えを使う" } }
+            ],
+            "edges": [
+                { "from": "ai", "to": "br" },
+                { "from": "br", "from_port": "true", "to": "cut" },
+                { "from": "br", "from_port": "false", "to": "whole" }
+            ]
+        })
+    };
+    for (name, prompt, stop, taken, skipped) in [
+        ("llm-plain-end", "要約して", "end_turn", "whole", "cut"),
+        (
+            "llm-plain-truncated",
+            "truncate:長い説明",
+            "max_tokens",
+            "cut",
+            "whole",
+        ),
+    ] {
+        let (run_id, status) = h
+            .run_to_completion(&ir(name, prompt), &json!({}), Arc::clone(&executor))
+            .await;
+        assert_eq!(status, RunStatus::Succeeded, "{name}");
+        let (output, _) = h.step_output(run_id).await;
+        assert_eq!(output["stop_reason"], stop, "{output}");
+        assert_eq!(output["model"], "stub", "{output}");
+        let steps = h.step_map(run_id).await;
+        assert_eq!(steps.get(taken), Some(&StepStatus::Succeeded), "{name}");
+        assert_eq!(steps.get(skipped), Some(&StepStatus::Skipped), "{name}");
+    }
+
+    let (run_id, status) = h
+        .run_to_completion(
+            &ir(
+                "llm-plain-fail",
+                "〔p.1〕資料の本文\nfail: 失敗の出口を通す",
+            ),
+            &json!({}),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "invalid", "{err}");
+    assert_eq!(err["retryable"], false, "{err}");
+    let attempts: i32 = sqlx::query_scalar(
+        "SELECT attempt FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'ai'",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(attempts, 1, "送り直さない失敗は 1 回で確定する");
+    h.cleanup_runs().await;
+}
+
 // ------- Test 12: ai.decide（FEAT-1）-------------------------------------------
 
 /// 問い合わせの種類で振り分ける判定（値で・しきい値 0.8）と、出口ごとの合流ノード。

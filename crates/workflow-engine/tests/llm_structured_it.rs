@@ -1,7 +1,7 @@
 //! llm.invoke の構造化出力（`output_schema`・GAP-13）の executor の順序（fake ポート・DB 不要）。
 //!
 //! 検証: 出力の data・ポートへ渡る閉じたスキーマと思考の深さ・1 回だけの修復（会話・会計の接尾辞）・
-//! 直しても合わないときの llm_output_invalid・上限と拒否は直さずに失敗・自由な本文から停止理由を外す。
+//! 直しても合わないときの llm_output_invalid・上限と拒否は直さずに失敗・自由な本文には停止理由を載せる（無ければ end_turn）。
 
 #![allow(
     clippy::unwrap_used,
@@ -294,7 +294,8 @@ async fn truncated_and_refused_outputs_are_not_repaired() {
     assert_eq!(code(&res), "llm_output_truncated");
 }
 
-/// 停止理由を返さないポート（既存の fake）は自然終了とみなす。自由な本文の出力からは停止理由を外す。
+/// 停止理由を返さないポート（既存の fake）は自然終了とみなす。自由な本文の出力には停止理由を載せる（上限で切れても
+/// 拒否でも成功のまま・D-78 (7)）。返さないポートの出力は end_turn で埋める（後ろの分岐の参照が解決できる）。
 #[tokio::test]
 async fn plain_output_keeps_its_shape() {
     let ports = ScriptedLlm::new(vec![
@@ -302,17 +303,27 @@ async fn plain_output_keeps_its_shape() {
     ]);
     let res = run(&ports, &Arc::new(Audit::default()), &params()).await;
     assert!(res.ok, "{:?}", res.error);
+    assert!(res.output.get("stop_reason").is_none(), "{}", res.output);
+    let plain = json!({ "prompt": "要約して" });
     let ports = ScriptedLlm::new(vec![reply("途中まで", "max_tokens")]);
-    let res = run(
-        &ports,
-        &Arc::new(Audit::default()),
-        &json!({ "prompt": "要約して" }),
-    )
-    .await;
+    let res = run(&ports, &Arc::new(Audit::default()), &plain).await;
     assert!(res.ok, "自由な本文は上限で切れても従来どおり成功");
-    assert_eq!(res.output, json!({ "text": "途中まで", "model": "m1" }));
+    assert_eq!(
+        res.output,
+        json!({ "text": "途中まで", "model": "m1", "stop_reason": "max_tokens" })
+    );
     let reqs = ports.reqs();
     assert!(reqs[0].output_schema.is_none() && reqs[0].effort.is_none());
+    let ports = ScriptedLlm::new(vec![reply("お答えできません", "refusal")]);
+    let res = run(&ports, &Arc::new(Audit::default()), &plain).await;
+    assert!(res.ok, "自由な本文は拒否でも従来どおり成功");
+    assert_eq!(res.output["stop_reason"], "refusal");
+    let ports = ScriptedLlm::new(vec![json!({ "text": "要約です", "model": "m1" })]);
+    let res = run(&ports, &Arc::new(Audit::default()), &plain).await;
+    assert_eq!(
+        res.output,
+        json!({ "text": "要約です", "model": "m1", "stop_reason": "end_turn" })
+    );
 }
 
 /// 保存を通らない形の出力の形は、実行時にも送らずに失敗する（多層防御）。

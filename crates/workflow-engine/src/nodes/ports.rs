@@ -438,7 +438,8 @@ pub trait NodePorts: Send + Sync {
     ///
     /// 返す Value は `{ text, model, stop_reason? }`。`model` は解決後の論理モデル名（実際に使ったモデル・会計と
     /// 同じ名前）で、executor が監査に使う。`stop_reason`（`end_turn`・`max_tokens`・`refusal` など）は任意で、
-    /// 無ければ自然終了とみなす。node の出力には載せない。
+    /// 無ければ自然終了とみなす。node の出力に載せるのは `output_schema` の無い llm.invoke だけ（無ければ `end_turn`
+    /// で埋める）で、`output_schema` のある llm.invoke と skill.invoke の出力には載せない。
     ///
     /// 会計の冪等キー（engine.md §7.2-7.3）:
     /// - 使えた呼び出しは `idempotency_key` ＋ `call_suffix`（1 回目は step のキー・修復は `#c1`）。

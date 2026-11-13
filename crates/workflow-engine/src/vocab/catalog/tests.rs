@@ -129,10 +129,12 @@ fn output_shape_is_defined_exactly_for_stage_a_nodes() {
             .find(|e| e.node_type == nt)
             .unwrap()
     };
-    // 出力の形（output_schema）を書いたときだけ、検証済みの data が付く（GAP-13）。
+    // 出力の形（output_schema）を書いたときだけ、検証済みの data が付く（GAP-13）。書いていなければ、停止理由が付く。
     assert_eq!(
         find(NodeType::LlmInvoke).output_shape,
-        "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }"
+        "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値）, \
+         stop_reason?: \"end_turn\" | \"max_tokens\" | \"refusal\" | \"other\"（output_schema を書いていないとき・\
+         max_tokens は答えの長さの上限で途中で切れた答え、refusal は AI が回答を断った答えで、どちらも失敗にはならない） }"
     );
 }
 
@@ -239,6 +241,11 @@ fn fields_that_depend_on_params_say_where() {
     assert_eq!(absent_if(NodeType::DataQuery, "items"), "/query/aggregate");
     assert_eq!(absent_if(NodeType::DataQuery, "count"), "/query/aggregate");
     assert_eq!(absent_if(NodeType::DataQuery, "groups"), "");
+    // 出力の形を書いた llm.invoke は停止理由を出さない（打ち切り・拒否は失敗になる・GAP-13）。
+    assert_eq!(
+        absent_if(NodeType::LlmInvoke, "stop_reason"),
+        "/output_schema"
+    );
     for e in &catalog {
         for f in e.output_fields {
             for at in [f.present_if, f.absent_if] {
