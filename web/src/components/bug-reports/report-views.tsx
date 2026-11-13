@@ -154,8 +154,20 @@ export function ReportList({ admin = false }: { admin?: boolean }) {
           }
         }
       }
-      loaded.current = items.length;
-      setData({ items, next_cursor: page.next_cursor });
+      const truncated = items.length < loaded.current && page.next_cursor;
+      setData((previous) => {
+        if (!truncated || !previous) {
+          loaded.current = items.length;
+          return { items, next_cursor: page.next_cursor };
+        }
+        // 上限で取り切れなかった表示済みの範囲は、前回の値とカーソルのまま残す。
+        const merged = [
+          ...items,
+          ...previous.items.filter((item) => !ids.has(item.id)),
+        ];
+        loaded.current = merged.length;
+        return { items: merged, next_cursor: previous.next_cursor };
+      });
       setError("");
     } catch (e) {
       setData(null);

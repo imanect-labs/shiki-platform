@@ -232,6 +232,37 @@ for (const admin of [false, true]) {
   });
 }
 
+test("21 ページ以上表示しても自動更新で表示済みの範囲を失わない", async ({ page }) => {
+  await loginReport(page);
+  await page.clock.install();
+  // 1 ページ 2 件 × 25 ページ。自動更新の取り直し上限（20 ページ）を超える。
+  const items = Array.from({ length: 50 }, (_, i) => ({
+    id: `report-${i}`, title: `報告 ${i}`, status: "pending_approval", rev: 1,
+  }));
+  await page.route("**/api/bug-reports*", async (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get("cursor");
+    const start = cursor ? Number(cursor) : 0;
+    return route.fulfill({ json: {
+      items: items.slice(start, start + 2),
+      next_cursor: start + 2 < items.length ? String(start + 2) : null,
+    } });
+  });
+  await page.goto("/bug-reports");
+  const reports = page.locator('main li a[href*="/bug-reports/report-"]');
+  await expect(reports).toHaveCount(2);
+  for (let n = 4; n <= 46; n += 2) {
+    await page.getByRole("button", { name: "続きを表示" }).click();
+    await expect(reports).toHaveCount(n);
+  }
+  items[0] = { ...items[0], title: "更新された報告" };
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(reports.first()).toContainText("更新された報告");
+  await expect(reports).toHaveCount(46);
+  await page.getByRole("button", { name: "続きを表示" }).click();
+  await expect(reports).toHaveCount(48);
+  await expect(reports.last()).toContainText("報告 47");
+});
+
 test("下書きは自動更新でも編集と同意を保持し保存・取り下げできる", async ({
   page,
 }) => {
