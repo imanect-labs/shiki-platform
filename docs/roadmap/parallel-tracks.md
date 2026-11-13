@@ -3,7 +3,7 @@
 > フェーズの直線（Phase 0→8）に乗らない作業を、トラックごとにまとめる。
 > 各トラックは独立した起動タイミングを持ち、対応する基盤フェーズが安定してから着手する。
 > タスク粒度は各 Phase ファイルと同じ**イシュー粒度**（1タスク=1 GitHub Issue）。
-> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR / ASR / JTD）を使う。
+> task ID はトラック接頭辞（SK / V2 / SAAS / GUI2 / BR / ASR / JTD / AB）を使う。
 > 関連: [要件定義書](../requirements.md)（6. スコープ外/将来, FR-1.1 skillex 連携）/ [設計書](../design.md) / [ROADMAP](../roadmap.md)
 
 ---
@@ -666,3 +666,84 @@
   - [ ] JTD をアップロードすると RAG 検索でヒットする
   - [ ] rendition の閲覧可否が原本 node の ReBAC に完全に従う（negative 含む）
   - [ ] 原本 JTD が変換・編集のどちらでも書き換わらない
+
+---
+
+## トラックAB — エージェントブラウザ（接頭辞 AB.x）
+
+- **目的**: エージェントが Web ページをたどり・フォームを送り・JS で描画されるページも扱えるようにする。
+  既定は JS を実行しない自前のテキストエンジン、JS が要るページだけ隔離した Chromium に切り替える（ハイブリッド）。
+  設計は [docs/agent/browser.md](../agent/browser.md)（設計 issue #1264）。
+- **タイミング**: Phase 4・5 の後ならいつでも（依存は web_fetch の取得関門・サンドボックスの gVisor ティア・承認ゲート）。
+  着手前に browser.md §12 の「決めること」（トレイト境界・ツール名・承認ポリシ・Chromium の実行場所・egress の公開 Web モード）を human と決める。
+- **状況**: PoC（2026-11）まで。評価サイトで成功率 24/24、所要時間・トークン・CPU はテキストエンジン単独並み（browser.md §10）。
+- ⚠️ 落とし穴: [PIT-79〜83](../design-caveats.md)（持ち出し経路の拡大・cookie の受け渡し・リダイレクトと Chromium の通信経路・Chromium の隔離・JS 必須の判定）。
+
+### タスク一覧
+
+| ID | タイトル | area | 依存 |
+|----|---------|------|------|
+| AB.1 | `BrowserEngine` トレイト・`BrowserSession`・共通スナップショット形式（`crates/browser`） | agent | 5.x |
+| AB.2 | テキストエンジン（public_fetch 経由・リダイレクト毎検証・フォーム・cookie jar） | agent | AB.1 |
+| AB.3 | `browser` ツール（読む操作）＋承認・egress・出所による URL の絞り込み | agent / chat | AB.2 |
+| AB.4 | Chromium エンジン（隔離実行・egress の公開 Web モード・資源上限） | sandbox | AB.1, 4.x |
+| AB.5 | ハイブリッド切替（`needs_js`・cookie の受け渡し・主文書の受け渡し） | agent | AB.2, AB.4 |
+| AB.6 | `browser_act`（POST 送信・JS ボタン）と承認ダイアログ | agent / frontend | AB.3, AB.5 |
+| AB.7 | 評価セット `eval/agent-browser/`（評価サイト・注入ページ・実サイト測定） | agent | AB.3 |
+| AB.8 | ログイン（シークレット参照の入力）とプロファイルの持ち越し（後続） | agent | AB.6, 10.x（secrets） |
+
+### Task AB.1: `BrowserEngine` トレイト・`BrowserSession`・共通スナップショット形式
+- **area**: agent / **path**: `crates/browser/`（新規）
+- **仕様**: browser.md §3・§4。エンジンは cookie jar を持たず、`BrowserSession`（run 単位）が持つ。
+  ref はエンジン接頭辞＋世代内連番で、古い ref は拒否する。
+- **受け入れ条件**:
+  - [ ] トレイト境界を human が承認している（browser.md §12-1）
+  - [ ] 共通形式のスナップショットがテキストエンジン・Chromium の両方から作れる（フェイク実装でテスト）
+
+### Task AB.2: テキストエンジン
+- **area**: agent / **path**: `crates/browser/`
+- **仕様**: browser.md §8。取得は `tools/public_fetch`、文字コードは web_fetch の `decode` を共有。
+- **受け入れ条件**:
+  - [ ] リダイレクトの 1 回ごとに検証し直す（私的アドレス・リンクローカルへのリダイレクトを拒否・PIT-81）
+  - [ ] 巨大 DOM で他の run を止めない（`spawn_blocking`・要素数上限）
+
+### Task AB.3: `browser` ツール（読む操作）
+- **area**: agent / chat / **path**: `crates/agent-core/src/tools/`, `crates/chat/`
+- **仕様**: browser.md §6。語彙追加・`is_egress`・`READ_ONLY`・`RESEARCH_TOOLS`・同一ホストの直列化。
+- **受け入れ条件**:
+  - [ ] 出所に無い URL の `navigate` が承認なしに通信しない（PIT-79）
+  - [ ] スナップショットが `<web_page>` 封筒に包まれ、ページ由来の値が封筒の外に出ない（PIT-56）
+
+### Task AB.4: Chromium エンジン
+- **area**: sandbox / **path**: 決定（browser.md §12-4）による
+- **仕様**: browser.md §7。1 run 1 プロセス・gVisor・egress プロキシ 1 か所・資源上限。
+- **受け入れ条件**:
+  - [ ] Chromium からの直接接続（WebRTC・リテラル IP）が通らない（PIT-81）
+  - [ ] プロセスを run 間で共有しない・上限超過が他の run に波及しない（PIT-82）
+
+### Task AB.5: ハイブリッド切替
+- **area**: agent / **path**: `crates/browser/`
+- **仕様**: browser.md §5。
+- **受け入れ条件**:
+  - [ ] ログイン後に JS が要るページへ切り替えて操作を続けられる
+  - [ ] host-only・Secure・HttpOnly の属性が切替で失われない／主文書の要求が 2 回届かない（PIT-80）
+
+### Task AB.6: `browser_act`
+- **area**: agent / frontend
+- **仕様**: browser.md §6.1。承認ダイアログに宛先ホストと送る値（パスワードは伏せる）。
+- **受け入れ条件**:
+  - [ ] Auto モードでも POST 送信・JS ボタンは承認なしに通信しない（PIT-79）
+
+### Task AB.7: 評価セット
+- **area**: agent / **path**: `eval/agent-browser/`
+- **仕様**: PoC の評価サイト（静的・検索・ページ送り・ログイン・SPA・JS ボタン・フォーム・注入）を移植し、
+  部分 JS ページ・ログイン後の SPA・ワンタイムリンクを足す。CI では回さない（実 LLM を使うため）。
+- **受け入れ条件**:
+  - [ ] 成功率・手数・トークン・所要時間・ピークメモリをエンジン別に出せる
+
+### Task AB.8: ログインとプロファイル（後続）
+- **area**: agent / **path**: `crates/browser/`, `crates/secrets/`
+- **仕様**: browser.md §9。パスワードは LLM に通さず、シークレット参照から入力欄へ直接入れる（宛先束縛）。
+- **受け入れ条件**:
+  - [ ] パスワードの値がモデルの入力・ツール結果・ログのどこにも現れない
+
