@@ -82,7 +82,10 @@ test("手動報告：空状態、同意、確認、未設定で保留、キー�
     page.getByText("保留（外部には未送信）", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("外部には送信していません。", { exact: false }),
+    page.getByText(
+      "外部には送信していません。送り先の設定後、本人による再確認が必要です。",
+      { exact: true },
+    ),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "下書きを保存" })).toHaveCount(
     0,
