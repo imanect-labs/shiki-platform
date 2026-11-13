@@ -389,9 +389,10 @@ export async function deleteFgaTuples(page: Page, tuples: FgaTuple[]): Promise<v
   }
 }
 
-/// テーブルを `userId` の editor にし、外す関数を返す。テーブルの共有はまだ画面にも API にも無い（作った人だけが
-/// owner になる）ので、サーバと同じ OpenFGA の store にタプルを直接書く（名前は authz の Namespace と同じ
-/// `<型>:<tenant>|<id>`）。
+/// テーブルを `userId` の editor にし、外す関数を返す。サーバと同じ OpenFGA の store にタプルを直接書く（名前は
+/// authz の Namespace と同じ `<型>:<tenant>|<id>`）。テーブルの共有には API（`PUT /api/data/tables/{id}/shares`）と
+/// 画面もあるが、これは共有の検証（相手が同じテナントのディレクトリに居るか）と監査を通らずにタプルだけを作る。
+/// 共有の道そのものを確かめる spec と、新しく書く spec は API で共有する（web/e2e/campaign/world.ts の `shares`）。
 export async function grantTableEditor(
   page: Page,
   tenant: string,

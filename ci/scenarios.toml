@@ -418,3 +418,12 @@ e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec
 pages = ["web/src/app/reference/**"]
 crates = []
 e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
+
+# ワークフロー／アプリ品質向上キャンペーンの APP の E2E（docs/workflow/quality-campaign.md §7・APP-01〜12）。
+# 共通部品（web/e2e/campaign/）は web/e2e 直下の spec 以外なので、paths で受けてこのシナリオだけを回す
+# （受けないと E2E を全部回す）。試験用のファイルは web/e2e/campaign/fixtures/ に置く（web/e2e/fixtures/ は [all]）。
+# APP は表・検索・CSV・画面の図を通しで使うので、それぞれのクレートの変更でも回す。
+[scenario.campaign]
+paths = ["web/e2e/campaign/**"]
+crates = ["shiki-data", "shiki-rag", "shiki-tabular", "shiki-yui"]
+e2e = ["campaign-app11.spec.ts"]
