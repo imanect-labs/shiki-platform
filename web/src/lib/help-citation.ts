@@ -52,3 +52,33 @@ export function citedHelpIds(text: string): Set<number> {
   }
   return ids;
 }
+
+/// ヘルプの図を、出所の本文と同じ形（`![](url)`）にする（lib/answer-images の出所に足す）。
+/// 図の URL はサーバが同梱コーパスの相対パスと設定の origin から組んだもの。抜粋の文に書かれた
+/// 画像は数えない。表示は回答の画像の代理取得（サーバ側でも同じ出所を判定する）を通る。
+export function helpImageTexts(citations: readonly HelpCitation[]): string[] {
+  return citations.flatMap((c) => (c.images ?? []).map((i) => `![](${i.url})`));
+}
+
+/// 回答のリンクを確認なしで開いてよいヘルプのホスト（#1143）。URL はサーバが組んだもので、
+/// モデルや文書が書いた文字列ではない。
+export function helpLinkHosts(citations: readonly HelpCitation[]): string[] {
+  const out = new Set<string>();
+  for (const c of citations) {
+    const url = safeHelpUrl(c.url);
+    if (url) out.add(new URL(url).host.toLowerCase().replace(/\.$/, "").replace(/^www\./, ""));
+  }
+  return [...out];
+}
+
+/// 回答で引いたヘルプのページに対応する Shiki の画面（パスの重複を除き、引いた順）。
+export function helpAppLinks(citations: readonly HelpCitation[]): { path: string; label: string }[] {
+  const out = new Map<string, { path: string; label: string }>();
+  for (const c of citations) {
+    for (const l of c.app_links ?? []) {
+      // サーバの検証と同じく、同一オリジンの静的なパスだけ。
+      if (/^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/.test(l.path) && !out.has(l.path)) out.set(l.path, l);
+    }
+  }
+  return [...out.values()];
+}

@@ -45,16 +45,21 @@ fn context(tenant: &str) -> AuthContext {
     )
 }
 fn fixture() -> (tempfile::TempDir, HelpConfig) {
+    fixture_with(&json!({}))
+}
+/// チャンクに項目を足した（上書きした）コーパス。
+fn fixture_with(extra: &serde_json::Value) -> (tempfile::TempDir, HelpConfig) {
     let dir = tempfile::tempdir().unwrap();
     let version = "a".repeat(40);
     let text = "設定からパスキーを登録します。";
-    let chunks = format!(
-        "{}\n",
-        json!({"schema_version":1,"corpus_version":version,
+    let mut chunk = json!({"schema_version":1,"corpus_version":version,
         "page_id":"security/passkey","chunk_id":"b".repeat(64),"title":"パスキーの登録",
         "heading_path":["手順"],"relative_url":"/help/security/passkey/#手順", "text":text,
-        "status":"reviewed","content_sha256":hash(text.as_bytes())})
-    );
+        "status":"reviewed","content_sha256":hash(text.as_bytes())});
+    for (k, v) in extra.as_object().unwrap() {
+        chunk[k] = v.clone();
+    }
+    let chunks = format!("{chunk}\n");
     let manifest = json!({"schema_version":1,"corpus_id":"shiki-help", "corpus_version":version,
         "source_commit":version,"visibility":"public","inclusion":"reviewed/final",
         "chunk_count":1,"asset_count":0,"chunks_bytes":chunks.len(),"chunks_sha256":hash(chunks.as_bytes())});
@@ -250,6 +255,58 @@ fn rejects_unlisted_chunks_and_vectors_even_with_updated_file_digest() {
             )
             .is_err(),
             "{kind}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn figures_and_app_screens_come_from_the_corpus_and_the_configured_origin() {
+    let (_dir, config) = fixture_with(&json!({
+        "images":[{"relative_url":"/help/media/security/images/passkey--add.png","alt":"ログイン方法の画面"}],
+        "app_links":[{"path":"/settings/security","label":"個人設定 › ログイン方法"},{"path":"/","label":"ホーム"}]
+    }));
+    let s = load(config, "model-v1", false);
+    let hit = &s.search(&context("a"), "パスキー", 1).await.unwrap()[0];
+    assert_eq!(
+        hit.images[0].url,
+        "https://shiki.imanect.app/help/media/security/images/passkey--add.png"
+    );
+    assert_eq!(hit.images[0].alt, "ログイン方法の画面");
+    assert_eq!(hit.app_links.len(), 2);
+    assert_eq!(hit.app_links[0].path, "/settings/security");
+}
+#[test]
+fn rejects_figures_and_app_screens_outside_the_contract() {
+    let image = |u: &str| json!({"images":[{"relative_url":u,"alt":"x"}]});
+    let link = |p: &str| json!({"app_links":[{"path":p,"label":"画面"}]});
+    for extra in [
+        image("https://evil.example/a.png"),
+        image("/help/security/passkey/"),
+        image("/help/media/../secret.png"),
+        image("/help/media/a.svg"),
+        image("/help/media/a%2e.png"),
+        link("https://evil.example/"),
+        link("//evil.example/x"),
+        link("/\\evil.example"),
+        link("/api/threads"),
+        link("/auth/logout"),
+        link("/login"),
+        link("/settings/security?x=1"),
+        link("/settings/"),
+        link(""),
+        json!({"app_links":[{"path":"/drive","label":""}]}),
+    ] {
+        let (_dir, config) = fixture_with(&extra);
+        assert!(
+            HelpSearchService::load(
+                config,
+                Arc::new(Embed {
+                    version: "model-v1",
+                    fail: false
+                })
+            )
+            .is_err(),
+            "{extra}"
         );
     }
 }

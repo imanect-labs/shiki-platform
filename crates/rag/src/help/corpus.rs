@@ -60,6 +60,22 @@ pub struct HelpChunk {
     pub text: String,
     pub status: String,
     pub content_sha256: String,
+    /// その節の図（公開ヘルプの `/help/media/…`）。旧コーパスには無い。
+    #[serde(default)]
+    pub images: Vec<HelpChunkImage>,
+    /// そのページの操作を行う Shiki の画面（1 ページに複数あり得る）。旧コーパスには無い。
+    #[serde(default)]
+    pub app_links: Vec<HelpAppLink>,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct HelpChunkImage {
+    pub relative_url: String,
+    pub alt: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct HelpAppLink {
+    pub path: String,
+    pub label: String,
 }
 /// ビルド時に作る密ベクトル契約。コーパス原本の manifest は変更しない。
 #[derive(Debug, Deserialize, Serialize)]
@@ -167,12 +183,73 @@ pub(super) fn load(
             return Err(invalid("chunk field limits"));
         }
         validate_relative_url(&chunk.relative_url)?;
+        validate_images(&chunk.images)?;
+        validate_app_links(&chunk.app_links)?;
         chunks.push(chunk);
     }
     if chunks.len() != manifest.chunk_count {
         return Err(invalid("chunk count mismatch"));
     }
     Ok((manifest, chunks))
+}
+/// 図はヘルプの公開画像（`/help/media/` 配下の画像ファイル）だけ。数と説明の長さも縛る。
+fn validate_images(images: &[HelpChunkImage]) -> Result<(), RagError> {
+    if images.len() > 20 {
+        return Err(invalid("too many images"));
+    }
+    for image in images {
+        validate_relative_url(&image.relative_url)?;
+        let lower = image.relative_url.to_ascii_lowercase();
+        if !lower.starts_with("/help/media/")
+            || lower.contains('#')
+            || !lower
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+            || ![".png", ".jpg", ".jpeg", ".webp", ".gif"]
+                .iter()
+                .any(|ext| lower.ends_with(ext))
+            || image.alt.chars().count() > 600
+            || image.alt.chars().any(char::is_control)
+        {
+            return Err(invalid("image"));
+        }
+    }
+    Ok(())
+}
+/// Shiki の画面は同一オリジンの静的なパスだけ（`/settings/security` など）。外部・別オリジン（`//host`）・
+/// クエリ・BFF や認証の入口（押すだけで動作する GET がある）は拒否する。
+fn validate_app_links(links: &[HelpAppLink]) -> Result<(), RagError> {
+    if links.len() > 10 {
+        return Err(invalid("too many app links"));
+    }
+    for link in links {
+        let p = link.path.as_str();
+        let segments_ok = p == "/"
+            || (p.starts_with('/')
+                && !p.ends_with('/')
+                && p[1..].split('/').all(|seg| {
+                    !seg.is_empty()
+                        && seg
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                }));
+        let first = p
+            .get(1..)
+            .unwrap_or_default()
+            .split('/')
+            .next()
+            .unwrap_or_default();
+        if !segments_ok
+            || p.len() > 128
+            || matches!(first, "api" | "auth" | "login")
+            || link.label.trim().is_empty()
+            || link.label.chars().count() > 100
+            || link.label.chars().any(char::is_control)
+        {
+            return Err(invalid("app link"));
+        }
+    }
+    Ok(())
 }
 /// URL の解決前に正規化で消える traversal と外部参照を拒否する。
 pub(super) fn validate_relative_url(value: &str) -> Result<(), RagError> {
