@@ -224,7 +224,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::CsvQuery
         | ToolName::DataQuery
         | ToolName::DriveFind => true,
-        ToolName::Skill
+        ToolName::BugReportDraft
+        | ToolName::Skill
         | ToolName::SkillSearch
         | ToolName::QuoteCheck
         | ToolName::CodeInterpreter

@@ -143,6 +143,14 @@ pub struct CsvDraft {
     pub parent_id: Option<String>,
 }
 
+/// 実検索の成功直後だけ発行する内部証拠。本文・クエリは含めない。
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpSearchReceipt {
+    pub hit_count: u32,
+    pub corpus_versions: Vec<String>,
+    pub chunk_ids: Vec<String>,
+}
+
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome {
@@ -150,6 +158,8 @@ pub struct ToolOutcome {
     pub content: String,
     /// UI へ流す引用（doc_search のみ・他ツールは空）。
     pub citations: Vec<Citation>,
+    pub bug_report_draft: Option<(String, i64)>,
+    pub help_search_receipt: Option<HelpSearchReceipt>,
     pub help_citations: Vec<crate::help_cite::HelpCitation>,
     /// ツールが保存した成果物（code_interpreter のみ・他ツールは空）。
     pub artifacts: Vec<ArtifactRef>,
@@ -218,6 +228,8 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            bug_report_draft: None,
+            help_search_receipt: None,
             help_citations: Vec::new(),
             artifacts: Vec::new(),
             workflow_refs: Vec::new(),
@@ -240,6 +252,8 @@ impl ToolOutcome {
         ToolOutcome {
             content: content.into(),
             citations: Vec::new(),
+            bug_report_draft: None,
+            help_search_receipt: None,
             help_citations: Vec::new(),
             artifacts: Vec::new(),
             workflow_refs: Vec::new(),

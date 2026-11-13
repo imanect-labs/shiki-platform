@@ -359,6 +359,7 @@ pub(crate) fn build_sandbox(
 }
 
 #[allow(clippy::too_many_arguments)] // 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。
+#[allow(clippy::too_many_lines)] // 配線の composition root。追加した依存もこの関数に集約する。
 pub(crate) async fn wire_chat(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -377,6 +378,7 @@ pub(crate) async fn wire_chat(
     office_runtime: Option<&api::state::OfficeRuntime>,
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
+    bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -524,6 +526,7 @@ pub(crate) async fn wire_chat(
         worker_config,
     )
     .with_help_search(wire_help(config, search)?)
+    .with_bug_report(bug_report)
     // 構造化データは API・ワークフローと同じチョークポイントを共有する。
     .with_data((**data).clone())
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、

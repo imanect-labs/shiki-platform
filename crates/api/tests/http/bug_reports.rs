@@ -190,3 +190,69 @@ async fn bug_reports_http_manual_approval_conflicts_and_settings() {
         StatusCode::CONFLICT
     );
 }
+
+#[tokio::test]
+async fn help_case_http_requires_real_case_and_valid_resolution_body() {
+    let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put(
+            "default",
+            "sid-valid",
+            &session_record(now() + 3600, None, "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    let mut state = state_with(sessions, None);
+    state.bug_report = Some(Arc::new(BugReportService::new(
+        BugReportStore::new(pool),
+        Arc::new(AllowAll),
+    )));
+    let app = build_router(state);
+    let path = format!(
+        "/threads/{}/help-cases/{}",
+        uuid::Uuid::new_v4(),
+        uuid::Uuid::new_v4()
+    );
+    assert_eq!(
+        call(&app, "GET", &path, Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{path}/resolution"),
+            json!("unresolved")
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&app, "POST", &format!("{path}/report-intent"), Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{path}/resolution"),
+            json!({"unresolved":true})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}

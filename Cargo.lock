@@ -5390,6 +5390,7 @@ dependencies = [
  "shiki-agent-core",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-bug-report",
  "shiki-collab",
  "shiki-data",
  "shiki-durable",

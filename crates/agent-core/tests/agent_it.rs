@@ -108,6 +108,8 @@ impl Tool for MockSearchTool {
             .unwrap_or_default()
             .to_string();
         Ok(ToolOutcome {
+            help_search_receipt: None,
+            bug_report_draft: None,
             content: format!("検索結果: {query}"),
             help_citations: vec![],
             citations: vec![Citation {
