@@ -106,6 +106,7 @@ def test_a_changed_fingerprint_stops_before_anything_but_validate(world, monkeyp
 
     monkeypatch.setattr(cli, "ShikiClient", client)
     monkeypatch.setattr(cli, "load_catalog", catalog)  # ir_lint のバイナリの無い CI でも流す
+    monkeypatch.setattr(cli, "check_lint_fresh", lambda *a, **k: None)
     # 記録の指紋は V0 らしいもの（誤りなし）だが、いまのサーバーは誤りを返す。
     behavior.record("v0", sg_validator({"port_next": ["ir.unknown_port"]}))
     proxies = []

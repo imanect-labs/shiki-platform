@@ -332,6 +332,8 @@ def test_run_drops_windowed_tasks_before_the_plan(monkeypatch, capsys):
     monkeypatch.setattr(cli, "guard_version", lambda *a, **k: SimpleNamespace(recheck=lambda: None))
     monkeypatch.setattr(cli, "guard_behavior", lambda *a, **k: True)
     monkeypatch.setattr(cli, "load_catalog", recorded.catalog)
+    # ir_lint のバイナリの無い CI でも流す（計画・実行を差し替えるので採点は使わない）。
+    monkeypatch.setattr(cli, "check_lint_fresh", lambda *a, **k: None)
     monkeypatch.setattr(cli, "probe_node_types", lambda client, types: list(types))
     monkeypatch.setattr(cli, "_record_node_types", lambda *a: None)
     monkeypatch.setattr(cli, "in_scope", lambda tasks, *a, **k: (list(tasks), []))

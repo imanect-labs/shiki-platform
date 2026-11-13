@@ -244,6 +244,8 @@ def test_stub_run_errors_are_marked(monkeypatch):
         lambda api, user, **k: ShikiClient(api, user, transport=fake.transport()),
     )
     monkeypatch.setattr(cli, "load_catalog", catalog)
+    # ir_lint のバイナリの無い CI でも流す（採点は _execute ごと差し替えるので使わない）。
+    monkeypatch.setattr(cli, "check_lint_fresh", lambda *a, **k: None)
     monkeypatch.setattr(cli, "probe_node_types", lambda client, types: list(types))
     monkeypatch.setattr(cli, "in_scope", lambda tasks, *a, **k: (list(tasks), []))
     monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1})
