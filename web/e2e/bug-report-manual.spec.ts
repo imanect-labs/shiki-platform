@@ -212,8 +212,11 @@ for (const admin of [false, true]) {
     await page.getByRole("button", { name: "続きを表示" }).click();
     await expect(reports).toHaveCount(100);
     items[0] = { ...items[0], title: "更新された報告" };
+    // 追加表示した範囲（51 件目）の状態変化も自動更新で反映される。
+    items[50] = { ...items[50], status: "queued" };
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(reports.first()).toContainText("更新された報告");
+    await expect(reports.nth(50)).not.toContainText("管理者の確認待ち");
     await expect(reports).toHaveCount(100);
     const before = refreshes;
     await page.clock.fastForward(30_000);

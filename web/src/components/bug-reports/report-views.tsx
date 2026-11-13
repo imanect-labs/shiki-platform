@@ -129,24 +129,33 @@ function useRefresh(load: () => Promise<void>) {
 export function ReportList({ admin = false }: { admin?: boolean }) {
   const [data, setData] = useState<Schema["ReportPage"] | null>(null);
   const [error, setError] = useState("");
-  const expanded = useRef(false);
+  // 表示済みの件数。自動更新では、この件数に届くまでページをたどって状態を取り直す。
+  const loaded = useRef(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const load = useCallback(async () => {
+    const base = admin ? "/org-admin/bug-reports" : "/bug-reports";
     try {
-      const first = await request<Schema["ReportPage"]>(
-        admin ? "/org-admin/bug-reports" : "/bug-reports",
-      );
-      setData((previous) => {
-        if (!previous || !expanded.current) return first;
-        const ids = new Set(first.items.map((item) => item.id));
-        return {
-          items: [
-            ...first.items,
-            ...previous.items.filter((item) => !ids.has(item.id)),
-          ],
-          next_cursor: previous.next_cursor,
-        };
-      });
+      let page = await request<Schema["ReportPage"]>(base);
+      const items = [...page.items];
+      const ids = new Set(items.map((item) => item.id));
+      // 追加表示した範囲も最新にする（上限 20 ページ）。
+      for (
+        let pages = 1;
+        items.length < loaded.current && page.next_cursor && pages < 20;
+        pages++
+      ) {
+        page = await request<Schema["ReportPage"]>(
+          `${base}?cursor=${page.next_cursor}`,
+        );
+        for (const item of page.items) {
+          if (!ids.has(item.id)) {
+            ids.add(item.id);
+            items.push(item);
+          }
+        }
+      }
+      loaded.current = items.length;
+      setData({ items, next_cursor: page.next_cursor });
       setError("");
     } catch (e) {
       setData(null);
@@ -204,17 +213,15 @@ export function ReportList({ admin = false }: { admin?: boolean }) {
               const next = await request<Schema["ReportPage"]>(
                 `${admin ? "/org-admin" : ""}/bug-reports?cursor=${data.next_cursor}`,
               );
-              expanded.current = true;
               setData((previous) => {
                 const items = previous?.items ?? [];
                 const ids = new Set(items.map((item) => item.id));
-                return {
-                  items: [
-                    ...items,
-                    ...next.items.filter((item) => !ids.has(item.id)),
-                  ],
-                  next_cursor: next.next_cursor,
-                };
+                const merged = [
+                  ...items,
+                  ...next.items.filter((item) => !ids.has(item.id)),
+                ];
+                loaded.current = merged.length;
+                return { items: merged, next_cursor: next.next_cursor };
               });
             } catch (e) {
               setError(message(e));
