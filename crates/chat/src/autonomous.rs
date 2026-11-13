@@ -86,7 +86,10 @@ impl AutonomousMode {
         /// 含めない: 共有フォルダへ移すと閲覧・RAG の可視範囲が広がって移し戻しても開示は取り消せず、
         /// ルートへ移すと継承していた権限が外れて戻せなくなることがある（human 決定）。全自動（bypass）は
         /// 他の不可逆ツールと同じく `allow_all` で自動承認する（明示オプトイン・org で禁止可）。
-        const VERSIONED_WRITES: [ToolName; 9] = [
+        /// Office Engine の編集（office.excel_edit / office.word_edit・#725）は office.edit と同じく
+        /// 保存で新しい版になり版履歴から戻せるため含める（human 決定）。含めないと、オートでも
+        /// 既存の Excel・Word の編集が承認カードで止まり、誰も押さなければ却下扱いで畳まれる。
+        const VERSIONED_WRITES: [ToolName; 11] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
             ToolName::DocumentEdit,
@@ -94,6 +97,8 @@ impl AutonomousMode {
             ToolName::CsvPatch,
             ToolName::CsvWrite,
             ToolName::OfficeEdit,
+            ToolName::OfficeExcelEdit,
+            ToolName::OfficeWordEdit,
             ToolName::SaveDocument,
             ToolName::SaveSheet,
         ];
@@ -251,6 +256,8 @@ mod tests {
             "csv.patch",
             "csv.write",
             "office.edit",
+            "office.excel_edit",
+            "office.word_edit",
             "office.live_edit",
             "save_document",
             "save_sheet",
@@ -275,6 +282,8 @@ mod tests {
             "csv.patch",
             "csv.write",
             "office.edit",
+            "office.excel_edit",
+            "office.word_edit",
             "save_document",
             "save_sheet",
         ] {
