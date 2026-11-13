@@ -277,6 +277,28 @@ impl ArtifactStore {
         }
     }
 
+    /// 本人が持ち主で、`since` 以降に作り、消していない `kind` の数（会話の 1 回の run あたりの作成数の上限・
+    /// D-10 の T06 の保存ビュー）。数えるだけで中身は読まない（監査も書かない）。
+    pub async fn count_own_created_since(
+        &self,
+        ctx: &AuthContext,
+        kind: ArtifactKind,
+        since: DateTime<Utc>,
+    ) -> Result<i64, ArtifactError> {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM artifact \
+             WHERE tenant_id = $1 AND kind = $2 AND owner = $3 \
+               AND created_at >= $4 AND deleted_at IS NULL",
+        )
+        .bind(ctx.tenant_id())
+        .bind(kind.as_str())
+        .bind(&ctx.principal().id)
+        .bind(since)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
     /// 自分が owner のアーティファクトの 1 ページ（kind 絞り込み・更新日降順・keyset ページング）。
     ///
     /// `before` は前のページの [`ArtifactPage::next`]。1 件多く引いて、後ろにまだあるときだけ続きの位置（返した最後の

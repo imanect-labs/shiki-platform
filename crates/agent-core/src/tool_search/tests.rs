@@ -430,3 +430,45 @@ fn trying_a_workflow_loads_the_try_tool_and_making_one_prefers_emit() {
         "emit_workflow が try_workflow より上: {hits:?}"
     );
 }
+
+/// アプリ・台帳を作る依頼ではテーブルを作る道具（data_table_create）が上位に入り、作ったテーブルに列を足す依頼では
+/// 直す道具（data_table_update）が上位に入る（D-10 の T05）。どちらも説明文ではなく検索用の短い文で索引に入る（D-41）。
+#[test]
+fn building_an_app_loads_the_table_tools() {
+    let mut defs = catalog();
+    defs.push(def(
+        "emit_workflow",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。",
+    ));
+    defs.push(def(
+        "data_record_write",
+        "テーブルのレコードを作成・更新する。承認カードを出す。",
+    ));
+    defs.push(def(
+        "data_table_create",
+        "業務データのテーブルを新しく作る。列の型・行の決まり・状態の進め方の書き方は長い。",
+    ));
+    defs.push(def(
+        "data_table_update",
+        "自分が作ったテーブルを直す。足す列と変える列だけを書く。",
+    ));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in [
+        "経費申請のアプリを作って",
+        "備品の貸出を管理する台帳のテーブルを作成",
+        "create a database table for orders",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "data_table_create"),
+            "{q}: {hits:?}"
+        );
+    }
+    for q in ["テーブルに列を追加して", "add a column to the table schema"] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "data_table_update"),
+            "{q}: {hits:?}"
+        );
+    }
+}

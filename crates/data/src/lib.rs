@@ -89,6 +89,7 @@ mod stats;
 mod store;
 mod stream;
 mod table_access;
+mod table_builder;
 mod table_labels;
 mod table_list;
 mod table_load;
@@ -197,6 +198,7 @@ pub use stream::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
     RECORD_CHANGED_EVENT,
 };
+pub use table_builder::{carry_write_guard, OwnTable, OWN_TABLES_SINCE_CAP};
 pub use table_labels::{TableLabel, MAX_TABLE_LABELS};
 pub use table_list::{
     TableListQuery, TableListing, TablePage, APP_TABLE_ROUNDS, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK,

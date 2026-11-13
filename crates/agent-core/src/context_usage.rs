@@ -260,6 +260,10 @@ fn reads_material(name: &str) -> bool {
         | ToolName::CsvWrite
         | ToolName::DataSchema
         | ToolName::DataRecordWrite
+        // テーブル・保存ビューを作る・直す道具（D-10 の T05・T06）。観測は保存の結果で、資料ではない。
+        | ToolName::DataTableCreate
+        | ToolName::DataTableUpdate
+        | ToolName::DataViewSave
         | ToolName::DriveMove
         | ToolName::DriveCopy => false,
     }

@@ -34,6 +34,8 @@ impl ChatWorker {
         self.push_office_and_csv_tools(&mut tools);
         // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
         self.push_data_tools(&mut tools, ctx).await;
+        // テーブルを作る・直す（見えるテーブルが 0 件でも出す・D-10 の T05）。
+        self.push_data_builder_tools(&mut tools, run);
         Ok(tools)
     }
 
@@ -386,6 +388,30 @@ impl ChatWorker {
             Arc::clone(&catalog),
         )));
         tools.push(Arc::new(DataRecordWriteTool::new(data.clone(), catalog)));
+    }
+
+    /// テーブルを作る・直す道具（data_table_create / data_table_update・D-10 の T05）。
+    ///
+    /// DataStore と FsmStore が配線されていれば、見えるテーブルが 0 件でも提示する（作る道具なので）。どちらも
+    /// 遅延ロード（tool_search で読み込むまで定義を載せない）。委譲の子には渡らない（`CHILD_TOOLS` は閉じた一覧）。
+    pub(super) fn push_data_builder_tools(&self, tools: &mut Vec<Arc<dyn Tool>>, run: &ClaimedRun) {
+        let (Some(data), Some(fsms)) = (&self.data, &self.fsms) else {
+            return;
+        };
+        let deps = crate::data_builder_tool::DataBuilderDeps {
+            data: data.clone(),
+            fsms: Arc::clone(fsms),
+            approvals: Arc::new(workflow_engine::ApprovalStore::new(self.db.clone())),
+        };
+        let builder_run = crate::data_builder_tool::BuilderRun {
+            since: run.created_at,
+        };
+        tools.push(Arc::new(
+            crate::data_builder_tool::DataTableCreateTool::new(deps.clone(), builder_run),
+        ));
+        tools.push(Arc::new(
+            crate::data_builder_tool::DataTableUpdateTool::new(deps),
+        ));
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。

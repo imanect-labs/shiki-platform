@@ -89,7 +89,10 @@ impl AutonomousMode {
         /// Office Engine の編集（office.excel_edit / office.word_edit・#725）は office.edit と同じく
         /// 保存で新しい版になり版履歴から戻せるため含める（human 決定）。含めないと、オートでも
         /// 既存の Excel・Word の編集が承認カードで止まり、誰も押さなければ却下扱いで畳まれる。
-        const VERSIONED_WRITES: [ToolName; 11] = [
+        /// テーブルの新規作成（data_table_create・D-10 の T05・HD-1 の改訂 (c)）も、空のテーブルを持ち主が消せば
+        /// 戻せ、作った本人のほかには見えないので含める。テーブルの改訂（data_table_update）は行の決まり・状態の
+        /// 進め方で権限の意味を変え、スキーマに版が無く戻せないので含めない（オートでも承認を残す）。
+        const VERSIONED_WRITES: [ToolName; 12] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
             ToolName::DocumentEdit,
@@ -101,6 +104,7 @@ impl AutonomousMode {
             ToolName::OfficeWordEdit,
             ToolName::SaveDocument,
             ToolName::SaveSheet,
+            ToolName::DataTableCreate,
         ];
         match self {
             AutonomousMode::RequireApproval => {
@@ -286,6 +290,7 @@ mod tests {
             "office.word_edit",
             "save_document",
             "save_sheet",
+            "data_table_create",
         ] {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }
@@ -297,12 +302,17 @@ mod tests {
             "office.live_edit",
             "drive.move",
             "try_workflow",
+            "data_table_update",
         ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は不可逆のため承認維持");
         }
         assert!(!AutonomousMode::RequireApproval
             .approval_policy()
             .is_pre_authorized("try_workflow"));
+        // 承認を求めるモードでは、テーブルの作成も止まる（D-10 の T05）。
+        assert!(!AutonomousMode::RequireApproval
+            .approval_policy()
+            .is_pre_authorized("data_table_create"));
     }
 
     #[test]

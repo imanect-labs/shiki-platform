@@ -148,6 +148,15 @@ vocab_enum! {
         DataSchema => "data_schema",
         /// テーブルのレコードの作成・更新（editor ＋書込述語・承認必須・Task 15.7）。
         DataRecordWrite => "data_record_write",
+        /// テーブルを作る（列・必須・選択肢・行の決まり・状態の進め方つき・作成者が持ち主・承認カード・
+        /// 会話の 1 回の run あたり 5 表まで・D-10 の T05）。
+        DataTableCreate => "data_table_create",
+        /// 自分が持ち主のテーブルの列・行の決まり・列の見せ方・状態の進め方を直す（足すだけ・承認カード・
+        /// スキーマの版で楽観ロック・D-10 の T05）。
+        DataTableUpdate => "data_table_update",
+        /// 保存ビュー（テーブルへの絞り込み・並べ替え・表示の設定）を作る・直す（確認なし・版を積む・
+        /// 会話の 1 回の run あたり 10 件まで作れる・D-10 の T06）。
+        DataViewSave => "data_view_save",
         /// ドライブのファイル・フォルダを名前で探す（本人に見える範囲・読み取りのみ・#942）。
         /// 保存先・移動先のフォルダ id を解決する入口。
         DriveFind => "drive.find",
@@ -258,6 +267,10 @@ impl ToolName {
             | Self::CsvPatch
             | Self::CsvWrite
             | Self::DataRecordWrite
+            // アプリを作る・直すときだけ使う（作成と改訂は承認カードを出す・D-10）。
+            | Self::DataTableCreate
+            | Self::DataTableUpdate
+            | Self::DataViewSave
             | Self::DriveFind
             | Self::DriveMove
             | Self::DriveCopy
@@ -285,6 +298,17 @@ impl ToolName {
             // 説明文は観測・上限・待ち方の仕様を載せて長い。何をする道具かだけを索引に入れる。
             Self::TryWorkflow => {
                 "保存したワークフローの版を、承認を得て本人の権限で試しに実行し、結果を確かめる"
+            }
+            // 説明文は列の型・行の決まりの書き方・例を載せて長い（D-10 の T05・T06）。
+            Self::DataTableCreate => {
+                "業務データのテーブル（表）を新しく作る。列・必須・選択肢・見られる人の決まり・状態の進め方を決める。\
+                 アプリや申請の台帳を作るときに使う。"
+            }
+            Self::DataTableUpdate => {
+                "自分が作ったテーブルを直す。列を足す・必須にする・選択肢を足す・見られる人の決まりや状態の進め方を変える。"
+            }
+            Self::DataViewSave => {
+                "テーブルの保存ビュー（絞り込み・並べ替え・表示する列の一覧）を作る・直す。アプリの画面の一覧に使う。"
             }
             _ => "",
         }
@@ -353,6 +377,18 @@ impl ToolName {
             Self::CsvWrite => "csv table create write save 表 作成 保存",
             Self::DataRecordWrite => {
                 "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
+            }
+            Self::DataTableCreate => {
+                "data table create new schema columns fields database app form application \
+                 テーブル 表 作る 作成 新規 列 項目 データベース アプリ 申請 フォーム 台帳 管理表"
+            }
+            Self::DataTableUpdate => {
+                "data table schema alter add column field policy permission status fsm \
+                 テーブル 表 直す 修正 変更 列 追加 項目 必須 行の決まり 権限 状態 進め方"
+            }
+            Self::DataViewSave => {
+                "data view saved filter sort list display app screen \
+                 ビュー 保存ビュー 一覧 絞り込み 並べ替え 表示 アプリ 画面 申請の一覧"
             }
             Self::DriveFind => {
                 "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"

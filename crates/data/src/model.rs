@@ -45,6 +45,34 @@ pub enum FieldType {
 }
 
 impl FieldType {
+    /// すべての型（宣言順）。会話の AI の道具が入力の型の列挙をここから作る（手書きの語彙を持たない・D-10 の T05）。
+    pub const ALL: [FieldType; 15] = [
+        FieldType::Text,
+        FieldType::Number,
+        FieldType::Date,
+        FieldType::DateTime,
+        FieldType::Select,
+        FieldType::MultiSelect,
+        FieldType::UserRef,
+        FieldType::RoleRef,
+        FieldType::FileRef,
+        FieldType::RecordRef,
+        FieldType::Lookup,
+        FieldType::Computed,
+        FieldType::Rollup,
+        FieldType::Formula,
+        FieldType::CreatedBy,
+    ];
+
+    /// 線の上の名前（serde の名前・`date_time` など）。
+    #[must_use]
+    pub fn wire_name(self) -> String {
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::String(s)) => s,
+            _ => String::new(),
+        }
+    }
+
     /// 書込不可の派生フィールド（lookup / computed / rollup / formula）か。
     pub fn is_derived(self) -> bool {
         matches!(
@@ -439,6 +467,45 @@ pub struct RecordRevision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ALL` は全変種をちょうど 1 回ずつ持ち、線の上の名前と往復する（変種を足したら、下の match が
+    /// コンパイルで落ちて `ALL` の更新を促す）。
+    #[test]
+    fn all_field_types_round_trip() {
+        fn listed(t: FieldType) -> bool {
+            match t {
+                FieldType::Text
+                | FieldType::Number
+                | FieldType::Date
+                | FieldType::DateTime
+                | FieldType::Select
+                | FieldType::MultiSelect
+                | FieldType::UserRef
+                | FieldType::RoleRef
+                | FieldType::FileRef
+                | FieldType::RecordRef
+                | FieldType::Lookup
+                | FieldType::Computed
+                | FieldType::Rollup
+                | FieldType::Formula
+                | FieldType::CreatedBy => FieldType::ALL.contains(&t),
+            }
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for t in FieldType::ALL {
+            assert!(listed(t));
+            let wire = t.wire_name();
+            assert!(!wire.is_empty());
+            assert_eq!(
+                serde_json::from_value::<FieldType>(serde_json::Value::String(wire.clone()))
+                    .unwrap(),
+                t
+            );
+            assert!(names.insert(wire), "{t:?} が重複");
+        }
+        assert_eq!(names.len(), FieldType::ALL.len());
+        assert_eq!(FieldType::DateTime.wire_name(), "date_time");
+    }
 
     #[test]
     fn field_type_serde_snake_case() {

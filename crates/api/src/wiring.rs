@@ -381,6 +381,8 @@ pub(crate) async fn wire_chat(
     office_runtime: Option<&api::state::OfficeRuntime>,
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
+    // 会話の AI がテーブルを作る・直す道具（data_table_create / data_table_update・D-10 の T05）の状態の進め方。
+    fsms: &Arc<data::FsmStore>,
     egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
     // 会話の AI の試運転（try_workflow・T04）の起動の入口と run の要約（`workflow.enabled=false` なら両方 None）。
     tries: (
@@ -546,6 +548,8 @@ pub(crate) async fn wire_chat(
     .with_help_search(wire_help(config, search)?)
     // 構造化データは API・ワークフローと同じチョークポイントを共有する。
     .with_data((**data).clone())
+    // テーブルを作る・直す道具は API と同じ FsmStore（状態の進め方の保存）を共有する（D-10 の T05）。
+    .with_data_builders(Arc::clone(fsms))
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
     // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
     .with_workflow_directory(workflow_directory(skill_artifacts, db));

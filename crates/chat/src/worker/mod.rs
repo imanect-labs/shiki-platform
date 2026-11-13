@@ -108,6 +108,8 @@ pub struct ChatWorker {
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
     /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
     data: Option<data::DataStore>,
+    /// テーブルの状態の進め方（data_table_create / data_table_update・D-10 の T05）。`data` と揃ったときだけ提示する。
+    fsms: Option<Arc<data::FsmStore>>,
     /// 試運転（try_workflow・T04）の起動の入口。`workflow_store` と `try_runs` が揃ったときだけ提示する。
     try_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     /// 試運転の run の要約（try_workflow・T04）。
@@ -160,6 +162,7 @@ impl ChatWorker {
             office_creator,
             office_engine,
             data: None,
+            fsms: None,
             try_launcher: None,
             try_runs: None,
             help_search: None,
@@ -180,6 +183,15 @@ impl ChatWorker {
     #[must_use]
     pub fn with_data(mut self, data: data::DataStore) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    /// テーブルを作る・直す道具（data_table_create / data_table_update・D-10 の T05）の状態の進め方のストアを配線する。
+    ///
+    /// [`Self::with_data`] と揃ったときだけ提示する（API と同じ `FsmStore` を共有する）。
+    #[must_use]
+    pub fn with_data_builders(mut self, fsms: Arc<data::FsmStore>) -> Self {
+        self.fsms = Some(fsms);
         self
     }
 

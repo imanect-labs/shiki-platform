@@ -32,6 +32,7 @@ pub mod autonomous;
 pub mod builder_obs;
 pub mod csv_tool;
 pub mod custom_instructions;
+pub mod data_builder_tool;
 pub mod data_tool;
 mod data_tool_sql;
 pub mod doc_read_tool;
@@ -77,6 +78,9 @@ pub use artifacts::StorageArtifactStore;
 pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use custom_instructions::CustomInstructions;
+pub use data_builder_tool::{
+    BuilderRun, DataBuilderDeps, DataTableCreateTool, DataTableUpdateTool, MAX_TABLES_PER_RUN,
+};
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
