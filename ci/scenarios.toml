@@ -262,3 +262,8 @@ e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec
 pages = ["web/src/app/reference/**"]
 crates = []
 e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
+
+[scenario.bug_reports]
+pages = ["web/src/app/(auth)/bug-reports/**", "web/src/app/(admin)/admin/bug-reports/**"]
+crates = ["shiki-bug-report"]
+e2e = ["bug-report-manual.spec.ts", "bug-report-approval.spec.ts"]
