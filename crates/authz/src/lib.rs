@@ -53,3 +53,19 @@ pub use subject::Subject;
 pub use tenancy::{TenantResolveError, TenantSource};
 pub use tenant_id::TenantId;
 pub use vocab::{ObjectType, Relation};
+
+/// 管理 middleware と内部サービスで共有する organization#admin 判定。
+pub async fn is_org_admin(
+    client: &dyn AuthzClient,
+    ctx: &AuthContext,
+    consistency: Consistency,
+) -> Result<bool, AuthzError> {
+    client
+        .check(
+            &ctx.subject(),
+            Relation::Admin,
+            &ctx.ns().organization(ctx.org()),
+            consistency,
+        )
+        .await
+}

@@ -74,6 +74,7 @@ pub struct AppState {
     pub mini_apps: Arc<gui::MiniAppStore>,
     /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
     pub secrets: Option<Arc<secrets::SecretStore>>,
+    pub bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
     /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。
     pub workflows: Arc<workflow_engine::WorkflowStore>,
     /// ワークフロー run 起動（対話トリガ・Stage A W3）。`workflow.enabled=false` では `None`。

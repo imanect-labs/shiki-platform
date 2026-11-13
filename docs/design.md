@@ -103,6 +103,12 @@ flowchart LR
 
 ### 3.1 差し替えトレイト
 
+> 追加提案（#1251・境界追加は human 承認済み）:
+> | 差し替え点 | cloud/preview | 本番未決・onprem |
+> | --- | --- | --- |
+> | `BugReportSink` (`send` / `reconcile`) | GitHub App・専用 shiki-test（PR2） | `DisabledBugReportSink`（held、成功を返さない） |
+> テスト専用 Stub は production 設定から選べない。
+
 | トレイト | オンプレ実装 | クラウド実装 |
 |----------|-------------|-------------|
 | `ObjectStore` | RustFS (S3 互換) | GCS |
@@ -1053,6 +1059,19 @@ envelope encryption（マスターキーは `KeyProvider` トレイト）・利�
 詳細は [miniapp-platform §5](./miniapp-platform.md)。
 
 ### 4.12 SaaS 運用面（アルファ必須）
+
+**不具合報告の追加提案（#1251）**: 既存 feedback と別の本人提出集約を設け、以下の二重同意に従う。
+`BugReportService` が AuthContext・現 membership・organization#admin（共通 OpenFGA helper）を検証する。
+全 SQL は tenant tx＋org 条件、複合 FK と FORCE RLS で隔離。本人だけが draft を編集・提出できる。
+管理者は提出 snapshot だけ読め、thread viewer は含意しない。revision の競合・異なる内容の冪等キー再利用は409。
+提出時に payload/hash・policy revision・同意文面版・本人・宛先版を固定する。本文の承認後編集は禁止。
+本番は承認 ON が既定、OFF にしても二重ゲートは省けない。送り先未決は held（承認設定に関係なく未送信）。
+held/rejected は本人が draft に戻して再提出する。設定変更だけで held を配送しない。
+変化系監査は同一 transaction の Chain::Yes。本文・token・却下理由を監査 metadata に入れない。
+外部配送の timeout/crash は delivery_unknown とし、照合で不明なら人間確認（盲目的な再 POST 禁止）。
+外部保持・消去手順と保存期間の最終値、本番送り先はリリース前に決定する。
+PR1 は disabled のローカル受付のみ。配送 worker・lease/fence は PR2、HTTP/手動画面は PR3、
+help receipt/case・本人確認カードは PR4、purge/監視は PR5。help_resolution_case は消費経路と整合する PR4 に回す。
 
 - **フィードバック（テナント境界を跨ぐ唯一のデータフロー）**: 二段構え。
   ①既定=メタデータのみ（評価＋カテゴリ＋run_id/trace_id・**会話本文なし**）を shiki の SaaS コントロールプレーンの

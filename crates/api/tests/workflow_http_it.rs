@@ -139,6 +139,7 @@ fn test_principal() -> Principal {
 
 fn config(db_url: &str) -> AppConfig {
     AppConfig {
+        bug_report: Default::default(),
         server: ServerConfig {
             host: "0.0.0.0".into(),
             port: 0,
@@ -356,6 +357,7 @@ async fn setup() -> Option<Env> {
         Arc::new(AllowAll::default()),
     ));
     let state = AppState {
+        bug_report: None,
         config: Arc::new(config(&db_url)),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),

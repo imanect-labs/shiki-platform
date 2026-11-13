@@ -1489,3 +1489,13 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
 - **受け入れ条件**: 出典に現れた画像は代理取得で描き、**外部ホストへはブラウザが 1 度もリクエストを送らない**こと。出典に無いホスト・出典の URL を書き換えたもの・
   モデル自身が書いたツール結果にだけ現れる URL へは**ブラウザが 1 度もリクエストを送らない**ことを E2E で確かめる（DOM に出ないことではなく通信が起きないこと・
   `web/e2e/answer-images.spec.ts`）。
+
+
+## 🔴 PIT-78: 不具合報告の同意・宛先・配送不明・下書き漏洩（#1251 追加提案）
+
+- 組織許可と本人同意は AND。管理者承認は代替にならない。提出 snapshot と宛先版を固定し、承認後の宛先差し替えを禁止。
+- GitHub 作成の exactly-once は保証しない。POST 後 timeout/crash は unknown、照合不明は人間判断。盲目的な再 POST を禁止。
+- held は送り先決定後も自動配送せず本人に再確認。承認 OFF への変更も pending の自動配送を許可しない。
+- shared thread の参加者や admin に他人の draft を返さない。admin に返す本文も提出 snapshot のみ。
+- help citation は検索成功・未解決・報告希望の証拠にならない。PR4 の receipt/case と本人ボタンをサーバで検証。
+- PR1 受入れ: runtime role の RLS 未設定拒否・tenant/org 越境拒否、他人draft拒否、監査失敗rollback、revision/冪等競合、二重ゲートとheld・上限。
