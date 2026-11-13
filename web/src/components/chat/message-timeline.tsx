@@ -10,9 +10,10 @@
 
 import * as React from "react";
 
-import type { Citation, ContentBlock } from "@/lib/chat-api";
+import type { Citation, ContentBlock, HelpCitation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { useHelpCitations } from "./help-sources";
+import { helpImageTexts, helpLinkHosts } from "@/lib/help-citation";
 import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -141,10 +142,15 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
 ///
 /// 共有された会話を run の実行者以外が見るときはツール結果が空で届く（サーバが伏せる）ので、
 /// 引用の抜粋に現れた分しか描けない。描けない画像はリンクに落ちる（読み込まない側に倒す）。
-export function answerImageSources(segments: TimelineSegment[], citations: Citation[]): Map<string, string> {
+export function answerImageSources(
+  segments: TimelineSegment[],
+  citations: Citation[],
+  helpCitations: readonly HelpCitation[] = [],
+): Map<string, string> {
   const tools = segments.flatMap((s) => (s.kind === "work" ? s.tools : []));
   const webSnippets = citations.flatMap((c) => (c.web ? [c.snippet] : []));
-  return collectImageSources(pageSourcedTexts(tools, webSnippets));
+  // ヘルプの図は、サーバが同梱コーパスと設定の origin から組んだ URL（抜粋の文は数えない）。
+  return collectImageSources([...pageSourcedTexts(tools, webSnippets), ...helpImageTexts(helpCitations)]);
 }
 
 /// 回答の出典のホスト（Web 検索の結果に現れたページを引用したもの・lib/answer-links・#1143）。
@@ -200,12 +206,20 @@ export function MessageTimeline({
       .flatMap((s) => (s.kind === "work" ? s.tools.map((t) => `${t.key}:${t.result?.length ?? -1}`) : []))
       .join(",") +
     "|" +
-    citations.map((c) => `${c.cite_id}:${c.web ? c.snippet.length : -1}`).join(",");
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- 出典が変わったかは sourcesKey が表す
-  const imageSources = React.useMemo(() => answerImageSources(segments, citations), [sourcesKey]);
+    citations.map((c) => `${c.cite_id}:${c.web ? c.snippet.length : -1}`).join(",") +
+    `|${helpCitations.map((c) => c.cite_id).join(",")}`;
+  const imageSources = React.useMemo(
+    () => answerImageSources(segments, citations, helpCitations),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 出典が変わったかは sourcesKey が表す
+    [sourcesKey],
+  );
   // 出典（Web の引用）のホスト。出典に無い外部リンクは押したときに確認してから開く（#1143）。
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- 引用が変わったかは sourcesKey が表す
-  const linkSources = React.useMemo(() => answerLinkSourcesOf(segments, citations), [sourcesKey]);
+  // ヘルプのページ（サーバが組んだ URL）へのリンクも出典として確認なしで開く。
+  const linkSources = React.useMemo(
+    () => new Set([...answerLinkSourcesOf(segments, citations), ...helpLinkHosts(helpCitations)]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 引用が変わったかは sourcesKey が表す
+    [sourcesKey],
+  );
   const leading =
     // 本文も操作もまだ無い（生成の開始直後）、または操作が無く引用だけある。
     (streaming && segments.length === 0) || (firstWork < 0 && citations.length > 0);

@@ -950,6 +950,8 @@ async fn help_citation_survives_replay_persistence_and_shared_viewer() {
         heading_path: vec!["手順".into()],
         snippet: "設定を開く".into(),
         url: "https://shiki.imanect.app/help/a/#step".into(),
+        images: vec![],
+        app_links: vec![],
     };
     let event = StreamEventKind::HelpCitation(cite.clone());
     store

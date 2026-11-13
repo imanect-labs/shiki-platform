@@ -7,10 +7,11 @@
 /// 本文の `[Hn]` は小さな番号チップにして、押すとその見出しのヘルプを新しいタブで開く。
 /// 番号の台帳は社内文書と別（サーバの `HelpCitation`）なので、文脈も別に持つ。
 import * as React from "react";
-import { ChevronDown, ExternalLink, LifeBuoy } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ExternalLink, LifeBuoy } from "lucide-react";
 
 import type { HelpCitation } from "@/lib/chat-api";
-import { citedHelpIds, groupHelpPages, safeHelpUrl, uniqueHelpCitations } from "@/lib/help-citation";
+import Link from "next/link";
+import { citedHelpIds, groupHelpPages, helpAppLinks, safeHelpUrl, uniqueHelpCitations } from "@/lib/help-citation";
 import { cn } from "@/lib/utils";
 import { CHIP } from "./citations/citation-marker";
 
@@ -88,10 +89,30 @@ export function HelpSources({ defaultOpen = false }: { defaultOpen?: boolean }) 
   const used = hasMarkers ? citations.filter((c) => cited.has(c.cite_id)) : citations;
   const unused = hasMarkers ? citations.filter((c) => !cited.has(c.cite_id)) : [];
   const pages = groupHelpPages(used);
+  // 引いたヘルプのページに対応する Shiki の画面。回答の本文に無くても、ここから開けるようにする。
+  const screens = helpAppLinks(used);
   if (pages.length === 0) return null;
 
   return (
     <div className="mt-3" data-testid="help-sources">
+      {screens.length > 0 ? (
+        <nav aria-label="この操作を行う画面" className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[12px] text-muted-foreground">この操作を行う画面</span>
+          {screens.map((s) => (
+            <Link
+              key={s.path}
+              href={s.path}
+              className={cn(
+                "inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12.5px] font-medium text-foreground/85 transition-colors",
+                "hover:border-primary/40 hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-9",
+              )}
+            >
+              <span className="truncate">{s.label}</span>
+              <ArrowUpRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            </Link>
+          ))}
+        </nav>
+      ) : null}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

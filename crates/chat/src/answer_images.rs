@@ -272,6 +272,9 @@ pub fn page_texts_from_blocks(blocks: &[ContentBlock], tool_results_visible: boo
             ContentBlock::Translation { translation } => {
                 out.extend(translation_image_texts(translation));
             }
+            // ヘルプの図は、サーバが同梱コーパスの相対パスと設定の origin から組んだ URL（LLM を通らない値）。
+            // 出典ブロックは閲覧者全員に見えるので、実行者かどうかに関わらず数える。
+            ContentBlock::HelpCitation(c) => out.extend(help_image_texts(c)),
             _ => {}
         }
     }
@@ -296,6 +299,15 @@ fn translation_image_texts(translation: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// ヘルプの出典の図を、出所の本文と同じ形（`![](url)`）にする。
+fn help_image_texts(c: &agent_core::help_cite::HelpCitation) -> Vec<String> {
+    c.images
+        .iter()
+        .filter(|i| i.url.len() <= MAX_URL && !i.url.contains(char::is_whitespace))
+        .map(|i| format!("![]({})", i.url))
+        .collect()
 }
 
 /// 出所になる本文を、生成中の run のイベントから取り出す（規則は [`page_texts_from_blocks`] と同じ）。
@@ -326,6 +338,7 @@ pub fn page_texts_from_events(
             StreamEventKind::Translation { translation } => {
                 out.extend(translation_image_texts(translation));
             }
+            StreamEventKind::HelpCitation(c) => out.extend(help_image_texts(c)),
             _ => {}
         }
     }
@@ -419,6 +432,35 @@ mod tests {
         );
         assert_eq!(s.len(), 1);
         assert!(resolve_source(&s, "https://evil.example/q?d=secret").is_none());
+    }
+
+    #[test]
+    fn help_figures_count_for_every_viewer_but_help_text_does_not() {
+        let cite = agent_core::help_cite::HelpCitation {
+            cite_id: 1,
+            corpus_version: "v".into(),
+            chunk_id: "c".into(),
+            title: "t".into(),
+            heading_path: vec![],
+            // 抜粋（コーパスの文）に書かれた画像は出所にしない。
+            snippet: "![x](https://evil.example/x.png)".into(),
+            url: "https://shiki.imanect.app/help/a/".into(),
+            images: vec![agent_core::help_cite::HelpImage {
+                url: "https://shiki.imanect.app/help/media/a/images/b.png".into(),
+                alt: "画面".into(),
+            }],
+            app_links: vec![],
+        };
+        let blocks = vec![ContentBlock::HelpCitation(cite)];
+        let s = collect_image_sources(
+            page_texts_from_blocks(&blocks, false)
+                .iter()
+                .map(String::as_str),
+        );
+        assert!(
+            resolve_source(&s, "https://shiki.imanect.app/help/media/a/images/b.png").is_some()
+        );
+        assert!(resolve_source(&s, "https://evil.example/x.png").is_none());
     }
 
     #[test]
