@@ -11,7 +11,7 @@
 //!
 //! [`AccessPolicy::OrgAdmin`]: crate::server::AccessPolicy::OrgAdmin
 
-use authz::{AuthContext, Consistency, Principal, Relation};
+use authz::{AuthContext, Consistency, Principal};
 use axum::{
     extract::{Request, State},
     middleware::Next,
@@ -92,13 +92,5 @@ pub(crate) async fn is_org_admin(
     ctx: &AuthContext,
     consistency: Consistency,
 ) -> Result<bool, ApiError> {
-    Ok(state
-        .authz
-        .check(
-            &ctx.subject(),
-            Relation::Admin,
-            &ctx.ns().organization(ctx.org()),
-            consistency,
-        )
-        .await?)
+    Ok(authz::is_org_admin(state.authz.as_ref(), ctx, consistency).await?)
 }

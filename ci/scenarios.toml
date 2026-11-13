@@ -56,7 +56,7 @@ crates = [
 # チャットの部品（アシスタントパネル・選択範囲の AI）は各エディタでも使うので、そのシナリオも shiki-chat を持つ。
 [scenario.home]
 pages = ["web/src/app/(auth)/page.tsx", "web/src/app/(auth)/c/**"]
-crates = ["shiki-chat", "shiki-rag", "shiki-agent-core"]
+crates = ["shiki-chat", "shiki-rag", "shiki-agent-core", "shiki-bug-report"]
 e2e = [
     "admin-console.spec.ts",
     "agent-full-stack.spec.ts",

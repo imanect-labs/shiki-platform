@@ -1,0 +1,5 @@
+# 接続情報などの必須設定は環境変数または SHIKI_CONFIG で指定する。
+# PR1: 有効化しても disabled はローカル held 受付のみ。
+[bug_report]
+enabled = false
+backend = "disabled"
