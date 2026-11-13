@@ -5,7 +5,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// コンポーザのスラッシュコマンド（issue #387）の E2E。
 ///
 /// 候補は `GET /skills/catalog`（モデルが `skill` ツールで見ているカタログと同一の源）由来で、
-/// **コマンド宣言（`SkillBody.command`）を持つスキルだけ**が並ぶ。ここでは宣言つきスキルを
+/// コマンド宣言（`SkillBody.command`）つきは `/<コマンド>`、無いもの（画面で作ったスキル）は
+/// スキル名で並ぶ。ここでは宣言つきスキルを
 /// 1 つ作り、補完 → 確定（ピル）→ 解除 → 「+」メニューからの打ち込みまでを通す。
 /// `SHOTS_DIR` を渡すと各状態の PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
@@ -83,9 +84,9 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const menuItem = page.getByTestId("composer-skill-command").first();
   await expect(menuItem).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-plus-menu.png` });
-  // 項目の 1 行目が `/<token>`。それがそのままピルになる。
+  // 項目の 1 行目（`/<token>`、宣言の無いスキルはスキル名）がそのままピルになる。
   const token = ((await menuItem.locator("span.block").first().textContent()) ?? "").trim();
-  expect(token.startsWith("/")).toBe(true);
+  expect(token.length).toBeGreaterThan(0);
   await menuItem.click();
   const pillFromMenu = page.getByTestId("slash-command-pill");
   await expect(pillFromMenu).toBeVisible();
@@ -105,6 +106,9 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const posted = page.waitForRequest(
     (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
   );
+  // 既知のコマンドに続けた本文が説明文の語でも、補完は開かない（Enter が送信になる）。
+  await input.fill(`/${cmd} web 社内文書`);
+  await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
   await input.fill(`/${cmd} auto 市場規模を調べて`);
   await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
   await page.getByRole("button", { name: "送信" }).click();
@@ -119,4 +123,77 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   expect(body.text).toBe(`/${cmd} auto 市場規模を調べて`);
   // コマンド起動は長ホライズン（通常チャットの max_steps=6 では多段の作法が切れる）。
   expect(body.autonomous).toBe(true);
+});
+
+test("コマンド宣言の無い自作スキルも / と「スキルを検索」から呼べる", async ({ page }) => {
+  await loginViaKeycloak(page);
+
+  // 画面で作るスキルと同じく command を持たない（`/` 名は作られず、スキル名で探す）。
+  const uniq = uniqueName("mine");
+  const name = `週報 ${uniq}`;
+  await page.goto("/");
+  const created = await page.evaluate(async (skillName) => {
+    const csrf = document.cookie.match(/(?:^|;\s*)shiki_csrf=([^;]+)/);
+    const res = await fetch("/api/skills", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        ...(csrf ? { "X-CSRF-Token": decodeURIComponent(csrf[1]) } : {}),
+      },
+      body: JSON.stringify({
+        name: skillName,
+        body: { description: "週報を定型で書く自作スキル。", instructions: "# 週報\n定型で書く。" },
+      }),
+    });
+    return { status: res.status, text: await res.text() };
+  }, name);
+  expect(created.status, `skill 作成: ${created.status} ${created.text}`).toBeLessThan(300);
+  const skillId = (JSON.parse(created.text) as { id: string }).id;
+
+  await page.reload();
+  const input = page.getByLabel("メッセージを入力");
+
+  // `/` の後に打った語をスキル名で探して出す（`/` 付きのコマンド名にはしない）。
+  await input.fill(`/${uniq}`);
+  const option = page.getByTestId("slash-command-option");
+  await expect(option).toHaveCount(1, { timeout: 10_000 });
+  await expect(option).toContainText(name);
+  await expect(option).not.toContainText(`/${uniq}`);
+  await input.fill("");
+
+  // 「+」の「スキルを検索」は入力欄の先頭に `/` を入れて補完を開く。書きかけの本文は残り、
+  // Esc でやめると入れた `/` 行だけが外れる。
+  await input.fill("今週分をまとめて");
+  await page.getByRole("button", { name: "追加メニューを開く" }).click();
+  await page.getByTestId("composer-search-skills").click();
+  await expect(page.getByTestId("slash-command-menu")).toBeVisible();
+  // フォーカスは「+」メニューが閉じきってから入力欄へ移る。移る前のキーは入力欄に届かない。
+  await expect(input).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("slash-command-menu")).toHaveCount(0);
+  await expect(input).toHaveText("今週分をまとめて");
+  await page.getByRole("button", { name: "追加メニューを開く" }).click();
+  await page.getByTestId("composer-search-skills").click();
+  await expect(page.getByTestId("slash-command-menu")).toBeVisible();
+  await expect(input).toBeFocused();
+  await expect(input).toContainText("今週分をまとめて");
+  await page.keyboard.type(uniq);
+  await expect(option).toHaveCount(1);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/skill-search-slash.png` });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("slash-command-pill")).toContainText(name);
+  await expect(input).toHaveText("今週分をまとめて");
+
+  // 送ると、この発話にだけその skill がピンされる。本文にコマンドのリテラルは付けない。
+  const posted = page.waitForRequest(
+    (r) => r.method() === "POST" && /\/api\/threads\/[^/]+\/messages$/.test(r.url()),
+  );
+  await page.getByRole("button", { name: "送信" }).click();
+  const body = JSON.parse((await posted).postData() ?? "{}") as {
+    text?: string;
+    skills?: { artifact_id: string }[];
+  };
+  expect(body.skills?.[0]?.artifact_id).toBe(skillId);
+  expect(body.text).toBe("今週分をまとめて");
 });

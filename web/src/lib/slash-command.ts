@@ -23,7 +23,7 @@ export type SkillCatalogItem = components["schemas"]["SkillCatalogItem"];
 export type SlashSuggestion = {
   /// リスト描画用の一意キー（`<skillId>:<args>`）。
   key: string;
-  /// `/` の後ろに入る全文（`deep-research auto`）。
+  /// `/` の後ろに入る全文（`deep-research auto`）。コマンド宣言の無いスキルは空文字。
   token: string;
   /// コマンド名（`deep-research`）。
   command: string;
@@ -38,7 +38,7 @@ export type SlashSuggestion = {
   hint: string | null;
 };
 
-/// 確定したコマンド（コンポーザがピルとして持つ）。
+/// 確定したコマンド（コンポーザがピルとして持つ）。`token` が空ならコマンド宣言の無いスキル。
 export type ActiveCommand = {
   token: string;
   command: string;
@@ -62,13 +62,31 @@ export async function fetchSkillCatalog(threadId?: string): Promise<SkillCatalog
   return data.skills ?? [];
 }
 
-/// カタログを補完候補へ展開する。コマンド宣言の無いスキルは候補にしない
-/// （＝コマンドで呼べないものを一覧に出さない）。
+/// カタログを補完候補へ展開する。
+///
+/// コマンド宣言の無いスキル（画面で作ったスキルは宣言の編集欄が無いので必ずこれ）は、
+/// **`/` 名を作らず**に `token` 空の 1 候補にする。`/` の後に打った語をスキル名で探して選び、
+/// 送信は skill id のピン（`POST /threads/{id}/messages` の `skills`）だけで起動する。
+/// 名前から `/` 名を作ると、サーバがコマンド名をスラグに限定している理由（コンポーザの
+/// パースの曖昧さ・一覧での他コマンドへの視覚的な詐称を防ぐ）をフロントが迂回することになる。
 export function toSuggestions(items: SkillCatalogItem[]): SlashSuggestion[] {
   const out: SlashSuggestion[] = [];
   for (const item of items) {
     const cmd = item.command;
-    if (!cmd?.name) continue;
+    if (!cmd?.name) {
+      out.push({
+        key: `${item.id}:`,
+        token: "",
+        command: "",
+        args: "",
+        skillName: item.name,
+        skillId: item.id,
+        skillVersion: item.version,
+        summary: item.description,
+        hint: null,
+      });
+      continue;
+    }
     // variants が空なら「引数なし」の 1 候補として扱う。
     const variants =
       cmd.variants.length > 0 ? cmd.variants : [{ args: "", summary: item.description }];
@@ -90,20 +108,53 @@ export function toSuggestions(items: SkillCatalogItem[]): SlashSuggestion[] {
   return out;
 }
 
+/// 候補・ピルの表示名。コマンド宣言つきは `/<token>`、無いものはスキル名から先頭の `/` を除いたもの
+/// （スキル名は自由文字列なので、`/deep-research auto` のような名前で別コマンドを装わせない。
+/// 区別は表示側の「スキル」バッジも担う）。
+export function commandLabel(c: { token: string; skillName: string }): string {
+  return c.token ? `/${c.token}` : undeclaredName(c.skillName);
+}
+
+/// 宣言の無いスキルの表示名（先頭の `/` と空白を除く。空になったら「スキル」）。
+function undeclaredName(skillName: string): string {
+  return skillName.replace(/^[\s/／]+/, "") || "スキル";
+}
+
+const norm = (s: string) => s.normalize("NFKC").toLowerCase();
+
 /// 入力欄の先頭がコマンド入力中かを判定し、絞り込み済みの候補を返す。
 ///
 /// 補完を出すのは**先頭が `/` のときだけ**（文中の `/` は URL・パスなので拾わない）。
-/// 空白を含んだ時点で「引数を打っている」とみなし、コマンド名部分で絞り込む。
+/// `firstLineOnly` のときは **1 行目だけ**で絞る（「スキルを検索」は書きかけの本文を 2 行目以降に
+/// 残して `/` を入れる）。
+/// コマンド宣言つきは token の前方一致を先に、続けてスキル名・説明に語がすべて含まれるものを拾う
+/// （宣言の無いスキルは後者だけ）。
 export function matchSuggestions(
   value: string,
   suggestions: SlashSuggestion[],
+  firstLineOnly = false,
 ): SlashSuggestion[] | null {
   if (!value.startsWith("/")) return null;
-  const typed = value.slice(1);
-  // 改行が入ったら本文の一部（コマンドではない）。
-  if (typed.includes("\n")) return null;
+  // 通常は改行が入ったら本文の一部（コマンドではない）。
+  if (!firstLineOnly && value.includes("\n")) return null;
+  const typed = value.slice(1).split("\n", 1)[0];
   const lower = typed.toLowerCase();
-  const hits = suggestions.filter((s) => s.token.toLowerCase().startsWith(lower));
+  // コマンド名を知らなくても探せるよう、スキル名・説明も見る（空白区切りの語がすべて含まれるか）。
+  // コマンド名の前方一致を先に並べる（Enter で確定する先頭がコマンドの補完になるように）。
+  const terms = norm(typed).split(/\s+/).filter(Boolean);
+  const byText = (s: SlashSuggestion) => {
+    const hay = norm(`${s.token} ${s.skillName} ${s.summary}`);
+    return terms.every((t) => hay.includes(t));
+  };
+  const prefix = suggestions.filter((s) => s.token && s.token.toLowerCase().startsWith(lower));
+  // 既知のコマンドに本文が続いている（`/summarize 四半期…`）なら引数を打っている最中。
+  // 説明文で拾うと補完が開いたままになり、Enter が送信ではなく確定になって本文を失う。
+  const typingArgs = suggestions.some(
+    (s) => s.token && /\s/.test(lower.charAt(s.token.length)) && lower.startsWith(s.token.toLowerCase()),
+  );
+  if (typingArgs) return prefix;
+  const seen = new Set(prefix);
+  const hits = [...prefix, ...suggestions.filter((s) => !seen.has(s) && byText(s))];
   // 完全一致 1 件だけになっても候補は出し続ける（Enter で確定できることを示す）。
   return hits;
 }
@@ -123,6 +174,8 @@ export function resolveTypedCommand(
   const head = value.slice(1);
   let best: { suggestion: SlashSuggestion; rest: string } | null = null;
   for (const s of suggestions) {
+    // 宣言の無いスキルは打ち込みでは解決しない（補完から選ぶ）。
+    if (!s.token) continue;
     if (head === s.token) {
       if (!best || s.token.length > best.suggestion.token.length) best = { suggestion: s, rest: "" };
       continue;
@@ -142,6 +195,8 @@ export function resolveTypedCommand(
 export function composeText(command: ActiveCommand | null, body: string): string {
   const text = body.trim();
   if (!command) return text;
+  // 宣言の無いスキルはリテラルを付けない（起動は skill のピンが担う）。本文が空ならスキル名を送る。
+  if (!command.token) return text || undeclaredName(command.skillName);
   return text ? `/${command.token} ${text}` : `/${command.token}`;
 }
 

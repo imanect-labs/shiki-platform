@@ -41,6 +41,7 @@ import {
   SLASH_LISTBOX_ID,
 } from "./slash-command-menu";
 import {
+  commandLabel,
   composeText,
   fetchSkillCatalog,
   matchSuggestions,
@@ -68,6 +69,12 @@ const HIT_AREA = "relative after:absolute after:-inset-2";
 type Uploading = { name: string; fraction: number; preview?: string };
 /// 入力欄の添付。端末から選んだ画像は、アップロード後も object URL でサムネイルを出す（送信時に外す）。
 type ComposerAttachment = Attachment & { preview?: string };
+
+/// 「スキルを検索」の 1 行目（`/` と検索語）を外した残り＝書きかけの本文。
+function dropSearchLine(v: string): string {
+  const nl = v.indexOf("\n");
+  return nl < 0 ? "" : v.slice(nl + 1).replace(/^\n+/, "");
+}
 
 /// 補完候補を確定済みコマンドへ写す。
 function toActiveCommand(s: SlashSuggestion): ActiveCommand {
@@ -260,17 +267,23 @@ const ScopedComposer = React.memo(function ScopedComposer({
   React.useEffect(() => {
     if (desiredFormat !== inputFormat && value === "") setInputFormat(desiredFormat);
   }, [desiredFormat, inputFormat, value]);
-  const latestValue = React.useRef(value);
+  // "inserted" は `/` 行をこちらで入れた（やめる・選ばずに送るときは外す）、"typed" は既に `/` で
+  // 始まっていた本文をそのまま検索語にした（外さない）。
+  const [searchingSkill, setSearchingSkill] = React.useState<false | "inserted" | "typed">(false);
+  // 書きかけとして保存するのは本文だけ（「スキルを検索」で入れた `/` 行は保存しない。復元後は
+  // 検索中の状態が無いので、残すと `/` 行が本文として送られる）。
+  const draftValue = searchingSkill === "inserted" ? dropSearchLine(value) : value;
+  const latestValue = React.useRef(draftValue);
   // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
   React.useEffect(() => {
-    latestValue.current = value;
-  }, [value]);
+    latestValue.current = draftValue;
+  }, [draftValue]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
-    const t = window.setTimeout(() => saveDraft(draftKey, value, generation), DRAFT_SAVE_DELAY_MS);
+    const t = window.setTimeout(() => saveDraft(draftKey, draftValue, generation), DRAFT_SAVE_DELAY_MS);
     return () => window.clearTimeout(t);
-  }, [draftKey, draftRestored, value]);
+  }, [draftKey, draftRestored, draftValue]);
   React.useEffect(() => {
     if (!draftKey || !draftRestored) return;
     const generation = draftGeneration.current;
@@ -307,8 +320,16 @@ const ScopedComposer = React.memo(function ScopedComposer({
     };
   }, [threadId]);
 
+  // 「スキルを検索」で開いた補完の最中か。確定済みのピルがあっても補完を出し、選べば差し替え、
+  // やめればピルはそのまま残る（検索を始めただけで選んでいたスキルを失わない）。
+  React.useEffect(() => {
+    if (searchingSkill && !value.startsWith("/")) setSearchingSkill(false);
+  }, [searchingSkill, value]);
   // 確定済みコマンドがある間は補完を出さない（ピルが既に状態を示している）。
-  const slashHits = command || slashDismissed ? null : matchSuggestions(value, suggestions);
+  const slashHits =
+    (command && !searchingSkill) || slashDismissed
+      ? null
+      : matchSuggestions(value, suggestions, searchingSkill !== false);
   const slashOpen = (slashHits?.length ?? 0) > 0;
   const activeSlash = slashOpen ? slashHits![Math.min(slashIndex, slashHits!.length - 1)] : null;
 
@@ -320,20 +341,56 @@ const ScopedComposer = React.memo(function ScopedComposer({
   // 「返答を待たないと次を書けない」体験を作らないための土台。
   const canSend = (value.trim().length > 0 || command !== null) && !disabled && !uploading;
 
+  const inputWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [focusFirstLineKey, setFocusFirstLineKey] = React.useState(0);
+
   const pickSuggestion = (s: SlashSuggestion) => {
     setCommand(toActiveCommand(s));
-    // コマンド部分は入力欄から取り除き、以降はピルが持つ（本文だけを打てる状態にする）。
-    setValue("");
+    // コマンド部分（1 行目）は入力欄から取り除き、以降はピルが持つ。2 行目以降は
+    // 「スキルを検索」の前に書いていた本文なので残す。
+    const nl = value.indexOf("\n");
+    setValue(value.startsWith("/") && nl >= 0 ? value.slice(nl + 1).replace(/^\n+/, "") : "");
     setSlashIndex(0);
+    setSearchingSkill(false);
+  };
+
+  /// 「スキルを検索」: 入力欄の先頭に `/` を入れて補完を開き、続けて打てば絞り込める状態にする
+  /// （探す手段を `/` の補完 1 つに揃える）。書きかけの本文は 2 行目以降に**見えたまま**残す
+  /// （別に退避すると、選ばずに送る・画面を離れる経路で本文を失う）。補完は 1 行目だけで絞る。
+  const startSkillSearch = () => {
+    const body = value.trim() ? value : "";
+    // 検索中に押し直したら状態を保つ（入れた `/` 行を本文扱いにしない）。
+    setSearchingSkill((cur) => cur || (body.startsWith("/") ? "typed" : "inserted"));
+    setSlashDismissed(false);
+    setSlashIndex(0);
+    // 既に `/` で始まっている（検索中・打ちかけのコマンド）なら行を足さず、その 1 行目で探す
+    // （足すと、選んだあとに古い `/…` 行が本文の先頭に上がってコマンドとして送られる）。
+    // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
+    if (!searchingSkill && !body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
+    // キャレットを `/` の行の末尾へ置く。Markdown 入力はエディタが本文の置き換えの後に行う
+    // （`focusFirstLineKey`）。textarea は値がコミットされてから選択範囲を直す。
+    setFocusFirstLineKey((k) => k + 1);
+    if (inputFormat !== "markdown") {
+      requestAnimationFrame(() => {
+        const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
+        if (!(el instanceof HTMLTextAreaElement)) return;
+        el.focus({ preventScroll: true });
+        const end = el.value.indexOf("\n");
+        const pos = end < 0 ? el.value.length : end;
+        el.setSelectionRange(pos, pos);
+      });
+    }
   };
 
   const submit = () => {
     if (disabled || uploading) return;
     // 補完で確定していなくても、既知のコマンドが直接打たれていれば拾う（#387・Codex P2）。
     // 拾わないと skill のピン処理を通らず、コマンドがただのテキストとして流れる。
-    const typed = command ? null : resolveTypedCommand(value, suggestions);
+    // 「スキルを検索」の途中で（選ばずに）送るときは、入れた `/` 行を本文に含めない。
+    const current = searchingSkill === "inserted" ? dropSearchLine(value) : value;
+    const typed = command || searchingSkill === "inserted" ? null : resolveTypedCommand(current, suggestions);
     const active = command ?? (typed ? toActiveCommand(typed.suggestion) : null);
-    const body = typed ? typed.rest : value;
+    const body = typed ? typed.rest : current;
     const text = composeText(active, body);
     if (!text) return;
     // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
@@ -364,6 +421,13 @@ const ScopedComposer = React.memo(function ScopedComposer({
       return;
     }
     if (!slashOpen) {
+      // 「スキルを検索」で一致が無いまま Esc: 入れた `/` 行を外して本文に戻す。
+      if (e.key === "Escape" && searchingSkill === "inserted") {
+        e.preventDefault();
+        setValue(dropSearchLine(value));
+        setSearchingSkill(false);
+        return;
+      }
       // `/` を打ち直したら再び候補を出す。
       if (e.key !== "Escape") setSlashDismissed(false);
       return;
@@ -383,6 +447,14 @@ const ScopedComposer = React.memo(function ScopedComposer({
       if (activeSlash) pickSuggestion(activeSlash);
     } else if (e.key === "Escape") {
       e.preventDefault();
+      if (searchingSkill) {
+        // 検索をやめる: 入れた `/` 行を外して本文だけに戻す（ピルはそのまま）。
+        if (searchingSkill === "inserted") setValue(dropSearchLine(value));
+        // 自分で打った `/…` を検索語にしていたときは本文を残し、補完だけを閉じる。
+        else setSlashDismissed(true);
+        setSearchingSkill(false);
+        return;
+      }
       setSlashDismissed(true);
     }
   };
@@ -437,7 +509,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
   const approvalLabel =
     autonomous && approvalMode ? approvalModeDef(approvalMode).label : null;
   const effectivePlaceholder = command
-    ? (command.hint ?? `/${command.token} に依頼`)
+    ? (command.hint ?? `${commandLabel(command)} に依頼`)
     : onAutonomousChange && autonomous
       ? desktop
         ? `エージェントに依頼${approvalLabel ? `（${approvalLabel}）` : ""}`
@@ -449,7 +521,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
   if (command) {
     tokens.push({
       key: "command",
-      label: `/${command.token}`,
+      label: commandLabel(command),
       icon: Sparkles,
       removeLabel: "コマンドを外す",
       onRemove: () => setCommand(null),
@@ -604,6 +676,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
 
         {/* 入力欄（DOM では先に置き、Tab の順を見た目の上→下に揃える）。 */}
         <div
+          ref={inputWrapRef}
           className={cn(
             "relative col-span-2 col-start-1 row-start-1 min-w-0 overflow-hidden px-1.5 pt-1 md:px-2",
             oneLine && "max-md:col-span-1 max-md:col-start-2 max-md:px-1 max-md:pt-0",
@@ -628,6 +701,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
             <PromptInputEditor
               placeholder={effectivePlaceholder}
               autoFocus={autoFocus}
+              focusFirstLineKey={focusFirstLineKey}
               attributes={{
                 "aria-label": "メッセージを入力",
                 role: slashOpen ? "combobox" : undefined,
@@ -694,6 +768,7 @@ const ScopedComposer = React.memo(function ScopedComposer({
             onOpenDrive={() => setPickerOpen(true)}
             skills={suggestions}
             onPickSkill={pickSuggestion}
+            onSearchSkills={startSkillSearch}
             // ワークスペース（作業フォルダ）はエージェントモード ON のときだけ意味を持つ。
             // OFF のときは残存する workspace 選択を無視し、既定（マイドライブ直下）へ作成する。
             createParentId={autonomous ? (workspace?.folderId ?? null) : null}
