@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import type { Editor as TiptapEditor } from "@tiptap/core";
 import { ArrowUp, Bot, HardDrive, Loader2, Paperclip, Sparkles, Square, TextSelect, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -366,24 +367,39 @@ const ScopedComposer = React.memo(function ScopedComposer({
     // （足すと、選んだあとに古い `/…` 行が本文の先頭に上がってコマンドとして送られる）。
     // 空行で区切る（Markdown 入力では単独の改行が同じ段落内の改行になり、`/` と本文が 1 行目に混ざる）。
     if (!searchingSkill && !body.startsWith("/")) setValue(body ? `/\n\n${body}` : "/");
-    // 値が入力欄へ反映されてからフォーカスし、キャレットを `/` の直後へ置く。
-    requestAnimationFrame(() => {
-      const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
-      if (!el) return;
-      el.focus({ preventScroll: true });
-      if (el instanceof HTMLTextAreaElement) {
-        const end = el.value.indexOf("\n");
-        const pos = end < 0 ? el.value.length : end;
-        el.setSelectionRange(pos, pos);
-        return;
-      }
-      // Markdown 入力（contenteditable）: 先頭のブロックの末尾へ。
-      const first = el.firstElementChild ?? el;
-      const sel = window.getSelection();
-      sel?.selectAllChildren(first);
-      sel?.collapseToEnd();
-    });
+    // キャレットは、入れた `/` 行が入力欄へ反映されてから置く（下の effect）。
+    setCaretToSlash((n) => n + 1);
   };
+
+  // 「スキルを検索」の後、フォーカスしてキャレットを `/` の直後（1 行目の末尾）へ置く。
+  // 値の変更と同じ描画のこの effect で置く: Markdown 入力は値を自分の effect（子なので先に走る）で
+  // 中身へ差し替えるため、requestAnimationFrame で置くと差し替えの前に走ってキャレットが本文の末尾へ
+  // 戻り、続けて打った語が `/` 行ではなく本文に入って補完が絞れなかった（#1236）。
+  const [caretToSlash, setCaretToSlash] = React.useState(0);
+  React.useEffect(() => {
+    if (caretToSlash === 0) return;
+    const el = inputWrapRef.current?.querySelector<HTMLElement>('[aria-label="メッセージを入力"]');
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    if (el instanceof HTMLTextAreaElement) {
+      const end = el.value.indexOf("\n");
+      const pos = end < 0 ? el.value.length : end;
+      el.setSelectionRange(pos, pos);
+      return;
+    }
+    // Markdown 入力（tiptap）: エディタの選択位置を先頭のブロックの末尾へ。DOM の選択範囲だけを
+    // 動かすと、エディタが読み直す前に打った文字は古い位置（本文の末尾）へ入る。
+    const editor = (el as HTMLElement & { editor?: TiptapEditor }).editor;
+    if (editor && !editor.isDestroyed) {
+      const first = editor.state.doc.firstChild;
+      editor.commands.setTextSelection(first ? 1 + first.content.size : 1);
+      return;
+    }
+    const first = el.firstElementChild ?? el;
+    const sel = window.getSelection();
+    sel?.selectAllChildren(first);
+    sel?.collapseToEnd();
+  }, [caretToSlash]);
 
   const submit = () => {
     if (disabled || uploading) return;
