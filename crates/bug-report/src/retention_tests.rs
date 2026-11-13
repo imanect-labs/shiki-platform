@@ -216,7 +216,12 @@ async fn admin_detail_rejects_report_whose_submission_body_was_purged() {
     sqlx::query("UPDATE bug_report_submission SET payload='{}'::jsonb, body_purged_at=now() WHERE tenant_id=$1 AND org=$2 AND report_id=$3")
         .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).execute(&db).await.unwrap();
     sqlx::query("UPDATE bug_report SET status='cancelled' WHERE tenant_id=$1 AND org=$2 AND id=$3")
-        .bind(ctx.tenant_id()).bind(ctx.org()).bind(report.id).execute(&db).await.unwrap();
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(report.id)
+        .execute(&db)
+        .await
+        .unwrap();
     // 未共有の本文を管理者へ返さない。
     assert!(matches!(
         svc.detail(&ctx, report.id, true, "after").await,
