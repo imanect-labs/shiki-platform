@@ -139,8 +139,8 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         }
         let ns = namespace(&open, &lower);
         if ns == Ns::Html {
-            let ruby_open = matches!(lower.as_str(), "rb" | "rt" | "rp" | "rtc")
-                && open.iter().any(|o| o.ns == Ns::Html && o.name == "ruby");
+            let ruby_open =
+                matches!(lower.as_str(), "rb" | "rt" | "rp" | "rtc") && ruby_in_scope(&open);
             let closes = implicitly_closes(&lower, ruby_open);
             while open
                 .last()
@@ -199,6 +199,23 @@ struct Open {
 const SVG_INTEGRATION: &[&str] = &["foreignobject", "desc", "title"];
 /// MathML の統合点（`annotation-xml` は encoding によるが、多く数える側＝HTML とみなす）。
 const MATH_INTEGRATION: &[&str] = &["mi", "mo", "mn", "ms", "mtext", "annotation-xml"];
+
+/// `ruby` がスコープの中にあるか（間に `table`・`td` 等の境界があれば無い・HTML 標準の「has an element in scope」）。
+fn ruby_in_scope(open: &[Open]) -> bool {
+    for o in open.iter().rev() {
+        if o.ns == Ns::Html && o.name == "ruby" {
+            return true;
+        }
+        let html_boundary = o.ns == Ns::Html
+            && (SCOPE_BOUNDARY.contains(&o.name.as_str())
+                || matches!(o.name.as_str(), "td" | "th"));
+        // 外部コンテンツの要素（svg・math・統合点）も境界になる。
+        if html_boundary || o.ns != Ns::Html {
+            return false;
+        }
+    }
+    false
+}
 
 fn in_foreign(open: &[Open]) -> bool {
     open.last().is_some_and(|o| o.content_foreign)
@@ -400,6 +417,9 @@ mod tests {
             let s = format!("<body>{}", format!("<{tag}>").repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
         }
+        // ruby が開いていても、間に table・td があるとスコープの外（閉じない）。
+        let cell = format!("<ruby><table><tbody><tr><td>{}", "<rb>".repeat(100_000));
+        assert!(clip_depth(&cell, MAX_PARSE_DEPTH).1);
         // 一番内側でない（間に閉じない要素がある）ときは閉じない。
         let section = "<li><section>".repeat(100_000);
         assert!(clip_depth(&section, MAX_PARSE_DEPTH).1);

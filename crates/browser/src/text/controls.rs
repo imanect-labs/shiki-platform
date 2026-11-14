@@ -193,7 +193,10 @@ impl Walker<'_> {
                     ElementKind::Checkbox
                 };
                 let id = self.push_element(kind, &label);
-                let checked = self.checked(node.has_attr("checked"));
+                // 同じグループで後から checked になったラジオが前のものを外す（初期状態も同じ）。
+                let initially =
+                    node.has_attr("checked") && !self.superseded_radios.contains(&node.id);
+                let checked = self.checked(initially);
                 // value 属性が無いときだけ "on"。明示された空文字は空のまま送る。
                 let value = if node.has_attr("value") {
                     value
@@ -299,7 +302,12 @@ impl Walker<'_> {
             }
         }
         // 単一選択で何も選ばれていなければ、最初の有効な選択肢が選ばれる。複数選択・選択肢なしは何も選ばない。
-        if !multiple && selected.is_empty() {
+        // 表示行数（size）が 2 以上のリストも何も選ばない（HTML 標準の selectedness setting）。
+        let size = node
+            .attr("size")
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(1);
+        if !multiple && size <= 1 && selected.is_empty() {
             if let Some(i) = all.iter().position(|(_, _, d)| !d) {
                 selected.push(i);
             }

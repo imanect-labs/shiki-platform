@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dom_query::{Document, NodeRef};
+use dom_query::{Document, NodeId, NodeRef};
 use url::Url;
 
 use crate::snapshot::{ElementInfo, ElementKind, EngineKind, NeedsJs, RefId};
@@ -132,12 +132,52 @@ struct Walker<'a> {
     form_ids: HashSet<String>,
     /// CSS 等で見えない部分木の中にいる深さ（項目は集めるが、表示も ref もしない）。
     invisible: u32,
+    /// 同じグループの後のラジオに外される `checked`（[`superseded_radios`]）。
+    superseded_radios: HashSet<NodeId>,
     /// `<pre>` の中にいる深さ（改行と字下げを保つ）。
     pre: u32,
     /// `<fieldset disabled>` の中にいる深さ。
     disabled: u32,
     /// いまの深さ（[`MAX_DEPTH`] で打ち切る）。
     depth: u32,
+}
+
+/// 同じラジオグループ（フォームの所有者と名前が同じ）に `checked` が複数あるとき、最後のもの以外。
+///
+/// HTML 標準では、ラジオが checked になると同じグループの他のラジオが外れる。解析時も同じなので、
+/// 文書順で最後の `checked` だけが選ばれた状態になる。所有者は `form` 属性（あればそれが優先）か祖先のフォーム。
+fn superseded_radios(doc: &Document) -> HashSet<NodeId> {
+    let form_by_id: HashMap<String, NodeId> = doc
+        .select("form[id]")
+        .nodes()
+        .iter()
+        .rev()
+        .filter_map(|f| f.attr("id").map(|i| (i.to_string(), f.id)))
+        .collect();
+    let mut last: HashMap<(Option<NodeId>, String), NodeId> = HashMap::new();
+    let mut superseded = HashSet::new();
+    for r in doc.select("input[checked]").nodes() {
+        let is_radio = r
+            .attr("type")
+            .is_some_and(|t| t.eq_ignore_ascii_case("radio"));
+        let Some(name) = r.attr("name").filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        if !is_radio {
+            continue;
+        }
+        let owner = match r.attr("form") {
+            Some(id) => form_by_id.get(&*id).copied(),
+            None => r
+                .ancestors_it(None)
+                .find(|a| a.node_name().is_some_and(|n| &*n == "form"))
+                .map(|f| f.id),
+        };
+        if let Some(prev) = last.insert((owner, name.to_string()), r.id) {
+            superseded.insert(prev);
+        }
+    }
+    superseded
 }
 
 /// HTML を描画する。`max_chars` を超えた本文は切る（文字数で数える）。
@@ -178,7 +218,9 @@ pub(crate) fn render(
         .and_then(|h| base.join(h.trim()).ok())
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .unwrap_or_else(|| base.clone());
+    let superseded_radios = superseded_radios(&doc);
     let mut w = Walker {
+        superseded_radios,
         base,
         link_base,
         state,

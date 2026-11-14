@@ -366,3 +366,44 @@ fn preformatted_text_keeps_line_breaks_and_indentation() {
     // pre の外は従来どおり空白を詰める。
     assert!(out.text.contains("後 の 文"), "{}", out.text);
 }
+
+#[test]
+fn radio_groups_keep_only_the_last_checked_and_list_boxes_start_empty() {
+    let out = r(
+        r#"<form id="f"><input type="radio" name="r" value="a" checked aria-label="A">
+        <input type="radio" name="r" value="b" checked aria-label="B">
+        <input type="radio" name="other" value="x" checked aria-label="X">
+        <select name="list" size="3" aria-label="一覧"><option value="a">A</option><option value="b">B</option></select>
+        <select name="one" size="1" aria-label="一つ"><option value="a">A</option></select></form>
+        <form><input type="radio" name="r" value="c" checked aria-label="別フォーム"></form>
+        <input type="radio" name="r" value="d" checked form="f" aria-label="外から"></body>"#,
+    );
+    let checked: Vec<_> = out
+        .fields
+        .iter()
+        .filter_map(|f| match &f.kind {
+            FieldKind::Check {
+                value,
+                checked: true,
+                ..
+            } => Some((f.form, value.as_str())),
+            _ => None,
+        })
+        .collect();
+    // フォーム f の r は、form 属性で外から加わった最後の d だけ。別グループ（other）・別フォームはそのまま。
+    assert_eq!(
+        checked,
+        [(Some(0), "x"), (Some(1), "c"), (Some(0), "d")],
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains(r#""A" checked=false"#), "{}", out.text);
+    // size が 2 以上の単一選択リストは何も選ばない。size=1 は従来どおり先頭。
+    assert_eq!(out.fields[3].kind, FieldKind::Select { values: vec![] });
+    assert_eq!(
+        out.fields[4].kind,
+        FieldKind::Select {
+            values: vec!["a".into()]
+        }
+    );
+}
