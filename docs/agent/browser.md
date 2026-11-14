@@ -1,6 +1,6 @@
 # エージェントブラウザ（`browser` ツール）設計メモ
 
-> 状態: **設計（未実装）**・設計 issue #1264。human の判断が要る点は §12「決めること」に集める。
+> 状態: **設計（未実装）**・設計 issue #1264。方式は **E（ハイブリッド）で確定**。決定事項は §12（2026-11・human）。
 > 関連: design §4.4（agent-core）・§4.6 の web_fetch 節・[web-translate.md](./web-translate.md)・
 > PIT-25・PIT-36・PIT-48・PIT-56・PIT-77・PIT-79〜83・#1008・NFR-2。
 
@@ -242,8 +242,7 @@ GET フォームとモデルが組み立てる URL は、クエリ文字列に�
 
 - **1 run = 1 ブラウザプロセス**。テナント間・ユーザー間で Chromium プロセスを共有しない
   （レンダラの脆弱性で別の BrowserContext に届くため。context の分離はセキュリティ境界として数えない・PIT-82）。
-- 実行場所は gVisor ティアのサンドボックス（§12 の決めることで、orchestrator に載せるか専用の
-  ブラウザランナーにするかを決める）。`chrome-headless-shell` は rootfs に焼き込み、実行時にダウンロードしない（PIT-33）。
+- 実行場所は gVisor（runsc）で動く専用のブラウザランナー（§12-4）。`chrome-headless-shell` は rootfs に焼き込み、実行時にダウンロードしない（PIT-33）。
 - 画像・フォント・メディア・Service Worker は既定で遮断する（PoC と同じ。本文には不要）。
 - 上限: メモリ 512MiB（PoC で 1 セッション +170MB）・1 操作 15 秒・1 run あたり切替回数とセッション数・
   無操作 120 秒で破棄。テナントごとの同時セッション数も上限を持つ（同時 16 で +1.25GB）。
@@ -344,19 +343,27 @@ D と C で 1 回ずつ開いた（2026-11-13・同じ出口プロキシ経由�
 - ログインとプロファイル（§9）
 - ワークフローのノードとしてのブラウザ操作（まずチャットのエージェントで評価する）
 
-## 12. 決めること（human）
+## 12. 決定事項（2026-11・human）
 
-1. **トレイト境界とクレート**: `BrowserEngine` / `EnginePage` を新設してよいか（§3）。置き場所は新クレート `crates/browser`。
+1. **トレイト境界とクレート**: `BrowserEngine` / `EnginePage` を新設する（§3）。置き場所は新クレート `crates/browser`。
    循環を避けるため `public_fetch` と web_fetch の `decode` を agent-core から下位のクレートへ移す（§2）
-2. **ツール名の語彙追加**: `browser` と `browser_act` の 2 つ（`crates/agent-core/src/vocab.rs`）。1 つにまとめて
-   `requires_confirmation` を入力依存にするトレイト変更の案もある（§6.1）
-3. **承認ポリシ**: §6.1 の振り分けと、§6.2 の出所による URL の絞り込みを v1 の既定にしてよいか
-4. **Chromium の実行場所**: ①`sandbox-orchestrator` に載せる（`ExecRequest` に CDP の双方向ストリームを足す＝Sandbox トレイトの変更）
-   ②専用のブラウザランナー（gVisor の runsc で動く別サービス。`BrowserEngine` の裏で完結し Sandbox トレイトは変えない）。②を推す。
-   ②でも出口は 1 つの実装に保つ: egress スタック（netns・SNI フィルタ・偽 DNS・net_guard）は `sandbox_orchestrator` ライブラリの
-   公開モジュール（`backend::egress`）なので、ランナーはそれを再利用し、自前の出口を書かない（PIT-81 の adversarial テストが 1 か所で効く）
-5. **egress の公開 Web モード**: 現行の egress は allowlist（空＝全遮断）。browser には「公開 IP なら可・私的 IP は管理者許可のみ」の
-   モードが要る（`SandboxSpec` の `Egress` の拡張）
-6. **社内ホストの許可**: 管理者設定で私的アドレスのホストを許す（§6.3）。設定の置き場所と監査に加え、
-   共有の関門への変更（`validate_url` に「管理者許可のホストは名前の拒否を外す」入口を足す。既定の挙動は変えない）
-7. **着手時期**: roadmap の並行トラック AB として扱う（Phase 4・5 の後ならいつでも）。優先順位
+2. **ツール名の語彙追加**: `browser` と `browser_act` の 2 つを `crates/agent-core/src/vocab.rs` に足す
+   （`requires_confirmation` を入力依存にするトレイト変更は採らない・§6.1）
+3. **承認ポリシ**: §6.1 の振り分け（範囲外の入力は `browser` が拒否して `browser_act` へ）と、§6.2 の出所による URL の絞り込みを v1 の既定にする
+4. **Chromium の実行場所**: 専用のブラウザランナー（gVisor の runsc で動く別サービス。`BrowserEngine` の裏で完結し Sandbox トレイトは変えない）。
+   出口は 1 つの実装に保つ: egress スタック（netns・SNI フィルタ・偽 DNS・net_guard）は `sandbox_orchestrator` ライブラリの
+   公開モジュール（`backend::egress`）なので、ランナーはそれを再利用し、自前の出口を書かない（PIT-81 の adversarial テストが 1 か所で効く）。
+   orchestrator に載せる案（`ExecRequest` に CDP の双方向ストリームを足す＝Sandbox トレイトの変更）は採らない
+5. **egress の公開 Web モード**: `SandboxSpec` の `Egress` に「公開 IP なら可・私的 IP は §12-6 の許可のみ」のモードを足す
+   （現行の allowlist（空＝全遮断）はそのまま残す）
+6. **社内ホストの許可は管理者が変えられる**（human 決定）。モデルカタログ（design §4.5・#553）と同じ**二層**にする（設計は本書の提案）:
+   - **上限はデプロイ設定（運用者）が正**: 接続してよい私的アドレスの範囲（CIDR）と、許可できるホスト名のサフィックスを持つ。
+     **既定は空＝機能ごと無効**。SaaS（フルプール）では空のままにする。共有基盤の私的アドレス（DB・OpenFGA・orchestrator・
+     メタデータ）にテナントの管理者が向けられると、そのまま SSRF になるため。オンプレでは顧客の IT 部門が運用者として社内の範囲を入れる
+   - **組織の管理者（`organization#admin`）は管理コンソールで、上限の内側のホストを完全一致で追加・削除する**。
+     設定の粒度は tenant_id ＋ org。ワイルドカード・IP リテラルは不可。保存時に名前解決し、解決先が上限の CIDR の外なら保存を拒否する。
+     接続時も解決先を毎回上限と照合する（保存後の DNS 付け替えで上限の外へ出さない）
+   - 変更は監査に残す（誰が・どのホストを・いつ）。許可ホストへの接続も browser の監査（ホスト単位）に載る
+   - 共有の関門は既定を変えない。`validate_url` に「許可ホストなら名前の拒否（単一ラベル・`.internal` 等）を外す」入口を、
+     `pinned_client` には browser 専用の `AddrGuard` を渡す。web_fetch・画像代理取得は公開 IP のみのまま（§6.3）
+7. **着手時期**: roadmap の並行トラック AB として扱う（Phase 4・5 の後ならいつでも）。優先順位は実装 issue を切るときに決める

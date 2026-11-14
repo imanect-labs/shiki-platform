@@ -675,7 +675,7 @@
   既定は JS を実行しない自前のテキストエンジン、JS が要るページだけ隔離した Chromium に切り替える（ハイブリッド）。
   設計は [docs/agent/browser.md](../agent/browser.md)（設計 issue #1264）。
 - **タイミング**: Phase 4・5 の後ならいつでも（依存は web_fetch の取得関門・サンドボックスの gVisor ティア・承認ゲート）。
-  着手前に browser.md §12 の「決めること」（トレイト境界・ツール名・承認ポリシ・Chromium の実行場所・egress の公開 Web モード）を human と決める。
+  設計の決定事項は browser.md §12（2026-11・human 承認済み）。
 - **状況**: PoC（2026-11）まで。評価サイトで成功率 24/24、所要時間・トークン・CPU はテキストエンジン単独並み（browser.md §10）。
 - ⚠️ 落とし穴: [PIT-79〜83](../design-caveats.md)（持ち出し経路の拡大・cookie の受け渡し・リダイレクトと Chromium の通信経路・Chromium の隔離・JS 必須の判定）。
 
@@ -686,7 +686,8 @@
 | AB.1 | `BrowserEngine` トレイト・`BrowserSession`・共通スナップショット形式（`crates/browser`）・`public_fetch` / `decode` の下位クレートへの移動 | agent | 5.x |
 | AB.2 | テキストエンジン（public_fetch 経由・リダイレクト毎検証・フォーム・cookie jar） | agent | AB.1 |
 | AB.3 | `browser` ツール（読む操作）＋承認・egress・出所による URL の絞り込み | agent / chat | AB.2 |
-| AB.4 | Chromium エンジン（隔離実行・egress の公開 Web モード・資源上限） | sandbox | AB.1, 4.x |
+| AB.4 | Chromium エンジン（専用ランナー・egress の公開 Web モード・資源上限） | sandbox | AB.1, 4.x |
+| AB.9 | 社内ホストの許可（デプロイ設定の上限＋組織の管理者が管理コンソールで追加・監査） | agent / frontend | AB.2, AB.4 |
 | AB.5 | ハイブリッド切替（`needs_js`・cookie の受け渡し・主文書の受け渡し） | agent | AB.2, AB.4 |
 | AB.6 | `browser_act`（出所の無い URL・別オリジン宛て・POST・JS ボタン・Chromium での入力）と承認ダイアログ | agent / frontend | AB.3, AB.5 |
 | AB.7 | 評価セット `eval/agent-browser/`（評価サイト・注入ページ・実サイト測定） | agent | AB.3 |
@@ -697,7 +698,7 @@
 - **仕様**: browser.md §3・§4。エンジンは cookie jar を持たず、`BrowserSession`（run 単位）が持つ。
   ref はエンジン接頭辞＋世代内連番で、古い ref は拒否する。
 - **受け入れ条件**:
-  - [ ] トレイト境界を human が承認している（browser.md §12-1）
+  - [ ] トレイトの形が browser.md §3・§12-1（承認済み）どおりである
   - [ ] 共通形式のスナップショットがテキストエンジン・Chromium の両方から作れる（フェイク実装でテスト）
 
 ### Task AB.2: テキストエンジン
@@ -715,7 +716,7 @@
   - [ ] スナップショットが `<web_page>` 封筒に包まれ、ページ由来の値が封筒の外に出ない（PIT-56）
 
 ### Task AB.4: Chromium エンジン
-- **area**: sandbox / **path**: 決定（browser.md §12-4）による
+- **area**: sandbox / **path**: 専用のブラウザランナー（browser.md §12-4。egress は `sandbox_orchestrator::backend::egress` を再利用）
 - **仕様**: browser.md §7。1 run 1 プロセス・gVisor・egress プロキシ 1 か所・資源上限。
 - **受け入れ条件**:
   - [ ] Chromium からの直接接続（WebRTC・リテラル IP）が通らない（PIT-81）
@@ -748,3 +749,11 @@
 - **受け入れ条件**:
   - [ ] パスワードの値がモデルの入力・ツール結果・ログのどこにも現れない
 
+### Task AB.9: 社内ホストの許可
+- **area**: agent / frontend / **path**: `crates/browser/`, 管理コンソール（`web/`）, デプロイ設定
+- **仕様**: browser.md §12-6。上限（私的 CIDR・ホスト名サフィックス）はデプロイ設定が正で既定は空。組織の管理者は上限の内側のホストを完全一致で追加・削除する。
+- **受け入れ条件**:
+  - [ ] 上限が空のとき（SaaS の既定）、組織の管理者はホストを追加できない
+  - [ ] 解決先が上限の CIDR の外なら保存も接続も拒否する（保存後の DNS 付け替えを含む）
+  - [ ] web_fetch・画像代理取得からは許可ホストに到達できない
+  - [ ] 追加・削除が監査に残る
