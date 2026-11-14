@@ -44,6 +44,17 @@ pub(crate) fn split_step_path(step_path: &str) -> (&str, &str) {
     }
 }
 
+/// 要素スコープと、それを囲む要素スコープ（外から内へ・自分を含む）。静的（空）は空。
+///
+/// `m1[0].m2[1]` → `m1[0]`・`m1[0].m2[1]`。入れ子の map の中のブロックに、外側の要素の結果も見せるのに使う
+/// （`RunStore::step_outputs`・D-123）。
+pub(crate) fn enclosing_scopes(scope_prefix: &str) -> Vec<&str> {
+    scope_prefix
+        .match_indices(']')
+        .map(|(i, _)| &scope_prefix[..=i])
+        .collect()
+}
+
 /// 同一スコープの源ノードの step_path（`scope_prefix.node`・静的は `node`）。
 pub(crate) fn scoped_path(scope_prefix: &str, node_id: &str) -> String {
     if scope_prefix.is_empty() {
@@ -138,7 +149,7 @@ pub(super) async fn insert_fanout(
 
     let region_nodes = graph.region_nodes(map_id);
     for (index, item) in fanout.items.iter().enumerate() {
-        let each = json!({ "each": { "item": item, "index": index } });
+        let each = element_input(item, index);
         for node in &region_nodes {
             let step_path = format!("{map_step_path}[{index}].{node}");
             let status = if graph.in_edges(node).is_empty() {
@@ -165,6 +176,12 @@ pub(super) async fn insert_fanout(
         }
     }
     Ok(count)
+}
+
+/// 要素ごとの領域のステップの入力（繰り返し中の 1 件 `each`）。項目は保存時に `$from: each` の path を照らす閉じた組
+/// （`NodeType::element_keys`・GAP-137）と同じ（下の試験が照らす）。
+fn element_input(item: &Value, index: usize) -> Value {
+    json!({ "each": { "item": item, "index": index } })
 }
 
 /// 要素ステップ 1 行（集約の材料）。
@@ -390,6 +407,23 @@ mod tests {
     use crate::WorkflowIr;
     use std::collections::HashMap;
 
+    /// 繰り返し中の 1 件の項目は、保存時に照らす閉じた組と同じ（GAP-137）。
+    #[test]
+    fn element_input_has_the_closed_each_keys() {
+        let input = element_input(&serde_json::json!({ "a": 1 }), 3);
+        let mut keys: Vec<&str> = input["each"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut want = NodeType::ControlMap.element_keys().unwrap().to_vec();
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        assert_eq!(input["each"]["index"], 3);
+    }
+
     #[test]
     fn split_static_and_element_and_nested() {
         assert_eq!(split_step_path("parse"), ("", "parse"));
@@ -400,6 +434,16 @@ mod tests {
         assert_eq!(split_step_path("m1[0].m2[1].leaf"), ("m1[0].m2[1]", "leaf"));
         // map ノード自身（領域内のノードだが map）: 接頭辞は外側要素。
         assert_eq!(split_step_path("m1[0].m2"), ("m1[0]", "m2"));
+    }
+
+    #[test]
+    fn enclosing_scopes_go_from_outer_to_inner() {
+        assert!(enclosing_scopes("").is_empty());
+        assert_eq!(enclosing_scopes("m[3]"), vec!["m[3]"]);
+        assert_eq!(
+            enclosing_scopes("m1[0].m2[12]"),
+            vec!["m1[0]", "m1[0].m2[12]"]
+        );
     }
 
     #[test]

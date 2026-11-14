@@ -15,18 +15,36 @@ use super::readiness::EdgeState;
 use crate::vocab::RunEventKind;
 
 mod advance;
+mod approval;
 mod backoff;
 mod claim;
+mod digest;
 mod gc;
 mod history;
 mod limits;
 mod map_region;
 mod ops;
+mod outcome;
+mod retry_wait;
 mod wait;
+mod wait_data;
 
+pub use approval::{
+    ApprovalWait, DueApprovalCursor, DueApprovalPage, PendingApproval, ResolvedApproval,
+};
+pub use claim::{LEASE_RECLAIMS_EXHAUSTED_MESSAGE, MAX_LEASE_RECLAIMS};
+pub use digest::{
+    DigestError, DigestMapCount, DigestRecord, DigestSkip, DigestStep, RecordChange, RunDigest,
+    DIGEST_OUTPUT_CHARS, MAX_DIGEST_RECORDS,
+};
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
+pub use limits::PromoteReport;
+pub(crate) use ops::cancel_runs_within;
 pub use ops::{CancelOutcome, ResumeOutcome};
+pub use outcome::{LiveState, OwnOutcome, RunOutcomeReader, MAX_REPLY_BYTES, MAX_REPLY_SECTIONS};
+pub use wait::{DueSweepLimits, EventWaitGate, EventWaitSubscriber};
+pub use wait_data::DataWaitCandidate;
 
 /// step の durable テーブル記述子（複合キー・engine.md §9.5）。
 ///
@@ -67,6 +85,11 @@ fn map_db(e: sqlx::Error) -> RunStoreError {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedStep {
     pub run_id: Uuid,
+    /// run を始めた時刻（`started_at`・まだ無ければ作った時刻。`$from run` の日時の源・D-97）。
+    pub run_started_at: chrono::DateTime<chrono::Utc>,
+    /// 予定の日時（スケジュールの予定の時刻・手動の実行で指定した日時・親の run から引き継いだ日時。ほかは `None`・
+    /// `$from run` の `scheduled_at` の源・GAP-15・[`super::planned`]）。
+    pub run_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub workflow_id: Uuid,
     pub step_path: String,
     pub node_id: String,
@@ -79,15 +102,64 @@ pub struct ClaimedStep {
     pub fencing_token: i64,
     pub idempotency_key: String,
     pub input: Json<Value>,
+    /// 手動の実行で試すきっかけの内容（`trigger_payload`・D-93）。無い run（ほとんどすべて）は `None` で、きっかけの
+    /// 内容は入力と同じ（schedule / event の run は入力にペイロードを載せる）。入力を DB から 2 回運ばないよう、
+    /// 入力での補いはワーカーがする（[`ClaimedStep::trigger_or_input`]）。
+    pub trigger: Option<Json<Value>>,
     /// step 固有の入力（map 要素の `each` コンテキスト等）。静的ノードは NULL。
     pub step_input: Option<Json<Value>>,
     /// 開始時にピンした IR（ワーカーがノード params/retry を引く）。
     pub ir_snapshot: Json<Value>,
 }
 
+impl ClaimedStep {
+    /// きっかけの内容（`$from trigger` の源）。試すきっかけの内容が無ければ入力と同じ（D-93）。
+    #[must_use]
+    pub fn trigger_or_input(&self) -> Value {
+        self.trigger
+            .as_ref()
+            .map_or_else(|| self.input.0.clone(), |t| t.0.clone())
+    }
+}
+
 /// resume がリース失効を待つときの上乗せ（秒）。旧 worker のリースが切れた「直後」を狙わず、
 /// 時計ずれと最後の heartbeat の遅延を吸収するための余白。
 const RESUME_GRACE_MARGIN_SECS: i64 = 5;
+
+/// run の由来（[`RunStore::create_run_from`]・GAP-07）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunOrigin<'a> {
+    /// 発火元の outbox イベント（イベントトリガの run・`(trigger_id, trigger_event_id)` で一意）。
+    pub trigger_event_id: Option<i64>,
+    /// 親の run（workflow.start で起動した子）。
+    pub parent_run_id: Option<Uuid>,
+    /// 手動の実行で試すきっかけの内容（`$from trigger` の源・D-93）。`None` なら、きっかけの内容は入力と同じ
+    /// （今までどおり）。
+    pub trigger_payload: Option<&'a Value>,
+    /// 予定の日時（実行情報の `scheduled_at` の源・GAP-15）。スケジュールの発火はその回の予定の時刻、手動の実行は
+    /// 指定した日時（試す値・GAP-88）を渡す。`None` なら、親の run（`parent_run_id`）の予定の日時を引き継ぎ
+    /// （GAP-90）、親も無ければ空のまま（実行情報は始めた時刻を予定の日時として返す）。
+    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// やり直しの元の run（「同じ入力でもう一度実行」で作る run だけ・実行履歴が予定の日時の由来を言い分ける・GAP-89）。
+    pub rerun_of: Option<Uuid>,
+    /// 作る run の id（呼び出し側が先に決めて記録しておく・会話の AI の試運転の台帳・D-197）。run を作った後に呼び出し側
+    /// が落ちても、この id で run を引き直せる。`None` なら DB が決める（今までどおり）。同じ id の run が既にあれば
+    /// 作らずに誤り（主キーの重複）になる。
+    pub run_id: Option<Uuid>,
+}
+
+/// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
+///
+/// **待機中の run は数えない**（D-26・H10 (1)）: 実行中・実行待ち（ready / running）の step が無く、
+/// wait（waiting_timer / waiting_event）で止まっている run。承認やイベントを何日も待つ run が枠を
+/// 占めて、新しい起動が queued のまま進まなくなるのを防ぐ。起床して上限を一時的に超えるのは許す。
+pub(crate) const ACTIVE_RUN: &str = "NOT ( \
+     NOT EXISTS (SELECT 1 FROM step_execution s \
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
+                   AND s.status IN ('ready', 'running')) \
+     AND EXISTS (SELECT 1 FROM step_execution s \
+                 WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
+                   AND s.status IN ('waiting_timer', 'waiting_event')))";
 
 /// run/step のデータチョークポイント。
 #[derive(Clone)]
@@ -110,6 +182,11 @@ impl RunStore {
         RunStore { db, lease_secs }
     }
 
+    /// run の DB（起動口が自動実行の見送りを同じ DB に記録する・GAP-67）。
+    pub(crate) fn db(&self) -> &PgPool {
+        &self.db
+    }
+
     /// `resume_failed` が claim 済み step を `ready` へ戻すときに置く猶予（秒）。
     ///
     /// 旧 worker が有効リースを保持したまま別 worker が再 claim すると、checkpoint は fencing が
@@ -121,12 +198,13 @@ impl RunStore {
     /// run を作成し本体ノードを一括実体化する（root=ready・他=pending・run.started 追記）。
     ///
     /// `trigger_id` は発火元トリガ（schedule/event の実体化トリガ id・interactive は None）。run 履歴の
-    /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。
+    /// リプレイ/監査/キャンセルがどのトリガ由来か辿れるようにする。由来（イベント・親の run）を持つ run は
+    /// [`Self::create_run_from`] で作る。
     ///
     /// **run 多重度**（engine.md §8.3・10.5）: `policies.max_parallel_runs` を超える場合は
     /// `on_trigger_overflow` に従い **queue**（status=queued で滞留・scheduler tick が promote）
     /// または **skip**（run を作らず `None`）。判定は per-workflow advisory lock で直列化する
-    /// （並行 create の数え漏れによる上限突破を防ぐ）。
+    /// （並行 create の数え漏れによる上限突破を防ぐ）。待機中の run（[`ACTIVE_RUN`]）は数えない。
     #[allow(clippy::too_many_arguments)]
     pub async fn create_run(
         &self,
@@ -142,6 +220,46 @@ impl RunStore {
         ir_snapshot: &Value,
         graph: &RunGraph,
     ) -> Result<Option<Uuid>, RunStoreError> {
+        self.create_run_from(
+            tenant_id,
+            org,
+            workflow_id,
+            version,
+            trigger_kind,
+            trigger_id,
+            principal,
+            principal_kind,
+            input,
+            ir_snapshot,
+            graph,
+            RunOrigin::default(),
+        )
+        .await
+    }
+
+    /// [`Self::create_run`] の由来つき版（GAP-07）。
+    ///
+    /// - `origin.trigger_event_id`: 発火元の outbox イベント。`(trigger_id, trigger_event_id)` で一意にし、
+    ///   同じイベントで作った run が既にあればそれを返す（再配送・再試行で二重に作らない・PIT-31）。
+    /// - `origin.parent_run_id`: 親の run（workflow.start の子）。子は親の鎖 ∪ {親のワークフロー} を
+    ///   同じ Tx で引き継ぐ（子の書込が親を起こす循環を見つける・D-26）。`origin.scheduled_at` が無ければ、親の
+    ///   予定の日時も同じ読みで引き継ぐ（スケジュールの run から始めた子が、同じ週・月を数える・GAP-90）。
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    pub async fn create_run_from(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        workflow_id: Uuid,
+        version: i64,
+        trigger_kind: &str,
+        trigger_id: Option<&str>,
+        principal: &str,
+        principal_kind: &str,
+        input: &Value,
+        ir_snapshot: &Value,
+        graph: &RunGraph,
+        origin: RunOrigin<'_>,
+    ) -> Result<Option<Uuid>, RunStoreError> {
         let policies: crate::ir::Policies = ir_snapshot
             .get("policies")
             .and_then(|p| serde_json::from_value(p.clone()).ok())
@@ -155,10 +273,28 @@ impl RunStore {
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
-        let active: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM workflow_run \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running')",
-        )
+        // 同じイベントで作った run があればそれを返す（多重度の判定より先・見送りに化けさせない）。
+        if let (Some(tid), Some(eid)) = (trigger_id, origin.trigger_event_id) {
+            let existing: Option<Uuid> = sqlx::query_scalar(
+                "SELECT run_id FROM workflow_run \
+                 WHERE tenant_id = $1 AND trigger_id = $2 AND trigger_event_id = $3",
+            )
+            .bind(tenant_id)
+            .bind(tid)
+            .bind(eid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            if existing.is_some() {
+                tx.rollback().await.map_err(map_db)?;
+                return Ok(existing);
+            }
+        }
+        let active: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM workflow_run r \
+             WHERE r.tenant_id = $1 AND r.workflow_id = $2 \
+               AND (r.status = 'queued' OR (r.status = 'running' AND {ACTIVE_RUN}))"
+        ))
         .bind(tenant_id)
         .bind(workflow_id)
         .fetch_one(&mut *tx)
@@ -172,15 +308,45 @@ impl RunStore {
         }
         let queued = overflow; // queue（既定）: 滞留させ tick が promote する。
 
+        // 親の鎖と予定の日時（workflow.start の子）。親が見つからなければ鎖は空で、予定の日時も引き継がない（由来だけ
+        // 残す）。
+        let (chain, parent_scheduled_at): (Vec<Uuid>, Option<chrono::DateTime<chrono::Utc>>) =
+            match origin.parent_run_id {
+                Some(parent) => {
+                    sqlx::query_as::<_, (Uuid, Vec<Uuid>, Option<chrono::DateTime<chrono::Utc>>)>(
+                        "SELECT workflow_id, trigger_chain, scheduled_at FROM workflow_run \
+                     WHERE tenant_id = $1 AND run_id = $2",
+                    )
+                    .bind(tenant_id)
+                    .bind(parent)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(map_db)?
+                    .map(|(wf, mut chain, at)| {
+                        if !chain.contains(&wf) {
+                            chain.push(wf);
+                        }
+                        (chain, at)
+                    })
+                    .unwrap_or_default()
+                }
+                None => (Vec::new(), None),
+            };
+        // 渡された予定の日時（スケジュールの発火・手動の実行で指定した値）が先。無ければ親から引き継ぐ（GAP-90）。
+        let scheduled_at = origin.scheduled_at.or(parent_scheduled_at);
+
         let status = if queued { "queued" } else { "running" };
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
-              principal_kind, input, ir_snapshot, status, started_at, timeout_at) \
+              principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
+              trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload, \
+              step_order, scheduled_at, rerun_of, run_id) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
-                          THEN now() + ($12 || ' seconds')::interval END) \
+                          THEN now() + ($12 || ' seconds')::interval END, \
+                     $13, $14, $15, $16, $17, $18, $19, $20, COALESCE($21, gen_random_uuid())) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -195,6 +361,20 @@ impl RunStore {
         .bind(Json(ir_snapshot))
         .bind(status)
         .bind(i64::from(policies.run_timeout_sec))
+        .bind(origin.trigger_event_id)
+        .bind(&chain)
+        .bind(origin.parent_run_id)
+        // 結果を画面に返すノード（実行順）。読取口が ir_snapshot を開かずに引く（GAP-09）。
+        .bind(graph.reply_nodes())
+        .bind(origin.trigger_payload.map(Json))
+        // 実行の詳細で同じ時刻の step を並べる順（ir_snapshot を開かない・BUG-117）。
+        .bind(graph.step_order())
+        // 予定の日時（run を作る Tx で書く。発火の記録の run_id は後から書くので、ワーカーが最初の step を取る時点では
+        // 発火の記録から読めないことがある・GAP-15）。
+        .bind(scheduled_at)
+        .bind(origin.rerun_of)
+        // 呼び出し側が決めた run の id（無ければ DB が決める）。
+        .bind(origin.run_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -355,10 +535,15 @@ impl RunStore {
     /// 実行対象 step から見える `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
     ///
     /// ワーカーが次ノード実行前に呼び、[`NodeContext`](super::NodeContext) の `node_outputs` を組む。
-    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**＋静的 body 出力を、
-    /// 静的ノードなら静的 body 出力のみを返す（要素どうしを混同しない）。ノード id は IR 内で一意なので
-    /// スコープ横断でキー衝突しない。on_error=continue で error ポートを取った failed step も含める
-    /// （`$from nodes.<id>.output.error.*` で参照できるように）。
+    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**と、それを囲む要素
+    /// スコープ（入れ子の map の外側の要素 `<m1>[i]`）の出力と、静的 body 出力を返す。静的ノードなら静的 body
+    /// 出力のみを返す（要素どうしを混同しない）。保存時検証 V5 が繰り返しの中のブロックの祖先に、囲む繰り返しの
+    /// 祖先を数えるのと同じ範囲（D-123）。ノード id は IR 内で一意で、囲むスコープの連鎖の中では 1 つの id に
+    /// 1 つの step しか無いので、キーは衝突しない。on_error=continue で error ポートを取った failed step も
+    /// 含める（`$from nodes.<id>.output.error.*` で参照できるように）。
+    ///
+    /// 見せないスコープ（ほかの要素）の行は DB から読まない（要素の数だけ step が増えても、読む出力は見える分に
+    /// とどめる）。
     pub async fn step_outputs(
         &self,
         tenant_id: &str,
@@ -366,14 +551,19 @@ impl RunStore {
         step_path: &str,
     ) -> Result<Vec<(String, Value)>, RunStoreError> {
         let (scope_prefix, _) = map_region::split_step_path(step_path);
+        let scopes = map_region::enclosing_scopes(scope_prefix);
+        // 要素の step（`[` を含む）のスコープは最後の `.` より前（ノード id は `.` を含まない）。
         let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
             "SELECT step_path, output FROM step_execution \
              WHERE tenant_id = $1 AND run_id = $2 \
                AND (status = 'succeeded' \
-                    OR (status = 'failed' AND 'error' = ANY(taken_ports)))",
+                    OR (status = 'failed' AND 'error' = ANY(taken_ports))) \
+               AND (strpos(step_path, '[') = 0 \
+                    OR regexp_replace(step_path, '\\.[^.]*$', '') = ANY($3))",
         )
         .bind(tenant_id)
         .bind(run_id)
+        .bind(&scopes)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -381,8 +571,8 @@ impl RunStore {
             .into_iter()
             .filter_map(|(sp, out)| {
                 let (sp_scope, sp_node) = map_region::split_step_path(&sp);
-                // 静的 body 出力（scope 空）＋自要素スコープの兄弟出力のみを見せる。
-                (sp_scope.is_empty() || sp_scope == scope_prefix)
+                // 静的 body 出力（scope 空）＋自要素とそれを囲む要素のスコープの出力のみを見せる。
+                (sp_scope.is_empty() || scopes.contains(&sp_scope))
                     .then(|| (sp_node.to_string(), out.map_or(Value::Null, |j| j.0)))
             })
             .collect())

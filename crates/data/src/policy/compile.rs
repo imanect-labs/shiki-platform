@@ -131,14 +131,19 @@ pub(crate) fn compile_field_cmp<B: PushBind>(
     let f = schema.field(field).ok_or_else(|| {
         DataError::Internal(format!("row_policy が未知フィールド '{field}' を参照"))
     })?;
-    // 埋め込み直前の再検証（スキーマ検証と二重・PIT-21）。埋め込むのは "f{id}" のみ。
-    let jk = f.json_key();
-    if !is_json_key(&jk) {
-        return Err(DataError::Internal(format!(
-            "row_policy の JSONB キー '{jk}' が内部 ID 形式ではありません"
-        )));
-    }
-    let accessor = format!("({alias}.data ->> '{jk}')");
+    let accessor = if f.is_created_by() {
+        // 作成者の列はレコードの作成者（owner・空にならない・だれも書き換えられない）と比べる（D-122）。
+        format!("({alias}.owner)")
+    } else {
+        // 埋め込み直前の再検証（スキーマ検証と二重・PIT-21）。埋め込むのは "f{id}" のみ。
+        let jk = f.json_key();
+        if !is_json_key(&jk) {
+            return Err(DataError::Internal(format!(
+                "row_policy の JSONB キー '{jk}' が内部 ID 形式ではありません"
+            )));
+        }
+        format!("({alias}.data ->> '{jk}')")
+    };
     match value {
         PolicyOperand::UserId => {
             let ph = binds.push_bind(Bind::Text(ctx_user_id.to_string()));
@@ -372,6 +377,36 @@ mod tests {
             .unwrap();
         assert_eq!(sql, "TRUE");
         assert!(binds.binds.is_empty());
+    }
+
+    /// 作成者の列（D-122）の比べは本体の owner と比べる（JSONB のキーは読まない）。
+    #[test]
+    fn created_by_compiles_to_the_owner_column() {
+        let mut schema = schema_with_policy(PolicyExpr::Any(vec![
+            PolicyExpr::FieldCmp {
+                field: "made_by".into(),
+                op: CmpOp::Ne,
+                value: PolicyOperand::UserId,
+            },
+            PolicyExpr::FieldCmp {
+                field: "made_by".into(),
+                op: CmpOp::In,
+                value: PolicyOperand::Lit(json!(["bob", "carol"])),
+            },
+        ]));
+        schema
+            .fields
+            .push(FieldDef::new("made_by", FieldType::CreatedBy));
+        crate::field_key::assign_field_ids(None, &mut schema).unwrap();
+        let jk = schema.field("made_by").unwrap().json_key();
+        let mut binds = BindSet::new(0);
+        let sql =
+            compile_read_predicate(&schema, &material(&[], &[]), "alice", "r", &mut binds).unwrap();
+        assert!(
+            sql.starts_with("((((r.owner) <> $1) OR ((r.owner) = ANY($2::text[])))"),
+            "{sql}"
+        );
+        assert!(!sql.contains(&jk) && !sql.contains("alice"), "{sql}");
     }
 
     #[test]

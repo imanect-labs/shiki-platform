@@ -6,7 +6,7 @@
 //!
 //! | 規則 | 内容 |
 //! |---|---|
-//! | 文字コード | UTF-8（先頭の BOM は読み飛ばす）。それ以外は 400 |
+//! | 文字コード | BOM（UTF-8・UTF-16）→ UTF-8 → 日本の文字コード（Shift_JIS・EUC-JP）の推定の順で決める（`textenc`・ファイルを読むと同じ判定・GAP-45）。日本語の Windows の Excel が保存する CSV の既定は Shift_JIS。決められなければ 400 |
 //! | 見出し行 | 必須。列はフィールドの参照名（`key`）で、無ければ表示名（`display_name`・一意なもの）で照合 |
 //! | 行キー | 見出し [`ROW_KEY_COLUMN`]（`_key`）の列があれば行キー（取込内で一意・エラー報告で行を特定する） |
 //! | 空のセル | そのフィールドを持たない（値なし） |
@@ -29,6 +29,10 @@ use crate::DataError;
 pub const ROW_KEY_COLUMN: &str = "_key";
 /// HTTP で受け付ける CSV の最大バイト数。
 pub const MAX_BULK_CSV_BYTES: usize = 32 * 1024 * 1024;
+
+/// 文字コードを決められない・文章でない CSV の誤り（利用者向け）。
+const NOT_TEXT_CSV: &str =
+    "CSV の文字コードを読み取れません。UTF-8 か Shift_JIS で保存してください";
 
 /// 見出しの列 1 つの行き先。
 enum Column<'a> {
@@ -84,6 +88,12 @@ fn columns<'a>(
         if f.field_type.is_derived() || f.is_reverse_link() {
             return Err(invalid(format!("列 '{h}' は書き込めません（派生列）")));
         }
+        // 作成者の列はレコードを追加した人で埋まる（取り込む値で書き換えさせない・D-122）。
+        if f.is_created_by() {
+            return Err(invalid(format!(
+                "列 '{h}' には書き込めません。作成者の列には、レコードを追加した人が自動で入ります。CSV からこの列を外してください"
+            )));
+        }
         if seen.contains(&f.id) {
             return Err(invalid(format!(
                 "フィールド '{}' の列が重複しています",
@@ -136,7 +146,7 @@ fn csv_error(e: &csv::Error, line: usize) -> DataError {
         } => invalid(format!(
             "CSV の {line} 行目の列の数が見出しと合いません（見出しは {expected_len} 列・この行は {len} 列）"
         )),
-        csv::ErrorKind::Utf8 { .. } => invalid("CSV は UTF-8 で保存してください"),
+        csv::ErrorKind::Utf8 { .. } => invalid(NOT_TEXT_CSV),
         _ => invalid(format!(
             "CSV の {line} 行目を読めません（引用符の閉じ忘れなどを確かめてください）"
         )),
@@ -154,14 +164,14 @@ pub(crate) fn csv_rows(
             "CSV が大きすぎます（最大 {MAX_BULK_CSV_BYTES} バイト）"
         )));
     }
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    if std::str::from_utf8(bytes).is_err() {
-        return Err(invalid("CSV は UTF-8 で保存してください"));
-    }
+    // 文字コードを決めて UTF-8 の文章にする（BOM は含めない）。決められなければ文字化けのまま取り込まない。
+    let text = textenc::decode_text(bytes)
+        .map_err(|_| invalid(NOT_TEXT_CSV))?
+        .text;
     let mut rd = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(false)
-        .from_reader(bytes);
+        .from_reader(text.as_bytes());
     let headers: Vec<String> = rd
         .headers()
         .map_err(|e| csv_error(&e, 1))?
@@ -265,10 +275,49 @@ mod tests {
         let m = err("title,amount\nx\n");
         assert!(m.contains("2 行目") && m.contains("見出しは 2 列"), "{m}");
         assert!(!m.contains("CSV error") && !m.contains("record"), "{m}");
-        assert!(matches!(
-            csv_rows(&s, &none, b"title\n\xff\xfe\n"),
-            Err(DataError::Invalid(m)) if m.contains("UTF-8")
-        ));
+        // 文字コードを決められない中身（西欧の windows-1252 の é）・文章でない中身は取り込まない。
+        for bytes in [b"title\ncaf\xe9\n".as_slice(), b"title\n\x00\x01\n"] {
+            assert!(matches!(
+                csv_rows(&s, &none, bytes),
+                Err(DataError::Invalid(m)) if m == NOT_TEXT_CSV
+            ));
+        }
+    }
+
+    /// Excel が保存する文字コードの CSV を取り込む（GAP-45）。Shift_JIS（日本語の Windows の既定）・BOM 付きの
+    /// UTF-8・UTF-16LE（BOM 付き）の「経費,金額」を、表示名の見出しで照合して同じ行にする。
+    #[test]
+    fn reads_csv_in_the_encodings_excel_writes() {
+        use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
+        let mut item = FieldDef::new("item", FieldType::Text);
+        item.display_name = "経費".into();
+        let mut amount = FieldDef::new("amount", FieldType::Number);
+        amount.display_name = "金額".into();
+        let mut s = TableSchema {
+            fields: vec![item, amount],
+            status_field: None,
+            row_policy: None,
+            field_policy: vec![],
+            aggregate_min_rows: None,
+            fsm_ref: None,
+            rag: None,
+        };
+        crate::field_key::assign_field_ids(None, &mut s).unwrap();
+        let csv = "経費,金額\n交通費,1200\n宿泊費,8000\n";
+        for (encoding, bom) in [(SHIFT_JIS, false), (UTF_8, true), (UTF_16LE, true)] {
+            let bytes = textenc::encode_like(csv, encoding, bom).unwrap();
+            let rows = csv_rows(&s, &HashSet::new(), &bytes).unwrap();
+            let data: Vec<Value> = rows.into_iter().map(|r| r.data).collect();
+            assert_eq!(
+                data,
+                vec![
+                    json!({"item": "交通費", "amount": 1200}),
+                    json!({"item": "宿泊費", "amount": 8000})
+                ],
+                "{}",
+                encoding.name()
+            );
+        }
     }
 
     /// 読めない列の見出しは、存在しない列と同じ 403（参照名でも表示名でも・列の存在オラクルを作らない）。

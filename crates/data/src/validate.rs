@@ -32,7 +32,7 @@ pub trait RefResolver: Send + Sync {
 
 /// 書込ペイロードをスキーマで検証し、**正規化済みの保存形**を返す。
 ///
-/// - 未宣言フィールド・派生フィールド（lookup/computed）への書込は拒否。
+/// - 未宣言フィールド・派生フィールド（lookup/computed）・作成者の列への書込は拒否。
 /// - `full` = create（required の欠落を拒否）。update は merge 後の完全形を渡す。
 /// - datetime は UTC 固定幅 ISO-8601 へ正規化する（辞書順＝時刻順）。
 /// - number は `numeric_spec` に従って正規化する（data-platform §4.2）。
@@ -104,6 +104,10 @@ async fn validate_inner(
                 key,
                 format!("'{key}' は自動で計算する列のため書き込めません"),
             ));
+        }
+        // 作成者の列は作成者で埋まる（保存しない・黙って捨てずに断る・D-122）。
+        if f.is_created_by() {
+            return Err(crate::created_by::write_rejected(f));
         }
         if f.is_reverse_link() {
             return Err(field_err(InvalidCode::InvalidInput, key, format!(
@@ -390,6 +394,7 @@ async fn validate_field_value(
                 format!("'{name}' は自動で計算する列のため書き込めません"),
             ))
         }
+        FieldType::CreatedBy => Err(crate::created_by::write_rejected(f)),
     }
 }
 

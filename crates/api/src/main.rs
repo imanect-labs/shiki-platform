@@ -20,6 +20,7 @@ mod gateway_functions;
 mod miniapp_triggers;
 mod shutdown;
 mod wiring;
+mod wiring_egress;
 mod wiring_gateway;
 mod wiring_gui;
 mod wiring_office;
@@ -48,6 +49,8 @@ async fn run() -> anyhow::Result<()> {
     let _telemetry = telemetry::init(&config.telemetry).context("計装の初期化に失敗")?;
 
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
+    // 外への送信の中継（ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数が共有する・GAP-72）。
+    let egress_proxy = wiring_egress::wire_egress_proxy(&config)?;
     // script エンジン（ゲストの wasm のコンパイル・数秒〜十数秒）を先に別スレッドで始め、マイグレーション・
     // 配線と重ねる（ワークフローの実行とミニアプリの関数が共有する・起動の無音区間の短縮）。
     if config.workflow.enabled || config.gateway.enabled {
@@ -189,6 +192,8 @@ async fn run() -> anyhow::Result<()> {
         &data_store,
         secrets.as_ref(),
     ));
+    // 前の版で登録したアプリのクライアントを今の登録の形に揃える（裏で動かす・BUG-172）。
+    api::miniapp_install::spawn_client_repair(Arc::clone(&installs));
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
     // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。
@@ -209,6 +214,7 @@ async fn run() -> anyhow::Result<()> {
             memory_limit_mb: config.tabular.memory_limit_mb,
             max_rows: config.tabular.max_rows,
             page_size: config.tabular.page_size,
+            // 結果の大きさの上限は設定に出さない（ワークフローの結果の大きさを決める・GAP-92）。
             ..tabular::Quotas::default()
         },
     ));
@@ -235,6 +241,25 @@ async fn run() -> anyhow::Result<()> {
     ));
 
     let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz)?;
+    // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
+    // 会話の試運転（try_workflow・T04）が同じ launcher/runs を使うので、wire_chat より先に組む。
+    // 履歴 GC ワーカーは enabled に依らず起動する（保持は新規実行の可否と独立・#448）。
+    let (workflow_launcher, workflow_runs) = wiring::wire_workflow(
+        &config,
+        &http,
+        &db,
+        &authz,
+        &workflows,
+        &storage,
+        search.as_ref(),
+        secrets.as_ref(),
+        &tabular,
+        &artifacts,
+        (&data_store, &fsms),
+        egress_proxy.as_ref(),
+    )
+    .await?;
+
     let chat = wiring::wire_chat(
         &config,
         &http,
@@ -252,24 +277,10 @@ async fn run() -> anyhow::Result<()> {
         office.as_ref(),
         &skill_installs,
         &data_store,
+        egress_proxy.as_ref(),
+        // 会話の AI の試運転（try_workflow・T04）。ワークフローの実行時が無効なら提示しない。
+        (workflow_launcher.as_ref(), workflow_runs.as_ref()),
         bug_report.clone(),
-    )
-    .await?;
-
-    // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
-    // 履歴 GC ワーカーは enabled に依らず起動する（保持は新規実行の可否と独立・#448）。
-    let (workflow_launcher, workflow_runs) = wiring::wire_workflow(
-        &config,
-        &http,
-        &db,
-        &authz,
-        &workflows,
-        &storage,
-        search.as_ref(),
-        secrets.as_ref(),
-        &tabular,
-        &artifacts,
-        (&data_store, &fsms),
     )
     .await?;
 
@@ -284,6 +295,7 @@ async fn run() -> anyhow::Result<()> {
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
+    let workflow_approvals = Arc::new(workflow_engine::ApprovalStore::new(db.clone()));
 
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
     let ui_actions = wiring_gui::wire_ui_actions(
@@ -321,6 +333,7 @@ async fn run() -> anyhow::Result<()> {
         object_store: &object_store,
         secrets: secrets.as_ref(),
         shutdown: &shutdown,
+        egress_proxy: egress_proxy.as_ref(),
     })
     .await?;
     // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。
@@ -334,6 +347,20 @@ async fn run() -> anyhow::Result<()> {
     };
     // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
     api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
+    // 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136・provisioner があるときだけ）。
+    api::membership_reconcile::spawn(
+        api::membership_reconcile::ReconcileDeps {
+            db: db.clone(),
+            authz: authz.clone(),
+            directory: Arc::clone(&directory),
+            data: Arc::clone(&data_store),
+            http: keycloak_http.clone(),
+            auth: config.auth.clone(),
+            batch_size: config.membership_reconcile.batch_size,
+            interval: std::time::Duration::from_secs(config.membership_reconcile.interval_secs),
+        },
+        &config.membership_reconcile,
+    );
     let state = AppState {
         bug_report,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),
@@ -367,6 +394,7 @@ async fn run() -> anyhow::Result<()> {
         workflow_registration,
         workflow_summaries,
         workflow_layout,
+        workflow_approvals,
         audit,
         directory,
         tenants,
@@ -376,6 +404,7 @@ async fn run() -> anyhow::Result<()> {
         rag_admin,
         office,
         docx_composer,
+        egress_proxy,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -506,6 +535,8 @@ fn wire_data(
     data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
     // 自前オプティマイザの統計（outbox 消費側の行数・値頻度表＋統計収集ジョブ・Task 15.12）。
     data::StatsWorker::new((*data_store).clone()).spawn();
+    // 消したテーブルの OpenFGA のタプルの掃除（削除の後の撤去に失敗したもの・撤去を始める前に消したもの・BUG-149）。
+    data::DeletedTableTupleSweeper::new((*data_store).clone()).spawn();
     // 起動時の較正ベンチ（較正用の固定表で単価を測り直す・顧客データに触れない・DDL を打たない）。
     // 失敗しても初期値で動く。
     {

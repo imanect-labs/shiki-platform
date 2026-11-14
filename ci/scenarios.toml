@@ -63,10 +63,13 @@ e2e = [
     "agent-full-stack.spec.ts",
     "agent-tools.spec.ts",
     "ai-insights.spec.ts",
+    "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
+    "artifacts-owned-paging.spec.ts",
     "bug-report-ai.spec.ts",
     "chat-ai-edit-revert.spec.ts",
     "chat-branch.spec.ts",
+    "chat-builder-ref.spec.ts",
     "chat-approval-banner.spec.ts",
     "chat-mobile.spec.ts",
     "chat-answer-export.spec.ts",
@@ -74,6 +77,7 @@ e2e = [
     "chat-translation-export.spec.ts",
     "chat-modes.spec.ts",
     "chat-scroll-follow.spec.ts",
+    "chat-stop-reason.spec.ts",
     "chat.spec.ts",
     "help-search.spec.ts",
     "home-microseason.spec.ts",
@@ -81,9 +85,14 @@ e2e = [
     "composer-create.spec.ts",
     "composer-markdown.spec.ts",
     "csv-conversation-drafts.spec.ts",
+    "csv-save-name-taken.spec.ts",
     "custom-instructions.spec.ts",
     "deep-research.spec.ts",
     "drive-ai-save-move.spec.ts",
+    "drive-list-paging.spec.ts",
+    "drive-picker-focus.spec.ts",
+    "drive-upload-same-name.spec.ts",
+    "home-today.spec.ts",
     "mini-apps.spec.ts",
     "note-conversation-drafts.spec.ts",
     "office-chart-insert.spec.ts",
@@ -99,6 +108,7 @@ e2e = [
     "slide-conversation-drafts.spec.ts",
     "user-preferences.spec.ts",
     "visual.spec.ts",
+    "workflow-ai-fix.spec.ts",
     "yui-actions.spec.ts",
     "yui.spec.ts",
 ]
@@ -110,13 +120,24 @@ crates = ["shiki-chat"]
 e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
+    "approvals.spec.ts",
     "composer-create.spec.ts",
     "csv-editor.spec.ts",
+    "csv-save-name-taken.spec.ts",
+    "csv-sql-save-folder.spec.ts",
     "drive-crud.spec.ts",
     "drive-html-preview.spec.ts",
+    "drive-list-paging.spec.ts",
     "drive-mobile-new.spec.ts",
     "drive-mobile-tabs.spec.ts",
+    "drive-move-start.spec.ts",
+    "drive-new-csv-name.spec.ts",
+    "drive-reindex.spec.ts",
     "drive-share.spec.ts",
+    "drive-shared-paging.spec.ts",
+    "drive-text-encoding.spec.ts",
+    "drive-trash-purge.spec.ts",
+    "drive-upload-same-name.spec.ts",
     "drive-versions.spec.ts",
     "pdf-workspace.spec.ts",
     "immersive-editor.spec.ts",
@@ -141,6 +162,12 @@ e2e = [
     "slides-export.spec.ts",
     "slides.spec.ts",
     "visual-editors.spec.ts",
+    "workflow-csv-query-join.spec.ts",
+    "workflow-csv-query-xlsx.spec.ts",
+    "workflow-storage-read-document.spec.ts",
+    "workflow-storage-read-shift-jis.spec.ts",
+    "workflow-storage-read-text.spec.ts",
+    "workflows-file-trigger.spec.ts",
 ]
 
 [scenario.notes]
@@ -204,8 +231,12 @@ e2e = [
     "composer-create.spec.ts",
     "csv-conversation-drafts.spec.ts",
     "csv-editor.spec.ts",
+    "csv-save-name-taken.spec.ts",
+    "csv-sql-save-folder.spec.ts",
+    "drive-picker-focus.spec.ts",
     "selection-ai.spec.ts",
     "visual-editors.spec.ts",
+    "workflow-csv-write-table.spec.ts",
 ]
 
 [scenario.data]
@@ -213,48 +244,173 @@ pages = ["web/src/app/(auth)/data/**"]
 crates = ["shiki-data"]
 e2e = [
     "admin-data.spec.ts",
+    "data-created-by.spec.ts",
     "data-display.spec.ts",
     "data-grid-live.spec.ts",
     "data-grid.spec.ts",
     "data-import.spec.ts",
+    "data-resubmit.spec.ts",
     "data-schema.spec.ts",
+    "data-share-add-only.spec.ts",
     "data-share.spec.ts",
     "data-sql.spec.ts",
+    "data-state-flow.spec.ts",
+    "data-table-list-paging.spec.ts",
     "data-ui.spec.ts",
     "select-escape.spec.ts",
+    "workflows-data-trigger.spec.ts",
 ]
 
 [scenario.search]
 pages = ["web/src/app/(auth)/search/**"]
 crates = ["shiki-rag"]
-e2e = ["search-page.spec.ts"]
+e2e = [
+    "search-debug-admin.spec.ts",
+    "search-page.spec.ts",
+]
 
 [scenario.skills]
 pages = ["web/src/app/(auth)/skills/**"]
 crates = ["shiki-chat"]
-e2e = ["skill-editor.spec.ts", "skills.spec.ts"]
+e2e = [
+    "artifacts-owned-paging.spec.ts",
+    "artifacts-shared-paging.spec.ts",
+    "list-load-failed.spec.ts",
+    "share-owner-only.spec.ts",
+    "skill-editor.spec.ts",
+    "skills.spec.ts",
+]
 
 [scenario.workflows]
 pages = ["web/src/app/(auth)/workflows/**"]
 crates = ["shiki-chat"]
 e2e = [
+    "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
+    "approval-form.spec.ts",
+    "approvals.spec.ts",
+    "artifacts-owned-paging.spec.ts",
+    "artifacts-shared-paging.spec.ts",
+    "data-state-flow.spec.ts",
+    "drive-picker-focus.spec.ts",
+    "list-load-failed.spec.ts",
+    "miniapp-access-check.spec.ts",
+    "miniapp-access-paths.spec.ts",
     "share-export.spec.ts",
+    "share-owner-only.spec.ts",
     "visual.spec.ts",
+    "workflow-approval-assignees.spec.ts",
+    "workflow-blank-required.spec.ts",
+    "workflow-consent-revoke.spec.ts",
+    "workflow-csv-encoding.spec.ts",
+    "workflow-csv-name-taken.spec.ts",
+    "workflow-csv-query-join.spec.ts",
+    "workflow-csv-query-xlsx.spec.ts",
+    "workflow-csv-write-table.spec.ts",
+    "workflow-data-query-columns.spec.ts",
+    "workflow-data-query-limit.spec.ts",
+    "workflow-data-upsert.spec.ts",
+    "workflow-date-calc.spec.ts",
+    "workflow-decide-blank-question.spec.ts",
+    "workflow-decide-cache.spec.ts",
+    "workflow-decide-editor.spec.ts",
+    "workflow-decide-raised.spec.ts",
+    "workflow-decide-scenarios.spec.ts",
+    "workflow-decide.spec.ts",
+    "workflow-delete-stops.spec.ts",
+    "workflow-editor-add-place.spec.ts",
+    "workflow-editor-narrow-bar.spec.ts",
+    "workflow-effort-warning.spec.ts",
+    "workflow-file-name-taken.spec.ts",
+    "workflow-fresh-approval.spec.ts",
+    "workflow-http-error-status.spec.ts",
+    "workflow-http-headers.spec.ts",
+    "workflow-inputs-panel.spec.ts",
+    "workflow-insert-menu-focus.spec.ts",
+    "workflow-launch-skip.spec.ts",
+    "workflow-llm-form.spec.ts",
+    "workflow-map-outer-ref.spec.ts",
+    "workflow-map-region.spec.ts",
+    "workflow-model-default.spec.ts",
+    "workflow-query-candidates.spec.ts",
+    "workflow-query-ref.spec.ts",
+    "workflow-run-dialog.spec.ts",
+    "workflow-run-failure-reasons.spec.ts",
+    "workflow-run-order.spec.ts",
+    "workflow-run-same-result.spec.ts",
+    "workflow-save-place-errors.spec.ts",
+    "workflow-schedule-weekday.spec.ts",
+    "workflow-scheduled-at.spec.ts",
+    "workflow-start-picker.spec.ts",
+    "workflow-step-timeout.spec.ts",
+    "workflow-storage-list-limit.spec.ts",
+    "workflow-storage-read-document.spec.ts",
+    "workflow-storage-read-shift-jis.spec.ts",
+    "workflow-storage-read-text.spec.ts",
+    "workflow-structured-output.spec.ts",
+    "workflow-switch-case.spec.ts",
+    "workflow-transition-table.spec.ts",
+    "workflow-value-compose.spec.ts",
+    "workflow-wait-timeout.spec.ts",
+    "workflows-agent.spec.ts",
+    "workflows-bound-table.spec.ts",
+    "workflows-data-trigger.spec.ts",
     "workflows-editor.spec.ts",
     "workflows-enable.spec.ts",
+    "workflows-file-trigger.spec.ts",
     "workflows-history.spec.ts",
+    "workflows-list-paging.spec.ts",
+    "workflows-table-search.spec.ts",
+]
+
+# 承認の受信箱（ワークフローの承認・テーブルの状態の進め方の承認）。
+[scenario.approvals]
+pages = ["web/src/app/(auth)/approvals/**"]
+crates = ["shiki-chat"]
+e2e = [
+    "approval-form.spec.ts",
+    "approvals-many-roles.spec.ts",
+    "approvals.spec.ts",
+    "data-state-flow.spec.ts",
+    "workflow-delete-stops.spec.ts",
 ]
 
 [scenario.apps]
 pages = ["web/src/app/(auth)/apps/**"]
 crates = ["shiki-app-platform", "shiki-app-gateway", "shiki-chat"]
-e2e = ["mini-apps.spec.ts", "miniapp-b1.spec.ts"]
+e2e = [
+    "artifacts-owned-paging.spec.ts",
+    "artifacts-shared-paging.spec.ts",
+    "list-load-failed.spec.ts",
+    "mini-apps-share.spec.ts",
+    "mini-apps.spec.ts",
+    "miniapp-access-check.spec.ts",
+    "miniapp-access-paths.spec.ts",
+    "miniapp-ai-model-lock.spec.ts",
+    "miniapp-b1.spec.ts",
+    "miniapp-card-states.spec.ts",
+    "miniapp-client-missing.spec.ts",
+    "miniapp-drafts.spec.ts",
+    "miniapp-errors.spec.ts",
+    "miniapp-input-check.spec.ts",
+    "miniapp-install-submitters.spec.ts",
+    "miniapp-skill-pin.spec.ts",
+    "miniapp-table-roles.spec.ts",
+    "miniapp-views.spec.ts",
+    "share-owner-only.spec.ts",
+]
 
 [scenario.admin]
 pages = ["web/src/app/(admin)/**"]
 crates = []
-e2e = ["admin-console.spec.ts", "admin-data.spec.ts", "ai-insights.spec.ts", "audit-log.spec.ts"]
+e2e = [
+    "admin-console.spec.ts",
+    "admin-data.spec.ts",
+    "admin-decision-models.spec.ts",
+    "ai-insights.spec.ts",
+    "audit-log.spec.ts",
+    "drive-reindex.spec.ts",
+]
 
 [scenario.settings]
 pages = ["web/src/app/(settings)/**"]
@@ -265,6 +421,18 @@ e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec
 pages = ["web/src/app/reference/**"]
 crates = []
 e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
+
+# ワークフロー／アプリ品質向上キャンペーンの APP の E2E（docs/workflow/quality-campaign.md §7・APP-01〜12）。
+# 共通部品（web/e2e/campaign/）は web/e2e 直下の spec 以外なので、paths で受けてこのシナリオだけを回す
+# （受けないと E2E を全部回す）。試験用のファイルは web/e2e/campaign/fixtures/ に置く（web/e2e/fixtures/ は [all]）。
+# APP は表・検索・CSV・画面の図を通しで使うので、それぞれのクレートの変更でも回す。
+# spec が開く主なページ（ミニアプリの画面・承認の受信箱）も持つ。web だけを変えた PR でも、これらのページに届く
+# 変更ならこのシナリオを回す（ほかのシナリオと重なってよい）。
+[scenario.campaign]
+pages = ["web/src/app/(auth)/apps/[id]/**", "web/src/app/(auth)/approvals/**"]
+paths = ["web/e2e/campaign/**"]
+crates = ["shiki-data", "shiki-rag", "shiki-tabular", "shiki-yui"]
+e2e = ["campaign-app01a.spec.ts", "campaign-app01b.spec.ts", "campaign-app02-rag.spec.ts", "campaign-app02.spec.ts", "campaign-app03.spec.ts", "campaign-app04-rag.spec.ts", "campaign-app04.spec.ts", "campaign-app05-rag.spec.ts", "campaign-app05.spec.ts", "campaign-app06.spec.ts", "campaign-app07-rag.spec.ts", "campaign-app07.spec.ts", "campaign-app08.spec.ts", "campaign-app09.spec.ts", "campaign-app10.spec.ts", "campaign-app11.spec.ts", "campaign-app12-rag.spec.ts", "campaign-app12.spec.ts"]
 
 [scenario.bug_reports]
 pages = ["web/src/app/(auth)/bug-reports/**", "web/src/app/(admin)/admin/bug-reports/**"]

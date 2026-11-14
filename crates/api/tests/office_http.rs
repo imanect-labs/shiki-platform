@@ -253,6 +253,8 @@ fn base_config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 
@@ -372,6 +374,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(pool.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone()));
+    let workflow_approvals = Arc::new(workflow_engine::ApprovalStore::new(pool.clone()));
     let collab_hub = Arc::new(collab::CollabHub::new(
         pool.clone(),
         Arc::new(AllowAll),
@@ -443,6 +446,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         workflow_registration,
         workflow_summaries,
         workflow_layout,
+        workflow_approvals,
         audit: audit_rec,
         workflow_runs: None,
         directory,
@@ -452,6 +456,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         llm: None,
         rag_admin,
         office: office_runtime,
+        egress_proxy: None,
         docx_composer: Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",

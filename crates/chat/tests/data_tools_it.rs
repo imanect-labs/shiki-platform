@@ -8,8 +8,8 @@
 //!   無い人には提示しない）→ 実行 → 観測までの実経路でも同じになる。
 //! - `sql`（SQL 前段面・#970）でも同じく見えない行・列・テーブルが返らず、結合・集計ができ、拒否の理由が
 //!   モデルへ返る。
-//! - description には発話ユーザーが viewer のテーブルだけが載る。`data_schema` は読めない列を載せない。
-//!   `data_record_write` は承認必須で、読めない行は更新できない。
+//! - description には発話ユーザーが viewer か「追加だけ」のテーブルだけが載る（追加だけには印とできること・GAP-53）。
+//!   `data_schema` は読めない列を載せない。`data_record_write` は承認必須で、読めない行は更新できない。
 
 #![allow(
     clippy::pedantic,
@@ -110,6 +110,10 @@ fn expense_schema() -> TableSchema {
     let mut status = FieldDef::new("status", FieldType::Select);
     status.options = vec!["承認待ち".into(), "承認済み".into()];
     status.indexed = true;
+    // 重複を許さない列（data_schema が印を付ける・ワークフローの同じレコードを探す列に選べる・GAP-16）。
+    let mut claim_no = FieldDef::new("claim_no", FieldType::Text);
+    claim_no.display_name = "申請番号".into();
+    claim_no.unique = true;
     TableSchema {
         fields: vec![
             applicant,
@@ -117,6 +121,7 @@ fn expense_schema() -> TableSchema {
             status,
             FieldDef::new("title", FieldType::Text),
             FieldDef::new("internal_memo", FieldType::Text),
+            claim_no,
         ],
         status_field: None,
         row_policy: Some(RowPolicy {
@@ -380,6 +385,30 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
     );
     assert!(out.content.contains("承認待ち, 承認済み"));
     assert!(!out.content.contains("internal_memo"), "{}", out.content);
+    assert!(
+        out.content
+            .contains("- claim_no: text — 申請番号（重複を許さない）"),
+        "{}",
+        out.content
+    );
+    assert!(
+        !out.content.contains("金額（重複を許さない）"),
+        "{}",
+        out.content
+    );
+    // 索引のある列に印を付け、絞り込み・並べ替え・まとめに使える列の決まりを書く（索引の無い件名には付けない・BUG-244）。
+    assert!(
+        out.content.contains("- amount: number — 金額（索引あり）")
+            && out.content.contains("- title: text — title\n")
+            && out
+                .content
+                .contains("絞り込み・並べ替えに使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ")
+            && out
+                .content
+                .contains("型が created_by・record_ref・multi_select でない列だけ"),
+        "{}",
+        out.content
+    );
     let out = DataSchemaTool::new(f.data.clone(), tools_for(&f, &carol).await)
         .call(&carol, json!({ "table": "経費" }), None)
         .await
@@ -427,6 +456,140 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
         kept.data["amount"].as_f64(),
         Some(200.0),
         "carol の行は書き換わらない"
+    );
+}
+
+/// [`setup`] と同じ環境に、後で消す OpenFGA のストアを添える。
+async fn setup_with_store() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String)> {
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = shiki_testenv::var("OPENFGA_TEST_URL").ok()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&db_url)
+        .await
+        .expect("Postgres へ接続できること");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("マイグレーション適用");
+    let fga = OpenFgaClient::connect(
+        reqwest::Client::new(),
+        &OpenFgaConfig {
+            base_url: base_url.clone(),
+            store_name: format!("shiki-chat-data-test-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("OpenFGA 接続");
+    let store_id = fga.store_id().to_string();
+    Some((pool, Arc::new(fga), base_url, store_id))
+}
+
+/// 「追加だけ」のテーブル（D-113・GAP-53）は一覧に印つきで載り、`data_schema` は読める列と、できることを言う。
+/// `data_query` は自分が追加したレコードだけを返し、`data_record_write` は作成ができる。状態の進め方で作成者に何も
+/// 許していないテーブルの更新は断る（D-127）。
+#[tokio::test]
+async fn add_only_tables_are_listed_with_what_the_speaker_can_do() {
+    let Some((pool, fga, base_url, store_id)) = setup_with_store().await else {
+        return;
+    };
+    let f = fixture(pool, fga).await;
+    let erin = ctx(&f.tenant, "erin");
+    f.fga
+        .write_tuple(
+            &erin.subject(),
+            Relation::Submitter,
+            &erin.ns().data_table(&f.table_id.to_string()),
+        )
+        .await
+        .expect("submitter");
+    let catalog = tools_for(&f, &erin).await;
+    assert!(!catalog.is_empty(), "追加だけのテーブルも提示する");
+    let query = DataQueryTool::new(f.data.clone(), Arc::clone(&catalog));
+    let desc = query.description().to_string();
+    let schema = DataSchemaTool::new(f.data.clone(), Arc::clone(&catalog))
+        .call(&erin, json!({ "table": "経費" }), None)
+        .await
+        .expect("schema");
+    let write = DataRecordWriteTool::new(f.data.clone(), Arc::clone(&catalog));
+    let created = write
+        .call(
+            &erin,
+            json!({ "table": "経費", "op": "create", "data": {
+                "applicant": "erin", "amount": 70, "status": "承認待ち", "title": "erin の申請"
+            }}),
+            None,
+        )
+        .await
+        .expect("create");
+    let rows = query.call(&erin, llm_input(), None).await.expect("query");
+    let own = f
+        .data
+        .list_records(
+            &erin,
+            f.table_id,
+            &data::ListRecordsOptions::default(),
+            None,
+        )
+        .await;
+    let own_id = own
+        .as_ref()
+        .ok()
+        .and_then(|p| p.items.first().map(|r| r.id));
+    let updated = match own_id {
+        Some(id) => Some(
+            write
+                .call(
+                    &erin,
+                    json!({ "table": "経費", "op": "update", "record_id": id, "data": { "amount": 1 } }),
+                    None,
+                )
+                .await
+                .expect("update"),
+        ),
+        None => None,
+    };
+    f.data.purge_tenant(&f.tenant).await.expect("purge");
+    let r = reqwest::Client::new()
+        .delete(format!("{base_url}/stores/{store_id}"))
+        .send()
+        .await
+        .expect("OpenFGA delete store");
+    assert!(r.status().is_success(), "delete store: {}", r.status());
+
+    assert!(
+        desc.contains(&format!(
+            "- 経費 / {}（追加だけ: 見えるのは自分が追加したレコードと、個別に共有されたレコードだけ。",
+            f.table_id
+        )),
+        "{desc}"
+    );
+    assert!(!desc.contains("役員報酬"), "{desc}");
+    assert!(!schema.is_error, "{}", schema.content);
+    assert!(
+        schema.content.contains("このテーブルは追加だけ: ")
+            && schema.content.contains("- amount: number — 金額"),
+        "{}",
+        schema.content
+    );
+    assert!(
+        !schema.content.contains("internal_memo"),
+        "{}",
+        schema.content
+    );
+    assert!(!created.is_error, "{}", created.content);
+    assert_eq!(
+        observed_rows(&rows.content),
+        vec![("erin".to_string(), 70, false)],
+        "自分が追加したレコードだけ: {}",
+        rows.content
+    );
+    let updated = updated.expect("自分のレコードが読める");
+    assert!(
+        updated.is_error && updated.content.contains("見つからないか、権限がありません"),
+        "{}",
+        updated.content
     );
 }
 
@@ -881,4 +1044,112 @@ async fn chat_run_answers_pending_expenses_by_amount_within_speaker_permissions(
         data_query_result(&events).is_none(),
         "見えるテーブルが無い人に data_query は提示されない"
     );
+}
+
+/// data_query の query と data_record_write の data は、object でも JSON の文字列でも同じに動く（文字列は 1 段だけ
+/// 読み、object と同じ検証を通る）。壊れた文字列・配列の文字列は、object のまま渡すよう言って断る（書き込まない・
+/// 道具で共通の受け口・GAP-130・D-186）。
+#[tokio::test]
+async fn object_args_may_come_as_json_strings() {
+    let Some((pool, fga, base_url, store_id)) = setup_with_store().await else {
+        return;
+    };
+    let f = fixture(pool, fga).await;
+    let carol = ctx(&f.tenant, "carol");
+    let alice = ctx(&f.tenant, "alice");
+    let query = DataQueryTool::new(f.data.clone(), tools_for(&f, &carol).await);
+    let write = DataRecordWriteTool::new(f.data.clone(), tools_for(&f, &alice).await);
+    let with_query = |q: Value| json!({ "table": "経費", "query": q });
+    let q = llm_input()["query"].clone();
+    let by_object = query.call(&carol, with_query(q.clone()), None).await;
+    let by_string = query
+        .call(&carol, with_query(json!(q.to_string())), None)
+        .await;
+    let query_broken = query
+        .call(&carol, with_query(json!(r#"{"filter": {"cmp": "#)), None)
+        .await;
+    let query_array = query
+        .call(&carol, with_query(json!(format!("[{q}]"))), None)
+        .await;
+    // 文字列で読んだ query も、object と同じ検証（未知のキー）を通る。
+    let query_unknown = query
+        .call(&carol, with_query(json!(r#"{"limitt": 5}"#)), None)
+        .await;
+    let create = |data: Value| json!({ "table": "経費", "op": "create", "data": data });
+    let row = json!({ "applicant": "alice", "amount": 77, "status": "承認待ち", "title": "文字列の申請" });
+    let created_by_object = write.call(&alice, create(row.clone()), None).await;
+    let created_by_string = write
+        .call(&alice, create(json!(row.to_string())), None)
+        .await;
+    let write_broken = write
+        .call(&alice, create(json!(r#"{"amount": "#)), None)
+        .await;
+    let write_array = write
+        .call(&alice, create(json!(format!("[{row}]"))), None)
+        .await;
+    let stored = f
+        .data
+        .list_records(
+            &alice,
+            f.table_id,
+            &data::ListRecordsOptions::default(),
+            None,
+        )
+        .await
+        .map(|p| {
+            p.items
+                .iter()
+                .filter(|r| r.data["title"] == "文字列の申請")
+                .count()
+        });
+    f.data.purge_tenant(&f.tenant).await.expect("purge");
+    let r = reqwest::Client::new()
+        .delete(format!("{base_url}/stores/{store_id}"))
+        .send()
+        .await
+        .expect("OpenFGA delete store");
+    assert!(r.status().is_success(), "delete store: {}", r.status());
+
+    let by_object = by_object.expect("object");
+    let by_string = by_string.expect("string");
+    assert!(!by_object.is_error, "{}", by_object.content);
+    assert_eq!(by_string.content, by_object.content);
+    let invalid = |r: Result<agent_core::ToolOutcome, agent_core::ToolError>| match r {
+        Err(agent_core::ToolError::Invalid(msg)) => msg,
+        other => panic!("断る: {other:?}"),
+    };
+    let query_not_object = "query は JSON の文字列にせず、オブジェクトのまま渡してください\
+         （filter・sort・select・limit などを持つオブジェクト）。";
+    let broken = invalid(query_broken);
+    assert!(
+        broken.starts_with("query の文字列を JSON として読めませんでした（")
+            && broken.ends_with(query_not_object),
+        "{broken}"
+    );
+    assert_eq!(invalid(query_array), query_not_object);
+    let unknown = query_unknown.expect("unknown key");
+    assert!(
+        unknown.is_error && unknown.content.contains("limitt"),
+        "{}",
+        unknown.content
+    );
+
+    for created in [created_by_object, created_by_string] {
+        let created = created.expect("create");
+        assert!(
+            !created.is_error && created.content.starts_with("レコードを作成しました"),
+            "{}",
+            created.content
+        );
+    }
+    let data_not_object =
+        "data は JSON の文字列にせず、オブジェクトのまま渡してください（列の参照名 → 値）。";
+    let broken = invalid(write_broken);
+    assert!(
+        broken.starts_with("data の文字列を JSON として読めませんでした（")
+            && broken.ends_with(data_not_object),
+        "{broken}"
+    );
+    assert_eq!(invalid(write_array), data_not_object);
+    assert_eq!(stored.expect("list"), 2, "断ったものは書き込まない");
 }

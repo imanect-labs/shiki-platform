@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./helpers";
+
+/// 会話で作ったワークフローを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// AI ワークフロー編集の e2e（Task 10.13 DoD）:
 /// 自然言語（stub の `emitwf:` 決定的駆動）→ 保存パイプライン検証 → workflow_ref カード →
@@ -28,6 +32,8 @@ test("AI 編集: emit_workflow → カード → エディタで開く / 不正 
   // 「エディタで開く」→ dnd エディタが保存済み IR を描画（レイアウトは自動導出）。
   await page.getByRole("link", { name: "エディタで開く" }).first().click();
   await page.waitForURL(/\/workflows\//, { timeout: 15_000 });
+  const workflowId = new URL(page.url()).pathname.split("/").pop()!;
+  cleanup.add(() => removeWorkflowApi(page, workflowId));
   const canvas = page.locator(".react-flow");
   await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
   // 編集可能（ノードクリックで設定パネルが開く）。

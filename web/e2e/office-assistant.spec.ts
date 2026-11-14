@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// Office 文書のアシスタントパネル＋選択→AI（Task 11.10・Office 版）。
 /// 実 Collabora が必要なため OFFICE_E2E=1 でのみ実行する。

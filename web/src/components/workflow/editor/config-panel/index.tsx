@@ -15,20 +15,24 @@ import { cn } from "@/lib/utils";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
-import { NODE_CATALOG } from "@/generated/workflow-catalog";
+import { WARNING_CODES } from "@/lib/workflow-api";
+import { inputFieldsOf } from "@/lib/workflow-input-schema";
+import type { Node as IrNode, Trigger, ValidationError } from "@/generated/workflow-ir";
+import { BLANK_OK_WHEN_SET, NODE_CATALOG, REQUIRED_PICK_FIELDS } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
-import { mapErrors, paramField, serdeParamError } from "../validation";
-import { CommonSection } from "./common";
+import { defaultParams } from "../ir-state";
+import { edgePortsOf } from "../ports";
+import { mapErrors, nodeErrorView, paramField } from "../validation";
+import { BLANK_PICK_MESSAGE, BLANK_REQUIRED_MESSAGE, CommonSection } from "./common";
+import { HumanApprovalForm } from "./forms-approval";
+import { WorkflowReplyForm } from "./forms-reply";
+import { AgentInvokeForm } from "./forms-agent";
+import { AiDecideForm } from "./forms-ai-decide";
 import {
-  AgentInvokeForm,
   LlmInvokeForm,
   RagSearchForm,
   SkillInvokeForm,
-  StorageListForm,
-  StorageReadForm,
-  StorageWriteForm,
   WorkflowStartForm,
   type FormProps,
 } from "./forms-basic";
@@ -39,11 +43,31 @@ import {
   DataRecordCreateForm,
   DataRecordDeleteForm,
   DataRecordUpdateForm,
+  DataRecordUpsertForm,
   DataTransitionForm,
 } from "./forms-data";
+import { TransformDateForm } from "./forms-date";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
+import { CsvQueryForm } from "./forms-csv-query";
+import {
+  CsvPatchForm,
+  CsvWriteForm,
+  StorageListForm,
+  StorageReadForm,
+  StorageWriteForm,
+} from "./forms-files";
+import { patchParams } from "./params";
+import type { InputRefUsage } from "./input-schema-editor";
+import { InputsSection } from "./inputs-section";
 import { TriggerPanel } from "./trigger-panel";
-import type { RefCandidate } from "./value-expr-input";
+import {
+  InputFieldsContext,
+  InputRefWarningsContext,
+  MapRegionContext,
+  TriggerSourcesContext,
+  type RefCandidate,
+} from "./value-expr-input";
+import { inputKeyOfRef, inputWarningKey, isFromRef, valueAtParamsPath } from "./value-refs";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "storage.read": StorageReadForm,
@@ -52,6 +76,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "rag.search": RagSearchForm,
   "llm.invoke": LlmInvokeForm,
   "agent.invoke": AgentInvokeForm,
+  "ai.decide": AiDecideForm,
   "workflow.start": WorkflowStartForm,
   "control.branch": BranchForm,
   "control.switch": SwitchForm,
@@ -64,12 +89,100 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "data.query": DataQueryForm,
   "data.record.create": DataRecordCreateForm,
   "data.record.update": DataRecordUpdateForm,
+  "data.record.upsert": DataRecordUpsertForm,
   "data.record.delete": DataRecordDeleteForm,
   "data.transition": DataTransitionForm,
   "data.bulk_upsert": DataBulkUpsertForm,
+  "csv.query": CsvQueryForm,
+  "csv.patch": CsvPatchForm,
+  "csv.write": CsvWriteForm,
+  "human.approval": HumanApprovalForm,
+  "workflow.reply": WorkflowReplyForm,
+  "transform.date": TransformDateForm,
 };
 
-/// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。
+/// 承認を待つブロックを置いたときに勧める実行の期限（14 日・承認は数日かかる・GAP-08）。
+const APPROVAL_RUN_TIMEOUT_SEC = 14 * 24 * 3600;
+
+/// 承認を待つ間に実行の期限が来ると、承認は時間切れの出口へ流れずに取り消される。期限を延ばす提案を出す。
+function RunTimeoutSuggestion({ ctx }: { ctx: EditorContext }) {
+  const policies = ctx.state.ir.policies;
+  const current = policies?.run_timeout_sec ?? 259_200;
+  if (current >= APPROVAL_RUN_TIMEOUT_SEC) return null;
+  const days = Math.round((current / 86_400) * 10) / 10;
+  return (
+    <div
+      role="note"
+      className="space-y-2 rounded-md border p-2.5 text-[11px] leading-relaxed"
+      style={{
+        borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
+        backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+      }}
+      data-testid="approval-run-timeout"
+    >
+      <p>
+        実行の期限はいま {days} 日です。承認を待つ間に期限が来ると、承認は取り消され、時間切れの出口へも進みません。
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 text-xs"
+        onClick={() =>
+          ctx.dispatch({
+            type: "update_meta",
+            patch: { policies: { ...policies, run_timeout_sec: APPROVAL_RUN_TIMEOUT_SEC } },
+          })
+        }
+      >
+        実行の期限を 14 日にする
+      </Button>
+    </div>
+  );
+}
+
+/// シートの本文の下端の余白（浮いているボタンの高さ 44px ＋ 余裕）。
+const SHEET_BOTTOM_SPACE = "pb-20";
+
+/// 欄の下に出す保存時の警告のコード（注意の帯には出さない・生成した定数で引く）。書いた思考の深さが組織の設定に
+/// 従うので使われない（D-75）。鍵の名前のヘッダーに値をそのまま書いた（GAP-19）。必須の文字の欄の空
+/// （`REQUIRED_TEXT_EMPTY`）は「入力してください」として別に扱う。
+const FIELD_WARNING_CODES: ReadonlySet<string> = new Set([
+  WARNING_CODES.EFFORT_IGNORED,
+  WARNING_CODES.PLAIN_KEY_HEADER,
+]);
+
+/// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
+/// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。
+function blankRequired(node: IrNode): string[] {
+  const defaults = defaultParams(node.type);
+  if (!defaults || typeof defaults !== "object") return [];
+  const params = (node.params ?? {}) as Record<string, unknown>;
+  return Object.entries(defaults as Record<string, unknown>)
+    .filter(([key, v]) => {
+      const cur = params[key];
+      return v === "" && (cur === undefined || (typeof cur === "string" && cur.trim() === "")) && !optionalBlank(node, key);
+    })
+    .map(([key]) => key);
+}
+
+/// 置いたときの空の欄のうち、ほかの欄に値があれば空のままでよいもの（どの欄かは Rust の readiness の表から生成した
+/// `BLANK_OK_WHEN_SET`。例: レコードの更新は「足す数」に列があれば「変更する値」が空でよい・GAP-16）。
+function optionalBlank(node: IrNode, key: string): boolean {
+  const other = BLANK_OK_WHEN_SET[node.type]?.[key];
+  if (!other) return false;
+  const v = (node.params as Record<string, unknown> | undefined)?.[other];
+  // 値があるか（中身の無いまとまりと空の文字は無いのと同じ・readiness の has_value）。
+  if (v === undefined || v === null) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  return !(typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length === 0);
+}
+
+/// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。ノード種は出力の形から
+/// 項目の候補を出すのに使う。
+///
+/// 繰り返しの中のブロックは、繰り返しのブロックの祖先も祖先に数える（入れ子なら外側の繰り返しの祖先も）。
+/// 保存時の検証（V5）と実行時の解決が同じ範囲を見る（D-123）。繰り返しのブロックそのものは中が終わるまで結果が
+/// 無いので数えない。
 function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
   const incoming = new Map<string, string[]>();
   for (const e of ctx.state.ir.edges) {
@@ -77,8 +190,15 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
     list.push(e.from);
     incoming.set(e.to, list);
   }
+  const parentOf = new Map(ctx.state.ir.nodes.map((n) => [n.id, n.parent ?? null] as const));
+  const queue: string[] = [];
+  // 自分と、囲む繰り返し（内から外へ）の前段から始める（親の連鎖が輪でも止まる）。
+  const enclosing = new Set<string>();
+  for (let cur: string | null = nodeId; cur && !enclosing.has(cur); cur = parentOf.get(cur) ?? null) {
+    enclosing.add(cur);
+    queue.push(...(incoming.get(cur) ?? []));
+  }
   const seen = new Set<string>();
-  const queue = [...(incoming.get(nodeId) ?? [])];
   while (queue.length > 0) {
     const id = queue.shift()!;
     if (seen.has(id)) continue;
@@ -91,6 +211,8 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
       id: n.id,
       label:
         n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id,
+      type: n.type,
+      params: n.params,
     }));
 }
 
@@ -103,22 +225,98 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     [ctx, node.id],
   );
   const inMapRegion = node.parent != null;
+  // 中にいる繰り返しの名前（繰り返し中の 1 件の候補に添える・D-98）。
+  const mapNode = node.parent ? ctx.state.ir.nodes.find((n) => n.id === node.parent) : undefined;
+  const mapLabel = mapNode ? mapNode.label || NODE_CATALOG.find((c) => c.type === mapNode.type)?.label_ja || mapNode.id : null;
+  // 繰り返しを消すと中のブロックも一緒に消える（ボタンでそう言う）。
+  const insideCount = node.type === "control.map" ? ctx.state.ir.nodes.filter((n) => n.parent === node.id).length : 0;
+  // 繰り返しの中（入れ子の中を含む）のブロックの種類（中に AI のブロックがあれば、利用量がかかると言う）。
+  const insideTypes = React.useMemo(() => {
+    if (node.type !== "control.map") return undefined;
+    const nodes = ctx.state.ir.nodes;
+    const within = (n: IrNode): boolean => {
+      for (let p = n.parent ?? null, guard = 0; p && guard < 8; guard += 1) {
+        if (p === node.id) return true;
+        p = nodes.find((x) => x.id === p)?.parent ?? null;
+      }
+      return false;
+    };
+    return nodes.filter(within).map((n) => n.type);
+  }, [ctx.state.ir.nodes, node.id, node.type]);
+  // 入力項目（「差し込む」・参照先の候補）。
+  const inputFields = React.useMemo(() => inputFieldsOf(ctx.state.ir.input_schema), [ctx.state.ir.input_schema]);
+  // きっかけの内容の項目（イベントトリガの source ごと・D-47）。
+  const triggerSources = React.useMemo(
+    () =>
+      (ctx.state.ir.triggers ?? []).flatMap((t) => (t.kind === "event" ? [t.source as string] : [])),
+    [ctx.state.ir.triggers],
+  );
 
-  // path 付きエラー → 先頭フィールド名で写像（同一フィールド複数はまとめる）。
+  // 欄に写せる誤り（path か文言の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
+  const nodeErrors = React.useMemo(
+    () => mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [],
+    [ctx.state.serverErrors, node.id],
+  );
+  const errorView = React.useMemo(() => nodeErrorView(nodeErrors), [nodeErrors]);
+  // 誤りの添字を検証した時点の値で引くための材料（フォームが今の並びに当てて取り違えない）。
+  const serverCheck = React.useMemo(
+    () => ({ errors: nodeErrors, node: ctx.state.serverErrorsIr?.nodes.find((n) => n.id === node.id) ?? null }),
+    [nodeErrors, ctx.state.serverErrorsIr, node.id],
+  );
+  const allWarnings = React.useMemo(
+    () => mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [],
+    [ctx.state.serverWarnings, node.id],
+  );
+  // 必須の文字の欄が空の警告（D-43）は注意の帯ではなく、その欄の下に出す（保存はできるが有効化・実行で止まる）。
+  const blankFields = React.useMemo(
+    () =>
+      allWarnings.flatMap((w) => {
+        const field = w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY ? paramField(w.path) : null;
+        return field ? [field] : [];
+      }),
+    [allWarnings],
+  );
   const fieldErrors = React.useMemo(() => {
-    const errors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
-    const map = new Map<string, string>();
-    for (const e of errors) {
-      const serde = paramField(e.path) ? null : serdeParamError(e.message);
-      const field = paramField(e.path) ?? serde?.field;
-      if (field && !map.has(field)) map.set(field, serde?.message ?? e.message);
+    const map = new Map(errorView.fields);
+    // 選ぶ欄は「選んでください」、打つ欄は「入力してください」（どちらの欄かは Rust の表から生成した一覧）。
+    const picks = REQUIRED_PICK_FIELDS[node.type] ?? [];
+    for (const key of [...blankRequired(node), ...blankFields]) {
+      if (!map.has(key)) map.set(key, picks.includes(key) ? BLANK_PICK_MESSAGE : BLANK_REQUIRED_MESSAGE);
     }
     return map;
-  }, [ctx.state.serverErrors, node.id]);
-  const nodeErrors = mapErrors(ctx.state.serverErrors).byNode.get(node.id) ?? [];
-  // 欄に写せた誤り（path か serde の原文の項目名）は欄の下に出し、上の帯には欄の無いものだけを出す。
-  const unmappedErrors = nodeErrors.filter((e) => !paramField(e.path) && !serdeParamError(e.message));
-  const nodeWarnings = mapErrors(ctx.state.serverWarnings).byNode.get(node.id) ?? [];
+  }, [errorView, node, blankFields]);
+  // 欄に写す警告（書いた思考の深さが組織の設定に従うので使われない・D-75 など）は、その欄の下に出す。
+  const fieldWarnings = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of allWarnings) {
+      const field = FIELD_WARNING_CODES.has(w.code) ? paramField(w.path) : null;
+      if (field && !map.has(field)) map.set(field, w.message);
+    }
+    return map;
+  }, [allWarnings]);
+  // 入力項目に無い項目を指す参照の注意（`ir.unknown_input`）は、その参照の欄の下に出す（参照ごとの鍵で引く）。
+  const inputRefWarnings = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of allWarnings) {
+      if (w.code !== WARNING_CODES.UNKNOWN_INPUT) continue;
+      const ref = valueAtParamsPath(node.params, w.path);
+      if (isFromRef(ref) && !map.has(inputWarningKey(ref))) map.set(inputWarningKey(ref), w.message);
+    }
+    return map;
+  }, [allWarnings, node.params]);
+  const params = (node.params ?? {}) as Record<string, unknown>;
+  const nodeWarnings = allWarnings.filter(
+    (w) =>
+      !(
+        (w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY ||
+          FIELD_WARNING_CODES.has(w.code) ||
+          w.code === WARNING_CODES.UNKNOWN_INPUT) &&
+        paramField(w.path)
+      ),
+  );
+  // このノードから出るエッジの出口（中身が同じなら同じ配列を渡す）。
+  const edgePortsKey = JSON.stringify(edgePortsOf(node.id, ctx.state.ir.edges));
+  const edgePorts = React.useMemo(() => JSON.parse(edgePortsKey) as string[], [edgePortsKey]);
 
   return (
     <>
@@ -143,18 +341,42 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           </Button>
         )}
       </div>
-      <div className="flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
-        {unmappedErrors.length > 0 ? (
+      {/* シートでは下端に余白を取る（画面の左下に浮くボタン・ブラウザの下端の操作部に最後の欄が隠れないよう、
+          末尾まで送ったときに欄を持ち上げる・BUG-40）。 */}
+      <div className={cn("flex-1 space-y-5 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
+        {errorView.banner.length > 0 ? (
           <ul className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-2 text-[11px] text-destructive">
-            {unmappedErrors.map((e, i) => (
-              <li key={i}>{e.message}</li>
+            {errorView.banner.map((e, i) => (
+              <li key={i} className="flex items-start justify-between gap-2">
+                <span className="min-w-0">{e.message}</span>
+                {e.removable && e.removable in params ? (
+                  <button
+                    type="button"
+                    className="shrink-0 font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => patchParams(ctx.dispatch, node, { [e.removable!]: undefined })}
+                  >
+                    取り除く
+                  </button>
+                ) : e.removableAttr === "cache" && node.cache ? (
+                  <button
+                    type="button"
+                    className="shrink-0 font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() =>
+                      ctx.dispatch({ type: "update_node", id: node.id, patch: { cache: null } as Partial<IrNode> })
+                    }
+                  >
+                    使い回しをやめる
+                  </button>
+                ) : null}
+              </li>
             ))}
           </ul>
         ) : null}
         {nodeWarnings.length > 0 ? (
           <div
             role="note"
-            className="space-y-1 rounded-md border p-2 text-[11px] leading-relaxed"
+            // 長いキー・path（/answers/<キー>/… など）が枠からはみ出さないよう、どこでも折り返す。
+            className="space-y-1 rounded-md border p-2 text-[11px] leading-relaxed [overflow-wrap:anywhere]"
             style={{
               borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
               backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
@@ -169,19 +391,36 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
             </ul>
           </div>
         ) : null}
+        {node.type === "human.approval" ? <RunTimeoutSuggestion ctx={ctx} /> : null}
         {Form ? (
-          <Form
-            node={node}
-            dispatch={ctx.dispatch}
-            refCandidates={refCandidates}
-            inMapRegion={inMapRegion}
-            fieldErrors={fieldErrors}
-          />
+          // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
+          <InputFieldsContext.Provider value={inputFields}>
+            <InputRefWarningsContext.Provider value={inputRefWarnings}>
+              <TriggerSourcesContext.Provider value={triggerSources}>
+                <MapRegionContext.Provider value={mapLabel}>
+                  <Form
+                    key={node.id}
+                    node={node}
+                    dispatch={ctx.dispatch}
+                    refCandidates={refCandidates}
+                    inMapRegion={inMapRegion}
+                    fieldErrors={fieldErrors}
+                    fieldWarnings={fieldWarnings}
+                    serverCheck={serverCheck}
+                    serverPorts={ctx.state.serverPorts[node.id]}
+                    serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
+                    edgePorts={edgePorts}
+                    insideTypes={insideTypes}
+                  />
+                </MapRegionContext.Provider>
+              </TriggerSourcesContext.Provider>
+            </InputRefWarningsContext.Provider>
+          </InputFieldsContext.Provider>
         ) : (
           <p className="text-xs text-muted-foreground">このブロックに設定はありません</p>
         )}
         <div className="border-t pt-4">
-          <CommonSection node={node} dispatch={ctx.dispatch} />
+          <CommonSection node={node} dispatch={ctx.dispatch} attrErrors={errorView.attrs} />
         </div>
         <Button
           variant="outline"
@@ -190,15 +429,37 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           onClick={() => ctx.dispatch({ type: "delete_nodes", ids: [node.id] })}
         >
           <Trash2 className="size-4" aria-hidden />
-          このブロックを削除
+          {insideCount > 0 ? "このブロックと中のブロックを削除" : "このブロックを削除"}
         </Button>
       </div>
     </>
   );
 }
 
+/// 入力項目に無い項目を指す参照があるブロック（保存時の検証の注意 `ir.unknown_input` から・決まりはサーバー）。キーは
+/// 参照の path の先頭の段（入力項目の表で足せる項目）と、そのブロックの表示名。
+function danglingInputsOf(nodes: IrNode[], warnings: ValidationError[]): InputRefUsage[] {
+  const byKey = new Map<string, string[]>();
+  for (const w of warnings) {
+    if (w.code !== WARNING_CODES.UNKNOWN_INPUT || !w.node_id) continue;
+    const n = nodes.find((x) => x.id === w.node_id);
+    const key = n ? inputKeyOfRef(valueAtParamsPath(n.params, w.path)) : null;
+    if (!n || key === null) continue;
+    const label = n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id;
+    const blocks = byKey.get(key) ?? [];
+    if (!blocks.includes(label)) byKey.set(key, [...blocks, label]);
+  }
+  return [...byKey].map(([key, blocks]) => ({ key, blocks }));
+}
+
 export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   const { selection, ir } = ctx.state;
+  const inputUsages = React.useMemo(
+    () => danglingInputsOf(ir.nodes, ctx.state.serverWarnings),
+    [ir.nodes, ctx.state.serverWarnings],
+  );
+  // ブロックの外の保存時の誤り（きっかけ・入力項目）は、きっかけの設定の欄の下に出す（GAP-35）。
+  const globalErrors = React.useMemo(() => mapErrors(ctx.state.serverErrors), [ctx.state.serverErrors]);
   const desktop = useMediaQuery("(min-width: 768px)");
   const sheet = !desktop;
   const close = () => ctx.dispatch({ type: "select", selection: { kind: "none" } });
@@ -215,29 +476,38 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
     label = "きっかけの設定";
     content = (
       <>
-        <div className={cn("flex items-center justify-between shiki-dash-bottom px-4 py-3", sheet && "min-h-14 pr-14")}>
-          <PanelTitle sheet={sheet}>きっかけ</PanelTitle>
-          {sheet ? (
-            <PanelDescription sheet className="sr-only">
-              いつ・何をきっかけに動かすかを設定します。
-            </PanelDescription>
-          ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              aria-label="パネルを閉じる"
-              onClick={close}
-            >
-              <X className="size-4" aria-hidden />
-            </Button>
-          )}
-        </div>
-        <div className="flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle">
+        <PlainHeader sheet={sheet} title="きっかけ" description="いつ・何をきっかけに動かすかを設定します。" onClose={close} />
+        <div className={cn("flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
           <TriggerPanel
             triggers={ir.triggers as Trigger[]}
             index={selection.index}
             onChange={(triggers) => ctx.dispatch({ type: "set_triggers", triggers })}
+            inputSchema={ir.input_schema}
+            onInputSchemaChange={(input_schema, inputRenames) =>
+              ctx.dispatch({ type: "update_meta", patch: { input_schema }, inputRenames })
+            }
+            inputUsages={inputUsages}
+            errors={globalErrors.byTrigger.get(selection.index)}
+            inputSchemaErrors={globalErrors.inputSchema}
+          />
+        </div>
+      </>
+    );
+  } else if (selection.kind === "inputs") {
+    // 入力項目はきっかけと別にも開く（「手動で実行」のきっかけが無いワークフローでも直せる・GAP-35）。
+    label = "入力項目の設定";
+    content = (
+      <>
+        <PlainHeader sheet={sheet} title="入力項目" description="実行するときに受け取る値を決めます。" onClose={close} />
+        <div className={cn("flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
+          <InputsSection
+            title={false}
+            schema={ir.input_schema}
+            onChange={(input_schema, inputRenames) =>
+              ctx.dispatch({ type: "update_meta", patch: { input_schema }, inputRenames })
+            }
+            usages={inputUsages}
+            errors={globalErrors.inputSchema}
           />
         </div>
       </>
@@ -262,6 +532,34 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   }
   if (!content || !label) return null;
   return <PanelShell label={label}>{content}</PanelShell>;
+}
+
+/// きっかけ・入力項目の設定の見出し（シートでは説明を読み上げにだけ渡し、閉じるボタンはシートの共通のものを使う）。
+function PlainHeader({
+  sheet,
+  title,
+  description,
+  onClose,
+}: {
+  sheet: boolean;
+  title: string;
+  description: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className={cn("flex items-center justify-between shiki-dash-bottom px-4 py-3", sheet && "min-h-14 pr-14")}>
+      <PanelTitle sheet={sheet}>{title}</PanelTitle>
+      {sheet ? (
+        <PanelDescription sheet className="sr-only">
+          {description}
+        </PanelDescription>
+      ) : (
+        <Button variant="ghost" size="icon" className="size-7" aria-label="パネルを閉じる" onClick={onClose}>
+          <X className="size-4" aria-hidden />
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /// シートでは Radix の Title/Description（読み上げの見出し）、パネルでは素の見出し。

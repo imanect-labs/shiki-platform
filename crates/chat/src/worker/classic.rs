@@ -23,13 +23,16 @@ fn map_llm_error(e: llm_gateway::LlmError) -> ChatError {
 
 impl ChatWorker {
     /// 通常チャット（OFF）。古典 RAG 注入＋llm-gateway 直叩き（ツールループ無し）。
+    ///
+    /// 戻り値は回答が途中で止まった理由（GAP-106）。ツールのループが無いので、出力の上限での
+    /// 打ち切りだけが起こり得る。
     pub(super) async fn run_classic_mode(
         &self,
         ctx: &AuthContext,
         run: &ClaimedRun,
         history: Vec<LlmMessage>,
         sink: &mut WorkerSink,
-    ) -> Result<(), ChatError> {
+    ) -> Result<Option<crate::model::StopReason>, ChatError> {
         use agent_core::{run_doc_search, AgentEvent, EventSink};
 
         // skill のピン解決（通常チャットにも適用する・複数可・fail-closed・Task 6.9/#344）。
@@ -144,16 +147,17 @@ impl ChatWorker {
             max_tokens,
             temperature,
             session_id: Some(run.thread_id.to_string()),
+            response_format: None,
         };
         // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
         let started_at = chrono::Utc::now();
         // 確立待ち（応答ヘッダ・再試行）の間の停止でも手放す（#602・生成前なので会計なし）。
         let setup = self.gateway.stream(ctx, req);
         let Some(stream) = agent_core::await_unless_cancelled(setup, sink).await else {
-            return Ok(());
+            return Ok(None);
         };
         let mut stream = stream.map_err(map_llm_error)?;
-        let (text_acc, usage) = consume(&mut stream, sink).await?;
+        let (text_acc, usage, stop) = consume(&mut stream, sink).await?;
 
         drop(stream); // 会計（DB・Langfuse）を待つ間も上流を握り続けないよう、先に手放す。
         let context = agent_core::ContextUsage::new(
@@ -185,20 +189,22 @@ impl ChatWorker {
         sink.emit(AgentEvent::ContextUsage(context))
             .await
             .map_err(|e| ChatError::Internal(e.to_string()))?;
-        Ok(())
+        Ok((stop == llm_gateway::StopReason::MaxTokens)
+            .then_some(crate::model::StopReason::Truncated))
     }
 }
 
 /// 応答ストリームを読み切り、本文・思考をイベントへ流す（停止要求で打ち切る・#602）。
-/// 戻り値は本文と usage（打ち切ったときは報告が無く既定値）。
+/// 戻り値は本文と usage と停止理由（打ち切ったときは報告が無く既定値）。
 async fn consume(
     stream: &mut llm_gateway::DeltaStream,
     sink: &mut WorkerSink,
-) -> Result<(String, llm_gateway::Usage), ChatError> {
+) -> Result<(String, llm_gateway::Usage, llm_gateway::StopReason), ChatError> {
     use agent_core::{AgentEvent, EventSink};
 
     let mut text_acc = String::new();
     let mut usage = llm_gateway::Usage::default();
+    let mut stop = llm_gateway::StopReason::EndTurn;
     loop {
         // 黙っている間も停止を見張り、止まったらストリームを手放す（#602）。
         let delta = match agent_core::next_unless_cancelled(stream, sink).await {
@@ -211,8 +217,12 @@ async fn consume(
                 AgentEvent::Text(text)
             }
             StreamDelta::ThinkingDelta { text } => AgentEvent::Thinking(text),
-            StreamDelta::Done { usage: u, .. } => {
+            StreamDelta::Done {
+                usage: u,
+                stop_reason,
+            } => {
                 usage = u;
+                stop = stop_reason;
                 continue;
             }
             _ => continue, // 通常チャットはツールを使わない
@@ -221,7 +231,7 @@ async fn consume(
             .await
             .map_err(|e| ChatError::Internal(e.to_string()))?;
     }
-    Ok((text_acc, usage))
+    Ok((text_acc, usage, stop))
 }
 
 #[cfg(test)]

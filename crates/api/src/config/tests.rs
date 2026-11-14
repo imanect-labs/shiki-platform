@@ -4,6 +4,8 @@ use super::*;
 
 // RAG の設定（`SHIKI__RAG__*`）の読み込み。
 mod rag_config;
+// ワークフローの設定（`workflow.*`）の確かめ。
+mod workflow_config;
 
 #[test]
 fn both_tenancies_supported() {
@@ -264,7 +266,7 @@ fn effective_jwks_uri_derives_from_issuer_when_no_internal() {
 // ---- AppConfig::validate() の各失敗分岐 ----
 
 /// defaults() を素に valid な AppConfig を組み立てる（必須項目を補完）。
-fn valid_config() -> AppConfig {
+pub(super) fn valid_config() -> AppConfig {
     let mut value = defaults();
     // 必須項目（defaults に含まれない）を補完する。
     value["database"]["url"] = serde_json::json!("postgres://localhost/shiki");
@@ -524,6 +526,7 @@ fn catalog_carries_provider_and_display_metadata() {
         processed_abroad: true,
         supports_effort: Some(true),
         reasoning_in_content: true,
+        structured_output: Some(llm_gateway::StructuredOutputMode::JsonSchema),
         ..Default::default()
     }];
     let m = &cfg.llm.model_catalog().models[0];
@@ -533,6 +536,11 @@ fn catalog_carries_provider_and_display_metadata() {
     assert!(m.processed_abroad);
     assert_eq!(m.supports_effort, Some(true));
     assert!(m.reasoning_in_content);
+    // 構造化出力のモード（GAP-13）も gateway のカタログへ届く。
+    assert_eq!(
+        m.structured_output,
+        Some(llm_gateway::StructuredOutputMode::JsonSchema)
+    );
 }
 
 #[test]

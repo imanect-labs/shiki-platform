@@ -49,7 +49,7 @@ pub mod workspace;
 
 pub use agent::{run_agent, AgentStop, RunContext};
 pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
-pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
+pub use budget::{Budget, BudgetCheck, BudgetExtension, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
 pub use context_usage::{ContextCategory, ContextCategoryUsage, ContextUsage};
@@ -77,6 +77,7 @@ pub use vocab::{MetaToolName, ToolLoading, ToolName, USER_SELECTABLE_TOOLS};
 pub use workspace::{WorkspaceEntry, WorkspaceStore, WorkspaceWrite};
 // サンドボックス契約を再輸出（chat は agent-core 経由で code_interpreter を配線する）。
 // `SandboxBackend` は admin ポリシーで隔離ティアを選ぶ導線で chat 側が渡す。
+pub use sandbox_client::egress_proxy::EgressProxy;
 pub use sandbox_client::{Sandbox, SandboxBackend};
 
 pub use tools::HelpSearchTool;

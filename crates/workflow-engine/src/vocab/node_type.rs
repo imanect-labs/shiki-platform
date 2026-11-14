@@ -23,9 +23,13 @@ vocab_enum! {
         RagSearch => "rag.search",
         LlmInvoke => "llm.invoke",
         AgentInvoke => "agent.invoke",
+        /// 質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す（決定モデル・FEAT-1・pure・課金あり）。
+        AiDecide => "ai.decide",
         HttpRequest => "http.request",
         ScriptRun => "script.run",
         WorkflowStart => "workflow.start",
+        /// 結果を起動した本人の画面に返す（ボタン・会話から起動した run だけ・GAP-09・pure）。
+        WorkflowReply => "workflow.reply",
         // ---- CSV 表データ（Task 11P.9・隔離 DuckDB 経由の tabular サービス）----
         /// CSV への読み取り専用 SQL（viewer・pure）。
         CsvQuery => "csv.query",
@@ -37,6 +41,8 @@ vocab_enum! {
         DataQuery => "data.query",
         DataRecordCreate => "data.record.create",
         DataRecordUpdate => "data.record.update",
+        /// 選んだ列（重複を許さない列）の値が同じレコードがあれば書き換え、なければ追加する（GAP-16・EngineDedup）。
+        DataRecordUpsert => "data.record.upsert",
         DataTransition => "data.transition",
         /// レコードの削除（rev 楽観ロック・EngineDedup）。
         DataRecordDelete => "data.record.delete",
@@ -53,6 +59,9 @@ vocab_enum! {
         ControlAssert => "control.assert",
         /// 実行履歴への構造化ログ出力。
         DebugLog => "debug.log",
+        // ---- 宣言的データ加工（pure・ノーコード向け）----
+        /// 基準の日時から、前日・先週・先月などの日付と、週・月の最初と最後の日を求める（GAP-15・pure）。
+        TransformDate => "transform.date",
         // ---- 将来予約: 宣言的データ加工（pure・ノーコード向け）----
         TransformTemplate => "transform.template",
         TransformParse => "transform.parse",
@@ -89,7 +98,7 @@ vocab_enum! {
         GraphqlQuery => "graphql.query",
         /// サンドボックス内の単発コマンド/Python 実行（secure-exec 基盤を転用）。
         SandboxExec => "sandbox.exec",
-        /// 人間の承認を待って分岐する human-in-the-loop。
+        /// 担当者の判断（承認・却下・差し戻し）を待って分岐する（テーブルの 1 行に束縛・GAP-08）。
         HumanApproval => "human.approval",
     }
 }
@@ -127,19 +136,24 @@ impl NodeType {
                 | NodeType::RagSearch
                 | NodeType::LlmInvoke
                 | NodeType::AgentInvoke
+                | NodeType::AiDecide
                 | NodeType::HttpRequest
                 | NodeType::ScriptRun
                 | NodeType::SkillInvoke
                 | NodeType::WorkflowStart
+                | NodeType::WorkflowReply
                 | NodeType::CsvQuery
                 | NodeType::CsvPatch
                 | NodeType::CsvWrite
                 | NodeType::DataQuery
                 | NodeType::DataRecordCreate
                 | NodeType::DataRecordUpdate
+                | NodeType::DataRecordUpsert
                 | NodeType::DataRecordDelete
                 | NodeType::DataTransition
                 | NodeType::DataBulkUpsert
+                | NodeType::TransformDate
+                | NodeType::HumanApproval
         )
     }
 }
@@ -169,26 +183,31 @@ mod tests {
                 "rag.search",
                 "llm.invoke",
                 "agent.invoke",
+                "ai.decide",
                 "http.request",
                 "script.run",
                 "workflow.start",
+                "workflow.reply",
                 "csv.query",
                 "csv.patch",
                 "csv.write",
                 "data.query",
                 "data.record.create",
                 "data.record.update",
+                "data.record.upsert",
                 "data.transition",
                 "data.record.delete",
                 "data.bulk_upsert",
                 "skill.invoke",
+                "transform.date",
+                "human.approval",
             ]
         );
     }
 
     #[test]
     fn reserved_vocab_is_parsed_but_gated() {
-        for name in ["notify.send", "sheet.read", "ai.review", "human.approval"] {
+        for name in ["notify.send", "sheet.read", "ai.review", "sandbox.exec"] {
             let nt = NodeType::parse(name).expect("予約語彙は閉集合に含まれる");
             assert!(!nt.available_stage_a(), "{name} は Stage A では無効のはず");
         }

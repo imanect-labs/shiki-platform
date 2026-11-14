@@ -19,7 +19,8 @@ reqwest.workspace = true
 tokio = { workspace = true, features = ["time"] }
 url.workspace = true
 encoding_rs.workspace = true
-chardetng.workspace = true
+# BOM・UTF-8・推定はファイルの文字コードの判定と共有する（GAP-45・判定を 2 つ持たない）。
+shiki-textenc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -27,7 +28,7 @@ async-trait.workspace = true
 
 # lib 名 sandbox_client で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-sandbox-client"]
+ignored = ["shiki-sandbox-client", "shiki-textenc"]
 
 [lints]
 workspace = true

@@ -40,13 +40,22 @@ pub struct SaveWorkflowResponse {
     pub warnings: Vec<ValidationError>,
 }
 
-/// 保存した IR の警告（`ir.condition_semantics_changed` など）。保存者が気付けるようログにも残す。
-fn save_warnings(ir: &workflow_engine::WorkflowIr, id: Uuid) -> Vec<ValidationError> {
-    let warnings = workflow_engine::semantics_warnings(ir);
-    if !warnings.is_empty() {
+/// 保存した IR の警告（`ir.condition_semantics_changed`・`ir.template_escaped_var` など）。
+/// 条件の意味論の切替に当たるものは、運用が気付けるようログにも残す。
+fn save_warnings(
+    ir: &workflow_engine::WorkflowIr,
+    catalog: &Catalog,
+    id: Uuid,
+) -> Vec<ValidationError> {
+    let warnings = workflow_engine::save_warnings(ir, catalog);
+    let semantics = warnings
+        .iter()
+        .filter(|w| w.code == workflow_engine::SEMANTICS_CHANGED)
+        .count();
+    if semantics > 0 {
         tracing::warn!(
             workflow = %id,
-            count = warnings.len(),
+            count = semantics,
             "条件の意味論の切替（2026-10）で振る舞いが変わり得る条件を含むワークフローを保存しました"
         );
     }
@@ -68,28 +77,64 @@ pub struct ValidationErrorResponse {
     pub errors: Vec<ValidationError>,
 }
 
-/// API 層でカタログを組む（Stage A: 登録済み secret の名前→許可ホスト・モデルカタログ）。
+/// API 層でカタログを組む（Stage A: 登録済み secret の名前→許可ホスト・使えるモデル）。
 ///
 /// 実装は [`crate::workflow_catalog::build_catalog_from`]（emit_workflow と共有・乖離禁止）。
-pub(crate) async fn build_catalog(
+/// モデルは gateway があれば呼び出し主体から見た組織の許可リスト（BUG-11）、無ければデプロイ設定。
+///
+/// IR の承認・状態を進める・状態のきっかけが束縛するテーブル（保存者の見え方・V4・GAP-08・BUG-105）と、
+/// workflow.start の相手（BUG-107）と、名指しするテーブル・フォルダーの実在（GAP-35）も引いて足す。
+pub(crate) async fn build_catalog_for(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    ir: &serde_json::Value,
+) -> Result<Catalog, ApiError> {
+    let mut catalog = build_catalog_base(state, ctx).await?;
+    catalog.tables = crate::workflow_catalog::fsm_tables(&state.data, ctx, ir)
+        .await
+        .map_err(ApiError::Internal)?;
+    // 別のワークフローを実行の相手が保存者に見えるか（無いと見えないは同じ誤り・BUG-107）。
+    catalog.workflows = crate::workflow_catalog::workflow_start_targets(&state.artifacts, ctx, ir)
+        .await
+        .map_err(ApiError::Internal)?;
+    // 名指しするテーブル・フォルダーが保存者に見えるか（無いと見えないは同じ誤り・GAP-35）。
+    crate::workflow_catalog::visible_refs(Some(&state.data), Some(&state.storage), ctx, ir)
+        .await
+        .map_err(ApiError::Internal)?
+        .fill(&mut catalog);
+    Ok(catalog)
+}
+
+/// モデルの照合の材料（gateway があればそれ、無ければデプロイ設定のモデル）。保存と有効化（D-196）が共有する。
+pub(crate) fn workflow_models(state: &AppState) -> crate::workflow_catalog::WorkflowModels {
+    crate::workflow_catalog::WorkflowModels::new(
+        state.llm.as_deref().cloned(),
+        state
+            .config
+            .llm
+            .models
+            .iter()
+            .map(|m| (m.id.clone(), m.modality))
+            .collect(),
+    )
+}
+
+async fn build_catalog_base(
     state: &AppState,
     ctx: &authz::AuthContext,
 ) -> Result<Catalog, ApiError> {
-    let models: Vec<String> = state
-        .config
-        .llm
-        .models
-        .iter()
-        .map(|m| m.id.clone())
-        .collect();
-    crate::workflow_catalog::build_catalog_from(
+    let models = workflow_models(state);
+    let mut catalog = crate::workflow_catalog::build_catalog_from(
         state.secrets.as_deref(),
         Some(&state.skill_installs),
         &models,
         ctx,
     )
     .await
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::Internal)?;
+    // AI エージェントの web.fetch の宛先は管理者の天井の部分集合だけ（BUG-6・D-29）。
+    catalog.web_ceiling = Some(state.config.workflow.agent_web_ceiling());
+    Ok(catalog)
 }
 
 /// 検証のみのリクエスト（保存しない・dnd のライブ検証用）。
@@ -108,6 +153,10 @@ pub struct ValidateWorkflowResponse {
     pub declared_scopes: Vec<String>,
     /// 保存は止めない警告（`ir.condition_semantics_changed` など・Task 15.7）。
     pub warnings: Vec<ValidationError>,
+    /// ノードの出口（ノード id → 出口の名前・表示の順）。保存時検証 V2 と同じ関数
+    /// （`workflow_engine::node_ports`）で導く。エディタはこれでハンドルを描く（出口の導出を web に書き写さない・
+    /// H15）。IR が読めなければ空、params が契約に合わず出口を導けないノードは載せない。
+    pub node_ports: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// IR を保存せず検証する（dnd エディタのライブ検証・Task 10.12）。
@@ -129,17 +178,26 @@ pub async fn validate_workflow(
     AuthContextExt(ctx): AuthContextExt,
     Json(req): Json<ValidateWorkflowRequest>,
 ) -> Result<Json<ValidateWorkflowResponse>, ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     // 保存と同じく、ノードが要するスコープを補完してから検証する（検証 C-P1-2・結果を保存と揃える）。
     let (ir, _) = workflow_engine::complete_declared_scopes(&req.ir);
-    let (errors, warnings) = match workflow_engine::validate(&ir, &catalog) {
-        Ok(ir) => (Vec::new(), workflow_engine::semantics_warnings(&ir)),
-        // スキーマ（V1）を通る IR なら、他の誤りがあっても警告は出す（エディタが同時に表示する）。
+    let (errors, warnings, node_ports) = match workflow_engine::validate(&ir, &catalog) {
+        Ok(ir) => (
+            Vec::new(),
+            workflow_engine::save_warnings(&ir, &catalog),
+            workflow_engine::node_ports(&ir),
+        ),
+        // スキーマ（V1）を通る IR なら、他の誤りがあっても警告と出口は出す（エディタが同時に表示する）。
         Err(errors) => {
-            let warnings = workflow_engine::WorkflowIr::from_json(&ir)
-                .map(|ir| workflow_engine::semantics_warnings(&ir))
+            let (warnings, ports) = workflow_engine::WorkflowIr::from_json(&ir)
+                .map(|ir| {
+                    (
+                        workflow_engine::save_warnings(&ir, &catalog),
+                        workflow_engine::node_ports(&ir),
+                    )
+                })
                 .unwrap_or_default();
-            (errors, warnings)
+            (errors, warnings, ports)
         }
     };
     let declared_scopes = ir
@@ -155,6 +213,7 @@ pub async fn validate_workflow(
         errors,
         declared_scopes,
         warnings,
+        node_ports,
     }))
 }
 
@@ -180,7 +239,7 @@ pub(crate) fn map_store_err(err: WorkflowStoreError) -> ApiError {
         (status = 201, description = "保存した", body = SaveWorkflowResponse),
         (status = 400, description = "IR 検証エラー（全件）", body = ValidationErrorResponse),
         (status = 401, description = "未認証"),
-        (status = 409, description = "同名ワークフローが既に存在する"),
+        (status = 409, description = "同じ名前のワークフローがすでにある（code=name_taken・見えないものを含む）", body = crate::error_body::ArtifactConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -190,13 +249,13 @@ pub async fn create_workflow(
     trace: TraceIdExt,
     Json(req): Json<SaveWorkflowRequest>,
 ) -> Result<(StatusCode, Json<SaveWorkflowResponse>), ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     let (id, ir) = state
         .workflows
         .create(&ctx, &req.ir, &catalog, trace.as_deref())
         .await
         .map_err(map_store_err)?;
-    let warnings = save_warnings(&ir, id);
+    let warnings = save_warnings(&ir, &catalog, id);
     Ok((
         StatusCode::CREATED,
         Json(SaveWorkflowResponse {
@@ -221,7 +280,7 @@ pub async fn create_workflow(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "バージョン競合"),
+        (status = 409, description = "比べた版の後にほかの保存があった（code=version_conflict・current_version）", body = crate::error_body::ArtifactConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -232,7 +291,7 @@ pub async fn update_workflow(
     Path(id): Path<Uuid>,
     Json(req): Json<SaveWorkflowRequest>,
 ) -> Result<Json<SaveWorkflowResponse>, ApiError> {
-    let catalog = build_catalog(&state, &ctx).await?;
+    let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     let (version, ir) = state
         .workflows
         .update(
@@ -245,7 +304,7 @@ pub async fn update_workflow(
         )
         .await
         .map_err(map_store_err)?;
-    let warnings = save_warnings(&ir, id);
+    let warnings = save_warnings(&ir, &catalog, id);
     Ok(Json(SaveWorkflowResponse {
         id,
         version,

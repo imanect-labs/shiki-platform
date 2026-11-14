@@ -52,10 +52,12 @@ export function NodeRow({
         menuOpen && "bg-accent",
         LIST_GRID,
       )}
+      data-node-id={node.id}
       {...longPress}
     >
       <button
         type="button"
+        data-node-primary
         onClick={primary}
         className="flex min-w-0 items-center gap-3.5 text-left outline-none focus-visible:underline"
       >

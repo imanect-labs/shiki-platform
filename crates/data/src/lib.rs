@@ -46,18 +46,25 @@
 //!   破棄・再構築させる。増分索引は outbox の別 consumer（[`RagIndexWorker`]・docs/data/rag-integration.md）
 
 mod bulk;
+mod change_view;
+mod created_by;
+mod creator_grant;
 mod cursor;
 mod derived;
 mod field_key;
 mod formula;
 mod fsm;
+mod fsm_pin;
 mod fsm_rules;
 mod fsm_store;
+mod fsm_table;
+mod fsm_write_guard;
 mod index;
 mod job_lease;
 mod key_migration;
 mod link_merge;
 mod link_values;
+mod list_position;
 mod mask;
 mod model;
 mod numeric;
@@ -81,8 +88,11 @@ mod sql;
 mod stats;
 mod store;
 mod stream;
+mod table_access;
+mod table_labels;
 mod table_list;
 mod table_load;
+mod table_purge;
 mod table_redact;
 mod table_share;
 mod tenant_settings;
@@ -102,10 +112,13 @@ mod viewer_context;
 pub const CONDITION_SEMANTICS_TABLE: &str = include_str!("query/semantics_table.json");
 
 pub use bulk::{
-    BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep, BulkImportWorker,
-    BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS,
-    MAX_BULK_CSV_BYTES, MAX_BULK_ROWS, MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES, ROW_KEY_COLUMN,
+    BulkFailedRow, BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep,
+    BulkImportWorker, BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE,
+    LAZY_INDEX_MIN_ROWS, MAX_BULK_CSV_BYTES, MAX_BULK_ROWS, MAX_BULK_ROW_BYTES,
+    MAX_BULK_ROW_KEY_BYTES, ROW_KEY_COLUMN,
 };
+pub use change_view::{ChangeEventKind, ChangeEventRef, ChangeEventView};
+pub use creator_grant::OwnRecordRights;
 pub use cursor::{CursorKey, CURSOR_KEY_LEN};
 pub use derived::links::{LINK_TRAVERSAL_SQL, MAX_LINK_VALUES_PER_RECORD};
 #[doc(hidden)]
@@ -115,8 +128,9 @@ pub use derived::types::{
 };
 pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
-pub use fsm_rules::AllowedTransitions;
+pub use fsm_rules::{reject_status_write, AllowedTransitions, ApprovalTargetView, FsmInitial};
 pub use fsm_store::FsmStore;
+pub use fsm_table::{LockedRecords, PinnedFsm, SaveTableFsm, TableFsm, LOCK_COUNT_CAP};
 #[doc(hidden)]
 pub use index::{analyze_index_partitions_without_stats, text_index_delete_sql};
 pub use index::{
@@ -129,18 +143,21 @@ pub use key_migration::{
     FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
 };
 pub use link_values::{LinkValueMigrationStatus, LinkValueStep, LINK_VALUE_CHUNK};
+pub use list_position::{ListCursorKind, ListPosition, ListPositionKind};
 pub use model::{
     ComputedDef, ComputedOp, DataRecord, DataTable, ExcessScale, FieldDef, FieldId, FieldPatch,
     FieldPolicy, FieldType, LookupDef, NumericSpec, RecordRevision, RoundingMode, TableSchema,
     FIRST_USER_FIELD_ID, MAX_FIELD_ID, SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER,
     SYSTEM_FIELD_UPDATED_AT,
 };
+pub use numeric::{add_numbers, number_key};
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy, TableReach};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
+pub use query::field_use::{check_field_use, check_link_field, check_search, FieldUse};
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
     HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryParseError, QueryResult, SortKey,
-    DATA_QUERY_KEYS,
+    DATA_QUERY_KEYS, MAX_LIMIT as MAX_QUERY_LIMIT,
 };
 pub use query::limits::{
     QueryLimits, MAX_AST_DEPTH, MAX_AST_NODES, MAX_COMPILE_MS, MAX_COMPILE_WORK, MAX_JOIN_DEPTH,
@@ -166,6 +183,7 @@ pub use rag::{
     MAX_RAG_BODY_FIELDS, MAX_RAG_CHUNK_CHARS, MAX_RAG_POST_FILTER_IDS, RAG_INDEX_BATCH,
     RAG_INDEX_CONSUMER,
 };
+pub use record::{FilteredRecords, RecordState};
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
@@ -180,6 +198,12 @@ pub use stream::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
     RECORD_CHANGED_EVENT,
 };
+pub use table_labels::{TableLabel, MAX_TABLE_LABELS};
+pub use table_list::{
+    TableListQuery, TableListing, TablePage, APP_TABLE_ROUNDS, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK,
+    TABLE_SCAN_MAX_CHECKS,
+};
+pub use table_purge::{DeletedTableTupleSweeper, TuplePurgeProgress, TUPLE_PURGE_BATCH};
 pub use table_share::TableShareRole;
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;
@@ -603,6 +627,26 @@ impl DataError {
         )
     }
 
+    /// 時間を置いて同じ要求を繰り返せば通りうる誤り（一時障害）か。偽なら確定的で、繰り返しても直らない。
+    ///
+    /// DB・認可基盤の障害（`Internal`）・読取の時間切れ・混雑・派生値の再計算中・索引の準備中・並行の
+    /// スキーマ切替などの競合（`Conflict`）・rev の不一致（rev を指定しない書込は読み直して通り得る）。
+    /// 権限・不在・入力の誤り・索引の承認待ち（管理者の承認が要る）は確定的。
+    ///
+    /// ワークフローの relay（配り直すか）と data ノードのポート（再試行するか）が、この 1 か所で決める。
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            DataError::Internal(_)
+                | DataError::ReadTimeout
+                | DataError::ReadOverloaded
+                | DataError::DerivedRecomputing { .. }
+                | DataError::IndexPreparing { .. }
+                | DataError::Conflict(_)
+                | DataError::RevConflict { .. }
+        )
+    }
+
     /// 競合の理由の文言（「競合しています」の前置きなし・行のエラー文言やログ用）。競合でなければ `None`。
     pub fn conflict_detail(&self) -> Option<String> {
         match self {
@@ -694,6 +738,40 @@ mod conflict_field_tests {
             "{e:?}"
         );
         assert_eq!(e.conflict_code(), Some("unique_violation"));
+    }
+
+    #[test]
+    fn transient_errors_are_the_ones_a_retry_can_pass() {
+        for e in [
+            DataError::Internal("db".into()),
+            DataError::ReadTimeout,
+            DataError::ReadOverloaded,
+            DataError::DerivedRecomputing { field: "f".into() },
+            DataError::IndexPreparing {
+                field: "f".into(),
+                progress: None,
+            },
+            DataError::Conflict("テーブルのスキーマが更新されました".into()),
+            DataError::RevConflict { current: 3 },
+        ] {
+            assert!(e.is_transient(), "{e:?}");
+        }
+        for e in [
+            DataError::NotFound,
+            DataError::Forbidden,
+            DataError::FieldUnavailable,
+            DataError::Invalid("x".into()),
+            DataError::NameTaken,
+            DataError::UniqueViolation { field: None },
+            DataError::Gone("x".into()),
+            DataError::IndexApprovalRequired {
+                field: "f".into(),
+                indexed: 8,
+                cap: 8,
+            },
+        ] {
+            assert!(!e.is_transient(), "{e:?}");
+        }
     }
 
     #[test]

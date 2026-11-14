@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::model::{Citation, RunStatus};
+use crate::model::{Citation, RunStatus, StopReason};
 
 /// SSE で配信する構造化イベント（`generation_event.payload` と一致）。
 ///
@@ -101,6 +101,12 @@ pub enum StreamEventKind {
     DocumentRef {
         document: serde_json::Value,
     },
+    /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照カード（D-204・T02）。
+    /// `item = {kind, id, name, version}`（[`crate::builder_obs::BuilderRef`]・組むのは `builder_obs` だけ）。
+    BuilderRef {
+        #[schema(value_type = crate::builder_obs::BuilderRef)]
+        item: serde_json::Value,
+    },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
     /// 新規に発火しない。`generation_event` の replay 互換のためだけに残す。
     DocumentDraft {
@@ -166,8 +172,13 @@ pub enum StreamEventKind {
         message: String,
     },
     /// 完了（確定した assistant message id）。
+    ///
+    /// `stop_reason` は回答が途中で止まった理由（GAP-106）。自然に終わった回答には付かない
+    /// （付ける前の run の replay も `None`）。確定は同じ値を `message.stop_reason` にも書く。
     Done {
         message_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<StopReason>,
     },
 }
 
@@ -201,6 +212,7 @@ impl StreamEventKind {
             StreamEventKind::CsvDraft { .. } => "csv_draft",
             StreamEventKind::SkillDraft { .. } => "skill_draft",
             StreamEventKind::DocumentRef { .. } => "document_ref",
+            StreamEventKind::BuilderRef { .. } => "builder_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
             StreamEventKind::SubagentRun { .. } => "subagent_run",

@@ -190,6 +190,7 @@ async fn checkpoint_survives_takeover_and_clears_on_finalize() {
             None,
             Some(&StreamEventKind::Done {
                 message_id: res.assistant_message_id,
+                stop_reason: None,
             }),
         )
         .await

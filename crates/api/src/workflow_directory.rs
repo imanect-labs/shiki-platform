@@ -1,7 +1,7 @@
 //! 本人に見えるワークフローの検索源（chat の `search_workflows` へ注入する）。
 //!
 //! 認可は**ワークフロー一覧 API（`GET /workflows`）と同じ経路**: artifact の所有一覧
-//! （`list_mine`）∪ 共有一覧（`list_shared_with_me` = FGA ListObjects の viewer 実効集合）で
+//! （`list_mine_page`）∪ 共有一覧（`list_shared_page` = FGA ListObjects の viewer 実効集合）で
 //! 認可済み id 集合を確定し、その集合だけを `WorkflowSummaryStore::search` が SQL で絞る
 //! （PIT-13: 可読集合を先に確定して DB 側で `IN` 絞り込み）。発話ユーザーの `AuthContext` の
 //! まま呼び、昇格しない。tenant は artifact 層と射影 SQL の両方で絞る（二重防御）。
@@ -30,19 +30,20 @@ pub async fn visible_workflow_ids(
     let mut before = None;
     for _ in 0..MAX_OWNED_PAGES {
         let page = artifacts
-            .list_mine(ctx, Some(ArtifactKind::Workflow), before, PAGE)
+            .list_mine_page(ctx, Some(ArtifactKind::Workflow), before, PAGE)
             .await?;
-        owned.extend(page.iter().map(|a| a.id));
-        if (page.len() as i64) < PAGE {
+        owned.extend(page.items.iter().map(|a| a.id));
+        // 続きの位置は後ろにまだあるときだけ返る（BUG-186）。
+        let Some(next) = page.next else {
             break;
-        }
-        before = page.last().map(|a| (a.updated_at, a.id));
+        };
+        before = Some(next);
     }
     let shared = artifacts
-        .list_shared_with_me(ctx, Some(ArtifactKind::Workflow), PAGE)
+        .list_shared_page(ctx, Some(ArtifactKind::Workflow), None, PAGE)
         .await?;
     let mut ids = owned.clone();
-    ids.extend(shared.iter().map(|a| a.id));
+    ids.extend(shared.items.iter().map(|a| a.id));
     ids.sort_unstable();
     ids.dedup();
     owned.sort_unstable();

@@ -1,0 +1,78 @@
+{
+ "task": "basic-branch-amount",
+ "variant": "null",
+ "case": "boundary",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-268ccb-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "7af0029f-8f3a-4686-b4b0-24139ac43c39",
+    "status": "succeeded",
+    "input": {
+     "amount": 50000,
+     "item": "プロジェクター"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:04.083654+00:00"
+   }
+  ],
+  "rows": {
+   "big": [],
+   "small": []
+  },
+  "rows_before": {
+   "big": [],
+   "small": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:42:57.413326+00:00"
+ }
+}

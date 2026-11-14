@@ -88,6 +88,29 @@ pub fn validate_local_id(id: &str) -> Result<(), IdentViolation> {
     Ok(())
 }
 
+/// 利用者の id（OIDC `sub`）の検証（fail-closed・D-205・GAP-77）。
+///
+/// sub は `user:<tenant>|<sub>` の `<sub>` に入る。[`validate_local_id`] と同じく型区切り `:`・
+/// userset 区切り `#`・tenant 区切り `|`（[`TENANT_SEP`]）と制御文字を断り、加えて空白も断る。
+/// ログイン・セッションの更新・アプリのゲートウェイの入口で通し、タプルの形は変えない。
+///
+/// OpenFGA（v1.8）で確かめたこと（`tests/user_id_chars.rs`）:
+/// - `:` か `#` を含む user は、書き込みも check も 400 で断られる（member にならない）。
+/// - `|` を含む user（`user:t|a|b`）は書けて check も通る。ところが `<tenant>|` の後ろは
+///   [`validate_local_id`] を通らないので、定期の照合が飛ばし、所属グループから外れても
+///   member が外れない（D-136 の窓）。
+/// - ASCII の空白は 400 で断られる。全角の空白（U+3000）などは受け付けられるが、tenant_id と
+///   同じく見分けにくい id を作らないために断る。Keycloak の sub は UUID か、フェデレーションで
+///   Import を切った人の `f:<provider>:<username>`（`:` で断られる）なので、空白で新しく
+///   締め出される人はいない。
+pub fn validate_user_id(id: &str) -> Result<(), IdentViolation> {
+    validate_local_id(id)?;
+    if id.chars().any(char::is_whitespace) {
+        return Err(IdentViolation::Whitespace);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +178,39 @@ mod tests {
             validate_local_id("a\nb"),
             Err(IdentViolation::ForbiddenChar(_))
         ));
+    }
+
+    #[test]
+    fn user_id_accepts_uuid_and_plain_ids() {
+        // Keycloak の既定の sub（UUID）と、`@`・`/`・非 ASCII の文字は通す。
+        for ok in [
+            "0b6f3a52-8f1e-4c1a-9d1e-2f7a2c1b9e10",
+            "alice@example.com",
+            "a/b",
+            "山田",
+        ] {
+            assert_eq!(validate_user_id(ok), Ok(()), "{ok:?} は許可されること");
+        }
+    }
+
+    #[test]
+    fn user_id_rejects_fga_separators_controls_and_whitespace() {
+        // フェデレーションで Import を切った人の sub（`f:<provider>:<username>`）も断る。
+        for bad in ["f:ldap:bob", "a#b", "a|b", "a\u{7}b", "a\nb", "a\tb"] {
+            assert!(
+                matches!(validate_user_id(bad), Err(IdentViolation::ForbiddenChar(_))),
+                "{bad:?} は拒否されること"
+            );
+        }
+        for bad in ["a b", "a\u{3000}b", "a\u{a0}b", " a"] {
+            assert_eq!(
+                validate_user_id(bad),
+                Err(IdentViolation::Whitespace),
+                "{bad:?} は拒否されること"
+            );
+        }
+        assert_eq!(validate_user_id(""), Err(IdentViolation::Empty));
+        // local id（ロール名など）は空白を含んでよいまま（validate_local_id は変えない）。
+        assert_eq!(validate_local_id("a b"), Ok(()));
     }
 }

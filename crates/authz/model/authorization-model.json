@@ -634,6 +634,20 @@
               }
             ]
           }
+        },
+        "submitter": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "editor"
+                }
+              }
+            ]
+          }
         }
       },
       "metadata": {
@@ -682,6 +696,17 @@
               },
               {
                 "type": "miniapp"
+              }
+            ]
+          },
+          "submitter": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "role",
+                "relation": "member"
               }
             ]
           }

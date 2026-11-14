@@ -98,7 +98,6 @@ pub(crate) fn wire_gateway(
         audit: storage::audit::AuditRecorder::new(db.clone()),
         // 内部 API と同じ解決規則（single=固定値・multi=tenant クレーム必須で fail-closed）。
         tenant_source: config.auth.tenant_source(),
-        default_org: "default".to_string(),
         caps: app_gateway::CapabilityDeps {
             db: db.clone(),
             storage: Arc::clone(storage_service),
@@ -143,10 +142,8 @@ pub(crate) async fn spawn_gateway_listener(
     Ok(())
 }
 
-/// 同意インストール（Task 9.13b）の InstallService を組む。
-///
-/// Keycloak admin（provisioner 資格情報＋admin base）が構成済みなら client 登録も配線する。
-/// 未構成（dev/テスト）は登録スキップ（InstallService 側で warn）。
+/// 同意インストール（Task 9.13b）の InstallService を組む（組み立ては結合テストと同じ
+/// [`api::miniapp_install::build_install_service`]）。
 pub(crate) fn wire_installs(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -156,36 +153,15 @@ pub(crate) fn wire_installs(
     data_store: &Arc<data::DataStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
 ) -> app_platform::InstallService {
-    let oauth = if let (Some(base), Some((id, secret))) = (
-        config.auth.admin_base(),
-        config.auth.provisioner_credentials(),
-    ) {
-        Some(app_gateway::OAuthClient::new(
-            http.clone(),
-            base,
-            config.auth.token_endpoint(),
-            id.to_string(),
-            secret.to_string(),
-        ))
-    } else {
-        tracing::info!("Keycloak admin 未構成: インストール時の client 登録は無効（dev）");
-        None
-    };
-    // B1 redirect は web シェルの popup callback（PR10 が消費）。web origin 由来。
-    let b1_redirects = vec![config.auth.redirect_uri.clone()];
-    let token_host = url::Url::parse(&config.auth.token_endpoint())
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string));
-    app_platform::InstallService::new(
-        db.clone(),
-        app_platform::Registry::new(db.clone()),
-        Arc::clone(mini_app_code),
-        Arc::clone(data_store),
-        authz.clone(),
-        oauth,
-        b1_redirects,
+    api::miniapp_install::build_install_service(
+        config,
+        http,
+        db,
+        authz,
+        mini_app_code,
+        data_store,
+        secrets,
     )
-    .with_secrets(secrets.cloned(), token_host)
 }
 
 /// B1 フロントバンドル配信（第3リスナ・Task 9.11）の Router を組む（gateway 無効時は None）。
@@ -206,20 +182,7 @@ pub(crate) fn wire_b1(
         .clone()
         .unwrap_or_else(|| format!("http://localhost:{}", config.gateway.port));
     // frame-ancestors は web シェルのオリジン（未設定は auth.redirect_uri から導出）。
-    let host_origin = config.gateway.web_origin.clone().unwrap_or_else(|| {
-        url::Url::parse(&config.auth.redirect_uri)
-            .ok()
-            .and_then(|u| {
-                u.port_or_known_default().map(|p| {
-                    format!(
-                        "{}://{}:{p}",
-                        u.scheme(),
-                        u.host_str().unwrap_or("localhost")
-                    )
-                })
-            })
-            .unwrap_or_else(|| "http://localhost:3000".to_string())
-    });
+    let host_origin = config.web_shell_origin();
     let state = app_gateway::B1State {
         installations: app_gateway::AppInstallationStore::new(db.clone()),
         store: Arc::clone(object_store),
@@ -248,6 +211,7 @@ pub(crate) fn wire_functions(
     db: &sqlx::PgPool,
     object_store: &Arc<dyn storage::ObjectStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
 ) -> Option<(
     Arc<crate::gateway_functions::GatewayFunctionPort>,
     Arc<app_platform::FunctionRunner>,
@@ -261,7 +225,8 @@ pub(crate) fn wire_functions(
     let loopback = format!("http://127.0.0.1:{}", config.gateway.port);
     let runner = match app_platform::FunctionRunner::new(engine, Arc::clone(object_store), loopback)
     {
-        Ok(r) => Arc::new(r),
+        // 外部 HTTP は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
+        Ok(r) => Arc::new(r.with_egress_proxy(egress_proxy.cloned())),
         Err(e) => {
             tracing::warn!(error = %e, "FunctionRunner 構築に失敗（B2 関数は無効）");
             return None;
@@ -272,7 +237,6 @@ pub(crate) fn wire_functions(
         http: reqwest::Client::new(),
         token_endpoint: config.auth.token_endpoint(),
         secrets: secrets.cloned(),
-        gateway_audience: config.gateway.audience.clone(),
         installations: app_gateway::AppInstallationStore::new(db.clone()),
     });
     Some((port, runner))
@@ -293,6 +257,8 @@ pub(crate) struct MiniappListenerDeps<'a> {
     pub secrets: Option<&'a Arc<secrets::SecretStore>>,
     /// 停止の合図（ゲートウェイ・B1 配信のリスナが受付を止める）。
     pub shutdown: &'a crate::shutdown::Shutdown,
+    /// B2 関数の外部 HTTP が通す外への送信の中継（`egress.proxy_url`・GAP-72）。
+    pub egress_proxy: Option<&'a sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// ゲートウェイ（第2リスナ）・B1 配信（第3リスナ）・B2 event/cron トリガをまとめて起動する。
@@ -301,7 +267,13 @@ pub(crate) struct MiniappListenerDeps<'a> {
 /// object store から組み、ゲートウェイへはループバックで委譲する（関数内の能力呼び出しも
 /// 二重ゲートを通る）。
 pub(crate) async fn spawn_miniapp_listeners(deps: MiniappListenerDeps<'_>) -> anyhow::Result<()> {
-    let functions = wire_functions(deps.config, deps.db, deps.object_store, deps.secrets);
+    let functions = wire_functions(
+        deps.config,
+        deps.db,
+        deps.object_store,
+        deps.secrets,
+        deps.egress_proxy,
+    );
     let functions_port: Arc<dyn app_gateway::FunctionPort> = match &functions {
         Some((port, _)) => port.clone(),
         None => Arc::new(app_gateway::NoFunctions),

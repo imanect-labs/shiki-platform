@@ -430,6 +430,86 @@ pub async fn set_tenant_audit_retention(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// テナントのゴミ箱の保持期間の設定リクエスト（GAP-108c・D-202）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TenantTrashRetentionRequest {
+    /// 保持日数（1〜3650）。ゴミ箱に入れてからこの日数を過ぎたものを自動で完全に削除する（元に戻せない）。
+    /// `null` で自動の完全削除を止める（既定）。**省略は 400**（書き忘れで止めないように、`null` を明示する）。
+    ///
+    /// i64 で受けて範囲はハンドラで見る（audit-retention と同じ理由: 桁溢れも 400 にする）。
+    #[serde(default, deserialize_with = "crate::routes::org_admin_ai::nullable")]
+    #[schema(value_type = Option<i64>, required = true, minimum = 1, maximum = 3650)]
+    #[allow(clippy::option_option)] // 省略（400）と null（止める）を区別する。
+    pub days: Option<Option<i64>>,
+}
+
+/// リクエストの日数を読む（省略・範囲外・桁溢れは 400、`null` は `None`）。
+fn trash_retention_days(req: &TenantTrashRetentionRequest) -> Result<Option<i32>, ApiError> {
+    use storage::trash_retention::{MAX_TRASH_RETENTION_DAYS, MIN_TRASH_RETENTION_DAYS};
+    let Some(days) = req.days else {
+        return Err(ApiError::BadRequest(
+            "days を指定してください（自動の完全削除を止めるときは null）".into(),
+        ));
+    };
+    let Some(days) = days else {
+        return Ok(None);
+    };
+    let days = i32::try_from(days).map_err(|_| {
+        ApiError::BadRequest(format!(
+            "ゴミ箱の保持日数は {MIN_TRASH_RETENTION_DAYS}〜{MAX_TRASH_RETENTION_DAYS} 日で指定してください（指定値: {days}）"
+        ))
+    })?;
+    storage::trash_retention::validate_trash_retention_days(days)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(Some(days))
+}
+
+/// テナントのゴミ箱の保持期間を設定する（GAP-108c・D-202）。
+///
+/// **既定は無効**（`null`・自動では消さない）。日数を入れると、ゴミ箱に入れてからその日数を過ぎたものを、
+/// 中断アップロードの回収と同じ周（`storage.upload_gc`・既定 1 時間ごと）にシステムが完全に削除する
+/// （元に戻せない・`storage.trash_retention.purge` として監査に残る）。**日数を入れたときと短くしたときは、
+/// その時点から日数を数え直す**（古いゴミ箱が一斉に消えない猶予）。長くしたとき・`null` に戻したときは数え直さない。
+/// 変更は `tenant.trash_retention.set` として監査に残す。
+#[utoipa::path(
+    put,
+    path = "/admin/tenants/{tenant_id}/trash-retention",
+    params(("tenant_id" = String, Path, description = "テナント識別子")),
+    request_body = TenantTrashRetentionRequest,
+    responses(
+        (status = 204, description = "保持期間を更新した"),
+        (status = 400, description = "tenant_id または days が不正（省略・範囲外・桁溢れを含む）"),
+        (status = 422, description = "リクエスト本文が JSON として不正"),
+        (status = 401, description = "provisioner トークンが無効"),
+        (status = 404, description = "active なテナントが存在しない"),
+    ),
+    security(("provisioner_token" = [])),
+)]
+pub async fn set_tenant_trash_retention(
+    State(state): State<AppState>,
+    Extension(actor): Extension<ProvisionerIdentity>,
+    Path(tenant_id): Path<String>,
+    Json(req): Json<TenantTrashRetentionRequest>,
+) -> Result<StatusCode, ApiError> {
+    validate_tenant_id(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    let days = trash_retention_days(&req)?;
+    let change = state
+        .storage
+        .trash_retention()
+        .set_retention_days(&tenant_id, days, &actor.0, serde_json::json!({}))
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    tracing::info!(
+        %tenant_id,
+        retention_days = ?change.days,
+        previous = ?change.previous,
+        grace_reset = change.grace_reset,
+        "ゴミ箱の保持期間を更新しました"
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// データ面の purge（FGA タプル → オブジェクト → DB 行）。
 ///
 /// 構造化データ（pivot 索引・FGA タプル・Task 9.2）→ storage（FGA タプル・オブジェクト・
@@ -519,6 +599,43 @@ mod tests {
             "provisioner_client_secret": "secret",
         }))
         .expect("auth config")
+    }
+
+    fn trash_req(body: serde_json::Value) -> TenantTrashRetentionRequest {
+        serde_json::from_value(body).expect("JSON として読める")
+    }
+
+    #[test]
+    fn trash_retention_days_accepts_null_and_range() {
+        // null は「自動では消さない」（既定に戻す）。
+        assert_eq!(
+            trash_retention_days(&trash_req(serde_json::json!({ "days": null }))).ok(),
+            Some(None)
+        );
+        for d in [1_i32, 30, 3650] {
+            assert_eq!(
+                trash_retention_days(&trash_req(serde_json::json!({ "days": d }))).ok(),
+                Some(Some(d))
+            );
+        }
+    }
+
+    #[test]
+    fn trash_retention_days_rejects_missing_and_out_of_range() {
+        // 省略は止めたのか書き忘れたのか分からないので 400（null を明示させる）。
+        assert!(matches!(
+            trash_retention_days(&trash_req(serde_json::json!({}))),
+            Err(ApiError::BadRequest(_))
+        ));
+        for d in [0_i64, -1, 3651, i64::from(i32::MAX) + 1, i64::MIN] {
+            assert!(
+                matches!(
+                    trash_retention_days(&trash_req(serde_json::json!({ "days": d }))),
+                    Err(ApiError::BadRequest(_))
+                ),
+                "{d} は 400"
+            );
+        }
     }
 
     #[test]

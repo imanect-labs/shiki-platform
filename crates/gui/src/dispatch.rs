@@ -68,6 +68,10 @@ pub enum ActionError {
         field: String,
         progress: Option<f64>,
     },
+    /// ミニアプリの、使う人に出していない版を押した・描こうとした（D-16）。画面を開いた後に公開した版が変わった
+    /// （`published` が今の公開した版）か、まだ公開していない（`None`）。API 層は開き直しを促す 409 にする。
+    #[error("このアプリの公開しているバージョンが変わりました")]
+    AppVersionChanged { published: Option<i64> },
     #[error("内部エラー: {0}")]
     Internal(String),
 }

@@ -13,13 +13,36 @@
 //! - 自律プロファイル（Phase 5）検証用の駆動プレフィックス:
 //!   - `plan: A, B, C` … 1 ターン目に `plan` メタツールをカンマ区切りのサブタスクで呼ぶ（計画分解の検証）。
 //!   - `loop:` … tool_result の有無に関わらず**毎ターン** tools[0] を空入力で呼び続ける
-//!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
+//!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。`loop:<ツール名>` は
+//!     tools[0] の代わりにその名前のツールを呼ぶ（提示されていなければ tools[0]）。
 //! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
+//! - 既存のワークフローを直す `fixwf:<語>` … `list_workflows` で探し、先頭を `read_workflow` で読み、説明を書き換えて
+//!   `emit_workflow` で新しい版として保存する（[`super::stub_triggers::fix_workflow_call`]・GAP-31）。
 //! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
+//! - `echoeffort:` … 受け取った思考の深さ（無ければ `none`）を `effort: <値>` で返す（ノードの思考の深さの解決が
+//!   実際にモデルへ届く値になることの検証用・D-75）。
+//! - `echohistory:` … 受け取ったメッセージの本文とツールの結果を改行でつないで返す（次の回答の文脈に何が渡るかの
+//!   検証用・[`super::stub_triggers::echo_history_call`]・PIT-84）。
+//! - `echotool:<ツール名> <入力 JSON>` … 1 ターン目にそのツールを呼び、結果が返ったらその本文をそのまま回答の本文で
+//!   返す（観測が回答・共有の相手の画面・次の回答の文脈のどこまで届くかの検証用・
+//!   [`super::stub_triggers::echo_tool_call`]・PIT-84）。
 //! - `<conversation>…</conversation>` … 包みの中の最初の行を返す（会話の自動タイトル用。
 //!   「回答: 」を付けない）。
+//! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
+//!   `refuse:` / `truncate:`（[`super::stub_structured`]・語はどの行の頭に置いてもよい）。
+//! - `fail:`（形の指定が無いとき・どの行の頭に置いてもよい）… 送り直されない誤り（`LlmError::BadRequest`）で失敗する
+//!   （ワークフローの llm.invoke の、再試行しない失敗の出口の検証用・[`super::stub_structured::failure_call`]）。
+//! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
+//!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
+//! - `truncatecall:`（ツールがあるとき）… 1 ターン目に tools[0] の呼び出しを引数の途中で切って `MaxTokens` で
+//!   終え（`ToolUseStart` だけを流す・BUG-225 の後のアダプタと同じ形）、ツールの結果が返ったら通常の応答に戻る
+//!   （切れた呼び出しの回復の検証用・#1196）。`truncatecallmix:`（ツールが 2 つ以上）は、その前に tools[1] の
+//!   引数まで届いた呼び出しを 1 つ混ぜる。
+//!
+//! 決定的なのは応答の中身だけで、ツール呼び出しの id は実プロバイダと同じく呼び出しごとに一意
+//! （[`super::stub_stream::stub_tool_call_id`]・承認の鍵が前の決定に当たらないように）。
 
 use std::time::Duration;
 
@@ -28,13 +51,14 @@ use futures::stream::{self, StreamExt};
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
-    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
-    thinking_only_stream, tool_call_stream, tool_calls_stream, truncated_text_stream,
-    truncated_tool_call_stream,
+    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, stub_tool_call_id,
+    text_stream, text_stream_ending, thinking_only_stream, tool_call_stream, tool_calls_stream,
+    truncated_text_stream, truncated_tool_call_stream,
 };
+use super::stub_structured::{failure_call, structured_call};
 use super::stub_triggers::{
-    conversation_title_call, echo_system_call, generic_tool_call, note_suggest_call,
-    note_tool_call, tool_search_call,
+    conversation_title_call, echo_effort_call, echo_history_call, echo_system_call, echo_tool_call,
+    fix_workflow_call, generic_tool_call, note_suggest_call, note_tool_call, tool_search_call,
 };
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
@@ -81,6 +105,19 @@ fn last_user_text(req: &GenerateRequest) -> String {
                 .join(" ")
         })
         .unwrap_or_default()
+}
+
+/// 最初の user 発話の本文（続きの催促の後でも、最初に送った駆動の語を見るため）。
+fn first_user_text(req: &GenerateRequest) -> Option<&str> {
+    req.messages
+        .iter()
+        .find(|m| m.role == Role::User)
+        .and_then(|m| {
+            m.content.iter().find_map(|b| match b {
+                Block::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+        })
 }
 
 /// `truncatetext:` の駆動（本文の途中で出力上限に達した応答の続きを書かせる回復）。
@@ -141,19 +178,6 @@ fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<
         "どの列を数えるかを考え続ける",
         prompt_tokens,
     ))
-}
-
-/// 最初の user 発話の本文。
-fn first_user_text(req: &GenerateRequest) -> Option<&str> {
-    req.messages
-        .iter()
-        .find(|m| m.role == Role::User)
-        .and_then(|m| {
-            m.content.iter().find_map(|b| match b {
-                Block::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-        })
 }
 
 /// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
@@ -337,7 +361,7 @@ fn parallel_read_call(
     (!calls.is_empty()).then(|| tool_calls_stream(calls, prompt_tokens))
 }
 
-/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system の返却）をまとめて試す。
+/// 本文を決め打ちで返す駆動（図・推論の引き継ぎ・受け取った system と思考の深さの返却）をまとめて試す。
 fn fixed_reply_call(
     req: &GenerateRequest,
     user_text: &str,
@@ -347,6 +371,8 @@ fn fixed_reply_call(
         .or_else(|| long_call(user_text, prompt_tokens))
         .or_else(|| reasoning_call(req, user_text, prompt_tokens))
         .or_else(|| echo_system_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_effort_call(req, user_text, prompt_tokens))
+        .or_else(|| echo_history_call(req, user_text, prompt_tokens))
         .or_else(|| conversation_title_call(user_text, prompt_tokens))
 }
 
@@ -428,18 +454,53 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     if let Some(s) = fixed_reply_call(req, &user_text, prompt_tokens) {
         return s;
     }
-    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
-    if !req.tools.is_empty() && user_text.starts_with("loop:") {
-        return tool_call_stream(
-            req.tools[0].name.clone(),
-            serde_json::json!({}),
+    // --- 構造化出力（GAP-13）: 形の指定があればスキーマに合う値・`json:` 等の駆動で返す。 ---
+    if let Some(s) = structured_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 形の指定が無い呼び出しの失敗 `fail:`（送り直されない誤り・ワークフローの失敗の出口）。 ---
+    if let Some(s) = failure_call(&user_text) {
+        return s;
+    }
+    // --- 出力の上限での打ち切り `truncate:<本文>`（形の指定が無いとき・GAP-106）。続きの催促（#1247）には何も
+    //     書かずに上限で止まり、打ち切りのまま run を終える（回答の下の注記を確かめる駆動を保つ）。 ---
+    if let Some(body) = user_text.strip_prefix("truncate:") {
+        return text_stream_ending(
+            &format!("回答: {}", body.trim()),
+            StopReason::MaxTokens,
             prompt_tokens,
         );
     }
-    // --- 出力上限で切れたツール呼び出し `truncate:`: 1 ターン目だけ tools[0] の引数が `{}` で
-    //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動）。 ---
-    if !req.tools.is_empty() && !has_tool_result(req) && user_text.starts_with("truncate:") {
-        return truncated_tool_call_stream(req.tools[0].name.clone(), prompt_tokens);
+    if user_text.starts_with(crate::CONTINUATION_MARK)
+        && first_user_text(req).is_some_and(|t| t.starts_with("truncate:"))
+    {
+        return text_stream_ending("", StopReason::MaxTokens, prompt_tokens);
+    }
+    // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。
+    //     `loop:<ツール名>`（空白を挟まない）はその名前のツールを呼ぶ（先頭が承認の要るツールの構成でも、
+    //     承認待ちで止めずに手数を積む）。 ---
+    if let Some(rest) = user_text.strip_prefix("loop:") {
+        if let Some(first) = req.tools.first() {
+            let named = rest.split(char::is_whitespace).next().unwrap_or("");
+            let tool = req.tools.iter().find(|t| t.name == named).unwrap_or(first);
+            return tool_call_stream(tool.name.clone(), serde_json::json!({}), prompt_tokens);
+        }
+    }
+    // --- 出力上限で切れたツール呼び出し `truncatecall:`: 1 ターン目だけ tools[0] の引数の途中で
+    //     `MaxTokens` 停止する（切れた呼び出しを黙って完了扱いにしない回復の決定的駆動・#1196）。
+    //     `truncatecallmix:` は tools[1] の完全な呼び出しを前に混ぜる。
+    //     本文の打ち切りの `truncate:`（GAP-106・上で先に拾う）とは別の語にする。 ---
+    if !req.tools.is_empty() && !has_tool_result(req) {
+        let whole = if user_text.starts_with("truncatecallmix:") {
+            req.tools.get(1).map(|t| Some(t.name.clone()))
+        } else if user_text.starts_with("truncatecall:") {
+            Some(None)
+        } else {
+            None
+        };
+        if let Some(whole) = whole {
+            return truncated_tool_call_stream(req.tools[0].name.clone(), whole, prompt_tokens);
+        }
     }
     // --- 本文の途中で出力上限 `truncatetext:`: 最初の応答は本文の途中で `MaxTokens` 停止し、
     //     続きの催促には続きを返す（`truncatetext:forever` は催促にも切れ続ける）。 ---
@@ -452,6 +513,14 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 既存のワークフローを直す `fixwf:`（探す → 読む → 新しい版を保存する・GAP-31）。 ---
+    if let Some(s) = fix_workflow_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 観測を写す `echotool:`（呼ぶ → 結果の本文をそのまま返す・PIT-84）。2 ターン目も見るので門の前に置く。 ---
+    if let Some(s) = echo_tool_call(req, &user_text, prompt_tokens) {
         return s;
     }
     // --- 並行 read 駆動 `parallel:`（#386）。 ---
@@ -582,7 +651,7 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
                 .iter()
                 .find(|t| t.name == tool_name)
                 .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
-            let id = "stubtool_1".to_string();
+            let id = stub_tool_call_id(1);
             let input = serde_json::json!({ key: value });
             let events = vec![
                 Ok(StreamDelta::ToolUseStart {
@@ -648,6 +717,49 @@ mod tests {
             }
         }
         assert!(text.contains("```ui\nask "), "{text}");
+    }
+
+    /// 形の指定が無い `truncate:` は本文を返して出力の上限で終える（チャットの打ち切りの注記の検証用・GAP-106）。
+    #[tokio::test]
+    async fn stub_truncate_prefix_ends_at_max_tokens_without_schema() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "truncate:長い説明")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        let mut stop = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::TextDelta { text: t } => text.push_str(&t),
+                StreamDelta::Done { stop_reason, .. } => stop = Some(stop_reason),
+                _ => {}
+            }
+        }
+        assert_eq!(text, "回答: 長い説明");
+        assert_eq!(stop, Some(StopReason::MaxTokens));
+    }
+
+    /// `truncate:` の後の続きの催促（#1247）には本文を書かずに出力の上限で止まる（打ち切りのまま run を終える）。
+    #[tokio::test]
+    async fn stub_truncate_stays_truncated_on_the_continuation() {
+        let req = GenerateRequest::new(vec![
+            Message::text(Role::User, "truncate:長い説明"),
+            Message::text(Role::Assistant, "回答: 長い説明"),
+            Message::text(
+                Role::User,
+                format!("{} 続きを書いてください。", crate::CONTINUATION_MARK),
+            ),
+        ]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        let mut stop = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::TextDelta { text: t } => text.push_str(&t),
+                StreamDelta::Done { stop_reason, .. } => stop = Some(stop_reason),
+                _ => {}
+            }
+        }
+        assert_eq!(text, "");
+        assert_eq!(stop, Some(StopReason::MaxTokens));
     }
 
     /// helpsearch: の 2 ターン目は、結果の 1 件目の画面・図・ページを実モデルへの指示と同じ形で使う。
@@ -780,6 +892,31 @@ mod tests {
         assert_eq!(input.unwrap()["query"], "rust");
     }
 
+    /// `loop:<ツール名>` は名前のツールを、`loop:` と `loop: 説明` は先頭のツールを毎ターン呼ぶ。
+    #[tokio::test]
+    async fn stub_loop_calls_named_tool_or_first() {
+        for (text, want) in [
+            ("loop:drive.find", "drive.find"),
+            ("loop:", "drive.copy"),
+            ("loop: drive.find を呼び続ける", "drive.copy"),
+            ("loop:無い名前", "drive.copy"),
+        ] {
+            let mut req = GenerateRequest::new(vec![Message::text(Role::User, text)]);
+            for name in ["drive.copy", "drive.find"] {
+                req.tools
+                    .push(crate::model::ToolDef::new(name, "d", serde_json::json!({})));
+            }
+            let mut s = StubProvider::new().stream(&req).await.unwrap();
+            let mut tool_name = None;
+            while let Some(ev) = s.next().await {
+                if let StreamDelta::ToolUseStart { name, .. } = ev.unwrap() {
+                    tool_name = Some(name);
+                }
+            }
+            assert_eq!(tool_name.as_deref(), Some(want), "{text}");
+        }
+    }
+
     #[tokio::test]
     async fn stub_python_prefix_selects_code_interpreter() {
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, "python: print(1)")]);
@@ -800,6 +937,33 @@ mod tests {
         }
         assert_eq!(tool_name.as_deref(), Some("code_interpreter"));
         assert_eq!(input.unwrap()["code"], "print(1)");
+    }
+
+    /// 同じ要求を 2 回流しても、ツール呼び出しの id は違う（job の再試行で前の承認に当たらない）。
+    #[tokio::test]
+    async fn stub_tool_call_id_differs_between_identical_requests() {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費規程")]);
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let mut s = StubProvider::new().stream(&req).await.unwrap();
+            let (mut start, mut stop) = (None, None);
+            while let Some(ev) = s.next().await {
+                match ev.unwrap() {
+                    StreamDelta::ToolUseStart { id, .. } => start = Some(id),
+                    StreamDelta::ToolUseStop { id, .. } => stop = Some(id),
+                    _ => {}
+                }
+            }
+            assert_eq!(start, stop, "開始と終了は同じ id");
+            ids.push(start.unwrap());
+        }
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids[0].starts_with("stubtool_1_"), "{}", ids[0]);
     }
 
     #[tokio::test]

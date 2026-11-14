@@ -83,7 +83,8 @@ test.describe("スマホのドロワとアカウントメニュー", () => {
     const drive = drawer.getByRole("link", { name: "ドライブ" });
     await drive.focus();
     await drive.press("Enter");
-    await expect(phone).toHaveURL(/\/drive/);
+    // 手元の next dev は移る先の画面をその場でコンパイルし、先に重い画面を開いていると 5 秒を超えるので長めに待つ。
+    await expect(phone).toHaveURL(/\/drive/, { timeout: 20_000 });
     await expect(drawer).toHaveCount(0);
   });
 
@@ -93,7 +94,7 @@ test.describe("スマホのドロワとアカウントメニュー", () => {
     const { drawer } = await openDrawer(phone);
     await openAccountMenu(phone);
     await phone.getByRole("menuitem", { name: "設定" }).tap();
-    await expect(phone).toHaveURL(/\/settings/);
+    await expect(phone).toHaveURL(/\/settings/, { timeout: 20_000 });
     await expect(drawer).toHaveCount(0);
   });
 });

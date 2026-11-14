@@ -76,13 +76,18 @@ function FieldSelect({
   columns,
   label,
   className,
+  currentLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   columns: ColumnModel[];
   label: string;
   className?: string;
+  /// 選んである列が候補に無いとき（保存済みの条件の、いまは使えない列・テーブルに無い列）の名前。省略で参照名。
+  currentLabel?: string;
 }) {
+  // 候補に無い列でも、選んである値は名前を出す（空欄にしない・BUG-244）。
+  const unlisted = value !== "" && !columns.some((c) => c.key === value);
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger aria-label={label} className={cn("h-8 text-[13px]", className)}>
@@ -94,6 +99,11 @@ function FieldSelect({
             {c.label}
           </SelectItem>
         ))}
+        {unlisted ? (
+          <SelectItem value={value} className="text-muted-foreground">
+            {currentLabel ?? value}
+          </SelectItem>
+        ) : null}
       </SelectContent>
     </Select>
   );
@@ -220,12 +230,12 @@ function ValueInput({
 }) {
   const t = col?.field?.type;
   const rt = col?.field?.result_type;
-  // 作成者（擬似列）もユーザーとして選ぶ。
+  // 作成者（作成者の列・擬似列）もユーザーとして選ぶ。
   const refField =
     (t === "user_ref" || t === "role_ref") && col?.field
       ? col.field
-      : col?.key === "_owner"
-        ? ({ key: "_owner", type: "user_ref" } as const)
+      : t === "created_by" || col?.key === "_owner"
+        ? ({ key: col?.key ?? "_owner", type: "user_ref" } as const)
         : null;
   if (refField) {
     // ユーザー・部署は候補から選ぶ（表示名を打って黙って 0 件にならない・比べる値は id・2-A-P2-3）。
@@ -269,12 +279,104 @@ function ValueInput({
   );
 }
 
+/// 絞り込みの部品の文言（呼び出し側の画面の言葉で言う・付録 D の N3.3.1）。
+export type FilterTexts = {
+  /// ツールバーのボタンとポップオーバーの題。
+  title: string;
+  /// 題の横の補足。
+  subtitle: string;
+  /// 画面で編集できない条件があるときの文と、それを外すボタン。
+  advanced: string;
+  clearAdvanced: string;
+  /// 条件が無いとき。
+  empty: string;
+  /// 適用のボタン。
+  apply: string;
+};
+
+const DATA_FILTER_TEXTS: FilterTexts = {
+  title: "絞り込み",
+  subtitle: "すべての条件を満たす行",
+  advanced: "ビューに保存された詳細な条件が掛かっています",
+  clearAdvanced: "外す",
+  empty: "条件はありません。「条件を追加」で足せます。",
+  apply: "適用",
+};
+
+/// 比べる値を式で決める部品（ワークフローの「探す条件」の「入力や結果から選ぶ」・BUG-98）。
+export type FilterExprValue = {
+  /// 式を選ぶ欄（`value` は選んだ式・まだ選んでいなければ null）。
+  render: (p: {
+    label: string;
+    value: Record<string, unknown> | null;
+    onChange: (next: Record<string, unknown>) => void;
+  }) => React.ReactNode;
+};
+
+/// 比べる値の入れ方の切り替え（直接入力｜入力や結果から選ぶ・付録 D の N1.5.1）。
+///
+/// ARIA の radiogroup の作り: 選んでいる方だけが Tab で止まり（roving tabindex）、矢印キーで選び直す。
+function ValueModeToggle({
+  label,
+  expr,
+  onChange,
+}: {
+  label: string;
+  expr: boolean;
+  onChange: (expr: boolean) => void;
+}) {
+  const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
+  const choose = (on: boolean) => {
+    if (expr !== on) onChange(on);
+    refs.current[on ? 1 : 0]?.focus();
+  };
+  const item = (on: boolean, text: string) => (
+    <button
+      type="button"
+      role="radio"
+      ref={(el) => {
+        refs.current[on ? 1 : 0] = el;
+      }}
+      aria-checked={expr === on}
+      tabIndex={expr === on ? 0 : -1}
+      onClick={() => expr !== on && onChange(on)}
+      onKeyDown={(e) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+          e.preventDefault();
+          choose(!on);
+        }
+      }}
+      className={cn(
+        "rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:py-1.5",
+        expr === on ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {text}
+    </button>
+  );
+  return (
+    <div
+      role="radiogroup"
+      aria-label={`${label}の入れ方`}
+      className="mb-1 flex flex-wrap gap-0.5 whitespace-nowrap text-[11px]"
+      data-testid="filter-value-mode"
+    >
+      {item(false, "直接入力")}
+      {item(true, "入力や結果から選ぶ")}
+    </div>
+  );
+}
+
 export function FilterControl({
   columns,
   rows,
   onChange,
   advanced,
   onClearAdvanced,
+  texts,
+  exprValue,
+  usable,
+  columnError,
 }: {
   columns: ColumnModel[];
   rows: FilterRow[];
@@ -282,8 +384,21 @@ export function FilterControl({
   /// 保存ビューの条件が画面で編集できない形（OR・入れ子）のとき true。
   advanced: boolean;
   onClearAdvanced: () => void;
+  /// 文言（省略でデータの画面の言葉）。
+  texts?: Partial<FilterTexts>;
+  /// 比べる値を式でも決められるようにする（省略で直接入力だけ）。
+  exprValue?: FilterExprValue;
+  /// 列を比べ方に使えるかで、選べる列と比べ方をさらに絞る（ワークフローの探す条件は索引のある列と、部分一致で検索
+  /// できる列の「含む」「で終わる」だけ・BUG-244）。使える比べ方が 1 つも無い列は選ばせない。省略で絞り込める列すべて。
+  usable?: (c: ColumnModel, op: CondOp) => boolean;
+  /// 列を断った保存時の誤り（列の参照名 → 文言）。その列の条件の下に出す。
+  columnError?: (key: string) => string | null;
 }) {
-  const filterable = columns.filter(isFilterable);
+  const t = { ...DATA_FILTER_TEXTS, ...texts };
+  // 列に使える比べ方（`usable` で絞る）。
+  const opsOf = (c: ColumnModel | undefined): CondOp[] =>
+    c && usable ? opsFor(c).filter((op) => usable(c, op)) : opsFor(c);
+  const filterable = columns.filter((c) => isFilterable(c) && opsOf(c).length > 0);
   const [draft, setDraft] = React.useState<FilterRow[]>(rows);
   const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
@@ -292,15 +407,20 @@ export function FilterControl({
   const set = (i: number, patch: Partial<FilterRow>) =>
     setDraft((d) => d.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   // 型に合わない値（数値の列に文字・日付でない文字列）は送らない（A-9）。空の値の条件は適用時に捨てる。
+  // 「入力や結果から選ぶ」にして値を選んでいない条件は、黙って捨てずに選ぶよう促す。
   const errorOf = (r: FilterRow): string | null => {
-    if (!r.field || NO_VALUE_OPS.includes(r.op) || r.value.trim() === "") return null;
+    if (!r.field || NO_VALUE_OPS.includes(r.op)) return null;
+    if (r.expr !== undefined) return r.expr === null ? "値を選んでください" : null;
+    if (r.value.trim() === "") return null;
     const v = parseFilterValue(r.value, columns.find((c) => c.key === r.field), r.op);
     return v.ok ? null : v.error;
   };
   const hasError = draft.some((r) => errorOf(r) !== null);
   const apply = () => {
     if (hasError) return;
-    onChange(draft.filter((r) => r.field && (NO_VALUE_OPS.includes(r.op) || r.value.trim() !== "")));
+    onChange(
+      draft.filter((r) => r.field && (NO_VALUE_OPS.includes(r.op) || r.expr !== undefined || r.value.trim() !== "")),
+    );
     setOpen(false);
   };
   return (
@@ -308,41 +428,65 @@ export function FilterControl({
       <PopoverTrigger asChild>
         <ToolbarButton
           icon={Filter}
-          label="絞り込み"
+          label={t.title}
           count={rows.length + (advanced ? 1 : 0)}
           active={rows.length > 0 || advanced}
           data-testid="data-filter-button"
         />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(30rem,calc(100vw-1.5rem))] space-y-3">
+      {/* 条件が多いとき・狭い画面では、画面の端に付けず、はみ出す分は中で送る（適用のボタンが画面の外に出ない）。 */}
+      <PopoverContent
+        align="start"
+        collisionPadding={12}
+        className="max-h-[var(--radix-popover-content-available-height)] w-[min(30rem,calc(100vw-1.5rem))] space-y-3 overflow-y-auto"
+      >
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">絞り込み</h3>
-          <span className="text-[11px] text-muted-foreground">すべての条件を満たす行</span>
+          <h3 className="text-sm font-semibold">{t.title}</h3>
+          <span className="text-[11px] text-muted-foreground">{t.subtitle}</span>
         </div>
         {advanced ? (
           <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
-            ビューに保存された詳細な条件が掛かっています
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClearAdvanced}>
-              外す
+            {t.advanced}
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 text-xs" onClick={onClearAdvanced}>
+              {t.clearAdvanced}
             </Button>
           </div>
         ) : null}
         {draft.length === 0 ? (
-          <p className="text-xs text-muted-foreground">条件はありません。「条件を追加」で足せます。</p>
+          <p className="text-xs text-muted-foreground">{t.empty}</p>
         ) : (
           <ul className="space-y-2">
             {draft.map((r, i) => {
               const col = columns.find((c) => c.key === r.field);
-              const ops = opsFor(col);
+              // 使えない比べ方で保存した条件も、選んだ比べ方の名前のまま出す（空欄にしない）。
+              const allowed = opsOf(col);
+              const ops = allowed.includes(r.op) ? allowed : [...allowed, r.op];
               const err = errorOf(r);
+              const fieldErr = r.field ? (columnError?.(r.field) ?? null) : null;
               return (
-                <li key={i} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5 sm:grid-cols-[9rem_9rem_1fr_auto]">
+                <li
+                  key={i}
+                  className={cn(
+                    "grid grid-cols-[1fr_1fr_auto] items-center gap-1.5",
+                    // 値の入れ方を選べるときは、値の欄を列と比べ方の下に広く取る（狭い列に押し込まない）。
+                    exprValue ? "border-b pb-2 last:border-b-0 last:pb-0" : "sm:grid-cols-[9rem_9rem_1fr_auto]",
+                  )}
+                >
                   <FieldSelect
                     label={`条件 ${i + 1} の列`}
                     value={r.field}
                     columns={filterable}
-                    // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。
-                    onChange={(field) => set(i, { field, op: opsFor(columns.find((c) => c.key === field))[0], value: "" })}
+                    currentLabel={col?.label}
+                    // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。入れ方
+                    // （入力や結果から選ぶ）は残し、選んだ値だけを外す。
+                    onChange={(field) =>
+                      set(i, {
+                        field,
+                        op: opsOf(columns.find((c) => c.key === field))[0],
+                        value: "",
+                        expr: r.expr === undefined ? undefined : null,
+                      })
+                    }
                   />
                   <Select value={r.op} onValueChange={(op) => set(i, { op: op as CondOp })}>
                     <SelectTrigger aria-label={`条件 ${i + 1} の比べ方`} className="h-8 text-[13px]">
@@ -350,22 +494,44 @@ export function FilterControl({
                     </SelectTrigger>
                     <SelectContent>
                       {ops.map((o) => (
-                        <SelectItem key={o} value={o}>
+                        <SelectItem key={o} value={o} className={allowed.includes(o) ? undefined : "text-muted-foreground"}>
                           {opLabel(col, o)}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <div className="col-span-2 row-start-2 sm:col-span-1 sm:row-start-auto">
+                  <div
+                    className={cn(
+                      "col-span-2 row-start-2 min-w-0",
+                      !exprValue && "sm:col-span-1 sm:row-start-auto",
+                    )}
+                  >
                     {NO_VALUE_OPS.includes(r.op) ? null : (
-                      <ValueInput
-                        col={col}
-                        label={`条件 ${i + 1} の値`}
-                        value={r.value}
-                        invalid={err !== null}
-                        onChange={(value) => set(i, { value })}
-                        onEnter={apply}
-                      />
+                      <>
+                        {exprValue ? (
+                          <ValueModeToggle
+                            label={`条件 ${i + 1} の値`}
+                            expr={r.expr !== undefined}
+                            onChange={(on) => set(i, on ? { expr: null, value: "" } : { expr: undefined, value: "" })}
+                          />
+                        ) : null}
+                        {exprValue && r.expr !== undefined ? (
+                          exprValue.render({
+                            label: `条件 ${i + 1} の値`,
+                            value: r.expr,
+                            onChange: (expr) => set(i, { expr }),
+                          })
+                        ) : (
+                          <ValueInput
+                            col={col}
+                            label={`条件 ${i + 1} の値`}
+                            value={r.value}
+                            invalid={err !== null}
+                            onChange={(value) => set(i, { value })}
+                            onEnter={apply}
+                          />
+                        )}
+                      </>
                     )}
                     {err ? (
                       <p className="mt-1 text-[11px] text-destructive" role="alert">
@@ -382,6 +548,12 @@ export function FilterControl({
                   >
                     <X className="size-4" aria-hidden />
                   </Button>
+                  {/* 外すボタンの後に置く（グリッドの自動配置で、外すボタンが誤りの下の段へ回らない）。 */}
+                  {fieldErr ? (
+                    <p className="col-span-full text-[11px] text-destructive" data-testid="filter-column-error">
+                      {fieldErr}
+                    </p>
+                  ) : null}
                 </li>
               );
             })}
@@ -394,7 +566,7 @@ export function FilterControl({
             className="h-8 text-xs"
             disabled={filterable.length === 0}
             onClick={() =>
-              setDraft((d) => [...d, { field: filterable[0]?.key ?? "", op: opsFor(filterable[0])[0], value: "" }])
+              setDraft((d) => [...d, { field: filterable[0]?.key ?? "", op: opsOf(filterable[0])[0], value: "" }])
             }
           >
             <Plus className="size-3.5" aria-hidden />
@@ -415,7 +587,7 @@ export function FilterControl({
               </Button>
             ) : null}
             <Button size="sm" className="h-8 text-xs" onClick={apply} disabled={hasError} data-testid="data-filter-apply">
-              適用
+              {t.apply}
             </Button>
           </div>
         </div>
@@ -429,19 +601,28 @@ export function SortControl({
   sort,
   maxKeys,
   onChange,
+  usable,
+  columnError,
 }: {
   columns: ColumnModel[];
   sort: SortKey[];
   maxKeys: number;
   onChange: (sort: SortKey[]) => void;
+  /// 選べる列をさらに絞る（ワークフローの並べ替えは索引のある列だけ・BUG-244）。省略で並べ替えできる列すべて。
+  usable?: (c: ColumnModel) => boolean;
+  /// 列を断った保存時の誤り（列の参照名 → 文言）。その列の並べ替えの下に出す。
+  columnError?: (key: string) => string | null;
 }) {
-  const sortable = columns.filter(isSortable);
+  const sortable = columns.filter((c) => isSortable(c) && (usable?.(c) ?? true));
+  // 足せる列が残っていなければ「並べ替えを追加」を押せなくする（押しても何も起きないボタンにしない）。
+  const nextKey = sortable.find((c) => !sort.some((s) => s.field === c.key));
   return (
     <Popover>
       <PopoverTrigger asChild>
         <ToolbarButton icon={ArrowDownUp} label="並べ替え" count={sort.length} active={sort.length > 0} />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 space-y-3">
+      {/* 画面の端に付けない（探す条件と同じ）。 */}
+      <PopoverContent align="start" collisionPadding={12} className="w-80 space-y-3">
         <h3 className="text-sm font-semibold">並べ替え</h3>
         {sort.length === 0 ? (
           <p className="text-xs text-muted-foreground">
@@ -449,46 +630,56 @@ export function SortControl({
           </p>
         ) : (
           <ol className="space-y-2">
-            {sort.map((k, i) => (
-              <li key={`${k.field}:${i}`} className="flex items-center gap-1.5">
-                <span className="w-4 text-center text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
-                <FieldSelect
-                  label={`並べ替え ${i + 1} の列`}
-                  value={k.field}
-                  columns={sortable.filter((c) => c.key === k.field || !sort.some((s) => s.field === c.key))}
-                  onChange={(field) => onChange(sort.map((s, j) => (j === i ? { ...s, field } : s)))}
-                  className="flex-1"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 w-20 gap-1 px-2 text-xs"
-                  onClick={() => onChange(sort.map((s, j) => (j === i ? { ...s, descending: !s.descending } : s)))}
-                >
-                  {k.descending ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />}
-                  {k.descending ? "降順" : "昇順"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  aria-label={`並べ替え ${i + 1} を外す`}
-                  onClick={() => onChange(sort.filter((_, j) => j !== i))}
-                >
-                  <X className="size-4" aria-hidden />
-                </Button>
-              </li>
-            ))}
+            {sort.map((k, i) => {
+              const fieldErr = columnError?.(k.field) ?? null;
+              return (
+                <li key={`${k.field}:${i}`} className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-4 text-center text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
+                    <FieldSelect
+                      label={`並べ替え ${i + 1} の列`}
+                      value={k.field}
+                      columns={sortable.filter((c) => c.key === k.field || !sort.some((s) => s.field === c.key))}
+                      currentLabel={columns.find((c) => c.key === k.field)?.label}
+                      onChange={(field) => onChange(sort.map((s, j) => (j === i ? { ...s, field } : s)))}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-20 gap-1 px-2 text-xs"
+                      onClick={() => onChange(sort.map((s, j) => (j === i ? { ...s, descending: !s.descending } : s)))}
+                    >
+                      {k.descending ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />}
+                      {k.descending ? "降順" : "昇順"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      aria-label={`並べ替え ${i + 1} を外す`}
+                      onClick={() => onChange(sort.filter((_, j) => j !== i))}
+                    >
+                      <X className="size-4" aria-hidden />
+                    </Button>
+                  </div>
+                  {fieldErr ? (
+                    <p className="pl-5 text-[11px] text-destructive" data-testid="sort-column-error">
+                      {fieldErr}
+                    </p>
+                  ) : null}
+                </li>
+              );
+            })}
           </ol>
         )}
         <Button
           variant="ghost"
           size="sm"
           className="h-8 text-xs"
-          disabled={sort.length >= maxKeys}
+          disabled={sort.length >= maxKeys || !nextKey}
           onClick={() => {
-            const next = sortable.find((c) => !sort.some((s) => s.field === c.key));
-            if (next) onChange([...sort, { field: next.key, descending: false }]);
+            if (nextKey) onChange([...sort, { field: nextKey.key, descending: false }]);
           }}
         >
           <Plus className="size-3.5" aria-hidden />

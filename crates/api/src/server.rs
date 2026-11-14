@@ -175,6 +175,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/nodes", &["GET"], Session, || {
             get(routes::folders::list_children)
         }),
+        r("/nodes/by-name", &["GET"], Session, || {
+            get(routes::folders::find_child_by_name)
+        }),
         r("/nodes/{id}/breadcrumb", &["GET"], Session, || {
             get(routes::folders::breadcrumb)
         }),
@@ -270,6 +273,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || post(routes::ui_actions::invoke_chat_ui_action),
         ),
+        r(
+            "/threads/{thread_id}/ui-runs/{run_id}",
+            &["GET"],
+            Session,
+            || get(routes::ui_actions::get_chat_ui_run),
+        ),
         // --- skill（Task 6.7・保存時検証つき。共有は /artifacts/{id}/shares を流用） ---
         r("/skills/catalog", &["GET"], Session, || {
             get(routes::skills_catalog::list_skill_catalog)
@@ -306,14 +315,42 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}", &["PUT"], Session, || {
             put(routes::mini_apps::update_mini_app)
         }),
+        // 束ねるワークフローの入力の手がかり（画面のエディタの部品の候補と突き合わせ・GAP-12）。
+        r("/mini-apps/workflow-inputs", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_workflow_inputs)
+        }),
+        // 保存の前の、画面の入力と入力項目の突き合わせ（「書く」タブ・保存と同じ関数・BUG-221）。
+        r("/mini-apps/input-check", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_input_check)
+        }),
+        // 束ねる部品の新しいバージョンと、上げると変わるところ（画面のエディタの版を上げる操作・GAP-11）。
+        r("/mini-apps/pin-updates", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_pin_updates)
+        }),
         r("/mini-apps/{id}/resolved", &["GET"], Session, || {
             get(routes::mini_apps::resolve_mini_app)
+        }),
+        r("/mini-apps/{id}/publish", &["POST"], Session, || {
+            post(routes::mini_apps::publish_mini_app)
+        }),
+        r("/mini-apps/{id}/publish-preview", &["GET"], Session, || {
+            get(routes::mini_apps::preview_mini_app_publish)
         }),
         r("/mini-apps/{id}/ui-actions", &["POST"], Session, || {
             post(routes::mini_apps::invoke_mini_app_action)
         }),
         r("/mini-apps/{id}/runs", &["GET"], Session, || {
             get(routes::mini_apps::list_mini_app_runs)
+        }),
+        r("/mini-apps/{id}/runs/{run_id}", &["GET"], Session, || {
+            get(routes::mini_apps::get_mini_app_run)
+        }),
+        // 使う人の権限の確かめ（GAP-37・作る人は相手ごと、使う人は自分）。
+        r("/mini-apps/{id}/access-check", &["POST"], Session, || {
+            post(routes::access_check::check_mini_app_access)
+        }),
+        r("/mini-apps/{id}/access", &["GET"], Session, || {
+            get(routes::access_check::my_mini_app_access)
         }),
         r(
             "/threads/{thread_id}/messages/{message_id}/save-as-app",
@@ -328,6 +365,18 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/validate", &["POST"], Session, || {
             post(routes::workflows::validate_workflow)
         }),
+        // スケジュールの次の実行の見通し（発火と同じ読み方・BUG-95）。
+        r("/workflows/schedule-preview", &["POST"], Session, || {
+            post(routes::workflows::preview_schedule)
+        }),
+        // AI エージェントの設定の天井（読んでよいサイト・手順の上限・BUG-6）。
+        r("/workflows/agent-settings", &["GET"], Session, || {
+            get(routes::workflows::get_agent_settings)
+        }),
+        // 試運転の下見（会話の AI の試運転の承認カード・id だけを受ける・D-197）。
+        r("/workflows/try-preview", &["GET"], Session, || {
+            get(routes::workflows::try_preview)
+        }),
         r("/workflows/{id}", &["GET", "PUT"], Session, || {
             get(routes::workflows::get_workflow).put(routes::workflows::update_workflow)
         }),
@@ -337,6 +386,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || get(routes::workflows::get_workflow_version),
         ),
+        // 使う人の権限の確かめ（GAP-37・手動の実行で要る権限を共有の相手ごとに）。
+        r("/workflows/{id}/access-check", &["POST"], Session, || {
+            post(routes::access_check::check_workflow_access)
+        }),
+        r("/workflows/{id}/access", &["GET"], Session, || {
+            get(routes::access_check::my_workflow_access)
+        }),
         // 対話トリガの run 起動＋実行履歴（Stage A W3）。
         r("/workflows/{id}/registration", &["GET"], Session, || {
             get(routes::workflows::get_registration)
@@ -517,6 +573,13 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/files/{id}/restore", &["POST"], SessionLongRunning, || {
             post(routes::files::restore_file)
         }),
+        // ゴミ箱の完全削除（GAP-108b）。大きなフォルダは行・本体・タプルの片付けに数秒以上かかる。
+        r("/trash/empty", &["POST"], SessionLongRunning, || {
+            post(routes::folders::empty_trash)
+        }),
+        r("/trash/{id}", &["DELETE"], SessionLongRunning, || {
+            delete(routes::folders::purge_trash_item)
+        }),
         r("/files/{id}/versions", &["GET"], SessionLongRunning, || {
             get(routes::file_versions::list_versions)
         }),
@@ -581,15 +644,25 @@ pub fn route_table() -> Vec<RouteDecl> {
             Provisioner,
             || put(routes::admin::set_tenant_audit_retention),
         ),
+        // ゴミ箱の保持期間（既定は無効・日数を過ぎたものを自動で完全に削除する・GAP-108c・D-202）。
+        r(
+            "/admin/tenants/{tenant_id}/trash-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_trash_retention),
+        ),
     ];
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());
     table.extend(routes::tabular::tabular_route_decls());
+    table.extend(routes::file_text::file_text_route_decls());
+    table.extend(routes::search_ingest::search_ingest_route_decls());
     table.extend(routes::data::data_route_decls());
     table.extend(routes::data_views::data_view_route_decls());
     table.extend(routes::data_indexes::data_index_route_decls());
     table.extend(routes::data_imports::data_import_route_decls());
     table.extend(routes::data_fsm::data_fsm_route_decls());
+    table.extend(routes::approvals::approval_route_decls());
     table.extend(routes::app_platform::app_platform_route_decls());
     table.extend(routes::app_install::app_install_route_decls());
     table.extend(routes::app_install::trusted_key_route_decls());

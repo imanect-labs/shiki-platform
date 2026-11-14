@@ -1,0 +1,120 @@
+{
+ "task": "app06-stock-move",
+ "variant": "null",
+ "case": "enough",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-5f3c10-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "3a2d5312-7bab-4f74-8b6d-6f2107de204a",
+    "status": "succeeded",
+    "input": {
+     "code": "P-100",
+     "qty": 15
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-09T08:00:54.812897+00:00"
+   }
+  ],
+  "rows": {
+   "stock": [
+    {
+     "id": "f7d6d6af-6744-4a2f-ba1e-19d2d4208f8c",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "e876bac4-2ff6-4c2b-963e-f3693923065e",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "rows_before": {
+   "stock": [
+    {
+     "id": "f7d6d6af-6744-4a2f-ba1e-19d2d4208f8c",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "e876bac4-2ff6-4c2b-963e-f3693923065e",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-09T08:00:50.495030+00:00"
+ }
+}

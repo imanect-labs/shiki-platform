@@ -677,7 +677,7 @@
 - **タイミング**: Phase 4・5 の後ならいつでも（依存は web_fetch の取得関門・サンドボックスの gVisor ティア・承認ゲート）。
   設計の決定事項は browser.md §12（2026-11・human 承認済み）。
 - **状況**: PoC（2026-11）まで。評価サイトで成功率 24/24、所要時間・トークン・CPU はテキストエンジン単独並み（browser.md §10）。
-- ⚠️ 落とし穴: [PIT-79〜83](../design-caveats.md)（持ち出し経路の拡大・cookie の受け渡し・リダイレクトと Chromium の通信経路・Chromium の隔離・JS 必須の判定）。
+- ⚠️ 落とし穴: [PIT-87〜91](../design-caveats.md)（持ち出し経路の拡大・cookie の受け渡し・リダイレクトと Chromium の通信経路・Chromium の隔離・JS 必須の判定）。
 
 ### タスク一覧
 
@@ -705,22 +705,22 @@
 - **area**: agent / **path**: `crates/browser/`
 - **仕様**: browser.md §8。取得は `tools/public_fetch`、文字コードは web_fetch の `decode` を共有。
 - **受け入れ条件**:
-  - [ ] リダイレクトの 1 回ごとに検証し直す（私的アドレス・リンクローカルへのリダイレクトを拒否・PIT-81）
+  - [ ] リダイレクトの 1 回ごとに検証し直す（私的アドレス・リンクローカルへのリダイレクトを拒否・PIT-89）
   - [ ] 巨大 DOM で他の run を止めない（`spawn_blocking`・要素数上限）
 
 ### Task AB.3: `browser` ツール（読む操作）
 - **area**: agent / chat / **path**: `crates/agent-core/src/tools/`, `crates/chat/`
 - **仕様**: browser.md §6。語彙追加・`is_egress`・`READ_ONLY`・`RESEARCH_TOOLS`・同一ホストの直列化。
 - **受け入れ条件**:
-  - [ ] 出所に無い URL の `navigate`・別オリジン宛ての GET フォームを `browser` が拒否し、承認なしに通信しない（PIT-79）
+  - [ ] 出所に無い URL の `navigate`・別オリジン宛ての GET フォームを `browser` が拒否し、承認なしに通信しない（PIT-87）
   - [ ] スナップショットが `<web_page>` 封筒に包まれ、ページ由来の値が封筒の外に出ない（PIT-56）
 
 ### Task AB.4: Chromium エンジン
 - **area**: sandbox / **path**: 専用のブラウザランナー（browser.md §12-4。egress は `sandbox_orchestrator::backend::egress` を再利用）
 - **仕様**: browser.md §7。1 run 1 プロセス・gVisor・egress プロキシ 1 か所・資源上限。
 - **受け入れ条件**:
-  - [ ] Chromium からの直接接続（WebRTC・リテラル IP）が通らない（PIT-81）
-  - [ ] プロセスを run 間で共有しない・上限超過が他の run に波及しない（PIT-82）
+  - [ ] Chromium からの直接接続（WebRTC・リテラル IP）が通らない（PIT-89）
+  - [ ] プロセスを run 間で共有しない・上限超過が他の run に波及しない（PIT-90）
 
 ### Task AB.5: ハイブリッド切替
 - **area**: agent / **path**: `crates/browser/`
@@ -728,13 +728,13 @@
 - **受け入れ条件**:
   - [ ] ログイン後に JS が要るページへ切り替えて操作を続けられる
   - [ ] host-only・Secure・HttpOnly の属性が切替で失われない／往復で別ホストの cookie が消えずログアウトが復活しない／
-        D のクロスサイト送信に Strict の cookie が付かない／切替と `back` で主文書の要求が 2 回届かない（PIT-80）
+        D のクロスサイト送信に Strict の cookie が付かない／切替と `back` で主文書の要求が 2 回届かない（PIT-88）
 
 ### Task AB.6: `browser_act`
 - **area**: agent / frontend
 - **仕様**: browser.md §6.1。承認ダイアログに宛先ホストと送る値（パスワードは伏せる）。
 - **受け入れ条件**:
-  - [ ] Auto モードでも POST 送信・JS ボタンは承認なしに通信しない（PIT-79）
+  - [ ] Auto モードでも POST 送信・JS ボタンは承認なしに通信しない（PIT-87）
 
 ### Task AB.7: 評価セット
 - **area**: agent / **path**: `eval/agent-browser/`

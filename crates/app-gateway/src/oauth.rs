@@ -4,14 +4,27 @@
 //! - **B1 = public client**（authcode+PKCE 強制・secret なし・短命トークン）。
 //! - **B2 = confidential client**（secret はサーバ側 secrets 保管・service account＋standard
 //!   token-exchange 有効。ユーザー操作は token-exchange でユーザー代理を維持＝単独昇格しない）。
+//! - **交換の相手（BUG-182）**: Keycloak 26.2 の標準のトークンの交換は、交換を頼むクライアント（B2）が元のトークンの
+//!   `aud` に入っていることを求める（自分に発行されたトークンを除く）。B2 を持つアプリの B1 のクライアントには、
+//!   同じアプリの B2 の client_id を `aud` に足すマッパーを付ける（[`client_representation`] の `exchanger`）。別の
+//!   アプリの B2 は `aud` に入らないので、そのアプリの利用者のトークンを交換できない。
 //!
 //! クライアント表現（登録 body）の組み立ては純粋関数（[`client_representation`]）に切り出し
 //! 単体検証する。実登録は Keycloak admin REST（provisioner service account）で行い IT で確認する。
+//!
+//! **登録の形はサーバーが持つ（BUG-172）。** 既にあるクライアント（再インストール・前の版で登録したもの）は、
+//! [`OAuthClient::register`] と [`OAuthClient::repair`] が今の形に揃える: 有効に戻し、戻り先・属性・マッパーを
+//! PUT で書き直し（Keycloak は protocolMappers を名前で突き合わせ、足し・直し・消す）、既定と任意のスコープを
+//! 今の集合にする（スコープは PUT では変わらないので、クライアントのスコープの下位の資源で足し引きする）。
+//! アプリのクライアントに管理者が手で足したマッパーやスコープは、揃えるときに消える。
 
 use authz::CapabilityScope;
 use serde::Deserialize;
 
 use crate::GatewayError;
+
+#[path = "oauth_delete.rs"]
+mod delete;
 
 /// 登録するクライアントの種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +47,19 @@ pub struct RegisteredClient {
     pub client_id: String,
     /// confidential のみ Some（サーバ側 secrets 保管・ゲストへは渡さない）。
     pub client_secret: Option<String>,
+    /// confidential のサービスアカウントの利用者の id（client_credentials のトークンの `sub`・BUG-183）。
+    /// ゲートウェイがアプリの主体のトークンを見分ける（`app_installation.b2_service_sub`）。public は None。
+    pub service_account_sub: Option<String>,
+}
+
+/// 揃えたクライアント（[`OAuthClient::repair`]）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairedClient {
+    /// confidential のサービスアカウントの利用者の id（[`RegisteredClient::service_account_sub`]）。public・
+    /// 無効のまま残した confidential は None。
+    pub service_account_sub: Option<String>,
+    /// Keycloak で無効にされていた confidential（B2）を、有効に戻さず、形も揃えずに残した（BUG-201・D-137）。
+    pub disabled: bool,
 }
 
 /// Keycloak admin REST 越しにクライアントを登録する OAuth 配線。
@@ -46,6 +72,11 @@ pub struct OAuthClient {
     token_endpoint: String,
     provisioner_id: String,
     provisioner_secret: String,
+    /// 能力スコープを realm に用意し終えたか（起動時の照合は、クライアントごとに作り直しを試さない）。
+    scopes_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience（デプロイ設定 `gateway.audience`・既定
+    /// [`DEFAULT_GATEWAY_AUDIENCE`]）。ゲートウェイが確かめる値と同じものを渡す（BUG-206）。
+    audience: String,
 }
 
 impl OAuthClient {
@@ -62,7 +93,25 @@ impl OAuthClient {
             token_endpoint,
             provisioner_id,
             provisioner_secret,
+            scopes_ready: std::sync::Arc::default(),
+            audience: DEFAULT_GATEWAY_AUDIENCE.to_string(),
         }
+    }
+
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience を決める（デプロイ設定 `gateway.audience`・BUG-206）。
+    ///
+    /// ゲートウェイが確かめる値（[`crate::GatewayTokenConfig::audience`]）と同じ値を渡す。値を変えると登録の形の指紋
+    /// （[`client_spec_fingerprint`]）が変わり、次の起動の照合がすべての有効なインストールのクライアントを揃え直す。
+    #[must_use]
+    pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
+        self.audience = audience.into();
+        self
+    }
+
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience。
+    #[must_use]
+    pub fn audience(&self) -> &str {
+        &self.audience
     }
 
     /// service account の access token（client_credentials）。
@@ -95,21 +144,34 @@ impl OAuthClient {
         Ok(tok.access_token)
     }
 
-    /// ミニアプリ用クライアントを登録する（冪等: 同一 client_id は 409 を許容し既存を返す）。
+    /// ミニアプリ用クライアントを登録する（冪等: 同じ client_id が既にあれば、有効に戻して今の形に揃える）。
     ///
-    /// confidential は登録後に生成 secret を取得して返す（サーバ側で secrets 保管する前提）。
+    /// アンインストールはクライアントを無効にする（[`Self::set_enabled`]）。再インストールは同じ client_id を
+    /// 登録し直すので、ここで有効に戻す（これまでは 409 を成功として扱い、無効のまま残っていた・BUG-172）。
+    /// 無効になっている confidential（B2）は、secret を作り直してから有効に戻す（管理者が漏れた secret を止めるために
+    /// 無効にしたのなら、持ち主の入れ直しや版の更新で同じ secret のまま戻さない・BUG-201・D-137。secret はサーバーだけが
+    /// 持つので、作り直しても困る人はいない）。confidential は登録後に今の secret を取得して返す（サーバ側で secrets
+    /// 保管する前提）。`exchanger` は [`client_representation`] のとおり（B1 の利用者のトークンを交換する同じアプリの B2）。
     pub async fn register(
         &self,
         kind: ClientKind,
         client_id: &str,
         app_name: &str,
         redirect_uris: &[String],
+        exchanger: Option<&str>,
     ) -> Result<RegisteredClient, GatewayError> {
         let token = self.admin_token().await?;
         // 能力スコープの realm client-scope を冪等作成する（optionalClientScopes 名前解決の前提）。
         // realm JSON のビルトインを汚さないため動的に用意する（Task 9.11/9.12）。
         self.ensure_capability_scopes(&token).await?;
-        let body = client_representation(kind, client_id, app_name, redirect_uris);
+        let body = client_representation(
+            kind,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+            &self.audience,
+        );
         let resp = self
             .http
             .post(format!("{}/clients", self.admin_base))
@@ -119,19 +181,244 @@ impl OAuthClient {
             .await
             .map_err(|e| GatewayError::Upstream(format!("client 登録: {e}")))?;
         let status = resp.status();
-        // 201=新規, 409=既存（冪等）。それ以外は上流エラー。
-        if !status.is_success() && status.as_u16() != 409 {
+        // 201=新規, 409=既存（再インストール・前の版で登録したもの）。それ以外は上流エラー。
+        if status.as_u16() == 409 {
+            let found = self.find_client(&token, client_id).await?;
+            if !kind.is_public() && !found.enabled {
+                // 有効に戻す前に secret を作り直す（無効のあいだに漏れた secret でアプリの主体を取り戻させない）。
+                self.regenerate_secret(&token, &found.id).await?;
+            }
+            self.update_client(&token, &found.id, &body).await?;
+        } else if !status.is_success() {
             return Err(GatewayError::Upstream(format!("client 登録応答: {status}")));
         }
-        let client_secret = if kind.is_public() {
-            None
+        let (client_secret, service_account_sub) = if kind.is_public() {
+            (None, None)
         } else {
-            Some(self.fetch_secret(&token, client_id).await?)
+            let internal_id = self.find_internal_id(&token, client_id).await?;
+            (
+                Some(self.fetch_secret(&token, &internal_id).await?),
+                Some(self.service_account_sub(&token, &internal_id).await?),
+            )
         };
         Ok(RegisteredClient {
             client_id: client_id.to_string(),
             client_secret,
+            service_account_sub,
         })
+    }
+
+    /// 既にあるクライアントを今の登録の形に揃える（前の版で登録したクライアントを直す・起動時の照合）。
+    ///
+    /// 有効なインストールのクライアントに使うので、public（B1）は有効に戻す。confidential（B2）が Keycloak で
+    /// 無効にされていたら、有効に戻さず、形も揃えずに `disabled` を返す（管理者が漏れた secret を止めるために無効に
+    /// したのなら、同じ secret のまま戻さない・BUG-201・D-137。有効に戻すのは再インストールか、管理者が Keycloak で
+    /// 戻したとき）。クライアントが無ければ作らずに `Ok(None)` を返す（confidential の secret を保管し直す経路が
+    /// ここに無いため。作り直しは再インストールが行う）。secret は取得しない・作り直さない。confidential は
+    /// サービスアカウントの利用者の id を返す（BUG-183）。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す
+    /// （多くのクライアントを続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。`exchanger` は
+    /// [`Self::register`] と同じ。
+    pub async fn repair(
+        &self,
+        kind: ClientKind,
+        client_id: &str,
+        app_name: &str,
+        redirect_uris: &[String],
+        exchanger: Option<&str>,
+    ) -> Result<Option<RepairedClient>, GatewayError> {
+        let token = self.admin_token().await?;
+        if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
+            self.ensure_capability_scopes(&token).await?;
+            self.scopes_ready
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let found = match self.find_client(&token, client_id).await {
+            Ok(found) => found,
+            Err(GatewayError::NotFound) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if !kind.is_public() && !found.enabled {
+            return Ok(Some(RepairedClient {
+                service_account_sub: None,
+                disabled: true,
+            }));
+        }
+        let internal_id = found.id;
+        let body = client_representation(
+            kind,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+            &self.audience,
+        );
+        self.update_client(&token, &internal_id, &body).await?;
+        let service_account_sub = if kind.is_public() {
+            None
+        } else {
+            Some(self.service_account_sub(&token, &internal_id).await?)
+        };
+        Ok(Some(RepairedClient {
+            service_account_sub,
+            disabled: false,
+        }))
+    }
+
+    /// Keycloak に無くなった公開のクライアント（B1・PKCE）を、今の形で作り直す（起動時の照合・GAP-70）。
+    ///
+    /// secret を持つクライアント（B2）は作り直さない。管理者が漏れた secret を無効にするために消したのなら、同じ
+    /// secret で作り直すとアプリの主体が戻ってしまう（入れ直せば新しい secret で作る）。照合と重なって既にあれば、
+    /// 今の形に揃える。
+    pub async fn recreate_public(
+        &self,
+        client_id: &str,
+        app_name: &str,
+        redirect_uris: &[String],
+        exchanger: Option<&str>,
+    ) -> Result<(), GatewayError> {
+        let body = client_representation(
+            ClientKind::PublicPkce,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+            &self.audience,
+        );
+        let token = self.admin_token().await?;
+        if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
+            self.ensure_capability_scopes(&token).await?;
+            self.scopes_ready
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        let resp = self
+            .http
+            .post(format!("{}/clients", self.admin_base))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("client 作り直し: {e}")))?;
+        let status = resp.status();
+        if status.as_u16() == 409 {
+            let internal_id = self.find_internal_id(&token, client_id).await?;
+            self.update_client(&token, &internal_id, &body).await?;
+        } else if !status.is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "client 作り直し応答: {status}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 既にあるクライアントを `body`（[`client_representation`]）の形に書き直す（有効・戻り先・属性・マッパー・
+    /// スコープ）。
+    async fn update_client(
+        &self,
+        token: &str,
+        internal_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), GatewayError> {
+        // スコープは PUT では変わらない（Keycloak は表現の defaultClientScopes を読まない）ので、外して送り、
+        // 下位の資源で足し引きする。protocolMappers は名前で突き合わされ、足し・直し・消しが行われる。
+        let mut put = body.clone();
+        if let Some(obj) = put.as_object_mut() {
+            obj.remove("defaultClientScopes");
+            obj.remove("optionalClientScopes");
+        }
+        let resp = self
+            .http
+            .put(format!("{}/clients/{internal_id}", self.admin_base))
+            .bearer_auth(token)
+            .json(&put)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("client 更新: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "client 更新応答: {}",
+                resp.status()
+            )));
+        }
+        let realm_scopes = self.realm_scope_ids(token).await?;
+        for (kind, field) in [
+            ("default-client-scopes", "defaultClientScopes"),
+            ("optional-client-scopes", "optionalClientScopes"),
+        ] {
+            let want: Vec<&str> = body
+                .get(field)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            self.sync_client_scopes(token, internal_id, kind, &want, &realm_scopes)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// realm の client-scope の名前 → id。
+    async fn realm_scope_ids(
+        &self,
+        token: &str,
+    ) -> Result<std::collections::HashMap<String, String>, GatewayError> {
+        let list: Vec<KcScope> = self
+            .http
+            .get(format!("{}/client-scopes", self.admin_base))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("client-scope 一覧: {e}")))?
+            .json()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("client-scope 一覧 parse: {e}")))?;
+        Ok(list.into_iter().map(|s| (s.name, s.id)).collect())
+    }
+
+    /// クライアントの既定（`default-client-scopes`）か任意（`optional-client-scopes`）のスコープを `want` の
+    /// 集合にする（足りないものを足し、余分なものを外す）。realm に無いスコープは足せないので warn に残す。
+    async fn sync_client_scopes(
+        &self,
+        token: &str,
+        internal_id: &str,
+        kind: &str,
+        want: &[&str],
+        realm_scopes: &std::collections::HashMap<String, String>,
+    ) -> Result<(), GatewayError> {
+        let base = format!("{}/clients/{internal_id}/{kind}", self.admin_base);
+        let have: Vec<KcScope> = self
+            .http
+            .get(&base)
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("{kind} 取得: {e}")))?
+            .json()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("{kind} parse: {e}")))?;
+        let mut changes = Vec::new();
+        for scope in have.iter().filter(|s| !want.contains(&s.name.as_str())) {
+            changes.push(self.http.delete(format!("{base}/{}", scope.id)));
+        }
+        for name in want.iter().filter(|n| !have.iter().any(|s| s.name == **n)) {
+            if let Some(id) = realm_scopes.get(*name) {
+                changes.push(self.http.put(format!("{base}/{id}")));
+            } else {
+                tracing::warn!(scope = name, kind, "realm にスコープが無いため足せません");
+            }
+        }
+        for change in changes {
+            let resp = change
+                .bearer_auth(token)
+                .send()
+                .await
+                .map_err(|e| GatewayError::Upstream(format!("{kind} 更新: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(GatewayError::Upstream(format!(
+                    "{kind} 更新応答: {}",
+                    resp.status()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// 能力スコープを realm の client-scope として冪等作成する（既存 409 は許容）。
@@ -191,6 +478,11 @@ impl OAuthClient {
 
     /// client_id → Keycloak 内部 uuid。
     async fn find_internal_id(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
+        self.find_client(token, client_id).await.map(|c| c.id)
+    }
+
+    /// client_id → Keycloak のクライアント（内部 uuid と、有効か）。無ければ [`GatewayError::NotFound`]。
+    async fn find_client(&self, token: &str, client_id: &str) -> Result<KcClient, GatewayError> {
         let list: Vec<KcClient> = self
             .http
             .get(format!("{}/clients", self.admin_base))
@@ -202,15 +494,68 @@ impl OAuthClient {
             .json()
             .await
             .map_err(|e| GatewayError::Upstream(format!("client 検索 parse: {e}")))?;
-        list.into_iter()
-            .next()
-            .map(|c| c.id)
-            .ok_or(GatewayError::NotFound)
+        list.into_iter().next().ok_or(GatewayError::NotFound)
     }
 
-    /// confidential client の生成 secret を取得する（内部 uuid を引いてから secret を GET）。
-    async fn fetch_secret(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
-        let internal_id = self.find_internal_id(token, client_id).await?;
+    /// confidential client のサービスアカウントの利用者の id（client_credentials のトークンの `sub`・BUG-183）。
+    ///
+    /// クライアントを管理できる provisioner の権限（manage-clients）で読める（権限は足さない）。
+    async fn service_account_sub(
+        &self,
+        token: &str,
+        internal_id: &str,
+    ) -> Result<String, GatewayError> {
+        #[derive(Deserialize)]
+        struct User {
+            id: String,
+        }
+        let resp = self
+            .http
+            .get(format!(
+                "{}/clients/{internal_id}/service-account-user",
+                self.admin_base
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("service account 取得: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "service account 応答: {}",
+                resp.status()
+            )));
+        }
+        let user: User = resp
+            .json()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("service account parse: {e}")))?;
+        Ok(user.id)
+    }
+
+    /// confidential client の secret を作り直す（前の secret ではトークンを取れなくなる）。新しい secret は
+    /// [`Self::fetch_secret`] で読む。
+    async fn regenerate_secret(&self, token: &str, internal_id: &str) -> Result<(), GatewayError> {
+        let resp = self
+            .http
+            .post(format!(
+                "{}/clients/{internal_id}/client-secret",
+                self.admin_base
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("secret 作り直し: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "secret 作り直し応答: {}",
+                resp.status()
+            )));
+        }
+        Ok(())
+    }
+
+    /// confidential client の生成 secret を取得する（内部 uuid の secret を GET）。
+    async fn fetch_secret(&self, token: &str, internal_id: &str) -> Result<String, GatewayError> {
         #[derive(Deserialize)]
         struct Secret {
             value: String,
@@ -235,6 +580,69 @@ impl OAuthClient {
 #[derive(Deserialize)]
 struct KcClient {
     id: String,
+    /// 有効か（表現に無ければ有効として読む・Keycloak の既定）。
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+struct KcScope {
+    id: String,
+    name: String,
+}
+
+/// アプリのクライアントの既定のスコープ（realm の client-scope の名前）。
+///
+/// `basic` はトークンに `sub`（呼び出す人）を載せる（Keycloak 25 以降）。ゲートウェイは `sub` の無いトークンを
+/// 401 で断る。表現に `optionalClientScopes` を書くと Keycloak は realm の既定のスコープを付けないので、明示する
+/// （BUG-172）。名前・メールアドレス（`profile`・`email`）と realm のロール（`roles`）は、アプリに渡すトークンに
+/// 載せない（B1 ではトークンがアプリのコードに渡る。ゲートウェイはどれも読まない）。B2 には、サービスアカウントを
+/// 有効にすると Keycloak が自分で付ける `service_account` も残す（揃えるたびに外して付け直されないように）。
+pub fn default_client_scopes(kind: ClientKind) -> &'static [&'static str] {
+    match kind {
+        ClientKind::PublicPkce => &["basic"],
+        ClientKind::Confidential => &["basic", "service_account"],
+    }
+}
+
+/// トークンに載せるクレームのマッパー（ログインのクライアント shiki-web と同じ写し方）。
+///
+/// - `tenant`: 利用者の属性 `tenant`（multi テナントでゲートウェイがテナントを決める）。値は Keycloak の利用者に
+///   束縛されていて、アプリは選べない。別のテナントの人がこのクライアントでトークンを得ても、そのテナントには
+///   このアプリのインストールが無いので、ゲートウェイが断る（インストールはテナントの中で引く）。
+///
+/// アクセストークンにだけ載せる（ID トークン・userinfo には載せない）。所属グループ（`groups`）とロール（`roles`）は
+/// 載せない。B1 ではトークンがアプリのコードに渡るので、載せると身元を読む能力（identity.read）を同意していない
+/// アプリにも所属の部署が見える。ゲートウェイは組織をインストールから決め、OpenFGA の organization#member で確かめる
+/// （D-130）。ロールは ReBAC のものを読み、identity.read の同意で渡す。前の版で付けた `groups` のマッパーは、
+/// 登録の形の指紋が変わるので、起動時の照合が外す（[`OAuthClient::repair`]・PUT はマッパーを名前で突き合わせる）。
+fn identity_mappers() -> [serde_json::Value; 1] {
+    let only_access_token = |extra: serde_json::Value| {
+        let mut config = serde_json::json!({
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+        });
+        if let (Some(c), Some(e)) = (config.as_object_mut(), extra.as_object()) {
+            c.extend(e.clone());
+        }
+        config
+    };
+    [serde_json::json!({
+        "name": "tenant",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-attribute-mapper",
+        "config": only_access_token(serde_json::json!({
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "multivalued": "false",
+        })),
+    })]
 }
 
 /// Keycloak client 登録 body を組み立てる（純粋関数・単体検証対象）。
@@ -242,11 +650,22 @@ struct KcClient {
 /// B1: `publicClient=true` ＋ PKCE S256 強制 ＋ 短命 access token（5min）。
 /// B2: `publicClient=false` ＋ `serviceAccountsEnabled=true` ＋ standard token-exchange 有効
 ///     （`standard.token.exchange.enabled=true`・RFC 8693／Keycloak 26.2）。
+/// どちらも既定のスコープ（[`default_client_scopes`]）と、[`identity_mappers`] のマッパーを付ける。
+///
+/// `exchanger` は、B1 のクライアントで取った利用者のトークンを交換してよい B2 の client_id（同じアプリの
+/// サーバーの関数・BUG-182）。B1 のアクセストークンの `aud` に足す。Keycloak 26.2 の標準の交換は、交換を頼む
+/// クライアントが元のトークンの `aud` に無いと 403「Client is not within the token audience」で断る。B2 を持たない
+/// アプリと B2 自身は `None`（B2 では使わない）。
+///
+/// `audience` はゲートウェイが確かめるトークンの `aud`（デプロイ設定 `gateway.audience`・[`OAuthClient::audience`]・
+/// BUG-206）。
 pub fn client_representation(
     kind: ClientKind,
     client_id: &str,
     app_name: &str,
     redirect_uris: &[String],
+    exchanger: Option<&str>,
+    audience: &str,
 ) -> serde_json::Value {
     let public = kind.is_public();
     let mut attributes = serde_json::Map::new();
@@ -271,6 +690,31 @@ pub fn client_representation(
     // アプリは authorize の `scope=` で必要分だけ要求し、ゲートウェイが granted ∩ token を
     // 強制する（realm 側の clientScopes 定義は deploy/keycloak/shiki-realm.json）。
     let capability_scopes: Vec<&str> = CapabilityScope::ALL.iter().map(|s| s.as_str()).collect();
+    // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の aud 検証を満たす）。
+    // これが無いとトークンが aud 不一致で弾かれる。
+    let mut mappers = vec![serde_json::json!({
+        "name": "shiki-gateway-audience",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "config": {
+            "included.custom.audience": audience,
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+        }
+    })];
+    mappers.extend(identity_mappers());
+    if let (true, Some(b2)) = (public, exchanger) {
+        mappers.push(serde_json::json!({
+            "name": EXCHANGER_AUDIENCE_MAPPER,
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.custom.audience": b2,
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+            }
+        }));
+    }
     serde_json::json!({
         "clientId": client_id,
         "name": app_name,
@@ -284,25 +728,48 @@ pub fn client_representation(
         // ブラウザ（B1）から token エンドポイントを直接叩けるように CORS を許可
         // （"+" = redirectUris のオリジン）。
         "webOrigins": ["+"],
+        "defaultClientScopes": default_client_scopes(kind),
         "optionalClientScopes": capability_scopes,
         "attributes": serde_json::Value::Object(attributes),
-        // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の
-        // aud=shiki-gateway 検証を満たす）。これが無いとトークンが aud 不一致で弾かれる。
-        "protocolMappers": [{
-            "name": "shiki-gateway-audience",
-            "protocol": "openid-connect",
-            "protocolMapper": "oidc-audience-mapper",
-            "config": {
-                "included.custom.audience": GATEWAY_AUDIENCE,
-                "access.token.claim": "true",
-                "id.token.claim": "false",
-            }
-        }],
+        "protocolMappers": mappers,
     })
 }
 
-/// ゲートウェイトークンの audience（verify_gateway_token の既定 aud と一致させる）。
-const GATEWAY_AUDIENCE: &str = "shiki-gateway";
+/// 登録の形の指紋（起動時の照合で、今の形に揃え直すクライアントを選ぶ・BUG-172）。
+///
+/// B1・B2 の登録の形（アプリごとの名前と client_id を除く）と、B1 の戻り先・ゲートウェイの audience から求める。
+/// 登録の形を変えた版を出したとき・戻り先（web のオリジン）や audience（`gateway.audience`）を変えたときに変わり、
+/// その後の最初の起動で、すべての有効なインストールのクライアントを揃え直す。
+pub fn client_spec_fingerprint(b1_redirect_uris: &[String], audience: &str) -> String {
+    let b1 = |exchanger| {
+        client_representation(
+            ClientKind::PublicPkce,
+            "",
+            "",
+            b1_redirect_uris,
+            exchanger,
+            audience,
+        )
+    };
+    let spec = serde_json::json!({
+        "b1": b1(None),
+        // B2 を持つアプリの B1（交換の相手の aud を足す・BUG-182）。
+        "b1_with_b2": b1(Some("")),
+        "b2": client_representation(ClientKind::Confidential, "", "", &[], None, audience),
+        // 揃えるときにインストールへ書き戻すもの（B2 のサービスアカウントの利用者・BUG-183）。
+        "records": ["b2_service_sub"],
+    });
+    storage::content_address::sha256_hex(spec.to_string().as_bytes())
+}
+
+/// ゲートウェイのトークンの audience の既定（デプロイ設定 `gateway.audience` の既定・BUG-206）。
+///
+/// 登録（アプリのクライアントのマッパー）とゲートウェイの確かめは、どちらも設定の値を使う。この定数は既定の値を
+/// 決める 1 か所。
+pub const DEFAULT_GATEWAY_AUDIENCE: &str = "shiki-gateway";
+
+/// B1 のトークンの `aud` に交換の相手（同じアプリの B2）を足すマッパーの名前（BUG-182）。
+const EXCHANGER_AUDIENCE_MAPPER: &str = "shiki-function-audience";
 
 #[cfg(test)]
 mod tests {
@@ -315,6 +782,8 @@ mod tests {
             "app-b1",
             "経費",
             &["https://apps.example/cb".into()],
+            None,
+            DEFAULT_GATEWAY_AUDIENCE,
         );
         assert_eq!(rep["publicClient"], true);
         assert_eq!(rep["standardFlowEnabled"], true);
@@ -330,11 +799,144 @@ mod tests {
             rep["protocolMappers"][0]["config"]["included.custom.audience"],
             "shiki-gateway"
         );
+        assert_eq!(rep["redirectUris"][0], "https://apps.example/cb");
+    }
+
+    /// 既定のスコープ（sub を載せる basic）と、tenant のマッパーを付ける。名前・メール・ロール・所属グループは載せない
+    /// （BUG-172。これが無いとトークンに sub と tenant が無く、ゲートウェイが 401 で断る。所属グループは D-130）。
+    #[test]
+    fn both_kinds_carry_sub_and_tenant_only() {
+        for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
+            let rep =
+                client_representation(kind, "app-x", "経費", &[], None, DEFAULT_GATEWAY_AUDIENCE);
+            let defaults = rep["defaultClientScopes"].as_array().unwrap();
+            assert_eq!(defaults[0], "basic");
+            assert!(defaults
+                .iter()
+                .all(|s| matches!(s.as_str(), Some("basic" | "service_account"))));
+            let optional = rep["optionalClientScopes"].as_array().unwrap();
+            assert_eq!(optional.len(), CapabilityScope::ALL.len());
+            let mappers = rep["protocolMappers"].as_array().unwrap();
+            let names: Vec<&str> = mappers.iter().filter_map(|m| m["name"].as_str()).collect();
+            assert_eq!(names, ["shiki-gateway-audience", "tenant"]);
+            let tenant = &mappers[1];
+            assert_eq!(tenant["protocolMapper"], "oidc-usermodel-attribute-mapper");
+            // テナントは利用者の属性から写す（アプリが値を選べる固定のクレームにしない）。
+            assert_eq!(tenant["config"]["user.attribute"], "tenant");
+            assert_eq!(tenant["config"]["claim.name"], "tenant");
+            assert_eq!(tenant["config"]["access.token.claim"], "true");
+            assert_eq!(tenant["config"]["id.token.claim"], "false");
+            // 所属グループはトークンに載せない（組織はゲートウェイがインストールから決める・D-130）。
+            assert!(mappers
+                .iter()
+                .all(|m| m["protocolMapper"] != "oidc-group-membership-mapper"));
+            assert!(!names.contains(&"roles") && !names.contains(&"groups"));
+            assert!(mappers
+                .iter()
+                .all(|m| m["protocolMapper"] != "oidc-hardcoded-claim-mapper"));
+        }
+    }
+
+    /// 指紋は登録の形と戻り先・audience で変わり、アプリの名前と client_id では変わらない。
+    #[test]
+    fn fingerprint_follows_shape_redirects_and_audience() {
+        let local = ["http://localhost:3000/apps/oauth/callback".to_string()];
+        let a = client_spec_fingerprint(&local, DEFAULT_GATEWAY_AUDIENCE);
+        assert_eq!(a, client_spec_fingerprint(&local, DEFAULT_GATEWAY_AUDIENCE));
+        assert_ne!(
+            a,
+            client_spec_fingerprint(
+                &["https://shiki.example/apps/oauth/callback".into()],
+                DEFAULT_GATEWAY_AUDIENCE
+            )
+        );
+        assert_ne!(a, client_spec_fingerprint(&local, "shiki-gateway-staging"));
+        assert_eq!(a.len(), 64);
+    }
+
+    /// トークンの aud に入れる値は、渡した audience（デプロイ設定 `gateway.audience`）にそろう（BUG-206）。
+    #[test]
+    fn audience_mapper_carries_the_configured_audience() {
+        for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
+            let rep =
+                client_representation(kind, "app-x", "経費", &[], None, "shiki-gateway-staging");
+            assert_eq!(
+                rep["protocolMappers"][0]["config"]["included.custom.audience"],
+                "shiki-gateway-staging"
+            );
+        }
+        let oauth = OAuthClient::new(
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        assert_eq!(oauth.audience(), DEFAULT_GATEWAY_AUDIENCE);
+        assert_eq!(oauth.with_audience("x").audience(), "x");
+    }
+
+    /// B2 を持つアプリの B1 は、同じアプリの B2 をトークンの aud に足す（Keycloak 26.2 の標準の交換は、交換を頼む
+    /// クライアントが元のトークンの aud に無いと断る・BUG-182）。B2 を持たないアプリと B2 自身には付けない。
+    #[test]
+    fn b1_tokens_name_their_own_b2_as_audience() {
+        let with = client_representation(
+            ClientKind::PublicPkce,
+            "app-1-b1",
+            "経費",
+            &[],
+            Some("app-1-b2"),
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
+        let mappers = with["protocolMappers"].as_array().unwrap();
+        let names: Vec<&str> = mappers.iter().filter_map(|m| m["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "shiki-gateway-audience",
+                "tenant",
+                "shiki-function-audience"
+            ]
+        );
+        assert_eq!(mappers[2]["protocolMapper"], "oidc-audience-mapper");
+        assert_eq!(mappers[2]["config"]["included.custom.audience"], "app-1-b2");
+        assert_eq!(mappers[2]["config"]["access.token.claim"], "true");
+        assert_eq!(mappers[2]["config"]["id.token.claim"], "false");
+        let without = client_representation(
+            ClientKind::PublicPkce,
+            "app-1-b1",
+            "経費",
+            &[],
+            None,
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
+        let b2 = client_representation(
+            ClientKind::Confidential,
+            "app-1-b2",
+            "経費",
+            &[],
+            Some("app-1-b2"),
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
+        for rep in [without, b2] {
+            assert!(rep["protocolMappers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| m["name"] != "shiki-function-audience"));
+        }
     }
 
     #[test]
     fn b2_confidential_token_exchange_representation() {
-        let rep = client_representation(ClientKind::Confidential, "app-b2", "経費", &[]);
+        let rep = client_representation(
+            ClientKind::Confidential,
+            "app-b2",
+            "経費",
+            &[],
+            None,
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
         assert_eq!(rep["publicClient"], false);
         assert_eq!(rep["serviceAccountsEnabled"], true);
         assert_eq!(rep["standardFlowEnabled"], false);

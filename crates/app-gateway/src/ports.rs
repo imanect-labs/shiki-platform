@@ -53,7 +53,8 @@ pub type AiEventStream = futures::stream::BoxStream<'static, AiEvent>;
 pub struct AgentInvokeSpec {
     pub app_id: uuid::Uuid,
     pub prompt: String,
-    /// 論理モデル名（allowlist 検証済み・None はテナント既定）。
+    /// 論理モデル名（allowlist 検証済み・アプリが書いたまま。省略は、解決した組織の既定を照合済み）。port 実装は省略も明示も
+    /// [`crate::resolve_app_model`] で組織の設定に照らす（None は組織の既定・Auto を含む・本人専用は除く）。
     pub model: Option<String>,
     /// インストール時ピンの宣言ツール（実装側で ToolName 閉集合 ∩ 実配線と交差する）。
     pub declared_tools: Vec<String>,

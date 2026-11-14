@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use app_platform::{MiniAppCodeStore, MiniAppManifest, Registry, TrustTier};
+use app_platform::{InstallService, MiniAppCodeStore, MiniAppManifest, Registry, TrustTier};
 use artifact::{ArtifactKind, ArtifactStore};
 use async_trait::async_trait;
 use authz::{
@@ -199,13 +199,43 @@ async fn publish_is_immutable() {
     assert_ne!(e2.id, entry.id);
 }
 
-/// レジストリの解決系（latest/get）と yank（不変性を保ちつつ新規解決を止める）を検証する。
+struct AnyRef;
+#[async_trait]
+impl data::RefResolver for AnyRef {
+    async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: uuid::Uuid) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
+/// 取り下げの口（[`InstallService::yank`]・D-203）を持つインストールのサービス（authz は AllowAll）。
+fn installs(pool: PgPool, code: MiniAppCodeStore, registry: Registry) -> InstallService {
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    InstallService::new(
+        pool.clone(),
+        registry,
+        Arc::new(code),
+        Arc::new(data::DataStore::new(pool, authz.clone(), Arc::new(AnyRef))),
+        authz,
+        None,
+        vec![],
+    )
+}
+
+/// レジストリの解決系（latest/get）と yank（不変性を保ちつつ新規解決を止める）を検証する。取り下げは
+/// [`InstallService::yank`] を通す（認可と監査を通らない口は無い・GAP-69b）。
 #[tokio::test]
 async fn registry_resolve_and_yank() {
     let Some(pool) = setup().await else { return };
     let artifacts = Arc::new(ArtifactStore::new(pool.clone(), Arc::new(AllowAll)));
     let registry = Registry::new(pool.clone());
     let s = MiniAppCodeStore::new(Arc::clone(&artifacts), registry.clone());
+    let installs = installs(pool.clone(), s.clone(), registry.clone());
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let c = ctx(&tenant, "alice");
     let kind = ArtifactKind::MiniAppCode.as_str();
@@ -242,8 +272,9 @@ async fn registry_resolve_and_yank() {
         .expect("get")
         .is_none());
 
-    // yank は行を残しつつ latest から外す（不変性は保つ）。
-    registry.yank(&c, e2.id).await.expect("yank");
+    // yank は行を残しつつ latest から外す（不変性は保つ）。2 回目も成功で、もう変えない。
+    assert!(installs.yank(&c, e2.id, None).await.expect("yank"));
+    assert!(!installs.yank(&c, e2.id, None).await.expect("2 回目の yank"));
     let after = registry
         .latest(&c, kind, "resolver")
         .await
@@ -263,9 +294,65 @@ async fn registry_resolve_and_yank() {
 
     // 存在しない id の yank は NotFound。
     assert!(matches!(
-        registry.yank(&c, uuid::Uuid::new_v4()).await,
+        installs.yank(&c, uuid::Uuid::new_v4(), None).await,
         Err(app_platform::AppPlatformError::NotFound)
     ));
+}
+
+/// レジストリの一覧は、呼ぶ人の組織が publish したものだけを返す（同じテナントの別の組織のものは出さない・
+/// PIT-45・BUG-197）。
+#[tokio::test]
+async fn registry_list_is_scoped_to_the_callers_org() {
+    let Some(pool) = setup().await else { return };
+    let registry = Registry::new(pool.clone());
+    let s = store(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let acme = ctx(&tenant, "alice");
+    let beta = AuthContext::new(
+        acme.principal().clone(),
+        "beta".into(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+    );
+    let kind = ArtifactKind::MiniAppCode.as_str();
+    let body = async {
+        let id = s
+            .create(&acme, &manifest("org-scoped", "1.0.0"), None)
+            .await
+            .expect("create");
+        s.publish(&acme, id, Some(1), None, None)
+            .await
+            .expect("publish");
+        let names = |list: Vec<app_platform::RegistryEntry>| {
+            list.into_iter().map(|e| e.name).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(registry.list(&acme, kind, 200).await.expect("acme")),
+            ["org-scoped"]
+        );
+        assert!(
+            registry
+                .list(&beta, kind, 200)
+                .await
+                .expect("beta")
+                .is_empty(),
+            "別の組織の一覧には出さない"
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for sql in [
+        "DELETE FROM registry_entry WHERE tenant_id = $1",
+        "DELETE FROM artifact_version WHERE tenant_id = $1",
+        "DELETE FROM artifact WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect(sql);
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 /// A（宣言的 mini_app）と B（mini_app_code）が同じ artifact テーブル・list/共有経路に乗る。
@@ -296,8 +383,12 @@ async fn a_and_b_share_artifact_plane() {
         .await
         .expect("B");
 
-    // 両者が同じ list_mine（artifact 共通枠）に現れる。
-    let mine = artifacts.list_mine(&c, None, None, 50).await.expect("list");
+    // 両者が同じ list_mine_page（artifact 共通枠）に現れる。
+    let mine = artifacts
+        .list_mine_page(&c, None, None, 50)
+        .await
+        .expect("list")
+        .items;
     assert!(mine
         .iter()
         .any(|x| x.id == a.id && x.kind == ArtifactKind::MiniApp));

@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::vocab::{AgentTool, NodeType};
+
 /// ノード実行時の認可・トレース文脈（ポート実装が `AuthContext` を組む素材）。
 #[derive(Debug, Clone)]
 pub struct ExecCtx {
@@ -73,36 +75,162 @@ impl PortError {
 #[derive(Debug, Clone)]
 pub struct StorageWriteReq {
     pub parent_id: Option<Uuid>,
+    /// 頼まれた名前（番号を付ける前の名前）。
     pub name: String,
     pub bytes: Vec<u8>,
     pub content_type: String,
+    /// 保存先に同じ名前のファイルがあるとき（BUG-97・D-112）。番号はチョークポイント（StorageService）が付け、
+    /// 実際に保存した名前を結果の `name` で返す。番号を付けても冪等キーと op_digest は頼まれた書込 1 つのもので、
+    /// 試し直しは前に付けた名前の結果を返す。上限まで埋まっていれば [`NAME_TAKEN`] で失敗する（文は
+    /// [`name_taken_error`]）。
+    pub on_name_taken: crate::ir::params::NameTakenPolicy,
     pub idempotency_key: String,
     pub op_digest: String,
 }
 
 /// llm.invoke の要求（llm-gateway 直行・モデル/予算はゲートウェイ側カタログで解決）。
+///
+/// 構造化出力（GAP-13）の項目はどれも `Option` で、`None` は従来どおりの自由な本文。
 #[derive(Debug, Clone)]
 pub struct LlmInvokeReq {
-    /// 論理モデル名（未指定はゲートウェイ既定）。
+    /// 論理モデル名。`None` は組織の既定（ポート実装が実行主体の組織の設定で解決する・Auto を含む）。
+    /// 指定したモデルが使えなければ既定へ戻さずに失敗する（fail-closed・BUG-12）。
     pub model: Option<String>,
     pub system: Option<String>,
     /// user メッセージ本文（Stage A は単発）。
     pub prompt: String,
     pub max_tokens: Option<u32>,
-    /// 生成記録の冪等キー（`<run_id>:<attempt>:<call_ordinal>` 相当）。
+    /// step の冪等キー（attempt を含まない・会計の鍵の素。使い方は [`NodePorts::llm_invoke`]）。
     pub idempotency_key: String,
+    /// 思考の深さ。`None` は組織の既定。書くと組織の既定より優先する（対応しないモデルでは gateway が落とす）。
+    pub effort: Option<crate::ir::params::LlmEffort>,
+    /// 出力の形（閉じた JSON Schema・[`crate::ir::output_schema::close_objects`] 済み）。`Some` ならポートは
+    /// 構造化出力を求める（gateway の `response_format`）。出力の検証と修復はエンジンが行う。
+    pub output_schema: Option<Value>,
+    /// 形に合わなかった出力の直しの依頼（エンジンが組む）。`Some` なら会話を
+    /// `[user: prompt][assistant: previous_output][user: instruction]` にする（user で終える）。
+    pub repair: Option<LlmRepair>,
+    /// 会計の冪等キーの接尾辞（修復の呼び出しは `#c1`・engine.md §7.3 の呼び出し連番）。
+    pub call_suffix: Option<String>,
 }
 
-/// agent.invoke の要求（サンドボックス起動・**capability は縮小のみ**）。
+/// ai.decide の要求（llm-gateway の判定のチョークポイント直行・FEAT-1）。
+///
+/// 質問は保存時に V1 を通したリテラル（params の型をそのまま渡す）。判定の材料は解決済みの値（文字列・
+/// オブジェクト・配列・上限はエンジンが確かめる）で、**信頼しないデータ**（決定器は中の指示に従わない）。
+#[derive(Debug, Clone)]
+pub struct LlmDecideReq {
+    /// 判定用のモデルの論理名（組織の許可・元の chat モデルの許可はチョークポイントが確かめる）。
+    pub model: String,
+    /// 判定の材料（解決済み）。
+    pub state: Value,
+    /// 質問（順序を保つ）。
+    pub questions: Vec<crate::ir::params::DecideQuestion>,
+    /// step の冪等キー（attempt を含まない）。使えた判定はこのキーで、使えなかった判定は `{key}#f{uuid}` で
+    /// チョークポイントが会計する（ポートでは記録しない）。
+    pub idempotency_key: String,
+    /// 決定キャッシュ（ノードの step 属性 `cache` を書いたときだけ `Some`・既定は使わない・T10）。
+    pub cache: Option<DecideCache>,
+}
+
+/// 決定キャッシュの指定（[`LlmDecideReq::cache`]）。範囲はテナント＋組織（ポートが `ExecCtx` から取る）と
+/// このワークフロー。当たっても組織の許可はチョークポイントが確かめ、会計はしない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecideCache {
+    /// 使い回す範囲のワークフロー。
+    pub workflow_id: Uuid,
+    /// 答えを使い回す期間（秒・保存時に範囲を確かめたもの）。
+    pub ttl_sec: u32,
+}
+
+/// 構造化出力の修復の依頼（[`LlmInvokeReq::repair`]）。
+#[derive(Debug, Clone)]
+pub struct LlmRepair {
+    /// 形に合わなかった直前の出力（モデルの本文のまま）。
+    pub previous_output: String,
+    /// 直す点と出し直しの依頼（エンジンが組んだ文）。
+    pub instruction: String,
+}
+
+/// agent.invoke の要求（agent-core のツールループを 1 回走らせる・BUG-6・D-22）。
+///
+/// 上限はエンジンがノード設定とデプロイ設定から丸めて渡す（縮めることしかできない）。道具は
+/// [`AgentToolGateway`] で渡し、ポート実装（api）は道具の呼び出しをそのまま中継する（権限を判断しない）。
 #[derive(Debug, Clone)]
 pub struct AgentInvokeReq {
-    /// 実行するコード/指示（ティアは admin ポリシー・既定 gVisor・#346・制約ツールセット）。
+    /// 依頼（自然文）。
+    pub instruction: String,
+    /// 参考データ（モデルには指示ではないデータとして別に渡す）。
+    pub context: Option<Value>,
+    /// 論理モデル名。`None` は組織の既定（llm.invoke と同じ解決・fail-closed）。
+    pub model: Option<String>,
+    /// 手順（モデルの応答）の上限（丸め済み）。
+    pub max_steps: u32,
+    /// この実行全体のトークンの上限（丸め済み）。
+    pub max_total_tokens: u64,
+    /// この実行全体の費用の上限（マイクロ USD・デプロイ設定）。
+    pub max_cost_usd_micros: i64,
+    /// 実行時間の上限（ミリ秒）。手順の境界で止める。
+    pub max_duration_ms: u64,
+    /// step の冪等キー（attempt 非依存）。
+    pub idempotency_key: String,
+    /// いまの attempt（会計キーの接頭辞に入れる。再試行・リース回収の消費を重複排除しない）。
+    pub attempt: i32,
+}
+
+/// agent.invoke の道具の呼び出しを束ねる口（実装はエンジン・D-22）。
+///
+/// ループ（api）は道具の呼び出しごとにこれを呼び、エンジンが「提示した道具か → scope 天井 → 引数の上限 →
+/// 宛先の照合（web.fetch）→ 監査（via=agent）→ [`NodePorts`] の各メソッド → 結果の上限」の順に処理する。
+/// script の `Shiki.*` と同じく、権限の一段目（scope 天井・宛先・監査）はエンジンの一点で効き、二段目
+/// （OpenFGA・二段 authz）はチョークポイントが担う。
+#[async_trait]
+pub trait AgentToolGateway: Send + Sync {
+    /// 提示してよい道具（allowed_tools ∩ 今のステージで選べる ∩ scope 天井 ∩ web の天井）。
+    fn tools(&self) -> &[AgentTool];
+
+    /// 止める合図（run の取り消し・リースの喪失）が立っているか。ループは手順の境界で見る。
+    fn is_cancelled(&self) -> bool;
+
+    /// 道具を 1 回呼ぶ。提示していない道具は `invalid`（監査に残す）。
+    async fn call(&self, tool: AgentTool, args: &Value) -> Result<Value, PortError>;
+}
+
+/// web.fetch の要求（宛先の照合はゲートウェイで済ませてから渡す）。
+#[derive(Debug, Clone)]
+pub struct WebFetchReq {
+    /// 照合を通った URL。
+    pub url: String,
+    /// 知りたい論点（長いページから関係する節だけを返す）。
+    pub query: Option<String>,
+    /// 続きを読む開始位置（字）。
+    pub offset: Option<u64>,
+}
+
+/// code.run の要求（隔離環境で Python を実行する・外部への通信は遮断）。
+#[derive(Debug, Clone)]
+pub struct CodeRunReq {
     pub code: String,
     /// 実行時間上限（ミリ秒）。
     pub timeout_ms: Option<u64>,
-    /// egress 許可ホスト（縮小のみ・空 = 全遮断）。ポートはこれを **上限として** spec を組む
-    /// （ノード設定で principal の ReBAC を超える権限は付与できない）。
-    pub egress_allowlist: Vec<String>,
+}
+
+/// doc.read の要求（索引済みの文書の本文を窓で読む）。
+#[derive(Debug, Clone, Default)]
+pub struct DocReadReq {
+    pub file_id: Uuid,
+    /// 読み始めた版（違えば結果で知らせる）。
+    pub version: Option<i64>,
+    /// このページ以降。
+    pub page: Option<i64>,
+    /// この文字列を含む見出しから。
+    pub heading: Option<String>,
+    /// 続きの位置（前回の結果に書かれた値）。
+    pub from: Option<i64>,
+    /// 続きの位置の中の字数。
+    pub offset: Option<i64>,
+    /// 1 回に読む字数。
+    pub max_chars: u32,
 }
 
 /// http.request が外部へ送る 1 リクエスト（宛先束縛照合は executor 側で済ませてから渡す）。
@@ -154,6 +282,100 @@ pub struct ResolvedSkillView {
     pub allowed_scopes: Option<Vec<String>>,
 }
 
+/// storage.read で、文章として読めないファイルを読もうとしたときの code（BUG-101・permanent・失敗の分類は設定の誤り）。
+pub const NOT_TEXT_FILE: &str = "not_text_file";
+
+/// storage.read で、PDF・Office の本文の社内文書の検索への取り込みが終わっていないときの code（D-111・retryable・
+/// 失敗の分類は一時障害）。取り込みを待っている・取り込み中・一時的な失敗のやり直しを待っているもの。
+pub const INDEX_PENDING: &str = "index_pending";
+
+/// storage.read で、社内文書の検索に取り込めない種類のファイル（画像・古い形式の Office など）・大きすぎるファイル・
+/// 本文の無い文書・取り込まない場所（AI エージェントの作業用のフォルダー）のファイルの本文を読もうとしたときの code
+/// （D-111・permanent・失敗の分類は設定の誤り）。
+pub const NOT_INDEXABLE: &str = "not_indexable";
+
+/// storage.read で、社内文書の検索への取り込みに失敗したファイル・取り込みが届いていない（待っても取り込まれない）
+/// ファイルの本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。ファイルを編集できる人が
+/// ドライブのメニューの「検索に取り込み直す」を選ぶと取り込み直す（D-126）。保存し直しても取り込み直す。
+pub const INDEX_FAILED: &str = "index_failed";
+
+/// storage.read で、社内文書の検索が使えない環境（`rag.enabled = false`）で PDF・Office の本文を読もうとしたときの
+/// code（BUG-158・permanent・失敗の分類はこの環境で使えない機能）。以前は `not_text_file`（設定の誤り）で、実行の
+/// 詳細の 1 行目が「ワークフローの設定に問題があり…」になっていた。
+pub const SEARCH_DISABLED: &str = "search_disabled";
+
+/// この環境で構成されていない機能（判定のチョークポイント・AI エージェントのツール・テーブル・社内文書の検索・CSV・
+/// シークレット・スクリプト）を使おうとしたときの code（BUG-175・permanent・失敗の分類はこの環境で使えない機能）。
+///
+/// 以前は `unsupported`（設定の誤り）か `forbidden`（権限）か `unavailable`（一時的な問題）で、実行の詳細の 1 行目が
+/// 作成者やアプリを共有した人に連絡するよう言うか、やり直しを待たせていた。作成者には直せないので、管理者に連絡する
+/// よう言う（社内文書の検索が使えない環境で PDF を読んだ `search_disabled`・BUG-158 と同じ形）。
+pub const NOT_CONFIGURED: &str = "not_configured";
+
+/// [`NOT_CONFIGURED`] の誤り。`what` は使えない機能を画面の名前で言う語（ブロックは「」で囲む）。
+#[must_use]
+pub fn not_configured(what: &str) -> PortError {
+    PortError::new(
+        NOT_CONFIGURED,
+        format!("この環境では{what}を使えません。管理者に連絡してください。"),
+        false,
+    )
+}
+
+/// ブロックを動かすチョークポイントが構成されていない（名前はカタログの表示名・[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn block_not_configured(nt: NodeType) -> PortError {
+    not_configured(&format!("「{}」", crate::vocab::label_ja(nt)))
+}
+
+/// AI エージェントのツールが構成されていない（名前はツールの表示名・[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn tool_not_configured(tool: AgentTool) -> PortError {
+    not_configured(&format!("ツール「{}」", tool.label_ja()))
+}
+
+/// テーブル（構造化データ）が構成されていない（[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn data_not_configured() -> PortError {
+    not_configured("テーブル")
+}
+
+/// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
+///
+/// 無いときと見る権限が無いときを言い分けない（名前の存在が分かってしまうため）。補いたい事実は呼び出し側が
+/// この後ろに 1 文足す。
+#[must_use]
+pub fn hidden_not_found(target: &str) -> String {
+    format!("{target}が見つかりません。削除されたか、見る権限がありません。")
+}
+
+/// storage.write・csv.write の保存先に同じ名前のファイルがあるときの code（BUG-97・permanent）。
+///
+/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。番号はポートの先（StorageService）が付け
+/// （D-112・D-124）、番号を付ける扱いでも上限まで埋まっていればこれを返す。そのときの文は、最後に試した名前を
+/// 言う [`name_taken_error`] にする（番号の規則はポートの先にしか無いので、エンジンは名前を作れない）。
+pub const NAME_TAKEN: &str = "name_taken";
+
+/// 保存先に同じ名前のファイルがあって保存できなかったときの誤り（[`NAME_TAKEN`]・permanent・BUG-97）。
+///
+/// `name` は頼まれた名前（番号を付ける前。csv.write は `.csv` を付けた名前）。`last_numbered` は番号を付ける扱いで
+/// 最後に試した名前（「名前 (50).md」）で、`None` は番号を付けない扱い。番号の規則は StorageService の 1 か所に
+/// あるので（D-112・D-124）、番号を付ける扱いの文はポートの実装がその規則で名前を求めて組む。
+#[must_use]
+pub fn name_taken_error(name: &str, last_numbered: Option<&str>) -> PortError {
+    let message = match last_numbered {
+        None => format!(
+            "保存先に同じ名前のファイル「{name}」がすでにあります。\
+             「同じ名前があるとき」を 番号を付けて保存 にするか、ファイル名に日付などを差し込んでください。"
+        ),
+        Some(last) => format!(
+            "保存先に「{name}」と、番号を付けた「{last}」までのファイルがすでにあります。\
+             ファイル名に日付などを差し込んでください。"
+        ),
+    };
+    PortError::new(NAME_TAKEN, message, false)
+}
+
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
 /// 各メソッドは `ExecCtx` から `AuthContext` を組み、チョークポイント（OpenFGA 認可込み）を呼ぶ。
@@ -164,15 +386,45 @@ pub trait NodePorts: Send + Sync {
     /// storage.write（`write_file_internal` の in-TX 冪等版）。返り値は書込結果の要約。
     async fn storage_write(&self, ctx: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError>;
 
-    /// storage.read（`read_file_internal`）。返り値はメタ＋本文の要約（本文は base64 等）。
+    /// storage.read（`read_file_internal`）。返り値はメタ（id・name・version・content_type・size）＋読んだ文字コード
+    /// （encoding）＋本文の文章（text）。version は読んだ中身のバージョン（エンジンが `file_id` を足す・D-96）。
+    /// 文字コードは BOM（UTF-8・UTF-16）→ UTF-8 → 日本の文字コード（Shift_JIS・EUC-JP）の推定で決める（GAP-45）。
+    /// 文章として読めないファイル（PDF・Office・画像など、または文字コードを決められない中身）は [`NOT_TEXT_FILE`] で
+    /// 失敗する（文字化けした中身を成功として渡さない・BUG-101）。
     async fn storage_read(&self, ctx: &ExecCtx, file_id: Uuid) -> Result<Value, PortError>;
 
-    /// storage.list（`list_children`）。返り値は子ノードのメタ配列。
-    async fn storage_list(
+    /// 「ファイルを読む」（storage.read ノード）の読み口（D-111）。文章のファイルは [`Self::storage_read`] と同じに
+    /// 中身を読み、文章でない種類（PDF・Office など）は、社内文書の検索が取り込んだ本文を
+    /// `rag::SearchService::read_document_text` で先頭から `max_chars` 字まで読む（原本は読み直さない）。
+    ///
+    /// - 返り値は [`Self::storage_read`] と同じメタ（id・name・version・content_type・size）＋本文の文章（text）＋
+    ///   上限の字数で切ったか（truncated）。取り込んだ本文には、ページの変わり目の印（〔p.2〕）と見出しの行（# で
+    ///   始まる）が入り、encoding は無い。version は読んだ本文のバージョン（いまの内容のもの）。
+    /// - 閲覧の判定（StorageService）と可読集合の pre-filter（SearchService）の両方を通す。見えない・無いは同じ
+    ///   誤り（`not_found`・存在の秘匿・チャットの doc_read と同じ契約）。
+    /// - いまの内容の取り込みが終わっていなければ [`INDEX_PENDING`]（やり直せる）。取り込めない種類・大きすぎる・
+    ///   本文が無い・取り込まない場所にあるは [`NOT_INDEXABLE`]、取り込みに失敗したもの・取り込みが届いていない
+    ///   ものは [`INDEX_FAILED`]（やり直さない）。社内文書の検索が使えない環境では [`NOT_TEXT_FILE`]。
+    ///
+    /// script の `Shiki.storage.read` は [`Self::storage_read`]（文章だけ）のまま。既定は [`Self::storage_read`]
+    /// （索引を結線しない実装・テスト用。いつも中身を読み、truncated はエンジンが false にする）。
+    async fn storage_read_document(
         &self,
         ctx: &ExecCtx,
-        parent_id: Option<Uuid>,
-    ) -> Result<Value, PortError>;
+        file_id: Uuid,
+        _max_chars: u32,
+    ) -> Result<Value, PortError> {
+        self.storage_read(ctx, file_id).await
+    }
+
+    /// storage.list（`list_children`・「フォルダ一覧」・script の `Shiki.storage.list`・AI エージェントの道具）。
+    ///
+    /// 返り値は `{ items, truncated, next_cursor }`。`items` は子ノードのメタ（名前の順・最大
+    /// [`crate::vocab::STORAGE_LIST_MAX_ITEMS`] 件）、`next_cursor` は続きがあるときの続きの位置（無ければ null・
+    /// `truncated` はその有無）。続きの位置はテナントと一覧（フォルダー）に束縛した不透明な文字列で、
+    /// [`StorageListReq::cursor`] に渡すと続きから読む。読めない位置（別のテナント・別のフォルダー・改竄・古い形）は
+    /// `invalid` で失敗する（D-131）。
+    async fn storage_list(&self, ctx: &ExecCtx, req: StorageListReq) -> Result<Value, PortError>;
 
     /// rag.search（`SearchService.search`・二段 authz はサービス内で担保）。
     async fn rag_search(
@@ -183,10 +435,41 @@ pub trait NodePorts: Send + Sync {
     ) -> Result<Value, PortError>;
 
     /// llm.invoke（`LlmGateway.stream` ＋ `record_generation`・trace_id を記録）。
+    ///
+    /// 返す Value は `{ text, model, stop_reason? }`。`model` は解決後の論理モデル名（実際に使ったモデル・会計と
+    /// 同じ名前）で、executor が監査に使う。`stop_reason`（`end_turn`・`max_tokens`・`refusal` など）は任意で、
+    /// 無ければ自然終了とみなす。node の出力に載せるのは `output_schema` の無い llm.invoke だけ（無ければ `end_turn`
+    /// で埋める）で、`output_schema` のある llm.invoke と skill.invoke の出力には載せない。
+    ///
+    /// 会計の冪等キー（engine.md §7.2-7.3）:
+    /// - 使えた呼び出しは `idempotency_key` ＋ `call_suffix`（1 回目は step のキー・修復は `#c1`）。
+    /// - 使えなかった呼び出し（途中で切れた・`output_schema` があって上限で切れた・拒否された・形に合わない）で
+    ///   使用量のあるものは `{idempotency_key}#f{uuid}`（呼び出しごとに一意）。step のキーで記録すると、
+    ///   再試行・再開で後から成功した分が重複除去で消えるため。形に合うかは
+    ///   [`crate::ir::output_schema::validate_output`]（エンジンと同じ検査）で見る。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
 
-    /// agent.invoke（`Sandbox` トレイト・ティアは admin ポリシー既定・capability 縮小のみ）。
-    async fn agent_invoke(&self, ctx: &ExecCtx, req: AgentInvokeReq) -> Result<Value, PortError>;
+    /// ai.decide（`LlmGateway::decide`・組織の許可・利用上限・会計はチョークポイントの中・FEAT-1）。
+    ///
+    /// 返す Value は判定の結果 `{ resolved_model, answers: { <key>: { type, … } }, calibrated, method, samples,
+    /// raised_questions }`（llm-gateway の `DecideResponse` の形・`raised_questions` は AI の自信を引き上げた質問で、
+    /// 無ければ空とみなす・D-114）に、決定キャッシュの答えなら `cached: true` を足したもの（無ければ false と
+    /// みなす）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
+    /// 既定は「未構成」（判定のチョークポイントを結線しない実装・テスト用・H1）。
+    async fn llm_decide(&self, _ctx: &ExecCtx, _req: LlmDecideReq) -> Result<Value, PortError> {
+        Err(block_not_configured(NodeType::AiDecide))
+    }
+
+    /// agent.invoke（agent-core のツールループを 1 回走らせる・LLM は llm-gateway を通す・BUG-6）。
+    ///
+    /// 道具の呼び出しは `tools`（エンジンの能力ゲートウェイ）へ中継する。返す Value は
+    /// `{ text, complete, stop, model, citations, tool_calls, skipped_tools, usage }`。
+    async fn agent_invoke(
+        &self,
+        ctx: &ExecCtx,
+        req: AgentInvokeReq,
+        tools: std::sync::Arc<dyn AgentToolGateway>,
+    ) -> Result<Value, PortError>;
 
     /// http.request の外部送信（宛先束縛照合は executor 済み）。
     async fn http_send(&self, ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError>;
@@ -228,7 +511,7 @@ pub trait NodePorts: Send + Sync {
     /// csv.write（`TabularService.save_new`・作成権限）。冪等化は capability 層が担保する。
     async fn csv_write(&self, ctx: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError>;
 
-    // --- 構造化データ（Task 15.7）。既定は「未構成」（data を結線しない実装・テスト用）。---
+    // --- 構造化データ（Task 15.7）。既定は「未構成」（data を結線しない実装・テスト用・[`data_not_configured`]）。---
     //
     // 実装は data の DataStore（行述語・フィールドマスク・OpenFGA の認可込み）を呼ぶ。schedule / event の
     // run（実行主体 = workflow）は、①ワークフロー主体にテーブルが委譲されていること（タプル）を確かめ、
@@ -236,7 +519,7 @@ pub trait NodePorts: Send + Sync {
 
     /// data.list_tables（実行主体が viewer のテーブル一覧）。
     async fn data_list_tables(&self, _ctx: &ExecCtx) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data.query（`DataStore::run_query`・data の `DataQuery` をそのまま渡す）。返り値は `QueryResult`。
@@ -246,7 +529,7 @@ pub trait NodePorts: Send + Sync {
         _table_id: Uuid,
         _query: &data::DataQuery,
     ) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data.get（`DataStore::get_record`）。返り値はマスク済みのレコード。
@@ -256,23 +539,77 @@ pub trait NodePorts: Send + Sync {
         _table_id: Uuid,
         _record_id: Uuid,
     ) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data の書込（作成・更新・削除・遷移・一括 upsert）。冪等化は capability 層の effect_journal が
     /// 担保し、ポートは適用のみを行う（一括 upsert は `idempotency_key` から取込 ID を決めて二重取込を防ぐ）。
     async fn data_write(&self, _ctx: &ExecCtx, _req: DataWriteReq) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
+    }
+
+    /// 承認（human.approval）の停止時に、束縛した行のいまの状態・rev・FSM でその状態から進める状態
+    /// （遷移の定義だけ・actor 述語は評価しない）・担当者の列の値を、実行主体の権限で読む（GAP-08）。
+    ///
+    /// 実装は data の `FsmStore`（テーブルの viewer・行述語・フィールドマスク込み）。既定は「未構成」。
+    async fn data_approval_target(
+        &self,
+        _ctx: &ExecCtx,
+        _table_id: Uuid,
+        _record_id: Uuid,
+    ) -> Result<ApprovalTarget, PortError> {
+        Err(data_not_configured())
+    }
+
+    // --- agent.invoke の道具（BUG-6・D-22）。既定は「未構成」（結線しない実装・テスト用）。---
+    //
+    // ゲートウェイ（scope 天井・宛先・監査）を通った呼び出しだけが来る。実装は実行主体の権限で
+    // チョークポイントを呼び、結果は道具の上限の中に収める。
+
+    /// web.search（`SearchProvider`・検索語が検索サービスへ出る）。返り値は `{ results: [{title, url, snippet}] }`。
+    async fn web_search(&self, _ctx: &ExecCtx, _query: &str) -> Result<Value, PortError> {
+        Err(tool_not_configured(AgentTool::WebSearch))
+    }
+
+    /// web.fetch（解決後の IP の検証・リダイレクト非追従）。返り値は `{ url, text, citations? }`。
+    async fn web_fetch(&self, _ctx: &ExecCtx, _req: WebFetchReq) -> Result<Value, PortError> {
+        Err(tool_not_configured(AgentTool::WebFetch))
+    }
+
+    /// code.run（`Sandbox`・egress 全遮断・成果物は保存しない）。返り値は `{ stdout, exit_code }`。
+    async fn code_run(&self, _ctx: &ExecCtx, _req: CodeRunReq) -> Result<Value, PortError> {
+        Err(tool_not_configured(AgentTool::CodeRun))
+    }
+
+    /// doc.read（`SearchService::read_document`＋viewer 判定・権限なしと不在は同じ応答）。返り値は `{ text }`。
+    async fn doc_read(&self, _ctx: &ExecCtx, _req: DocReadReq) -> Result<Value, PortError> {
+        Err(tool_not_configured(AgentTool::DocRead))
+    }
+
+    /// storage.read の窓読み（テキストだけ・`offset` 字目から `max_chars` 字）。
+    /// 返り値は `{ id, name, content_type, size, text, offset, next_offset }`（続きが無ければ next_offset は null）。
+    async fn storage_read_window(
+        &self,
+        _ctx: &ExecCtx,
+        _file_id: Uuid,
+        _offset: u64,
+        _max_chars: u32,
+    ) -> Result<Value, PortError> {
+        Err(tool_not_configured(AgentTool::StorageRead))
     }
 }
 
-/// data ポート未構成のエラー（permanent・黙って成功扱いにしない）。
-fn data_unconfigured() -> PortError {
-    PortError::new(
-        "unsupported",
-        "構造化データ（data）が構成されていません",
-        false,
-    )
+/// 承認の停止時に読む行の状態（[`NodePorts::data_approval_target`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalTarget {
+    /// いまの状態（未設定なら `None`）。
+    pub current: Option<String>,
+    /// いまの rev。
+    pub rev: i64,
+    /// FSM でいまの状態から進める状態（定義順・重複なし）。
+    pub targets: Vec<String>,
+    /// ユーザー・ロールの列のうち実行主体に読めるもの（参照名 → 種別と値）。読めない列は入らない。
+    pub refs: std::collections::BTreeMap<String, (crate::approval::AssigneeKind, Option<String>)>,
 }
 
 /// data 書込の要求。
@@ -305,11 +642,20 @@ pub enum DataWriteOp {
         to: String,
         expected_rev: Option<i64>,
     },
+    /// 結果は step の出力と同じ形（件数・`errors`〔先頭の一部〕・状態）に、ポートの中だけの [`BULK_FAILED_ROWS`] を
+    /// 足したもの。
     BulkUpsert {
         rows: Vec<data::BulkUpsertRow>,
         abort_on_invalid: bool,
     },
 }
+
+/// 一括 upsert の結果の、ポートの中だけの項目: 断られた行の全部（`[{ row, rejected, update_of }]`・行番号の昇順。
+/// `rejected` は適用の段で拒否されたか〔偽なら検証の段で不合格〕、`update_of` は更新の行が書き換えようとした
+/// レコード〔作成の行は null〕）。`errors` は先頭の一部だけなので、同じレコードを探す列の取り込み直し
+/// （[`super::data_bulk_match`]）はこちらで断られた行を選ぶ。ノードが読んで外し、step の出力・効果の記録には出さない。
+/// 返さないポート（テストの fake）では `errors` から選ぶ。
+pub const BULK_FAILED_ROWS: &str = "failed_rows";
 
 impl DataWriteOp {
     /// 能力 API 名（監査・スコープの語彙）。
@@ -349,10 +695,24 @@ pub struct CsvPatchReq {
     pub ops: Value,
 }
 
+/// storage.list の要求（D-131）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageListReq {
+    /// 一覧にするフォルダー（`None` は実行主体のドライブのトップ）。
+    pub parent_id: Option<Uuid>,
+    /// 続きの位置（前の結果の `next_cursor`・同じフォルダーのもの）。`None` は先頭から。
+    pub cursor: Option<String>,
+}
+
 /// csv.write の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。
 #[derive(Debug, Clone)]
 pub struct CsvWriteReq {
     pub parent_id: Option<Uuid>,
+    /// 頼まれた名前（`.csv` を付けた名前・番号を付ける前の名前）。
     pub name: String,
     pub csv_bytes: Vec<u8>,
+    /// 保存先に同じ名前のファイルがあるとき（BUG-97・D-124・[`StorageWriteReq::on_name_taken`] と同じ）。番号は
+    /// チョークポイント（StorageService）が書込の 1 つの TX の中で付け、実際に保存した名前を結果の `name` で返す。
+    /// 上限まで埋まっていれば [`NAME_TAKEN`] で失敗する（文は [`name_taken_error`]）。
+    pub on_name_taken: crate::ir::params::NameTakenPolicy,
 }

@@ -59,12 +59,30 @@ pub fn tenant_relative_groups(
 /// 先頭要素の先頭セグメント（オンプレ利用者の org を変えない）。
 pub fn resolve_org(groups: &[String], tenant_id: &str, layout: GroupLayout) -> Option<String> {
     let (relative, source) = relative_groups(groups, tenant_id, layout);
-    let mut orgs = relative.iter().filter_map(|rel| rel.split('/').next());
+    let mut orgs = org_segments(&relative);
     match source {
         Source::TenantScoped => orgs.min(),
         Source::Legacy => orgs.next(),
     }
     .map(str::to_string)
+}
+
+/// groups claim から [`resolve_org`] が選びうる組織をすべて返す（名前の順・重複なし）。
+///
+/// [`resolve_org`] の結果は必ずこの中にある。組織を 1 つに選ばず「その組織のグループにまだ入っているか」だけを
+/// 知りたいところ（組織の member の定期の照合・D-136）が使う。claim の並びに依存しない（従来解釈の
+/// [`resolve_org`] は claim の先頭を採るが、ここは並びが違っても同じ集合を返す）。
+pub fn org_candidates(groups: &[String], tenant_id: &str, layout: GroupLayout) -> Vec<String> {
+    let (relative, _) = relative_groups(groups, tenant_id, layout);
+    let mut orgs: Vec<String> = org_segments(&relative).map(str::to_string).collect();
+    orgs.sort();
+    orgs.dedup();
+    orgs
+}
+
+/// 相対パス（`<org>` / `<org>/<dept>`）の先頭セグメント（組織の名前）。
+fn org_segments(relative: &[String]) -> impl Iterator<Item = &str> {
+    relative.iter().filter_map(|rel| rel.split('/').next())
 }
 
 /// 相対パスをどちらの解釈で得たか。
@@ -301,6 +319,47 @@ mod tests {
         assert_eq!(
             resolve_org(&groups, "default", TenantScopedOrLegacy).as_deref(),
             Some("acme")
+        );
+    }
+
+    #[test]
+    fn org_candidates_contain_the_resolved_org_in_any_order() {
+        let cases: &[(&[&str], GroupLayout)] = &[
+            (&["/tenants/t/zeta", "/tenants/t/alpha/eng"], TenantScoped),
+            (&["/beta/aaa", "/alpha/zzz", "/beta"], TenantScopedOrLegacy),
+            (&["/legacy", "/tenants/t/acme/eng"], TenantScopedOrLegacy),
+            (&["/tenants/u/x", "/tenants/t"], TenantScoped),
+            (&[], TenantScopedOrLegacy),
+        ];
+        for (groups, layout) in cases {
+            let groups = v(groups);
+            let candidates = org_candidates(&groups, "t", *layout);
+            if let Some(org) = resolve_org(&groups, "t", *layout) {
+                assert!(candidates.contains(&org), "{groups:?} {candidates:?}");
+            } else {
+                assert!(candidates.is_empty(), "{groups:?} {candidates:?}");
+            }
+            // claim の並びを変えても同じ集合（従来解釈の resolve_org は先頭を採るので変わりうる）。
+            let mut reversed = groups.clone();
+            reversed.reverse();
+            assert_eq!(org_candidates(&reversed, "t", *layout), candidates);
+        }
+        assert_eq!(
+            org_candidates(
+                &v(&["/beta/aaa", "/alpha/zzz", "/beta"]),
+                "t",
+                TenantScopedOrLegacy
+            ),
+            v(&["alpha", "beta"])
+        );
+        // 自テナント配下があれば従来形式は候補にしない（resolve_org と同じ）。
+        assert_eq!(
+            org_candidates(
+                &v(&["/legacy", "/tenants/t/acme/eng"]),
+                "t",
+                TenantScopedOrLegacy
+            ),
+            v(&["acme"])
         );
     }
 

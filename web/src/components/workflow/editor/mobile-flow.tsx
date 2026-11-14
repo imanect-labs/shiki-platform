@@ -6,10 +6,12 @@
 ///   出口の末尾・きっかけ直後の 3 通り）。
 /// - 分岐（はい／いいえ・振り分けの各出口・エラー時など）は出口名の行と字下げで簡易に表す。
 ///   合流（2 本目以降の入エッジ）は「〜へ合流」の行で示し、同じカードを二重に描かない。
+/// - 繰り返し（control.map）の中のブロックは、繰り返しのカードの下に字下げして並べる。中が空なら「中にブロックを追加」
+///   の＋を出す（BUG-103・D-85）。中の入口は、きっかけの直後の「別の入口」には並べない（実行の始めには動かない）。
 /// - 完全なグラフ編集（任意の接続・座標）はキャンバスで行う（「キャンバスで開く」）。
 
 import * as React from "react";
-import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus, TriangleAlert } from "lucide-react";
+import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus, Repeat, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
@@ -19,15 +21,21 @@ import { categoryVar } from "../category-accent";
 import type { AddTarget } from "./add-target";
 import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
-import { outputPorts, portLabel } from "./node-card";
+import { nodePortLabel } from "../port-labels";
+import { defaultOutPort, drawnPorts, edgePortsOf, exitsPending, type ServerPorts } from "./ports";
+import { isMap, typeLabel } from "./regions";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
-import { mapErrors } from "./validation";
+import { mapErrors, triggerErrorsOf } from "./validation";
 
 type Props = {
   ir: WorkflowIr;
   selection: Selection;
   serverErrors: ValidationError[];
   serverWarnings?: ValidationError[];
+  /// サーバが導いた出口（判定のノード・検証 API の `node_ports`）。
+  serverPorts?: ServerPorts;
+  /// `serverPorts` を導いたときの各ノードの params（今の設定の出口かを見る）。
+  serverPortsParams?: Readonly<Record<string, unknown>>;
   dispatch: React.Dispatch<EditorAction>;
   /// ＋が押された（追加先を親へ渡し、親がブロック選択のシートを開く）。
   onAdd: (target: AddTarget, contextLabel: string) => void;
@@ -44,6 +52,7 @@ function Indent({ depth, children }: { depth: number; children: React.ReactNode 
   const d = Math.min(depth, MAX_DEPTH);
   return (
     <div
+      data-depth={depth}
       className={cn(d > 0 && "border-l border-border")}
       style={d > 0 ? { marginLeft: `${(d - 1) * 14 + 6}px`, paddingLeft: "12px" } : undefined}
     >
@@ -148,11 +157,50 @@ function StepCard({
   );
 }
 
-function PortRow({ label }: { label: string }) {
+function PortRow({ label, missing = false, note }: { label: string; missing?: boolean; note?: string }) {
   return (
-    <div className="flex items-center gap-1.5 pb-1 pt-2 text-xs font-medium text-muted-foreground">
-      <CornerDownRight className="size-3.5" aria-hidden />
-      {label}
+    <div className="pb-1 pt-2">
+      <div
+        className={cn(
+          "flex items-center gap-1.5 text-xs font-medium",
+          missing ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        <CornerDownRight className="size-3.5" aria-hidden />
+        {missing ? `${label}（無い出口）` : label}
+      </div>
+      {note ? <p className="mt-0.5 pl-5 text-[11px] leading-relaxed text-muted-foreground">{note}</p> : null}
+    </div>
+  );
+}
+
+/// 中にブロックの無い繰り返しの「中にブロックを追加」（カード間の＋と見分けがつくよう、文字の付いた破線の枠）。
+function InsideSlot({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <div className="py-2">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={cn(
+          "flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed bg-background px-3 text-sm text-muted-foreground outline-none",
+          "transition-colors duration-fast hover:border-primary hover:text-primary active:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+        )}
+      >
+        <Plus className="size-4" aria-hidden />
+        中にブロックを追加
+      </button>
+    </div>
+  );
+}
+
+/// 繰り返しの中の見出し（この下に字下げして並ぶブロックを、1 件ずつ実行する）。
+function RegionRow({ name, mapId }: { name: string; mapId: string }) {
+  return (
+    <div className="pb-1 pt-2" data-testid={`mobile-region-${mapId}`}>
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <Repeat className="size-3.5" aria-hidden />「{name}」の中（1 件ずつ実行）
+      </div>
     </div>
   );
 }
@@ -166,12 +214,28 @@ function MergeRow({ name }: { name: string }) {
   );
 }
 
-export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispatch, onAdd }: Props) {
+const NO_PORTS: ServerPorts = {};
+const NO_PARAMS: Readonly<Record<string, unknown>> = {};
+
+export function MobileFlow({
+  ir,
+  selection,
+  serverErrors,
+  serverWarnings,
+  serverPorts = NO_PORTS,
+  serverPortsParams = NO_PARAMS,
+  dispatch,
+  onAdd,
+}: Props) {
   const errors = React.useMemo(() => mapErrors(serverErrors), [serverErrors]);
   const warnings = React.useMemo(() => mapErrors(serverWarnings ?? []), [serverWarnings]);
   const byId = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, n])), [ir.nodes]);
 
   const select = (next: Selection) => dispatch({ type: "select", selection: next });
+  const nameOf = (id: string) => {
+    const n = byId.get(id);
+    return n ? nodeName(n) : id;
+  };
 
   const card = (node: IrNode) => {
     const entry = NODE_CATALOG.find((c) => c.type === node.type);
@@ -200,6 +264,46 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
       </Indent>,
     );
 
+  const incoming = new Set(ir.edges.map((e) => e.to));
+
+  // 繰り返しの中（中のブロックを字下げで並べ、中が空なら中に足す＋を出す）。
+  const walkRegion = (map: IrNode, depth: number) => {
+    const name = nodeName(map);
+    const inside = ir.nodes.filter((n) => n.parent === map.id);
+    push(depth + 1, <RegionRow name={name} mapId={map.id} />);
+    if (inside.length === 0) {
+      push(
+        depth + 1,
+        <InsideSlot
+          label={`「${name}」の中にブロックを追加`}
+          onClick={() => onAdd({ kind: "inside", map: map.id }, `「${name}」の中に追加`)}
+        />,
+      );
+      return;
+    }
+    inside
+      .filter((n) => !incoming.has(n.id))
+      .forEach((entry, i) => {
+        if (i > 0) {
+          push(
+            depth + 1,
+            <PortRow
+              label="中でここからも始まる流れ"
+              note={`中の最後のブロックは 1 つにします。分かれた流れは「${typeLabel("control.join")}」でまとめます。`}
+            />,
+          );
+        }
+        push(
+          depth + 1,
+          <AddSlot
+            label={`「${nodeName(entry)}」の前にブロックを追加`}
+            onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に追加`)}
+          />,
+        );
+        walk(entry.id, depth + 1);
+      });
+  };
+
   const walk = (startId: string, depth: number) => {
     let currentId: string | null = startId;
     while (currentId) {
@@ -211,12 +315,26 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
       }
       visited.add(node.id);
       push(depth, card(node));
+      if (isMap(node)) walkRegion(node, depth);
 
-      const ports = outputPorts(node);
+      // 判定の出口はサーバの導出。今の設定に無い出口から出るエッジも行き先ごと見せる（無い出口の印つき）。
+      const drawn = drawnPorts(
+        node,
+        serverPorts[node.id],
+        edgePortsOf(node.id, ir.edges),
+        serverPortsParams[node.id] === node.params,
+      );
       const outs = ir.edges.filter((e) => e.from === node.id);
       const name = nodeName(node);
-      if (ports.length === 1) {
-        const port = ports[0];
+      // 出口（続きの処理の出口）がまだ決まらない判定（設定が契約に合わない間）は、キャンバスの尻尾の＋と同じく
+      // 既定の出口（out）の後ろに足せる。error だけがあっても、それを 1 出口として扱わない（error の後ろに足さない）。
+      const ports = exitsPending(node, serverPorts[node.id])
+        ? [{ port: defaultOutPort(node.type), missing: false }, ...drawn.filter((p) => p.port !== defaultOutPort(node.type))]
+        : drawn.length > 0
+          ? drawn
+          : [{ port: "out", missing: false }];
+      if (ports.length === 1 && !ports[0].missing) {
+        const port = ports[0].port;
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {
           push(
@@ -230,11 +348,12 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
         }
         if (edges.length === 1) {
           const edge = edges[0];
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
           push(
             depth,
             <AddSlot
-              label={`「${name}」の後ろにブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の後ろに挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           currentId = edge.to;
@@ -242,12 +361,13 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
         }
         // 同じ出口から複数へ（並行）。各行き先を字下げで並べる。
         edges.forEach((edge, i) => {
-          push(depth + 1, <PortRow label={`並行 ${i + 1}`} />);
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
+          push(depth + 1, <PortRow label={`同時に進む流れ ${i + 1}`} />);
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の後ろにブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の後ろに挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           walk(edge.to, depth + 1);
@@ -255,28 +375,29 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
         return;
       }
       // 複数の出口（分岐・振り分け・エラー時）。
-      for (const port of ports) {
-        const label = portLabel(port) || port;
-        push(depth + 1, <PortRow label={label} />);
+      for (const { port, missing } of ports) {
+        const label = nodePortLabel(node, port);
+        push(depth + 1, <PortRow label={label} missing={missing} />);
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の「${label}」にブロックを追加`}
+              label={`「${name}」の「${label}」の後ろにブロックを追加`}
               onClick={() =>
-                onAdd({ kind: "after", from: node.id, port }, `「${name}」の「${label}」に追加`)
+                onAdd({ kind: "after", from: node.id, port }, `「${name}」の「${label}」の後ろに追加`)
               }
             />,
           );
           continue;
         }
         for (const edge of edges) {
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の「${label}」にブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の「${label}」に挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           walk(edge.to, depth + 1);
@@ -286,18 +407,27 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
     }
   };
 
-  const incoming = new Set(ir.edges.map((e) => e.to));
-  const entries = ir.nodes.filter((n) => !incoming.has(n.id));
+  // 本体の入口（繰り返しの中のブロックは、その繰り返しのカードの下に並べる）。
+  const entries = ir.nodes.filter((n) => !incoming.has(n.id) && !(n.parent && isMap(byId.get(n.parent))));
   if (ir.nodes.length === 0) {
     push(0, <AddSlot label="最初のブロックを追加" onClick={() => onAdd({ kind: "first" }, "最初のブロックを追加")} />);
   }
   entries.forEach((entry, i) => {
-    if (i > 0) push(0, <PortRow label="別の入口" />);
+    // 前から線が来ないブロックは、実行の始めにほかの入口と同時に動く（線のないブロックもここに並ぶ・BUG-106）。
+    if (i > 0) {
+      push(
+        0,
+        <PortRow
+          label="ここからも始まる流れ"
+          note="前から線が来ないブロックは、実行の始めにほかと同時に動きます。"
+        />,
+      );
+    }
     push(
       0,
       <AddSlot
-        label={`「${nodeName(entry)}」の前にブロックを挿入`}
-        onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に挿入`)}
+        label={`「${nodeName(entry)}」の前にブロックを追加`}
+        onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に追加`)}
       />,
     );
     walk(entry.id, 0);
@@ -318,6 +448,7 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
                 name={view.label}
                 detail={view.detail}
                 selected={selection.kind === "trigger" && selection.index === i}
+                errorCount={triggerErrorsOf(errors, t, i).length}
                 onClick={() => select({ kind: "trigger", index: i })}
               />
             </li>
@@ -326,9 +457,11 @@ export function MobileFlow({ ir, selection, serverErrors, serverWarnings, dispat
       </ol>
       {items}
       {orphans.length > 0 ? (
-        <div className="mt-6 flex flex-col gap-2">
-          <p className="text-xs font-medium text-muted-foreground">
-            つながっていないブロック（キャンバスでつなげます）
+        // 入口から辿れないのは、線が輪になったブロックだけ（線のないブロックは入口として上に並ぶ・BUG-106）。
+        <div className="mt-6 flex flex-col gap-2" data-testid="mobile-flow-cycle">
+          <p className="text-xs font-medium text-muted-foreground">線が輪になっているブロック</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            前のブロックへ戻る線は保存できません。キャンバスで線を削除してください。
           </p>
           {orphans.map((n) => (
             <div key={n.id}>{card(n)}</div>

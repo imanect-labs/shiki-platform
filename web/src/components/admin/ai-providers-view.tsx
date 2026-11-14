@@ -14,6 +14,7 @@ const KIND_LABEL: Record<string, string> = {
   openai: "OpenAI 互換（Chat Completions）",
   openai_responses: "OpenAI Responses API",
   stub: "スタブ（開発・テスト用）",
+  typesafe_systemone: "TypeSafe System One 互換（判定用・実験的）",
 };
 
 function ProviderCard({ p }: { p: AdminProvider }) {

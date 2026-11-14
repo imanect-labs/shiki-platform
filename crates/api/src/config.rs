@@ -62,6 +62,13 @@ pub struct AppConfig {
     /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
     #[serde(default)]
     pub insights: crate::insights::InsightsConfig,
+    /// 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136）。既定は有効・60 秒ごとに 500 人。
+    #[serde(default)]
+    pub membership_reconcile: crate::membership_reconcile::MembershipReconcileConfig,
+    /// 外への送信の中継（ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数・GAP-72）。
+    /// 既定は使わない。
+    #[serde(default)]
+    pub egress: EgressConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
@@ -126,7 +133,10 @@ pub struct GatewayConfig {
     /// バインドポート（内部 API とは別ポート＝別オリジン）。既定 8090。
     #[serde(default = "default_gateway_port")]
     pub port: u16,
-    /// ゲートウェイトークンの `aud` 検証値（ミニアプリ client に付与される）。既定 `shiki-gateway`。
+    /// ゲートウェイトークンの `aud` 検証値。既定 `shiki-gateway`（[`app_gateway::DEFAULT_GATEWAY_AUDIENCE`]）。
+    ///
+    /// インストールはこの値をアプリのクライアントのマッパーに書く（トークンの `aud` に入る・BUG-206）。変えると次の
+    /// 起動の照合が、すべての有効なインストールのクライアントを新しい値に揃え直す。
     #[serde(default = "default_gateway_audience")]
     pub audience: String,
     /// ミニアプリ AI（llm/agent.invoke）の日次予算・管理者キャップ（マイクロ USD・Task 9.9）。
@@ -140,8 +150,8 @@ pub struct GatewayConfig {
     /// `http://localhost:<port>`（dev 既定）。
     #[serde(default)]
     pub public_origin: Option<String>,
-    /// ホスト（web シェル）のオリジン（CSP frame-ancestors）。未設定は
-    /// `auth.redirect_uri` のオリジンから導出。
+    /// ホスト（web シェル）のオリジン（CSP frame-ancestors と B1 のクライアントの戻り先）。未設定は
+    /// `auth.redirect_uri` のオリジンから導出（[`AppConfig::web_shell_origin`]）。
     #[serde(default)]
     pub web_origin: Option<String>,
     /// 組み込み砂箱バンドル（スライドエディタ等）の配置ディレクトリ（Task 11.2）。
@@ -155,7 +165,7 @@ fn default_gateway_port() -> u16 {
 }
 
 fn default_gateway_audience() -> String {
-    "shiki-gateway".to_string()
+    app_gateway::DEFAULT_GATEWAY_AUDIENCE.to_string()
 }
 
 fn default_ai_daily_cap() -> i64 {
@@ -303,10 +313,18 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
 }
 
+#[cfg(test)]
+mod app_builder_tests;
 mod auth;
 mod backends;
 #[cfg(test)]
 mod data_tests;
+#[cfg(test)]
+mod decision_tests;
+mod egress;
+mod miniapp;
+#[cfg(test)]
+mod prompt_cache_tests;
 #[cfg(test)]
 mod tests;
 
@@ -318,6 +336,8 @@ pub use backends::{
     LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
     UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
+pub use egress::EgressConfig;
+pub use miniapp::MINIAPP_OAUTH_CALLBACK_PATH;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -403,6 +423,11 @@ impl AppConfig {
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;
         Self::check_llm_chatgpt(&self.llm)?;
+        // 内部の送り先は読めない項目を黙って外さない（社内の送り先を書いたつもりで、実行のときに断られる・D-135）。
+        crate::workflow_runtime::check_internal_hosts(&self.workflow.http_internal_hosts)
+            .map_err(ConfigError::Invalid)?;
+        // 外への送信の中継の書き方（資格情報を URL に書かない・GAP-72）。パスワードのファイルは配線で読む。
+        self.egress.check()?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),

@@ -1,0 +1,167 @@
+{
+ "task": "basic-summary-file",
+ "variant": "escape_var",
+ "case": "normal",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-8fbfe0-escape-var",
+   "display_name": "本文を要約して保存",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title",
+     "body"
+    ],
+    "x-order": [
+     "title",
+     "body"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "summarize",
+     "type": "llm.invoke",
+     "label": "要約する",
+     "params": {
+      "prompt": {
+       "$template": "次の本文を 3 行で要約してください。\n件名: {{title}}\n本文: {body}",
+       "vars": {
+        "title": {
+         "$from": "input",
+         "path": "/title"
+        },
+        "body": {
+         "$from": "input",
+         "path": "/body"
+        }
+       }
+      },
+      "model": "default"
+     }
+    },
+    {
+     "id": "save",
+     "type": "storage.write",
+     "label": "要約を保存",
+     "params": {
+      "folder": "e7f53e4a-50d0-4a8f-ab40-081e6c95bc3d",
+      "name": {
+       "$template": "要約-{date}.md",
+       "vars": {
+        "date": {
+         "$from": "run",
+         "path": "/date"
+        }
+       }
+      },
+      "content": {
+       "$template": "# {title}\n\n{summary}",
+       "vars": {
+        "title": {
+         "$from": "input",
+         "path": "/title"
+        },
+        "summary": {
+         "$from": "nodes.summarize.output",
+         "path": "/text"
+        }
+       }
+      },
+      "content_type": "text/markdown",
+      "on_name_taken": "add_number"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "summarize",
+     "to": "save"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "save": [
+    "out"
+   ],
+   "summarize": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "7bc5e387-6ac6-4b88-8e9a-c2c60ce9ec4e",
+    "status": "succeeded",
+    "input": {
+     "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
+     "title": "会議室の予約方法"
+    },
+    "steps": [
+     {
+      "step_path": "summarize",
+      "node_id": "summarize",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "model": "default",
+       "text": "回答: 次の本文を 3 行で要約してください。\n件名: {title}\n本文: 来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。"
+      },
+      "error": null
+     },
+     {
+      "step_path": "save",
+      "node_id": "save",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "file_id": "226e0ecc-efe0-4050-94f4-32cdfa8753e9",
+       "id": "226e0ecc-efe0-4050-94f4-32cdfa8753e9",
+       "name": "要約-2026-11-07 (2).md",
+       "sha256": "ab70a9ed8db4ece22e5e98190b5a8cd4efdfe680f1f14ba8bd5369a266c5839a",
+       "size": 287,
+       "version": 1
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:54.474788+00:00"
+   }
+  ],
+  "rows": {},
+  "rows_before": {},
+  "files": [
+   {
+    "folder": "out",
+    "id": "226e0ecc-efe0-4050-94f4-32cdfa8753e9",
+    "name": "要約-2026-11-07 (2).md",
+    "text": "# 会議室の予約方法\n\n回答: 次の本文を 3 行で要約してください。\n件名: {title}\n本文: 来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。"
+   }
+  ],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:42:48.319650+00:00"
+ }
+}

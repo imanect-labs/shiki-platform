@@ -59,11 +59,13 @@ function SelectContent({
   );
 }
 
+/// `note` は選択肢の下の 1 行の補足（一覧の中にだけ出し、選んだ後の欄には名前だけを出す）。
 function SelectItem({
   className,
   children,
+  note,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+}: React.ComponentProps<typeof SelectPrimitive.Item> & { note?: React.ReactNode }) {
   return (
     <SelectPrimitive.Item
       className={cn(
@@ -73,7 +75,14 @@ function SelectItem({
       )}
       {...props}
     >
-      <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {note ? (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+          <span className="text-[11px] leading-snug text-muted-foreground">{note}</span>
+        </span>
+      ) : (
+        <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      )}
       <span className="absolute right-2 flex size-4 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
           <Check className="size-4" aria-hidden />

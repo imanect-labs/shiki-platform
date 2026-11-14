@@ -25,6 +25,7 @@
 pub mod accounting;
 pub mod chatgpt;
 pub mod config;
+pub mod decision;
 pub mod gateway;
 pub mod langfuse;
 pub mod limits;
@@ -32,6 +33,7 @@ pub mod model;
 pub mod provider;
 pub mod providers;
 mod retry;
+pub mod structured;
 pub mod tenant;
 pub mod tool_loading;
 pub mod usage_report;
@@ -41,18 +43,27 @@ pub use chatgpt::{
     CHATGPT_PROVIDER_ID,
 };
 pub use config::{
-    AutoConfig, GatewayConfig, LangfuseConfig, LlmTimeouts, ModelCatalog, ModelEntry,
-    ProviderConfig, ProviderKind, ProviderLimit, UsageLimitsConfig, DEFAULT_PROVIDER_ID,
+    AutoConfig, DecisionTuning, GatewayConfig, LangfuseConfig, LlmTimeouts, Modality, ModelCatalog,
+    ModelEntry, ProviderConfig, ProviderKind, ProviderLimit, UsageLimitsConfig,
+    DEFAULT_PROVIDER_ID,
 };
-pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
+pub use decision::cache::{Decided, DecisionCache};
+pub use decision::{
+    decide_error_kind, Answer, ChoiceOption, DecideCall, DecideErrorKind, DecideFailure,
+    DecideRequest, DecideResponse, DecisionMethod, DecisionProvider, Question, QuestionKind,
+};
+pub use gateway::{
+    GenerationRecord, LlmGateway, ProviderInfo, UsageSource, WorkflowEditorSettings,
+};
 pub use model::{
-    Block, Effort, GenerateRequest, ImageData, Message, Role, StopReason, StreamDelta, ToolDef,
-    Usage,
+    Block, Effort, GenerateRequest, ImageData, Message, ResponseFormat, Role, StopReason,
+    StreamDelta, ToolDef, Usage,
 };
 pub use provider::{DeltaStream, LlmError, LlmProvider};
+pub use structured::StructuredOutputMode;
 pub use tenant::{
     ChoiceError, ModelChoice, ResolvedChoice, SettingsError, SettingsPatch, TenantLlmSettings,
-    AUTO_MODEL,
+    AUTO_MODEL, MODEL_CHOICE_DISABLED, MODEL_UNAVAILABLE, NO_MODEL,
 };
 /// 前のターンの作業記録（chat の履歴が user 発話の前に別ブロックで足す）の先頭の印。
 ///

@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginAs, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// issue #342「共有リンクの複数発行・個別失効/延長・2タブ化」の受け入れ条件を検証する（LLM=stub）:
 /// - 共有ダイアログの「リンク」タブで範囲を選んでリンクを発行でき、発行済み一覧に出る。
@@ -88,7 +94,8 @@ test("同一(公開範囲・権限)の非パスワードリンクは重複発行
 
   // 同じ (社内の全員・閲覧) をもう一度発行しようとすると弾かれ、一覧は 1 本のまま。
   await dialog.getByTestId("link-create").click();
-  await expect(page.getByText("同じ公開範囲のリンクが既にあります")).toBeVisible({ timeout: 10_000 });
+  // 文頭で当てる（部分一致だと、トーストの読み上げ用の要素「Notification …」にも当たる）。
+  await expect(page.getByText(/^同じ公開範囲のリンクが既にあります。/)).toBeVisible({ timeout: 10_000 });
   await expect(dialog.getByTestId("link-item")).toHaveCount(1);
 });
 

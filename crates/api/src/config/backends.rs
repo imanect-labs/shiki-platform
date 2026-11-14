@@ -411,6 +411,7 @@ impl LlmConfig {
                     completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
                     cache_read_price_micros_per_mtok: m.cache_read_price_micros_per_mtok,
                     cache_write_price_micros_per_mtok: m.cache_write_price_micros_per_mtok,
+                    prompt_cache: m.prompt_cache,
                     context_window_tokens: m.context_window_tokens,
                     provider: m.provider.clone(),
                     display_name: m.display_name.clone(),
@@ -419,6 +420,10 @@ impl LlmConfig {
                     supports_effort: m.supports_effort,
                     requires_opt_in: m.requires_opt_in,
                     reasoning_in_content: m.reasoning_in_content,
+                    structured_output: m.structured_output,
+                    modality: m.modality,
+                    decision_via: m.decision_via.clone(),
+                    decision: m.decision,
                 })
                 .collect()
         };
@@ -460,6 +465,8 @@ pub(crate) fn chatgpt_model_id(slug: &str) -> String {
 }
 
 /// モデルカタログの 1 エントリ（設定表現）。単価はマイクロ USD / 100万トークン。
+// 真偽の項目は独立した設定の値そのもの（[`llm_gateway::ModelEntry`] と同じ・状態機械ではない）。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmModelEntry {
     pub id: String,
@@ -475,6 +482,10 @@ pub struct LlmModelEntry {
     /// キャッシュ書き込みの単価（省略はプロンプト単価・#581）。
     #[serde(default)]
     pub cache_write_price_micros_per_mtok: Option<u64>,
+    /// Anthropic の prompt caching を使う（[`llm_gateway::ModelEntry::prompt_cache`]・既定 false）。
+    /// Anthropic へ振る chat モデルでだけ書け、キャッシュの単価を 2 つとも書く（構築時に確かめる）。
+    #[serde(default)]
+    pub prompt_cache: bool,
     /// コンテキスト窓トークン数（未設定ならエージェントの剪定は固定閾値のまま・#529）。
     #[serde(default)]
     pub context_window_tokens: Option<u32>,
@@ -500,6 +511,19 @@ pub struct LlmModelEntry {
     /// （[`llm_gateway::ModelEntry::reasoning_in_content`]）。
     #[serde(default)]
     pub reasoning_in_content: bool,
+    /// 構造化出力の効かせ方（`json_schema` / `json_object` / `prompt`・省略は種別の既定。
+    /// [`llm_gateway::ModelEntry::structured_output`]）。
+    #[serde(default)]
+    pub structured_output: Option<llm_gateway::StructuredOutputMode>,
+    /// モデルの種類（`chat` / `decision`・省略は chat。[`llm_gateway::ModelEntry::modality`]）。
+    #[serde(default)]
+    pub modality: llm_gateway::Modality,
+    /// 判定用のモデルの元にする chat モデルの ID（[`llm_gateway::ModelEntry::decision_via`]）。
+    #[serde(default)]
+    pub decision_via: Option<String>,
+    /// 判定の出し方（`samples`・`effort`。[`llm_gateway::ModelEntry::decision`]）。
+    #[serde(default)]
+    pub decision: Option<llm_gateway::DecisionTuning>,
 }
 
 /// Langfuse 計装の設定（設定表現）。
@@ -525,6 +549,9 @@ pub enum LlmBackend {
     Gemini,
     /// Vertex AI（枠・未実装）。
     Vertex,
+    /// TypeSafe System One 互換の決定モデルの API（判定専用・実験的・FEAT-1 の T9）。`[[llm.providers]]` に書き、
+    /// 判定用のモデル（`modality = "decision"`・`requires_opt_in = true`・`processed_abroad = true`）だけを振る。
+    TypesafeSystemone,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
@@ -593,6 +620,51 @@ pub struct ChatConfig {
     /// rootfs の numpy/pandas 同梱はビルド（rootfs-requirements.txt・--require-hashes）が保証する。
     #[serde(default)]
     pub sandbox_backend: Option<sandbox_client::SandboxBackend>,
+    /// 作成系の道具（emit_workflow など）を使う会話の予算（`chat.app_builder.*`・D-53 の HD-4・T03）。
+    #[serde(default)]
+    pub app_builder: AppBuilderChatConfig,
+}
+
+/// 作成系の道具を使う会話の予算（`chat.app_builder.*`・環境変数は `SHIKI__CHAT__APP_BUILDER__MAX_STEPS` など）。
+///
+/// 通常の会話は、作成系の道具を初めて呼んだときに、手数・トークン・費用・1 応答の上限をこの値まで 1 回だけ
+/// 広げる（D-204）。どれも未指定は `chat::WorkerConfig` の既定（24 手・新規ぶん 60 万トークン・$2・1 応答 32768・
+/// effort medium）。項目の名前は `chat.*` の同じ意味の項目に揃える（`max_tokens` は 1 応答、`budget_*` は累積）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppBuilderChatConfig {
+    /// 最大ステップ（1 未満は 1 にする）。
+    #[serde(default)]
+    pub max_steps: Option<usize>,
+    /// 累積トークン上限（新規ぶん）。
+    #[serde(default)]
+    pub budget_max_tokens: Option<u64>,
+    /// 累積コスト上限（マイクロ USD）。
+    #[serde(default)]
+    pub budget_max_cost_usd_micros: Option<i64>,
+    /// 1 応答の最大トークン（adaptive thinking も含む）。
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    /// 作成用の会話の思考強度（組織が指定していなければ当てる・T09 で使う）。
+    #[serde(default)]
+    pub effort: Option<llm_gateway::Effort>,
+}
+
+impl AppBuilderChatConfig {
+    /// ワーカーの設定へ写す（未指定の項目は `chat::WorkerConfig` の既定）。
+    #[must_use]
+    pub fn resolve(&self) -> chat::worker::AppBuilderConfig {
+        let base = chat::WorkerConfig::default().app_builder;
+        chat::worker::AppBuilderConfig {
+            max_steps: self.max_steps.unwrap_or(base.max_steps).max(1),
+            max_fresh_tokens: self.budget_max_tokens.unwrap_or(base.max_fresh_tokens),
+            max_cost_usd_micros: self
+                .budget_max_cost_usd_micros
+                .unwrap_or(base.max_cost_usd_micros),
+            max_response_tokens: self.max_tokens.unwrap_or(base.max_response_tokens),
+            effort: self.effort.unwrap_or(base.effort),
+        }
+    }
 }
 
 /// CSV クエリサービス（tabular・Task 11P.7）の設定。
@@ -699,6 +771,7 @@ impl Default for ChatConfig {
             classic_rag: false,
             sandbox_endpoint: None,
             sandbox_backend: None,
+            app_builder: AppBuilderChatConfig::default(),
         }
     }
 }

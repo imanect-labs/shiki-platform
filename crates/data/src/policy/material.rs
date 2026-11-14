@@ -6,6 +6,9 @@
 //!
 //! - **上限**: ロール集合 [`MAX_ROLE_SET`]（超過は fail-closed エラー＝設定異常として拒否）、
 //!   共有 ID [`MAX_SHARED_IDS`]（超過分は**落とす**＝可視が減る方向・`shares_truncated` で通知）。
+//! - **ListObjects の応答の上限**（[`authz::visible::LIST_OBJECTS_MAX_RESULTS`]・BUG-161）: 実効集合の応答は上限で
+//!   黙って切れる。ロールの実効集合は上限に届いたら超過と同じく fail-closed。共有 ID は本人と所属ロールの直接タプルを
+//!   Read API（件数の上限が無い）で読み直して足す（[`shared_ids`]）。
 //! - SQL 側は `= ANY($n::text[]/uuid[])` の**配列バインド**で渡し、SQL テキストは肥大しない。
 //!
 //! # リクエストを跨いでキャッシュしない（PIT-18・Codex #6/#7/#8）
@@ -216,15 +219,72 @@ async fn role_members(
     Ok(out)
 }
 
-/// 個別共有集合（**実効集合**＝role 共有も継承展開・Codex #3）を上限付きで解決する。
+/// 個別共有集合（**実効集合**＝role 共有も継承展開・Codex #3）を上限付きで解決する（リクエスト内はメモ）。
+///
+/// ListObjects の応答が上限（[`authz::visible::LIST_OBJECTS_MAX_RESULTS`]）に届いたら、その応答は全部ではない
+/// （BUG-161）。`data_record` の viewer は直接のタプル（`[user, role#member]`・editor を含む）だけなので、本人と
+/// 所属ロール（配下ロール込みの実効集合）それぞれの直接タプルを Read API（件数の上限が無い）で読み直して足す。
+/// 所属ロールの実効集合も上限に届いたら、読み直せないロールの共有は見えない方向に倒し `shares_truncated` を立てる。
 async fn shared_ids(ctx: &AuthContext, az: &AuthzMemo<'_>) -> Result<(Vec<Uuid>, bool), DataError> {
-    let shared = az
+    if let Some(got) = az.shared_records(ctx) {
+        return Ok(got);
+    }
+    let listed = az
         .list_objects(ctx, Relation::Viewer, ObjectType::DataRecord)
         .await?;
+    let got = if authz::visible::list_may_be_cut(listed.len()) {
+        let (direct, roles_cut) = shared_by_direct_tuples(ctx, az).await?;
+        let (ids, truncated) = cap_shared_ids(ctx, listed.iter().chain(direct.iter()));
+        (ids, truncated || roles_cut)
+    } else {
+        cap_shared_ids(ctx, listed.iter())
+    };
+    az.put_shared_records(ctx, got.clone());
+    Ok(got)
+}
+
+/// 本人と所属ロールの `data_record` の直接タプル（`type:id`）。2 つ目は所属ロールの実効集合が上限で切れたか
+/// （切れたら読み直せないロールの共有が欠ける）。
+async fn shared_by_direct_tuples(
+    ctx: &AuthContext,
+    az: &AuthzMemo<'_>,
+) -> Result<(Vec<String>, bool), DataError> {
     let ns = ctx.ns();
-    let mut truncated = false;
-    let mut ids: Vec<Uuid> = Vec::with_capacity(shared.len().min(MAX_SHARED_IDS));
-    for o in shared.iter() {
+    let roles = az
+        .list_objects(ctx, Relation::Member, ObjectType::Role)
+        .await?;
+    let roles_cut = authz::visible::list_may_be_cut(roles.len());
+    let mut subjects = vec![ctx.subject()];
+    subjects.extend(
+        roles
+            .iter()
+            .filter_map(|o| o.split_once(':').map(|(_, id)| id))
+            .filter_map(|id| ns.strip_object_id(id))
+            .map(|local| ns.role_member(local)),
+    );
+    let read = az
+        .read_direct_objects(&subjects, ObjectType::DataRecord)
+        .await?;
+    if roles_cut {
+        tracing::warn!(
+            user = %ctx.principal().id,
+            roles = roles.len(),
+            "所属ロールの実効集合が上限に届いたため、読み直せないロールの個別共有は見えない方向に倒す（BUG-161）"
+        );
+    }
+    Ok((read.into_iter().flatten().collect(), roles_cut))
+}
+
+/// `data_record:<tenant>|<uuid>` の並びから、このテナントの id を重ねずに [`MAX_SHARED_IDS`] 件まで取り出す
+/// （超えたら切り詰めて `true`・可視が減る方向）。
+fn cap_shared_ids<'a>(
+    ctx: &AuthContext,
+    objects: impl Iterator<Item = &'a String>,
+) -> (Vec<Uuid>, bool) {
+    let ns = ctx.ns();
+    let mut seen = std::collections::HashSet::new();
+    let mut ids: Vec<Uuid> = Vec::new();
+    for o in objects {
         let Some((_, id_part)) = o.split_once(':') else {
             continue;
         };
@@ -234,18 +294,21 @@ async fn shared_ids(ctx: &AuthContext, az: &AuthzMemo<'_>) -> Result<(Vec<Uuid>,
         let Ok(id) = Uuid::parse_str(local) else {
             continue;
         };
+        if seen.contains(&id) {
+            continue;
+        }
         if ids.len() >= MAX_SHARED_IDS {
-            truncated = true;
             tracing::warn!(
                 user = %ctx.principal().id,
                 limit = MAX_SHARED_IDS,
                 "個別共有集合が上限を超過（超過分は不可視・PIT-18 fail-closed）"
             );
-            break;
+            return (ids, true);
         }
+        seen.insert(id);
         ids.push(id);
     }
-    Ok((ids, truncated))
+    (ids, false)
 }
 
 /// ロール集合（direct=read_subject_objects / effective=list_objects）を上限付きで解決する。
@@ -260,7 +323,9 @@ async fn role_set(
     } else {
         az.read_subject_objects(ctx, ObjectType::Role).await?
     };
-    if raw.len() > MAX_ROLE_SET {
+    // 実効集合（ListObjects）は応答の上限で黙って切れるので、上限に届いたら超過と同じに扱う（BUG-161）。
+    // 直接タプル（Read API）は件数の上限が無く、切れない。
+    if raw.len() > MAX_ROLE_SET || (effective && authz::visible::list_may_be_cut(raw.len())) {
         // ロール爆発は述語の部分適用（見えすぎ/見えなさすぎの不定）を招くため
         // fail-closed でクエリごと拒否する（PIT-18: 閾値超のフォールバックを仕様化）。
         return Err(DataError::Invalid(format!(
@@ -284,6 +349,59 @@ async fn role_set(
 mod tests {
     use super::*;
     use crate::policy::ast::CmpOp;
+
+    /// 上限に届いたときの読み直し（[`shared_by_direct_tuples`]）は、`data_record` の直接のタプルを relation を問わず
+    /// 閲覧として数える（Read API は relation を問わずに返す）。viewer を含意しない直接の relation（例: commenter）を
+    /// 足すと、ListObjects の経路では見えないのに、この経路だけ見える側に倒れる（fail-open）。モデルの `data_record` の
+    /// 直接に付けられる relation が、どれも viewer を含意することを確かめる（足したら、この経路を直すまで落ちる）。
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn every_direct_data_record_relation_implies_viewer() {
+        let model = authz::model::default_model();
+        let t = model["type_definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["type"] == "data_record")
+            .unwrap();
+        let relations = t["relations"].as_object().unwrap();
+        // viewer を含意する relation（viewer の和に計算の userset で入っているものを、たどれるだけたどる）。
+        let mut implied: Vec<String> = vec!["viewer".into()];
+        let mut i = 0;
+        while i < implied.len() {
+            let def = &relations[&implied[i]];
+            let parts: Vec<&serde_json::Value> = def["union"]["child"]
+                .as_array()
+                .map_or_else(|| vec![def], |c| c.iter().collect());
+            for part in parts {
+                if let Some(r) = part["computedUserset"]["relation"].as_str() {
+                    if !implied.iter().any(|x| x == r) {
+                        implied.push(r.to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+        let direct: Vec<&String> = t["metadata"]["relations"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, m)| {
+                m["directly_related_user_types"]
+                    .as_array()
+                    .is_some_and(|v| !v.is_empty())
+            })
+            .map(|(r, _)| r)
+            .collect();
+        assert!(!direct.is_empty());
+        for r in direct {
+            assert!(
+                implied.contains(r),
+                "data_record の直接の relation「{r}」は viewer を含意しません。上限に届いたときの読み直し\
+                 （shared_by_direct_tuples）が見える側に倒れるので、読み直しを viewer の判定で確かめ直してください"
+            );
+        }
+    }
 
     #[test]
     fn analyze_detects_role_needs() {

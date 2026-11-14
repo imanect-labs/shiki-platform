@@ -149,7 +149,7 @@ impl From<storage::StorageError> for ApiError {
         match err {
             SE::Forbidden => ApiError::Forbidden,
             SE::NotFound => ApiError::NotFound,
-            SE::Conflict => ApiError::Conflict,
+            SE::Conflict | SE::IdempotencyConflict => ApiError::Conflict,
             // 版の衝突は今の版を返す（クライアントが「最新を開く／上書き」を選べるように）。
             SE::VersionConflict { current } => ApiError::ConflictJson(json!({
                 "status": 409,
@@ -207,10 +207,15 @@ impl From<artifact::ArtifactError> for ApiError {
     fn from(err: artifact::ArtifactError) -> Self {
         use artifact::ArtifactError as AE;
         match err {
-            AE::NotFound => ApiError::NotFound,
+            // 公開していない版（ミニアプリの下書きを使う人が読もうとした・D-16）は、汎用の口では見つからないのと同じ
+            // （ミニアプリの口は、開き直しを促す 409 に写す・`routes::gui_errors`）。
+            AE::NotFound | AE::NotPublished { .. } => ApiError::NotFound,
             AE::Forbidden => ApiError::Forbidden,
             AE::Invalid(msg) => ApiError::BadRequest(msg),
-            AE::Conflict(_) => ApiError::Conflict,
+            // 版の競合と名前の重複は、code と利用者向けの文言を持つ 409（本文の無い 409 にしない・GAP-41）。
+            AE::Conflict(reason) => ApiError::ConflictJson(crate::error_body::to_body(
+                &crate::error_body::ArtifactConflictBody::new(reason),
+            )),
             AE::Internal(msg) => ApiError::Internal(format!("artifact: {msg}")),
         }
     }
@@ -340,6 +345,22 @@ impl From<app_platform::AppPlatformError> for ApiError {
             E::NotFound => ApiError::NotFound,
             E::Forbidden => ApiError::Forbidden,
             E::Invalid(msg) => ApiError::BadRequest(msg),
+            // ほかの組織のインストール（BUG-212）と取り下げた版は、理由を返す。ほかの 409 の文言は内部の詳細を含みうる。
+            E::Conflict(msg) if msg == app_gateway::INSTALLED_IN_OTHER_ORG => {
+                use crate::error_body::{to_body, ConflictBody, ConflictCode};
+                ApiError::ConflictJson(to_body(&ConflictBody {
+                    message: Some(msg),
+                    ..ConflictBody::new(ConflictCode::InstalledInOtherOrg)
+                }))
+            }
+            // 取り下げた版のインストール（GAP-69b）も、理由を返す（画面が一覧を読み直す手がかり）。
+            E::Conflict(msg) if msg == app_platform::YANKED_VERSION => {
+                use crate::error_body::{to_body, ConflictBody, ConflictCode};
+                ApiError::ConflictJson(to_body(&ConflictBody {
+                    message: Some(msg),
+                    ..ConflictBody::new(ConflictCode::Yanked)
+                }))
+            }
             E::Conflict(_) => ApiError::Conflict,
             E::Internal(msg) => ApiError::Internal(format!("app-platform: {msg}")),
         }
@@ -492,6 +513,33 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["code"], "conflict");
         assert!(body.get("detail").is_none(), "理由の文言は返さない: {body}");
+    }
+
+    /// アプリ基盤の 409 は、ほかの組織のインストールと取り下げた版だけ code と文言を返し、ほかは汎用の 409（GAP-69b）。
+    #[tokio::test]
+    async fn app_platform_conflicts_return_only_known_messages() {
+        use app_platform::AppPlatformError as E;
+        let (status, body) = body_json(ApiError::from(E::Conflict(
+            app_platform::YANKED_VERSION.into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "yanked", "{body}");
+        assert_eq!(body["message"], app_platform::YANKED_VERSION, "{body}");
+        let (_, body) = body_json(ApiError::from(E::Conflict(
+            app_gateway::INSTALLED_IN_OTHER_ORG.into(),
+        )))
+        .await;
+        assert_eq!(body["code"], "installed_in_other_org", "{body}");
+        let (status, body) = body_json(ApiError::from(E::Conflict(
+            "テーブル名 'x' は既に存在します".into(),
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            !body.to_string().contains("テーブル名"),
+            "内部の文言を返さない: {body}"
+        );
     }
 
     /// data の 400 は構造化（code・安全な文言・列の参照名）。理由を構造化していない誤りは汎用の文言で、
@@ -683,6 +731,39 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], 429);
         assert_eq!(v["detail"], MSG);
+    }
+
+    /// アーティファクトの版の競合と名前の重複は、code と利用者向けの文言を持つ 409（本文の無い 409 にしない・GAP-41）。
+    #[tokio::test]
+    async fn artifact_conflicts_are_structured_409s() {
+        use artifact::{ArtifactKind, ConflictReason};
+        let (status, body) = body_json(ApiError::from(artifact::ArtifactError::Conflict(
+            ConflictReason::VersionChanged {
+                kind: ArtifactKind::MiniApp,
+                current: 7,
+            },
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "version_conflict");
+        assert_eq!(body["current_version"], 7);
+        assert_eq!(
+            body["message"],
+            "ほかの人が先にこのアプリを保存しました。あなたの変更は保存されていません。"
+        );
+        let (status, body) = body_json(ApiError::from(artifact::ArtifactError::Conflict(
+            ConflictReason::NameTaken {
+                kind: ArtifactKind::Workflow,
+            },
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "name_taken");
+        assert!(body.get("current_version").is_none(), "{body}");
+        assert_eq!(
+            body["message"],
+            "同じ名前のワークフローがすでにあります（あなたが見られないものを含みます）。別の名前にしてください。"
+        );
     }
 
     #[tokio::test]

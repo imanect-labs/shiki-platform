@@ -135,6 +135,8 @@ impl TableRow {
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            add_only: false,
+            narrowed: None,
             keys: TableKeys {
                 tenant_int: self.tenant_int,
                 table_int: self.table_int,
@@ -339,6 +341,8 @@ impl DataStore {
             .prepare_derived(ctx, None, app_id, false, &mut schema, None)
             .await?;
         validate_table_schema(&schema)?;
+        self.check_fsm_pin(ctx, None, None, &schema, trace_id)
+            .await?;
         // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
         let keys = self.allocate_table_keys(ctx.tenant_id()).await?;
 
@@ -512,6 +516,9 @@ impl DataStore {
             .await?;
         }
         validate_schema_update(&current.schema.0, &next)?;
+        // 指す状態の進め方と状態の列の選択肢が合うか（指す定義を替えたら、それを読めるか・GAP-44）。
+        self.check_fsm_pin(ctx, Some(id), Some(&current.schema.0), &next, trace_id)
+            .await?;
         // 既存データと矛盾する改訂（値の無い行がある列の必須化・使われている選択肢の削除）は理由付きで拒否
         // （検証 2-A-P1-1。テーブル行は FOR UPDATE 済みなので並行する書込はこの前後に直列化される）。
         crate::schema_data_check::check_schema_against_data(
@@ -585,7 +592,8 @@ impl DataStore {
         Ok(row)
     }
 
-    /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。
+    /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。OpenFGA の
+    /// `data_table` のタプルは commit の後に撤去する（[`crate::table_purge`]）。
     pub async fn delete_table(
         &self,
         ctx: &AuthContext,
@@ -634,6 +642,13 @@ impl DataStore {
         crate::stream::relay::emit_refresh_for_referrers(&mut tx, ctx.tenant_id(), id).await?;
         tx.commit().await.map_err(map_db)?;
         self.schema_cache.invalidate_table(ctx.tenant_id(), id);
+        // OpenFGA のタプル（持ち主・共有・委譲）を撤去する（BUG-149・失敗は掃除がやり直す）。開いている購読には
+        // 次のバッチで認可を引き直させる。
+        self.purge_deleted_table_tuples_of(ctx.tenant_id(), id)
+            .await;
+        if let Err(e) = self.notify_authz_changed(ctx, Some(id)).await {
+            tracing::warn!(error = %e, table_id = %id, "テーブルの削除の後の配信の世代更新に失敗");
+        }
         self.record_audit_best_effort(
             ctx,
             AuditAction::DataTableDelete,
@@ -793,10 +808,11 @@ impl DataStore {
                     },
                 )
                 .await;
-            // テーブルが見えない主体（viewer でない）には存在も分からせない: 存在しない・削除済みと同じ 404
-            // （data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403。
+            // テーブルが見えない主体（viewer でも追加だけでもない）には存在も分からせない: 存在しない・削除済みと
+            // 同じ 404（data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403（追加だけの
+            // 人はテーブルの定義を読めるので、書き換え・削除・状態を進める・取込は 403・D-113）。
             let visible =
-                relation != Relation::Viewer && az.check(ctx, Relation::Viewer, &obj).await?;
+                relation != Relation::Viewer && self.read_scope(ctx, az, id).await?.is_some();
             return Err(if visible {
                 DataError::Forbidden
             } else {

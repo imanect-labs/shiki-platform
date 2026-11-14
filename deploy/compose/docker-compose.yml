@@ -648,6 +648,16 @@ services:
       # ワークフロー実行時（Phase 10）。launcher/worker/scheduler を有効化（エディタからの実行・
       # スケジュール発火・実行履歴 SSE が動く）。
       SHIKI__WORKFLOW__ENABLED: ${SHIKI__WORKFLOW__ENABLED:-true}
+      # ワークフローの AI エージェント（agent.invoke）の web ページを読む道具が読んでよいサイトの天井（BUG-6）。
+      # 例: '["docs.example.com", "*.example.org"]'。未設定・空なら web ページを読む道具は提示しない
+      # （SHIKI__WORKFLOW__HTTP_ALLOWLIST には戻さない・D-59。ノードの設定はこの部分集合に限る）。
+      # SHIKI__WORKFLOW__AGENT__WEB_ALLOWLIST: '["docs.example.com"]'
+      # 外へ出るのに中継（フォワードプロキシ）が要る環境で、ワークフローの外部への送信・web.fetch・回答の画像の取得・
+      # ミニアプリの関数の外部 HTTP を通す中継（GAP-72）。環境の HTTP_PROXY / HTTPS_PROXY は、これらの送信には使わない。http:// の
+      # ホストとポートだけを書き、認証のパスワードはファイルで渡す（URL に利用者名やパスワードを書くと起動しない）。
+      # SHIKI__EGRESS__PROXY_URL: http://proxy.corp.example:8080
+      # SHIKI__EGRESS__PROXY_USERNAME: shiki
+      # SHIKI__EGRESS__PROXY_PASSWORD_FILE: /run/secrets/egress-proxy-password
       # RAG（Phase 2）: インジェスト・パイプラインと検索。
       SHIKI__BUG_REPORT__ENABLED: ${SHIKI_BUG_REPORT_ENABLED:-false}
       SHIKI__BUG_REPORT__BACKEND: ${SHIKI_BUG_REPORT_BACKEND:-disabled}
@@ -661,7 +671,7 @@ services:
       SHIKI__HELP__MAX_CHUNKS: ${SHIKI__HELP__MAX_CHUNKS:-20000}
       SHIKI__RAG__ENABLED: ${SHIKI__RAG__ENABLED:-true}
       SHIKI__CHAT__SANDBOX_ENDPOINT: http://sandbox-orchestrator:50000
-      # コード実行系（code_interpreter / shell / workflow agent_invoke）の隔離ティア（admin ポリシー）。
+      # コード実行系（code_interpreter / shell / workflow の agent.invoke の道具 code.run）の隔離ティア（admin ポリシー）。
       # gvisor（既定・#346。rootfs は numpy/pandas 同梱・orchestrator イメージに焼き込み済み）/
       # wasm / firecracker。runsc の動かない環境（KVM 不要だが非特権 userns が必要）では
       # `SHIKI__CHAT__SANDBOX_BACKEND=wasm` で明示的に退避する（自動降格はしない・design §4.6）。

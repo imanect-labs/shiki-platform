@@ -229,6 +229,10 @@ pub(crate) async fn emit_tool_events(
         })
         .await?;
     }
+    for item in &outcome.builder_refs {
+        sink.emit(AgentEvent::BuilderRef { item: item.clone() })
+            .await?;
+    }
     for skill in &outcome.skill_invocations {
         sink.emit(AgentEvent::SkillInvoked {
             skill: skill.clone(),
@@ -254,7 +258,60 @@ pub(crate) async fn emit_tool_events(
 
 #[cfg(test)]
 mod tests {
-    use super::with_parent;
+    use super::{emit_tool_events, with_parent, PendingCall};
+    use crate::event::{AgentError, AgentEvent, EventSink};
+    use crate::tool::ToolOutcome;
+
+    /// 届いたイベントを並べて持つだけのシンク。
+    #[derive(Default)]
+    struct Recorder(Vec<AgentEvent>);
+
+    #[async_trait::async_trait]
+    impl EventSink for Recorder {
+        async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+            self.0.push(event);
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// builder_refs は中身を変えずに、結果の後へ 1 件ずつ BuilderRef として流れる（D-204）。
+    /// ドライブの文書の参照（document_refs）とは混ざらない。
+    #[tokio::test]
+    async fn builder_refs_become_builder_ref_events() {
+        let call = PendingCall {
+            id: "call-1".into(),
+            name: "emit_workflow".into(),
+            input: serde_json::json!({}),
+        };
+        let mut outcome = ToolOutcome::ok("作りました");
+        let table =
+            serde_json::json!({ "kind": "data_table", "id": "t-1", "name": "顧客", "version": 1 });
+        let view =
+            serde_json::json!({ "kind": "data_view", "id": "v-1", "name": "今月", "version": 3 });
+        outcome.builder_refs = vec![table.clone(), view.clone()];
+        let mut sink = Recorder::default();
+        emit_tool_events(&mut sink, &call, &outcome).await.unwrap();
+        assert!(matches!(
+            &sink.0[0],
+            AgentEvent::ToolResult { ok: true, .. }
+        ));
+        let refs: Vec<&serde_json::Value> = sink
+            .0
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BuilderRef { item } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refs, [&table, &view]);
+        assert!(!sink
+            .0
+            .iter()
+            .any(|e| matches!(e, AgentEvent::DocumentRef { .. })));
+    }
 
     /// 保存先は指定があるときだけ下書きペイロードへ足す（無ければ形を変えない・#942）。
     #[test]

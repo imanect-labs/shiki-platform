@@ -14,11 +14,22 @@ use llm_gateway::{Block, Message as LlmMessage};
 use crate::budget::{Budget, Spent};
 
 /// run 内で変化しない上限と計画の作法。残量はツール結果で更新し、system のキャッシュを保つ。
+///
+/// `extensible` は、この run の上限が途中で 1 回だけ広がりうるか（[`crate::BudgetExtension`]・D-204）。
+/// 広がった後は [予算] の残量が広げた上限で数えられるので、ここに書いた上限より残量を正とさせる
+/// （system は run 内で変えない。どの道具で広がるかは書かない＝広げるために道具を呼ばせない）。
 pub(crate) fn budget_system_prompt(
     system: Option<&str>,
     budget: &Budget,
     has_tools: bool,
+    extensible: bool,
 ) -> String {
+    let extension_note = if extensible {
+        "作業の内容によっては、この上限が途中で広がることがあります。\
+         そのときはツール結果の [予算] の残量を正としてください。"
+    } else {
+        ""
+    };
     let tool_plan = if has_tools {
         "複数工程の依頼では、何をどの順で調べ、何を実行して\
          どう結果を確かめるかを、利用者に見える本文として最初に 1〜3 文で伝えてください。\
@@ -30,7 +41,7 @@ pub(crate) fn budget_system_prompt(
     };
     format!(
         "{}\n\n[実行予算と計画]\n\
-         この run の上限は {} ステップです。LLM の生成 1 回が 1 ステップで、\
+         この run の上限は {} ステップです。{extension_note}LLM の生成 1 回が 1 ステップで、\
          ツール結果を受けた後の生成・計画ツールの呼び出し・最終回答も数えます。\
          同じ生成で複数ツールを呼んでもステップ数は 1 ですが、依存する操作は結果を見てから進めてください。\n\
          最初に、依頼の完了条件と、必要な調査・操作・結果確認・最終回答までを上限内に収める\
@@ -93,18 +104,33 @@ const TRUNCATED_CALL_MARK: &str = "[出力上限] この呼び出しは";
 /// （毎回同じ大きさで書いて切れ続けるモデルで、ステップ予算を空費させない）。
 const MAX_TRUNCATED_RETRIES: usize = 3;
 
-/// **出力上限（`max_tokens`）で切れたツール呼び出し**へ返す結果を組む。上限回数を超えたら `None`。
+/// 出力の上限（`max_tokens`）で止まった応答のツール呼び出し（[`truncated_call_results`] の入力・(id, 名前)）。
+pub(crate) struct TruncatedCalls<'a> {
+    /// 引数の途中で切れた呼び出し（始まりだけ届き、引数の届かなかったもの・BUG-225）。
+    pub(crate) cut: &'a [(String, String)],
+    /// 同じ応答の、引数まで届いた呼び出し（応答が上限で止まったので、これも実行しない）。
+    pub(crate) whole: &'a [(String, String)],
+}
+
+/// **出力上限（`max_tokens`）で止まった応答のツール呼び出し**へ返す結果を組む。上限回数を超えたら `None`。
 ///
-/// 切れた呼び出しの引数は途中までしか無く、プロバイダは解釈できない引数を `{}` にして返す
-/// （openai.rs / anthropic.rs）。それを実行すると空の編集・既定値での操作になるので**実行しない**。
-/// 黙って run を畳むと、画面ではツールカードが出たまま止まり、利用者には何が起きたか分からない
+/// 切れた呼び出しの引数は途中までしか無く、アダプタは読めない引数の呼び出しを渡さない（BUG-225）。
+/// ループは始まりだけ届いた呼び出しを `{}` で履歴に積み、ここで閉じる。**実行しない**（空の編集・既定値での
+/// 操作になる）。黙って run を畳むと、画面ではツールカードが出たまま止まり、利用者には何が起きたか分からない
 /// （実測: エージェントモードで大きな表の編集・委譲の指示文が切れ、そのまま終わっていた）。
 /// 「切れた・小さく分けて呼び直せ」をツール結果として返し、次の生成で書き直させる。
 /// tool_use と対の tool_result にするのは、両プロバイダが確実に受け付ける形だから（冒頭の注記）。
+///
+/// 同じ応答の、引数まで届いた呼び出し（`whole`）も実行しない（応答が途中で止まっているので、モデルが続けて
+/// 出すはずだった呼び出しとの順や組を保てない）。それには「切れた」とは言わず、同じ呼び出しを送り直させる。
+///
+/// `widened_to` は、この切れた呼び出しで次の応答の出力上限が広がったとき（作成系の道具・D-204）の新しい上限。
+/// そのときは分けて呼ばせず、同じ呼び出しを書き直させる（分けると版や編集が余分に増える）。
 pub(crate) fn truncated_call_results(
     messages: &[LlmMessage],
-    call_ids: &[(String, String)],
+    calls: &TruncatedCalls<'_>,
     max_tokens: Option<u32>,
+    widened_to: Option<u32>,
 ) -> Option<Vec<Block>> {
     // 回数は**切れた応答（ステップ）単位**で数える（1 応答に複数の呼び出しがあっても 1 回）。
     let retried = messages
@@ -119,23 +145,38 @@ pub(crate) fn truncated_call_results(
         return None;
     }
     let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
-    Some(
-        call_ids
-            .iter()
-            .map(|(id, name)| {
-                Block::tool_result(
-                    id.clone(),
-                    format!(
-                        "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
-                         実行していません（{name} は何も変更していません）。\
-                         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
-                         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
-                    ),
-                    true,
-                )
-            })
-            .collect(),
-    )
+    let widened = widened_to.filter(|n| max_tokens.is_some_and(|m| *n > m));
+    let retry = match widened {
+        Some(n) => format!(
+            "次の応答からは出力上限を {n} トークンに広げたので、思考を短くして同じ呼び出しを\
+             書き直してください。"
+        ),
+        None => "1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
+                 数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+            .to_string(),
+    };
+    let whole = calls.whole.iter().map(|(id, name)| {
+        Block::tool_result(
+            id.clone(),
+            format!(
+                "{TRUNCATED_CALL_MARK}、応答が出力上限{limit}で止まったため実行していません\
+                 （{name} は何も変更していません）。引数は届いているので、同じ呼び出しをもう一度\
+                 送ってください。"
+            ),
+            true,
+        )
+    });
+    let cut = calls.cut.iter().map(|(id, name)| {
+        Block::tool_result(
+            id.clone(),
+            format!(
+                "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
+                 実行していません（{name} は何も変更していません）。{retry}"
+            ),
+            true,
+        )
+    });
+    Some(whole.chain(cut).collect())
 }
 
 /// 1 run で「本文の続き」を書かせる回数の上限（1 回の上限 × (この回数 + 1) までの本文を書ける）。
@@ -392,6 +433,62 @@ mod tests {
         assert!(!nudge_empty_response(&mut messages));
     }
 
+    /// 全部が引数の途中で切れた呼び出しの組。
+    fn cut(ids: &[(String, String)]) -> TruncatedCalls<'_> {
+        TruncatedCalls {
+            cut: ids,
+            whole: &[],
+        }
+    }
+
+    /// 同じ応答に引数まで届いた呼び出しと切れた呼び出しが混ざったら、届いた方を「切れた」と言わず、
+    /// 切れた方にだけ「切れた」と返す（どちらも実行しない・届いた順に返す）。
+    #[test]
+    fn whole_and_cut_calls_in_one_truncated_answer_get_their_own_results() {
+        let whole = vec![("w1".to_string(), "doc_search".to_string())];
+        let cut = vec![("c1".to_string(), "emit_workflow".to_string())];
+        let calls = TruncatedCalls {
+            cut: &cut,
+            whole: &whole,
+        };
+        let messages = vec![LlmMessage::text(LlmRole::User, "作って")];
+        let blocks = truncated_call_results(&messages, &calls, Some(8192), Some(32768)).unwrap();
+        let results: Vec<(&str, &str)> = blocks
+            .iter()
+            .map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error: true,
+                    ..
+                } => (tool_use_id.as_str(), content.as_str()),
+                other => panic!("形が違う: {other:?}"),
+            })
+            .collect();
+        assert_eq!(results.len(), 2, "{results:?}");
+        let (id, whole_text) = results[0];
+        assert_eq!(id, "w1");
+        assert!(whole_text.starts_with(TRUNCATED_CALL_MARK), "{whole_text}");
+        assert!(!whole_text.contains("切れた"), "{whole_text}");
+        assert!(whole_text.contains("引数は届いている"), "{whole_text}");
+        assert!(whole_text.contains("実行していません"), "{whole_text}");
+        let (id, cut_text) = results[1];
+        assert_eq!(id, "c1");
+        assert!(cut_text.contains("引数の途中で切れた"), "{cut_text}");
+        assert!(cut_text.contains("32768 トークンに広げた"), "{cut_text}");
+        // 2 つの呼び出しがあっても、書き直させた回数は応答単位で 1 回。
+        let mut messages = messages;
+        messages.push(LlmMessage {
+            role: LlmRole::Tool,
+            content: blocks,
+        });
+        for _ in 1..MAX_TRUNCATED_RETRIES {
+            assert!(truncated_call_results(&messages, &calls, Some(8192), None).is_some());
+            messages.push(messages[1].clone());
+        }
+        assert!(truncated_call_results(&messages, &calls, Some(8192), None).is_none());
+    }
+
     /// 切れた呼び出しは失敗の結果で閉じ、上限回数を超えたら諦める。
     #[test]
     fn truncated_calls_are_closed_and_retried_a_bounded_number_of_times() {
@@ -402,7 +499,7 @@ mod tests {
         ];
         let mut messages = vec![LlmMessage::text(LlmRole::User, "埋めて")];
         for _ in 0..MAX_TRUNCATED_RETRIES {
-            let blocks = truncated_call_results(&messages, &ids, Some(8192)).unwrap();
+            let blocks = truncated_call_results(&messages, &cut(&ids), Some(8192), None).unwrap();
             let Block::ToolResult {
                 tool_use_id,
                 content,
@@ -416,15 +513,54 @@ mod tests {
             assert!(*is_error);
             assert!(content.contains("8192 トークン"), "{content}");
             assert!(content.contains("実行していません"), "{content}");
+            assert!(content.contains("小さく分けて"), "{content}");
             messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: blocks,
             });
         }
         assert!(
-            truncated_call_results(&messages, &ids, Some(8192)).is_none(),
+            truncated_call_results(&messages, &cut(&ids), Some(8192), None).is_none(),
             "上限回数を超えたら書き直させない"
         );
+    }
+
+    /// 切れた呼び出しで次の応答の上限が広がったとき（D-204）は、分けさせず同じ呼び出しを書き直させる。
+    #[test]
+    fn truncated_call_with_a_widened_limit_asks_to_rewrite_the_same_call() {
+        let ids = vec![("c1".to_string(), "emit_workflow".to_string())];
+        let messages = vec![LlmMessage::text(LlmRole::User, "作って")];
+        let blocks =
+            truncated_call_results(&messages, &cut(&ids), Some(8192), Some(32768)).unwrap();
+        let Block::ToolResult { content, .. } = &blocks[0] else {
+            panic!("形が違う");
+        };
+        assert!(content.contains("8192 トークン"), "{content}");
+        assert!(content.contains("32768 トークンに広げた"), "{content}");
+        assert!(content.contains("同じ呼び出しを"), "{content}");
+        assert!(!content.contains("小さく分けて"), "{content}");
+        // 広がっていない（同じ値）なら従来の文。
+        let same = truncated_call_results(&messages, &cut(&ids), Some(8192), Some(8192)).unwrap();
+        let Block::ToolResult { content, .. } = &same[0] else {
+            panic!("形が違う");
+        };
+        assert!(content.contains("小さく分けて"), "{content}");
+    }
+
+    /// 上限が途中で広がりうる run（D-204）だけ、system の上限より [予算] の残量を正とさせる。
+    /// どの道具で広がるかは書かない（広げるために道具を呼ばせない）。
+    #[test]
+    fn system_prompt_mentions_the_extension_only_when_it_can_happen() {
+        let budget = Budget::chat(6);
+        let plain = budget_system_prompt(Some("前置き"), &budget, true, false);
+        assert!(plain.starts_with("前置き\n\n[実行予算と計画]"), "{plain}");
+        assert!(plain.contains("上限は 6 ステップです。"), "{plain}");
+        assert!(!plain.contains("広がる"), "{plain}");
+        let wide = budget_system_prompt(Some("前置き"), &budget, true, true);
+        assert!(wide.contains("上限は 6 ステップです。"), "{wide}");
+        assert!(wide.contains("上限が途中で広がることがあります"), "{wide}");
+        assert!(wide.contains("[予算] の残量を正としてください"), "{wide}");
+        assert!(!wide.contains("emit_workflow"), "{wide}");
     }
 
     /// 予算超過の着地指示は「ツールはもう使えない・いま書け」と伝える。

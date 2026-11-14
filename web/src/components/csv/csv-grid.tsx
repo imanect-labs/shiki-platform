@@ -20,10 +20,11 @@ import {
   type GridSelection,
   type Item,
 } from "@glideapps/glide-data-grid";
-import { Rows3, Sparkles } from "lucide-react";
+import { RotateCcw, Rows3, Sparkles } from "lucide-react";
 import * as React from "react";
 
 import { useGlideTheme } from "@/components/csv/glide-theme";
+import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetBody,
@@ -33,7 +34,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { getRows, type PatchOp, type TableResponse } from "@/lib/tabular-api";
+import { getRows, TabularLoadError, type PatchOp, type TableResponse } from "@/lib/tabular-api";
 
 const PAGE_SIZE = 1_000;
 
@@ -90,6 +91,9 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
   const { theme: glideTheme, editedBg } = useGlideTheme();
   const cache = React.useRef<PageCache>(new Map());
   const fetching = React.useRef<Set<number>>(new Set());
+  // 読み込めなかったページ（空のページを入れて読み込みのくり返しを止めている）と、その理由。
+  const failedPages = React.useRef<Set<number>>(new Set());
+  const [rowsError, setRowsError] = React.useState<string | null>(null);
   // セル編集の上書き（"row,col" → 新値）。保存でパッチへ変換。
   const edits = React.useRef<Map<string, string>>(new Map());
   const patches = React.useRef<PatchOp[]>([]);
@@ -159,15 +163,29 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
           if (page === 0) setNumericCols(detectNumericCols(res.rows, columns.length));
           bump();
         })
-        .catch(() => {
-          // 取得失敗時は空ページを入れてローディングループを止める（行は空表示）。
+        .catch((e: unknown) => {
+          // 取得失敗時は空ページを入れてローディングループを止め、読み込めなかったことと理由を出す（空の行に見せない）。
           cache.current.set(page, []);
+          failedPages.current.add(page);
+          setRowsError(
+            e instanceof TabularLoadError
+              ? e.message
+              : "通信の状態を確かめてから、もう一度読み込んでください。",
+          );
           bump();
         })
         .finally(() => fetching.current.delete(page));
     },
     [nodeId, bump, columns.length],
   );
+
+  /// 読み込めなかったページを捨てて、描画中のページから読み込み直す。
+  const retryFailedPages = React.useCallback(() => {
+    for (const page of failedPages.current) cache.current.delete(page);
+    failedPages.current.clear();
+    setRowsError(null);
+    bump();
+  }, [bump]);
 
   // 行詳細の行がまだ取得していないページにある（グリッドで描画されていない遠い行へ「次の行」で
   // 進んだ・保存後の reset 直後など）なら、空で見せずにそのページを取得する。
@@ -240,6 +258,8 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
     reset: () => {
       cache.current.clear();
       fetching.current.clear();
+      failedPages.current.clear();
+      setRowsError(null);
       edits.current.clear();
       patches.current = [];
       onDirtyChange?.(false);
@@ -267,6 +287,19 @@ export const CsvGrid = React.forwardRef<CsvGridHandle, Props>(function CsvGrid(
         height="100%"
         getCellsForSelection
       />
+      {rowsError ? (
+        <div
+          role="alert"
+          data-testid="csv-rows-error"
+          className="absolute inset-x-3 top-10 z-20 mx-auto flex max-w-md flex-col gap-2 rounded-md border border-destructive/40 bg-card p-3 text-sm shadow-md"
+        >
+          <p className="text-destructive">行を読み込めませんでした。{rowsError}</p>
+          <Button variant="outline" size="sm" className="self-start" onClick={retryFailedPages}>
+            <RotateCcw className="size-3.5" aria-hidden />
+            もう一度読み込む
+          </Button>
+        </div>
+      ) : null}
       {/* 選択→AI 指示（Task 11.10）: 範囲選択時にフロートボタンを出す。スマホは行の詳細も。 */}
       {selectionRange && (onAskAi || touchNarrow) ? (
         <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5 max-md:bottom-[max(0.75rem,env(safe-area-inset-bottom))] max-md:right-1/2 max-md:top-auto max-md:translate-x-1/2">

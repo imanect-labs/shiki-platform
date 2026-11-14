@@ -39,10 +39,17 @@ export const ADDABLE_TYPES: FieldType[] = [
   "lookup",
   "rollup",
   "formula",
+  "created_by",
 ];
 
 const DERIVED: FieldType[] = ["lookup", "rollup", "formula", "computed"];
 export const isDerived = (t: FieldType) => DERIVED.includes(t);
+/// 作成者の列（レコードを追加した人が自動で入り、だれも書けない・D-122）。
+export const isCreatedBy = (t: FieldType) => t === "created_by";
+
+/// 作成者の列の説明（列の追加・列の設定で同じ文）。
+export const CREATED_BY_HINT =
+  "レコードを追加した人が自動で入り、誰も書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。";
 
 /// 一対多はこの列の側からは作れない（参照先の多対一の逆向きとして現れる）。
 const CARDINALITIES: { value: LinkCardinality; label: string }[] = [
@@ -295,6 +302,8 @@ export type TableTraits = {
   rowPolicy: boolean;
   /// フィールドマスク（一部の人に隠す列）の参照名。
   masked: ReadonlySet<string>;
+  /// 状態の進め方で使っている状態の列の参照名（選択肢は「状態の進め方」で変える・GAP-44）。
+  stateField?: string | null;
 };
 
 export const NO_TRAITS: TableTraits = { rowPolicy: false, masked: new Set() };
@@ -330,9 +339,32 @@ function BasicAttributes({
   traits?: TableTraits;
 }) {
   const t = field.type;
+  if (isCreatedBy(t)) {
+    // 必須・重複なし・部分一致は意味を持たない（いつも追加した人が入る・サーバも断る）。
+    return (
+      <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="schema-created-by-hint">
+        {CREATED_BY_HINT}
+      </p>
+    );
+  }
   return (
     <div className="space-y-2.5">
-      {t === "select" || t === "multi_select" ? (
+      {(t === "select" || t === "multi_select") && !isNew && traits.stateField === field.key ? (
+        // 状態の列の選択肢は状態の進め方の状態と同じ集合（サーバも、ここだけで変えると断る）。
+        <div className="space-y-1" data-testid="schema-state-options">
+          <p className="text-xs font-medium">選択肢</p>
+          <p className="flex flex-wrap gap-1">
+            {(field.options ?? []).map((o) => (
+              <span key={o} className="rounded-full border bg-card px-2 py-0.5 text-xs">
+                {o}
+              </span>
+            ))}
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            この列は状態の進め方で使っています。選択肢は、テーブルの「状態の進め方」で状態として変えてください。
+          </p>
+        </div>
+      ) : t === "select" || t === "multi_select" ? (
         <OptionsEditor options={field.options ?? []} onChange={(options) => onChange({ ...field, options })} />
       ) : null}
       {t === "number" && isNew ? <NumericSpecEditor field={field} onChange={onChange} /> : null}

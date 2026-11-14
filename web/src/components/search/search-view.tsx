@@ -6,6 +6,7 @@ import { FileSearch } from "lucide-react";
 
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useMe } from "@/hooks/use-me";
 import {
   searchDocuments,
   SearchApiError,
@@ -26,7 +27,10 @@ export function SearchView() {
 
   const [query, setQuery] = useState(initialQuery);
   const [mode, setMode] = useState<SearchMode>("hybrid");
-  const [debug, setDebug] = useState(false);
+  const [debugToggle, setDebug] = useState(false);
+  // 内訳は組織の管理者にだけ出す（サーバーもほかの人には返さない・D-80・BUG-94）。
+  const isAdmin = Boolean(useMe().data?.is_admin);
+  const debug = isAdmin && debugToggle;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [response, setResponse] = useState<SearchResponse | null>(null);
@@ -84,6 +88,7 @@ export function SearchView() {
           if (executedQuery) void runSearch(executedQuery, m, debug);
         }}
         debug={debug}
+        showDebug={isAdmin}
         onDebugChange={(d) => {
           setDebug(d);
           if (executedQuery) void runSearch(executedQuery, mode, d);

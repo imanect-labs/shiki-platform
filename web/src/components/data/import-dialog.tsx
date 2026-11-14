@@ -262,7 +262,7 @@ export function friendlyImportMessage(message: string): string {
   }
   if (/CSV error|invalid utf-?8|stream did not contain valid UTF-8/i.test(message)) {
     return /utf-?8/i.test(message)
-      ? "文字コードを読めませんでした。UTF-8 の CSV で保存し直してください"
+      ? "文字コードを読み取れませんでした。UTF-8 か Shift_JIS の CSV で保存し直してください"
       : "CSV を読み取れませんでした。区切りの「,」や引用符「\"」、改行を確かめてください";
   }
   if (/expected struct|missing field|unknown field|invalid type/i.test(message)) {
@@ -506,7 +506,7 @@ export function ImportDialog({
                   <>
                     <Upload className="size-6 text-muted-foreground" aria-hidden />
                     <span className="font-medium">CSV ファイルを選ぶ</span>
-                    <span className="text-xs text-muted-foreground">またはここにドロップ（UTF-8・最大 32 MB）</span>
+                    <span className="text-xs text-muted-foreground">またはここにドロップ（UTF-8 か Shift_JIS・最大 32 MB）</span>
                   </>
                 )}
               </label>

@@ -105,7 +105,8 @@ pub(crate) fn policy_keys(schema: &TableSchema) -> Vec<String> {
         match e {
             PolicyExpr::Any(v) | PolicyExpr::All(v) => v.iter().for_each(|c| walk(c, schema, out)),
             PolicyExpr::FieldCmp { field, .. } => {
-                if let Some(f) = schema.field(field) {
+                // 作成者の列は owner と比べる（owner は before に別に載る・D-122）。
+                if let Some(f) = schema.field(field).filter(|f| !f.is_created_by()) {
                     let k = json_key(f.id);
                     if !out.contains(&k) {
                         out.push(k);
@@ -164,8 +165,9 @@ pub(crate) async fn emit_record_changes(
     emit_record_changes_as(conn, ctx, table, changes, false, trace_id).await
 }
 
-/// [`emit_record_changes`] の一括取込版の区別つき（`bulk` は private payload にだけ載せる・SSE の配信が
-/// 取込の行を `records.bulk_applied` にまとめる材料。汎用の consumer が読む payload は変えない）。
+/// [`emit_record_changes`] の一括取込版の区別つき（`bulk` は private payload にだけ載せる・汎用の consumer が
+/// 読む payload は変えない）。SSE の配信は取込の**作成行**を `records.bulk_applied` にまとめ、ワークフローの
+/// トリガは作成・更新のどちらの取込行でも発火しない（[`crate::DataStore::bulk_flags`]・D-26）。
 pub(crate) async fn emit_record_changes_as(
     conn: &mut PgConnection,
     ctx: &AuthContext,

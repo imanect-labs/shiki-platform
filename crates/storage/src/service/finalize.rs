@@ -6,6 +6,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
+
+use super::upload::{lock_file_for_content, lock_parent_for_create, BlobBody};
 
 impl StorageService {
     /// finalize: staging を読み戻して内容ハッシュを検証し、content-addressed に昇格してノード化する。
@@ -141,6 +144,7 @@ impl StorageService {
                     actual_size as i64,
                     &pending.content_type,
                     &final_key,
+                    &incoming_key,
                     pending.base_version,
                     trace_id,
                 )
@@ -148,10 +152,16 @@ impl StorageService {
             }
             // 新規作成: blob upsert + node + FGA tuple + 版記録 + イベント + pending 削除 + 監査。
             // FGA tuple は **commit 前**に書き、parent 失敗・commit 失敗のどちらでも書けた tuple を
-            // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない。
+            // revoke して DB/FGA の不整合（auth tuple 欠落・owner 残留）を残さない（tuple_commit）。
             None => {
                 async {
                     let mut tx = self.db.begin().await?;
+                    // 親を Tx の中で確かめ直して押さえる（ロックの順 node → blob → 監査のチェーン・bump_blob より前）。
+                    // declare・上の ensure_folder の後に親が論理削除されても、削除したフォルダの下に生きたファイルを残さない。
+                    if let Some(p) = pending.parent_id {
+                        lock_parent_for_create(&mut tx, ctx, p).await?;
+                    }
+                    // 行を新しく作ったら、ロックの中で本体を確かめ直し、無ければ incoming（commit まで残す）から写す。
                     self.bump_blob(
                         &mut tx,
                         ctx.tenant_id(),
@@ -160,6 +170,7 @@ impl StorageService {
                         actual_size as i64,
                         &pending.content_type,
                         &final_key,
+                        BlobBody::CopyFrom(&incoming_key),
                     )
                     .await?;
                     let node = self
@@ -232,49 +243,15 @@ impl StorageService {
                         trace_id,
                     )
                     .await?;
-                    // DB 側が確定したので FGA tuple を書く（commit 前）。
+                    // DB 側が確定したので owner・parent の FGA tuple を書いてから commit する。区間は別の
+                    // タスクで最後まで走る（補償の決まりは tuple_commit・BUG-134）。
                     let file_obj = ctx.ns().file(&node.id.to_string());
-                    // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
-                    self.authz
-                        .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                        .await
-                        .map_err(StorageError::Authz)?;
-                    // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
-                    if let Some(p) = pending.parent_id {
-                        if let Err(e) = self
-                            .authz
-                            .write_tuple(
-                                &Subject::object(&ctx.ns().folder(&p.to_string())),
-                                Relation::Parent,
-                                &file_obj,
-                            )
-                            .await
-                        {
-                            let _ = self
-                                .authz
-                                .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                                .await;
-                            return Err(StorageError::Authz(e));
-                        }
-                    }
-                    // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
-                    if let Err(e) = tx.commit().await {
-                        let _ = self
-                            .authz
-                            .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                            .await;
-                        if let Some(p) = pending.parent_id {
-                            let _ = self
-                                .authz
-                                .delete_tuple(
-                                    &Subject::object(&ctx.ns().folder(&p.to_string())),
-                                    Relation::Parent,
-                                    &file_obj,
-                                )
-                                .await;
-                        }
-                        return Err(StorageError::from(e));
-                    }
+                    commit_tx_with_tuples(
+                        self.authz.clone(),
+                        tx,
+                        node_creation_tuples(ctx, pending.parent_id, &file_obj),
+                    )
+                    .await?;
                     Ok(node)
                 }
                 .await
@@ -312,10 +289,10 @@ impl StorageService {
 
     /// 既存ファイルの内容を新版へ差し替える（finalize の内容更新経路・Task 1.7）。
     ///
-    /// blob を bump（refcount +1）→ 対象ファイルを行ロックしつつ blob/size/content_type と
-    /// version を更新 → 新版を履歴に記録 → 書込イベント（op=update）→ 監査 を 1 txn で原子的に
-    /// 確定する。owner/parent タプルは既存ファイルのものを流用するため触らない。古い版の blob は
-    /// 減算しない（履歴＝安全網のため download/restore 可能に保つ・LbvQZ と対称）。
+    /// 対象ファイルを行ロック → blob を bump（refcount +1）→ blob/size/content_type と version を更新 →
+    /// 新版を履歴に記録 → 書込イベント（op=update）→ 監査 を 1 txn で原子的に確定する（ロックの順
+    /// node → blob → 監査のチェーン）。owner/parent タプルは既存ファイルのものを流用するため触らない。古い版の
+    /// blob は減算しない（履歴＝安全網のため download/restore 可能に保つ・LbvQZ と対称）。
     #[allow(clippy::too_many_arguments)] // finalize から確定済みのメタ一式を受け取る。
     async fn finalize_content_update(
         &self,
@@ -326,6 +303,7 @@ impl StorageService {
         size: i64,
         content_type: &str,
         final_key: &str,
+        incoming_key: &str,
         base_version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
@@ -341,6 +319,9 @@ impl StorageService {
         if claimed.rows_affected() == 0 {
             return Err(StorageError::NotFound);
         }
+        // 対象の行を bump_blob より前に押さえる（ロックの順 node → blob → 監査のチェーン）。並行内容更新の
+        // lost-update もここで防ぐ。base_version があれば押さえた後の版と比べる（間に入った保存を上書きしない）。
+        lock_file_for_content(&mut tx, ctx, target, base_version).await?;
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -349,10 +330,10 @@ impl StorageService {
             size,
             content_type,
             final_key,
+            BlobBody::CopyFrom(incoming_key),
         )
         .await?;
-        // UPDATE は対象行をロックするため、並行内容更新の lost-update を防げる。
-        // base_version があれば「その版のままなら」の条件付きにする（間に入った保存を上書きしない）。
+        // 行は押さえてあるが、条件は前と同じに保つ（base_version があれば「その版のままなら」）。
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \
@@ -422,7 +403,9 @@ impl StorageService {
                 node_id: node.id,
                 version: node.version,
                 op: WriteOp::Update,
-                payload: json!({ "kind": "file", "blob_sha256": sha256, "size": size }),
+                // 親フォルダはファイル保存トリガ・wait(event) の祖先束縛の照合に使う（作成と同じ・BUG-28）。
+                payload: json!({ "kind": "file", "blob_sha256": sha256, "size": size,
+                    "parent_id": node.parent_id.map(|p| p.to_string()) }),
             },
             trace_id,
         )

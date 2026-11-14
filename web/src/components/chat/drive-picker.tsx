@@ -3,8 +3,10 @@
 import * as React from "react";
 import { ChevronLeft } from "lucide-react";
 
-import { listChildren, type NodeResponse } from "@/lib/storage";
+import { listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useRestoreFocus } from "@/hooks/use-restore-focus";
+import { MoreRows, sentinelEnabled } from "@/components/drive/more-rows";
 import { NodeIcon, LoadingRow } from "@/components/drive/primitives";
 import {
   Dialog,
@@ -15,8 +17,12 @@ import {
 } from "@/components/ui/dialog";
 
 /// ドライブからファイルを選ぶダイアログ（既定は添付）。フォルダは辿れ、ファイルを選ぶと閉じる。
-/// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。
+/// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。見えないものが多いドライブのトップ
+/// では、続きを数回たどっても見つからなければ「さらに読み込む」を出す（BUG-187）。
 /// `accept` を渡すと、それに合うファイルだけを並べる（フォルダは常に並べる）。
+///
+/// 閉じたら、開いたときにフォーカスがあった要素（開いたボタンなど）へフォーカスを戻す（開くボタンは Radix の Trigger
+/// ではないので、Radix に任せるとページの先頭に落ちる・`useRestoreFocus`・BUG-261）。
 export function DrivePicker({
   open,
   onOpenChange,
@@ -24,6 +30,7 @@ export function DrivePicker({
   title = "ドライブから選択",
   description = "添付するファイルを選んでください。",
   accept,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -31,19 +38,22 @@ export function DrivePicker({
   title?: string;
   description?: string;
   accept?: (node: NodeResponse) => boolean;
+  /// 閉じたときのフォーカスの戻し方（既定は開いたときの要素へ戻す。`preventDefault` して別の要素へ移せる）。
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
+  const focus = useRestoreFocus(onCloseAutoFocus);
   const [stack, setStack] = React.useState<(string | undefined)[]>([undefined]);
   const parentId = stack[stack.length - 1];
 
   const fetchPage = React.useCallback(
     (cursor?: string) => {
       if (!open) return Promise.resolve({ items: [] as NodeResponse[], next_cursor: null });
-      return listChildren({ parentId, cursor, limit: 50 });
+      return listChildrenUpTo({ parentId, cursor, want: 50 });
     },
     [open, parentId],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, parentId]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
+  const sentinelRef = useInfiniteSentinel(list.loadMore, open && sentinelEnabled(list), list.items.length);
   const items = accept ? list.items.filter((n) => n.kind === "folder" || accept(n)) : list.items;
 
   // 開くたびにルートへ戻す。
@@ -53,7 +63,7 @@ export function DrivePicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" {...focus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
@@ -117,7 +127,7 @@ export function DrivePicker({
               })}
               {list.hasMore ? (
                 <li>
-                  <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div>
+                  <MoreRows list={list} sentinelRef={sentinelRef} testId="picker-more" />
                 </li>
               ) : null}
             </ul>

@@ -6,6 +6,8 @@
 //! - 配送の記録（`mark_delivered` / `mark_delivered_seq`）は、並行 GC が消している最中のイベントで
 //!   FK 違反を起こしてバッチ全体を巻き戻さず、残ったイベントだけを記録する（番号に穴を空けない）。
 //! - 購読ストリームの台帳行が保持期間（`retain_until`）内の行は、全コンシューマが配送済みでも GC しない。
+//! - 購読ストリームの配信位置は consumer ごとに穴の無い連番で、並行の採番でも重複・欠落しない（共有の
+//!   データベースでは、ほかのテストの登録と GC がまだ採番していない event を消すので、ここで流す）。
 //! - RAG（`processed_at` の ack コンシューマ）が登録されていない配備では、登録済みの全台帳コンシューマへ
 //!   配送済み・保持期間外の行を `processed_at` に依らず GC する（3 回目の検証 3-D-1）。未配送・保持期間内の
 //!   行は残す。登録されていれば従来どおり `processed_at` を待つ。滞留の原因は先頭の行で判定する。
@@ -611,6 +613,81 @@ async fn hinted_claim_skips_scans_when_idle_and_still_sees_late_commits() {
         vec![e2],
         "後からコミットした小さい id の行も届く"
     );
+    drop(pool);
+    db.drop_db().await;
+}
+
+/// Task 15.6: 購読ストリームの配信位置は consumer ごとに穴のない連番で、並行の採番でも重複・欠落しない。
+///
+/// 専用のデータベースで流す。共有のデータベースでは、ほかのテストの consumer の登録（outbox の全行を配送済みに
+/// 刻む fast-forward）と登録済みの GC が、まだ採番していないこのテストの event を消し、採番の件数が減って落ちる
+/// （BUG-159）。本番のストリームは登録済みの台帳 consumer（`data-stream`）の配送として採番するので、GC は採番を
+/// 待つ。このテストは台帳 consumer を通さずに採番するため、GC から守られない。
+#[tokio::test]
+async fn stream_delivery_seq_is_gapless_per_consumer_and_retained() {
+    let Some(db) = IsolatedDb::create().await else {
+        return;
+    };
+    let pool = db.pool.clone();
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let stream_a = format!("test-stream:{}", Uuid::new_v4());
+    let stream_b = format!("test-stream:{}", Uuid::new_v4());
+    let mut ids = Vec::new();
+    for _ in 0..40 {
+        ids.push(insert_event(&pool, &tenant).await);
+    }
+    // 8 本の並行リレーが同じ consumer に採番する（別 consumer へも混ぜる）。
+    let mut tasks = Vec::new();
+    for (i, chunk) in ids.chunks(5).enumerate() {
+        let pool = pool.clone();
+        let chunk = chunk.to_vec();
+        let consumer = if i % 4 == 3 {
+            stream_b.clone()
+        } else {
+            stream_a.clone()
+        };
+        let tenant = tenant.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            let got = mark_delivered_seq(
+                &mut tx,
+                &consumer,
+                &tenant,
+                &chunk,
+                Duration::from_secs(3600),
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            tx.commit().await.unwrap();
+            (consumer, got)
+        }));
+    }
+    let mut per: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    for t in tasks {
+        let (c, got) = t.await.unwrap();
+        per.entry(c)
+            .or_default()
+            .extend(got.iter().map(|(_, s)| *s));
+    }
+    for (c, mut seqs) in per {
+        seqs.sort_unstable();
+        let n = seqs.len() as i64;
+        assert_eq!(seqs, (1..=n).collect::<Vec<_>>(), "{c}: 穴なし・重複なし");
+        let mut conn = pool.acquire().await.unwrap();
+        let b = storage::event::stream_bounds(&mut conn, &c).await.unwrap();
+        assert_eq!((b.head, b.floor), (n, Some(1)));
+        // 再採番は冪等（同じ event は二度番号を取らない）。
+        let again = mark_delivered_seq(&mut conn, &c, &tenant, &ids, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(again.len() as i64, 40 - n, "未採番の分だけ新しく番号を取る");
+        let entries = storage::event::stream_entries_after(&mut conn, &c, 0, 1_000)
+            .await
+            .unwrap();
+        assert!(entries.windows(2).all(|w| w[1].seq == w[0].seq + 1));
+    }
+    // 保持期間内の行が GC されないことは `stream_rows_within_retention_survive_gc` で確かめる。
     drop(pool);
     db.drop_db().await;
 }

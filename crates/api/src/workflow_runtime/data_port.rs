@@ -19,7 +19,8 @@ use data::{BulkImportOptions, DataError, DataQuery, DataStore, FsmStore, TableRe
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
-use workflow_engine::{DataWriteOp, DataWriteReq, ExecCtx, PortError};
+use workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS;
+use workflow_engine::{DataWriteOp, DataWriteReq, ExecCtx, PortError, BULK_FAILED_ROWS};
 
 use super::auth::auth_ctx;
 
@@ -31,14 +32,17 @@ const MAX_LISTED_TABLES: i64 = 200;
 const MAX_REACHABLE_TABLES: i64 = 500;
 
 /// 読み書きする主体と、その主体で使うストア（ワークフロー主体なら委譲の天井つき）。
-struct Actor {
-    ctx: AuthContext,
-    data: DataStore,
-    fsms: FsmStore,
+pub(super) struct Actor {
+    pub(super) ctx: AuthContext,
+    pub(super) data: DataStore,
+    pub(super) fsms: FsmStore,
 }
 
 /// data のエラー → ポートのエラー（不可視と不在は同じ「見つからない」・再試行で直るものだけ retryable）。
+///
+/// 再試行で直るかは data の [`DataError::is_transient`] が決める（relay の配り直しと同じ判定）。
 pub(super) fn map_data(e: DataError) -> PortError {
+    let retryable = e.is_transient();
     match e {
         DataError::NotFound => PortError::new("not_found", "対象が見つかりません", false),
         DataError::Forbidden => PortError::forbidden("data の権限がありません"),
@@ -62,19 +66,26 @@ pub(super) fn map_data(e: DataError) -> PortError {
         // rev の不一致（rev を指定しない書込は再試行で読み直して通り得る）。
         e @ (DataError::Conflict(_)
         | DataError::RevConflict { .. }
-        | DataError::DerivedRecomputing { .. }) => {
-            PortError::new("conflict", e.conflict_detail().unwrap_or_default(), true)
-        }
+        | DataError::DerivedRecomputing { .. }) => PortError::new(
+            "conflict",
+            e.conflict_detail().unwrap_or_default(),
+            retryable,
+        ),
         DataError::Gone(m) => PortError::new("gone", m, false),
         DataError::ReadOverloaded => {
-            PortError::new("rate_limited", "data の読取が混み合っています", true)
+            PortError::new("rate_limited", "data の読取が混み合っています", retryable)
         }
         DataError::ReadTimeout => PortError::new(
             "read_timeout",
             "data の読取が時間内に終わりませんでした",
-            true,
+            retryable,
         ),
-        e @ (DataError::IndexPreparing { .. } | DataError::IndexApprovalRequired { .. }) => {
+        e @ DataError::IndexPreparing { .. } => {
+            PortError::new("index_preparing", e.to_string(), retryable)
+        }
+        // 索引の承認待ちは data の一時障害ではない（relay は配り直さない）が、管理者が承認すれば通るので、
+        // ノードの再試行の対象には残す（従来どおり）。
+        e @ DataError::IndexApprovalRequired { .. } => {
             PortError::new("index_preparing", e.to_string(), true)
         }
         e @ (DataError::QueryTooExpensive { .. } | DataError::Rejected(_)) => {
@@ -93,6 +104,20 @@ fn import_id_for(tenant_id: &str, idempotency_key: &str) -> Uuid {
     uuid::Builder::from_random_bytes(b).into_uuid()
 }
 
+/// 行が 0 件の一括 upsert の結果（行がある取込の結果と同じ形・件数はどれも 0・取込の記録は作らない）。
+fn empty_bulk_output(import_id: Uuid) -> Value {
+    json!({
+        "import_id": import_id,
+        "status": "done",
+        "rows_total": 0,
+        "rows_applied": 0,
+        "rows_invalid": 0,
+        "rows_rejected": 0,
+        "errors": [],
+        "last_error": null,
+    })
+}
+
 /// data のポート（`ProdNodePorts` の data 部分）。
 pub(super) struct DataPort<'a> {
     pub data: &'a DataStore,
@@ -102,7 +127,9 @@ pub(super) struct DataPort<'a> {
 
 impl DataPort<'_> {
     /// 読み書きする主体（上の ①②③）。`relation` は委譲で要るテーブルの関係（読取 viewer・書込 editor）。
-    async fn actor(
+    ///
+    /// データ変更トリガ・wait(event) の relay（`relay_data`）も、変更の見え方をこの主体で作る（GAP-07）。
+    pub(super) async fn actor(
         &self,
         ec: &ExecCtx,
         table_id: Uuid,
@@ -161,7 +188,9 @@ impl DataPort<'_> {
             },
             ec.org.clone(),
             super::auth::tenant_of(ec)?,
-        );
+        )
+        // 委譲元の権限で書いても、run の書込の印は残す（relay の因果の鎖・by_workflow・BUG-44）。
+        .in_run(ec.run_id);
         Ok(Actor {
             ctx: actor,
             data: self.data.within_reach(reach.clone()),
@@ -199,18 +228,22 @@ impl DataPort<'_> {
     }
 
     /// 実行主体（ワークフロー主体なら委譲されたテーブル）の一覧。中身ではなく名前と id だけ。
+    ///
+    /// `truncated` は一覧に載らなかった見えるテーブルがあるかもしれないこと（上限の件数を超えたか、見えるテーブルが
+    /// 多い人で OpenFGA に問う数の上限で切れた・BUG-149）。
     pub(super) async fn list_tables(&self, ec: &ExecCtx) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec)?;
-        let tables = self
+        let listing = self
             .data
-            .list_tables(&ctx, MAX_LISTED_TABLES)
+            .list_tables_listing(&ctx, MAX_LISTED_TABLES)
             .await
             .map_err(map_data)?;
-        let items: Vec<Value> = tables
+        let items: Vec<Value> = listing
+            .items
             .iter()
             .map(|t| json!({ "id": t.id, "name": t.name }))
             .collect();
-        Ok(json!({ "items": items }))
+        Ok(json!({ "items": items, "truncated": listing.more }))
     }
 
     pub(super) async fn query(
@@ -241,6 +274,38 @@ impl DataPort<'_> {
             .await
             .map_err(map_data)?;
         serde_json::to_value(rec).map_err(|e| PortError::unavailable(format!("serialize: {e}")))
+    }
+
+    /// 承認の停止時に読む行の状態（実行主体の権限・委譲元の見え方・GAP-08）。
+    pub(super) async fn approval_target(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        record_id: Uuid,
+    ) -> Result<workflow_engine::ApprovalTarget, PortError> {
+        let a = self.actor(ec, table_id, Relation::Viewer).await?;
+        let v = a
+            .fsms
+            .approval_target(&a.ctx, table_id, record_id, ec.trace_id.as_deref())
+            .await
+            .map_err(map_data)?;
+        Ok(workflow_engine::ApprovalTarget {
+            current: v.current,
+            rev: v.rev,
+            targets: v.targets,
+            refs: v
+                .refs
+                .into_iter()
+                .map(|(k, (role, value))| {
+                    let kind = if role {
+                        workflow_engine::AssigneeKind::Role
+                    } else {
+                        workflow_engine::AssigneeKind::User
+                    };
+                    (k, (kind, value))
+                })
+                .collect(),
+        })
     }
 
     /// 現在の rev（rev を指定しない書込が、読んだ rev で楽観ロックを掛けるため）。
@@ -346,6 +411,22 @@ impl DataPort<'_> {
         idempotency_key: &str,
     ) -> Result<Value, PortError> {
         let import_id = import_id_for(&ec.tenant_id, idempotency_key);
+        if rows.is_empty() {
+            // 取り込む行が無い（毎日の処理で、今日は書くものが無い日）: 取込を作らず、0 件で成功にする。設定の
+            // 誤りとして止めない（画面の取込は data の入口が「取り込む行がありません」で止めたまま）。権限は行がある
+            // ときと同じ入口で問う（書けない・見えないテーブルは同じ誤りで止まる・テーブルを消した後も同じ）。
+            a.data
+                .authorize_table(
+                    &a.ctx,
+                    table_id,
+                    Relation::Editor,
+                    storage::audit::AuditAction::DataRecordBulkImport,
+                    ec.trace_id.as_deref(),
+                )
+                .await
+                .map_err(map_data)?;
+            return Ok(empty_bulk_output(import_id));
+        }
         let opts = BulkImportOptions {
             abort_on_invalid,
             ..BulkImportOptions::default()
@@ -381,6 +462,20 @@ impl DataPort<'_> {
             .iter()
             .map(|e| json!({ "row": e.row_no, "key": e.key, "message": e.message }))
             .collect();
+        // 断られた行の全部（誤りの文は先頭の一部だけ）。同じレコードを探す列の取り込み直しが選ぶのに使い、ノードが
+        // 外す（step の出力に出さない・[`BULK_FAILED_ROWS`]）。
+        let failed: Vec<Value> = if st.rows_invalid + st.rows_rejected > 0 {
+            let limit = i64::try_from(MAX_WORKFLOW_BULK_ROWS).unwrap_or(i64::MAX);
+            a.data
+                .bulk_import_failed_rows(&a.ctx, table_id, import_id, limit)
+                .await
+                .map_err(map_data)?
+                .iter()
+                .map(|f| json!({ "row": f.row_no, "rejected": f.rejected, "update_of": f.update_of }))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(json!({
             "import_id": import_id,
             "status": st.status,
@@ -390,6 +485,7 @@ impl DataPort<'_> {
             "rows_rejected": st.rows_rejected,
             "errors": errors,
             "last_error": st.last_error,
+            BULK_FAILED_ROWS: failed,
         }))
     }
 }
@@ -413,6 +509,40 @@ mod tests {
         assert!(map_data(DataError::Conflict("rev".into())).retryable);
         assert!(!map_data(DataError::Invalid("x".into())).retryable);
         assert!(map_data(DataError::Internal("db".into())).retryable);
+    }
+
+    /// 再試行するかは data の一時障害の判定と同じ（索引の承認待ちだけはノードの再試行に残す）。
+    #[test]
+    fn retryable_follows_the_data_transient_classification() {
+        for e in [
+            DataError::NotFound,
+            DataError::Forbidden,
+            DataError::FieldUnavailable,
+            DataError::Invalid("x".into()),
+            DataError::NameTaken,
+            DataError::ReadTimeout,
+            DataError::Conflict("スキーマが更新されました".into()),
+            DataError::RevConflict { current: 2 },
+            DataError::UniqueViolation { field: None },
+            DataError::DerivedRecomputing { field: "f".into() },
+            DataError::Internal("db".into()),
+            DataError::Gone("x".into()),
+            DataError::IndexPreparing {
+                field: "f".into(),
+                progress: None,
+            },
+            DataError::ReadOverloaded,
+        ] {
+            let (transient, label) = (e.is_transient(), format!("{e:?}"));
+            assert_eq!(map_data(e).retryable, transient, "{label}");
+        }
+        let approval = DataError::IndexApprovalRequired {
+            field: "f".into(),
+            indexed: 8,
+            cap: 8,
+        };
+        assert!(!approval.is_transient());
+        assert!(map_data(approval).retryable);
     }
 
     /// unique 違反は REST・取込・チャットと同じ `unique_violation`・再試行不可・列の表示名つき（3-B-3）。

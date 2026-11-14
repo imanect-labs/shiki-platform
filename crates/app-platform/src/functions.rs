@@ -10,9 +10,12 @@
 //! 外部 HTTP（`http.request`）のみホストが直接実行し、manifest `egress_allowlist`
 //! （完全一致 / `*.suffix`・default-deny）で判定する。リダイレクトは自動追従しない
 //! （PIT-36: 追従先が allowlist を迂回するのを防ぐ・ゲストが再要求すれば各ホップを再検証）。
+//! 名前解決・アドレスの確かめ・接続の固定・本文の上限は [`crate::function_http`]（BUG-196）。
 
 use std::sync::Arc;
 
+use sandbox_client::egress_proxy::EgressProxy;
+use sandbox_client::net_guard::{HostResolver, SystemResolver};
 use script_runtime::{compile, EngineHandle, HostCall, HostResponse, Limits};
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
 use storage::ObjectStore;
@@ -83,9 +86,12 @@ pub struct FunctionInvocation {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FunctionOutcome {
     pub ok: bool,
-    /// スクリプトの戻り値（`ok=false` は打ち切り理由）。
+    /// スクリプトの戻り値（`ok=false` は null）。
     pub value: serde_json::Value,
     pub logs: Vec<String>,
+    /// 失敗の理由と文（`ok=false` のときだけ・GAP-60）。スタックの行・内部の文を含まない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::FunctionFailure>,
 }
 
 /// B2 関数ランナ（engine＋コード取得＋ホスト委譲の束）。
@@ -93,9 +99,14 @@ pub struct FunctionRunner {
     /// 共有エンジンなら、コンパイルの完了は関数を実行するときに待つ（起動の経路で待たない）。
     engine: EngineHandle,
     store: Arc<dyn ObjectStore>,
+    /// ゲートウェイへの委譲の HTTP（環境のプロキシを使わない・外部への送信は [`crate::function_http`] が 1 回ごとに組む）。
     http: reqwest::Client,
     /// サーバ内から到達するゲートウェイの origin（例 `http://127.0.0.1:8090`）。
     gateway_origin: String,
+    /// 外部への送信の名前解決（既定は OS の DNS。テストで解決先を決める）。
+    resolver: Arc<dyn HostResolver>,
+    /// 外部への送信が通す中継（運用者が `egress.proxy_url` に書いたもの・無ければ直接つなぐ・GAP-72）。
+    proxy: Option<EgressProxy>,
 }
 
 impl FunctionRunner {
@@ -104,8 +115,11 @@ impl FunctionRunner {
         store: Arc<dyn ObjectStore>,
         gateway_origin: String,
     ) -> Result<Self, AppPlatformError> {
-        // 外部 egress・ゲートウェイ委譲共通の HTTP。リダイレクト自動追従なし（PIT-36）。
+        // ゲートウェイ委譲の HTTP。リダイレクト自動追従なし（PIT-36）。送り先はサーバ内のゲートウェイ（ループバック）
+        // なので環境のプロキシを使わない（`NO_PROXY` にループバックの無い環境で、利用者の Bearer と本文をプロキシへ
+        // 渡さない・BUG-209。外部への送信は function_http が同じく no_proxy で組む）。
         let http = reqwest::Client::builder()
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(15))
             .build()
@@ -115,7 +129,16 @@ impl FunctionRunner {
             store,
             http,
             gateway_origin,
+            resolver: Arc::new(SystemResolver),
+            proxy: None,
         })
+    }
+
+    /// 外部への送信を、運用者が設定した中継に通す（`egress.proxy_url`・確かめたアドレスがすべて公開の IP のとき・GAP-72）。
+    #[must_use]
+    pub fn with_egress_proxy(mut self, proxy: Option<EgressProxy>) -> Self {
+        self.proxy = proxy;
+        self
     }
 
     /// サーバコード（content address ピン）を取得・整合検証してから関数を実行する。
@@ -152,6 +175,8 @@ impl FunctionRunner {
         let handler = Arc::new(GatewayHostCallHandler {
             http: self.http.clone(),
             gateway_origin: self.gateway_origin.clone(),
+            resolver: Arc::clone(&self.resolver),
+            proxy: self.proxy.clone(),
             bearer: inv.bearer,
             egress_allowlist: inv.egress_allowlist,
             app_id: inv.app_id,
@@ -162,6 +187,7 @@ impl FunctionRunner {
             AppPlatformError::Internal(format!("script エンジンを準備できません: {e}"))
         })?;
         let limits = function_limits();
+        let limits_secs = limits.epoch_deadline.as_secs();
         let handle = tokio::runtime::Handle::current();
         // prelude はコンパイル後に前置する（compile の禁止構文 lint はユーザーコードにのみ適用）。
         // `Shiki.data.*` / `Shiki.notify.*` の糖衣（ゲスト wasm を再ビルドせずに足す・script-runtime の共通定義）。
@@ -178,10 +204,18 @@ impl FunctionRunner {
         .await
         .map_err(|e| AppPlatformError::Internal(format!("関数実行スレッド: {e}")))?;
 
+        let error = (!outcome.ok).then(|| {
+            crate::function_failure::function_failure(
+                outcome.error,
+                &outcome.termination,
+                limits_secs,
+            )
+        });
         Ok(FunctionOutcome {
             ok: outcome.ok,
             value: outcome.value.unwrap_or(serde_json::Value::Null),
             logs: outcome.logs,
+            error,
         })
     }
 }
@@ -190,6 +224,8 @@ impl FunctionRunner {
 struct GatewayHostCallHandler {
     http: reqwest::Client,
     gateway_origin: String,
+    resolver: Arc<dyn HostResolver>,
+    proxy: Option<EgressProxy>,
     bearer: String,
     egress_allowlist: Vec<String>,
     app_id: Uuid,
@@ -335,63 +371,71 @@ impl GatewayHostCallHandler {
         }
     }
 
-    /// 外部 HTTP（egress allowlist・default-deny・リダイレクト非追従）。
+    /// 外部 HTTP（egress allowlist・default-deny・リダイレクト非追従・確かめたアドレスに接続を固定・BUG-196）。
     async fn external_http(&self, args: &serde_json::Value) -> HostResponse {
         let Some(url_str) = args.get("url").and_then(|v| v.as_str()) else {
             return invalid("url がありません");
         };
         let Ok(url) = url::Url::parse(url_str) else {
-            return invalid("url が不正です");
+            return invalid(
+                "URL の書き方が正しくありません。https:// から、ドメインまで書いてください。",
+            );
         };
         if !matches!(url.scheme(), "http" | "https") {
-            return invalid("http/https のみ使用できます");
+            return invalid("URL は http:// か https:// で始めてください。");
         }
-        if url.port().is_some() && url.port() != url.port_or_known_default() {
-            // 既定ポート以外は拒否（内部ポートへの到達を防ぐ・アルファ制約）。
-        }
-        let Some(host) = url.host_str() else {
-            return invalid("host がありません");
+        let Some(host) = url.host_str().map(str::to_string) else {
+            return invalid("URL にホストがありません");
         };
-        if url.port_or_known_default() != Some(80) && url.port_or_known_default() != Some(443) {
-            return deny(host, "既定ポート以外は許可されません");
-        }
-        if !egress_allowed(&self.egress_allowlist, host) {
-            return deny(host, "egress allowlist に含まれていません");
-        }
-        // SSRF 防御: 許可ホストが内部/メタデータ IP に解決される場合は拒否（PIT-23）。
-        let port = url.port_or_known_default().unwrap_or(443);
-        if let Err(reason) = crate::egress_guard::ensure_public_host(host, port).await {
-            return deny(host, reason);
+        // 既定のポート（http は 80・https は 443）だけ（内部のポートへ届かないように・アルファの制約）。
+        let Some(port @ (80 | 443)) = url.port_or_known_default() else {
+            return deny(format!(
+                "{host} へは、決まったポート（http は 80、https は 443）でだけ接続できます。"
+            ));
+        };
+        if !egress_allowed(&self.egress_allowlist, &host) {
+            return deny(format!(
+                "このアプリが通信してよい先に {host} が含まれていないため、接続しませんでした。"
+            ));
         }
         let method = args
             .get("method")
             .and_then(|v| v.as_str())
             .unwrap_or("GET")
             .to_uppercase();
-        let mut req = match method.as_str() {
-            "GET" => self.http.get(url.clone()),
-            "POST" => self.http.post(url.clone()),
-            "PUT" => self.http.put(url.clone()),
-            "DELETE" => self.http.delete(url.clone()),
-            _ => return invalid("未対応のメソッドです"),
-        };
-        if let Some(b) = args.get("body") {
-            req = req.json(b);
-        }
-        match req.send().await {
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                let text = resp.text().await.unwrap_or_default();
-                // 応答サイズ有界化（1MiB・ゲストメモリ保護）。
-                let text: String = text.chars().take(1024 * 1024).collect();
-                HostResponse::Ok(serde_json::json!({ "status": status, "body": text }))
+        let method = match method.as_str() {
+            "GET" => reqwest::Method::GET,
+            "POST" => reqwest::Method::POST,
+            "PUT" => reqwest::Method::PUT,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => {
+                return invalid(
+                    "送り方（メソッド）は GET・POST・PUT・DELETE のどれかにしてください。",
+                )
             }
-            Err(e) => HostResponse::Err {
-                message: format!("外部 HTTP 失敗: {e}"),
-                code: "egress_failed".into(),
-                retryable: true,
-            },
-        }
+        };
+        // SSRF 防御: 名前を 1 回だけ引き、許可ホストが内部・メタデータの IP に解決されるなら断る（PIT-23・PIT-48）。
+        let (domain, addrs) =
+            match crate::function_http::resolve_checked(&*self.resolver, &url, port).await {
+                Ok(v) => v,
+                Err(refused) => return refused,
+            };
+        // 外へ出るのに中継が要る環境では、確かめたアドレスへのトンネルを先に開く（送り終えるまで持つ・GAP-72）。
+        let tunnel =
+            match crate::function_http::open_tunnel(self.proxy.as_ref(), &addrs, &host).await {
+                Ok(t) => t,
+                Err(refused) => return refused,
+            };
+        crate::function_http::send_pinned(
+            url,
+            method,
+            args.get("body"),
+            domain.as_deref(),
+            &addrs,
+            tunnel.as_ref(),
+            crate::function_http::MAX_BODY,
+        )
+        .await
     }
 }
 
@@ -420,7 +464,7 @@ fn table_and_id(args: &serde_json::Value) -> Result<(Uuid, Uuid), HostResponse> 
     Ok((table, id))
 }
 
-fn invalid(message: &str) -> HostResponse {
+pub(crate) fn invalid(message: &str) -> HostResponse {
     HostResponse::Err {
         message: message.into(),
         code: "invalid".into(),
@@ -436,9 +480,10 @@ fn internal(message: &str) -> HostResponse {
     }
 }
 
-fn deny(host: &str, reason: &str) -> HostResponse {
+/// 外部への送信を断った（code は `egress_denied`・やり直さない）。
+pub(crate) fn deny(message: String) -> HostResponse {
     HostResponse::Err {
-        message: format!("egress 拒否（{host}）: {reason}"),
+        message,
         code: "egress_denied".into(),
         retryable: false,
     }

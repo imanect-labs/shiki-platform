@@ -7,14 +7,15 @@
 use std::sync::Arc;
 
 use artifact::{ArtifactKind, ArtifactStore, NewArtifact};
-use authz::AuthContext;
+use authz::{AuthContext, Relation};
 use sha2::{Digest, Sha256};
+use storage::audit::{record_on, AuditAction, AuditEntry, Chain, Decision};
 use uuid::Uuid;
 
 use crate::manifest::MiniAppManifest;
 use crate::registry::{NewRegistryEntry, Registry, RegistryEntry};
 use crate::validate::validate_manifest;
-use crate::{map_artifact, AppPlatformError};
+use crate::{map_artifact, map_db, AppPlatformError};
 
 /// ミニアプリの保存/publish チョークポイント。
 #[derive(Clone)]
@@ -107,8 +108,10 @@ impl MiniAppCodeStore {
 
     /// マニフェストの指定バージョンをレジストリへ不変 publish する。
     ///
-    /// artifact の owner のみが publish できる（`get` の viewer で読めることに加え、
-    /// レジストリは owner 前提。呼び出し側 API が owner を要求する）。
+    /// artifact の owner のみが publish できる（読める viewer・editor は publish できない）。共有で viewer になった
+    /// 人が name@version を先に公開すると、unique 制約で持ち主がその版を出せなくなるため、最初に owner を確かめる
+    /// （足りなければ `app.registry.publish` の deny を監査に残して 403・GAP-69a）。登録と、`app.registry.publish`
+    /// の監査（チェーンにつなぐ・対象は `miniapp` のアプリの id）は同じ Tx で書く。
     pub async fn publish(
         &self,
         ctx: &AuthContext,
@@ -117,10 +120,23 @@ impl MiniAppCodeStore {
         signature: Option<&[u8]>,
         trace_id: Option<&str>,
     ) -> Result<RegistryEntry, AppPlatformError> {
+        self.artifacts
+            .require_relation(
+                ctx,
+                id,
+                Relation::Owner,
+                AuditAction::AppRegistryPublish,
+                trace_id,
+            )
+            .await
+            .map_err(map_artifact)?;
         let (ver, manifest) = self.get(ctx, id, version, trace_id).await?;
         let digest = manifest_digest(&manifest)?;
-        self.registry
-            .publish(
+        let mut tx = self.registry.begin().await?;
+        let entry = self
+            .registry
+            .publish_on(
+                &mut tx,
                 ctx,
                 NewRegistryEntry {
                     artifact_kind: ArtifactKind::MiniAppCode.as_str(),
@@ -133,7 +149,29 @@ impl MiniAppCodeStore {
                     signature,
                 },
             )
-            .await
+            .await?;
+        record_on(
+            &mut tx,
+            ctx,
+            AuditEntry {
+                action: AuditAction::AppRegistryPublish,
+                object_type: "miniapp",
+                object_id: &id.to_string(),
+                decision: Decision::Allow,
+                trace_id,
+                metadata: serde_json::json!({
+                    "name": entry.name,
+                    "version": entry.version,
+                    "artifact_id": id,
+                    "artifact_version": ver,
+                }),
+            },
+            Chain::Yes,
+        )
+        .await
+        .map_err(|e| AppPlatformError::Internal(format!("audit: {e}")))?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(entry)
     }
 
     async fn ensure_kind(

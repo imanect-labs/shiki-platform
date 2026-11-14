@@ -9,7 +9,7 @@
 //! 違いは、`SHIKI_REQUIRE_IT=1` のときに未設定を **panic（＝テスト失敗）** にすること。
 //!
 //! - `SHIKI_REQUIRE_IT=1`: CI の結合テストジョブ（coverage・data-strategies）が立てる。
-//! - `SHIKI_REQUIRE_IT_EXCEPT=A,B`: CI が用意しない依存（実 Keycloak・実 LLM・VM 系サンドボックス等）。
+//! - `SHIKI_REQUIRE_IT_EXCEPT=A,B`: CI が用意しない依存（実 LLM・Office エンジン・VM 系サンドボックス等）。
 //!   ここに挙げた変数は、未設定でも従来どおりスキップする。**このリストが「CI で一度も走らない
 //!   結合テスト」の一覧そのもの**なので、ci.yml の 1 か所で管理し Job Summary に出す。
 //!

@@ -74,6 +74,7 @@ async fn stub_llm_creates_only_a_personal_ref_after_help_confirmation() {
             None,
             Some(&StreamEventKind::Done {
                 message_id: source.assistant_message_id,
+                stop_reason: None,
             }),
         )
         .await

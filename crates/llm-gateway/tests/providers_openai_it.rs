@@ -103,14 +103,51 @@ async fn openai_client_error_maps_to_bad_request() {
     assert!(matches!(res, Err(LlmError::BadRequest(_))));
 }
 
+/// 4xx の本文（要求の ID・組織の ID）を誤りの文言に入れない（BUG-87）。誤りの種類の語だけを残す。
+#[tokio::test]
+async fn openai_client_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"Invalid value for org-secret (request req_secret_9)","type":"invalid_request_error","code":"invalid_value"}}"#,
+    )
+    .await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "gpt-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("4xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_9", "Invalid value"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::BadRequest(m) if m.contains("invalid_value")),
+        "{shown}"
+    );
+}
+
 #[tokio::test]
 async fn openai_server_error_maps_to_unavailable() {
-    let base = spawn_mock(StatusCode::SERVICE_UNAVAILABLE, "down").await;
+    let base = spawn_mock(
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":{"message":"The server is overloaded for org-secret (request req_secret_3)","type":"server_error"}}"#,
+    )
+    .await;
     let provider = OpenAiProvider::new(reqwest::Client::new(), base, Some("k".into()), "gpt-x");
     let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
 
     let res = provider.stream(&req).await;
-    assert!(matches!(res, Err(LlmError::Unavailable(_))));
+    // 5xx の本文は誤りの文言に入れない（誤りの種類の語だけ・BUG-210）。
+    let Err(LlmError::Unavailable(msg)) = res else {
+        panic!("Unavailable になる: {res:?}", res = res.map(|_| ()));
+    };
+    for leaked in ["org-secret", "req_secret_3", "overloaded for"] {
+        assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+    }
+    assert_eq!(
+        msg,
+        "openai 503 Service Unavailable: プロバイダが一時的に応答できませんでした（server_error）"
+    );
 }
 
 type Seen = Arc<Mutex<Option<HeaderMap>>>;
@@ -295,7 +332,7 @@ async fn openai_stream_cut_midway_is_unavailable_not_a_clean_end() {
     let bodies: [&'static str; 2] = [
         concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"<thought>考え中\"}}]}\n\n",
-            "[{\n  \"error\": {\n    \"code\": 500,\n    \"status\": \"INTERNAL\"\n  }\n}\n]\n",
+            "[{\n  \"error\": {\n    \"code\": 500,\n    \"message\": \"Internal error for project-secret\",\n    \"status\": \"INTERNAL\"\n  }\n}\n]\n",
         ),
         "data: {\"choices\":[{\"delta\":{\"content\":\"途中\"}}]}\n",
     ];
@@ -312,6 +349,8 @@ async fn openai_stream_cut_midway_is_unavailable_not_a_clean_end() {
             Some(Err(LlmError::Unavailable(msg))) => {
                 if body.contains("error") {
                     assert!(msg.contains("INTERNAL"), "{msg}");
+                    // 誤りの本文（message）は文言に入れない（BUG-210）。
+                    assert!(!msg.contains("project-secret"), "{msg}");
                 }
             }
             other => panic!("{body}: {other:?}"),

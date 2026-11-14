@@ -32,6 +32,12 @@ use storage::{
 };
 use uuid::Uuid;
 
+/// 期限切れの共有リンクを外す掃除（`revoke_expired_share_links`）は DB の全部を見る。掃除を呼ぶ試験どうしが並んで
+/// 走ると、未来の時刻での掃除が、ほかの試験の作ったばかりの期限つきのリンクまで外す（解錠が Forbidden になる）。
+/// 掃除を呼ぶ試験はこの鍵で順に走らせる。
+static EXPIRY_SWEEP: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 struct Ctx {
     service: StorageService,
     pool: PgPool,
@@ -1567,6 +1573,75 @@ async fn content_update_base_version_conflict() {
         3,
         "衝突した保存は版を増やさない"
     );
+}
+
+/// サーバー内のバイトで内容を差し替えるときの楽観ロック（ドライブのテキストの編集が元の文字コードで書き戻す・
+/// D-119）。版が合っていれば新しい版になり、古い版を申告したら今の版つきの 409 で書かない（版を増やさない）。
+/// 消えたファイルは 404 のまま。
+#[tokio::test]
+async fn content_update_from_base_refuses_a_stale_version() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    // テナントを分け、最後にテナントごと撤去する（タプル・オブジェクト・行を残さない）。
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let tenant = format!("it-text-{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    let actx = make_ctx_tenant(&org, &tenant, &alice);
+    authz
+        .write_tuple(
+            &actx.subject(),
+            Relation::Member,
+            &actx.ns().organization(&org),
+        )
+        .await
+        .expect("seed member");
+    let file = upload(&service, &http, &actx, None, "memo.txt", b"v1")
+        .await
+        .expect("upload v1");
+
+    let v2 = service
+        .update_file_content_from_base(&actx, file.id, file.version, b"v2", "text/plain", None)
+        .await
+        .expect("base が合っていれば保存する");
+    assert_eq!(v2.version, file.version + 1);
+    let stale = service
+        .update_file_content_from_base(&actx, file.id, file.version, b"stale", "text/plain", None)
+        .await;
+    assert!(
+        matches!(stale, Err(StorageError::VersionConflict { current }) if current == v2.version),
+        "{stale:?}"
+    );
+    let now = service
+        .get_metadata(&actx, file.id, None)
+        .await
+        .expect("get");
+    assert_eq!(now.version, v2.version, "古い版の上には書かない");
+    assert_eq!(now.blob_sha256.as_deref(), Some(sha256_hex(b"v2").as_str()));
+    assert_eq!(
+        node_version_count(&pool, file.id).await,
+        2,
+        "版を増やさない"
+    );
+
+    service
+        .soft_delete_file(&actx, file.id, None)
+        .await
+        .expect("delete");
+    let gone = service
+        .update_file_content_from_base(&actx, file.id, now.version + 1, b"x", "text/plain", None)
+        .await;
+    assert!(matches!(gone, Err(StorageError::NotFound)), "{gone:?}");
+    service
+        .purge_tenant(&tenant, &org, "provisioner:test")
+        .await
+        .expect("purge");
 }
 
 #[tokio::test]
@@ -3124,6 +3199,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key,
             digest,
             None,
@@ -3140,6 +3216,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key,
             digest,
             None,
@@ -3158,6 +3235,40 @@ async fn write_file_internal_idempotent_dedups_by_key() {
     .unwrap();
     assert_eq!(count, 1, "冪等キー再送で 2 バージョン作らない");
 
+    // 同じキーで別の書込（op_digest が違う）は、名前の衝突（Conflict）と分けて返す（BUG-97）。
+    let other = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem-other.txt",
+            b"payload",
+            "text/plain",
+            storage::OnNameTaken::Fail,
+            &key,
+            "other-digest",
+            None,
+        )
+        .await;
+    assert!(
+        matches!(other, Err(StorageError::IdempotencyConflict)),
+        "{other:?}"
+    );
+    // 失敗にする扱いの名前の衝突は Conflict（番号を付ける扱いは naming_it.rs で確かめる・D-112）。
+    let taken = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem.txt",
+            b"payload2",
+            "text/plain",
+            storage::OnNameTaken::Fail,
+            &format!("{key}:another"),
+            digest,
+            None,
+        )
+        .await;
+    assert!(matches!(taken, Err(StorageError::Conflict)), "{taken:?}");
+
     // 別の冪等キー → 別ノードが作られる。
     let key2 = format!("wf:{}:r:step2", Uuid::new_v4().simple());
     let s3 = service
@@ -3167,6 +3278,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem2.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key2,
             digest,
             None,
@@ -3531,6 +3643,7 @@ async fn share_link_password_redeem() {
 /// 有効期限: 遅延失効（get_metadata 前段）とイベント駆動タイマの明示剥奪、次回起床時刻。
 #[tokio::test]
 async fn share_link_expiry() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx {
@@ -4979,6 +5092,7 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
 /// UPDATE を per-user 剥奪より先に行い、0 行だったリンクには触れてはならない。
 #[tokio::test]
 async fn share_link_expire_race_with_extend_keeps_grants() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx {
@@ -5215,6 +5329,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
 /// next_expiry が過去時刻を返し続け、タイマが全速ループに入るため（kind IN ('file','folder') 除外）。
 #[tokio::test]
 async fn share_link_sweep_ignores_poison_kind() {
+    let _sweep = EXPIRY_SWEEP.lock().await;
     use chrono::Utc;
     let Some(ctx) = setup().await else { return };
     let Ctx { service, pool, .. } = ctx;
@@ -5569,6 +5684,27 @@ async fn rename_tenant_rows_moves_every_table() {
             .await
             .expect("node 再取得");
     assert_eq!(node_org.as_deref(), Some(org.as_str()));
+
+    // 後片付け（BUG-66）: 移した先のテナントの行を撤去する。仕込んだ workflow_run は ir_snapshot が空の
+    // queued のままで、残すと同じ DB を使う手元のサーバの昇格（全テナントを見る）に混ざっていた。
+    // app_function_schedule も次の実行時刻が今のまま残り、手元のサーバの定期実行が拾っていた。
+    service
+        .purge_tenant(&to, &org, "provisioner:test")
+        .await
+        .expect("後片付け");
+    let left: Vec<String> = storage::tenant_scope::count_tenant_rows(&pool, &tables, &to)
+        .await
+        .expect("後片付けの集計")
+        .into_iter()
+        .filter(|(t, n)| {
+            *n > 0
+                && !storage::tenant_scope::PURGE_RETAINED
+                    .iter()
+                    .any(|(r, _)| r == t)
+        })
+        .map(|(t, n)| format!("{t}={n}"))
+        .collect();
+    assert!(left.is_empty(), "後片付けで消えない行がある: {left:?}");
 }
 
 /// 中断アップロードの回収（#468）。

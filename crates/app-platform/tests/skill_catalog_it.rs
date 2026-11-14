@@ -233,8 +233,11 @@ async fn first_party_skill_is_listed_and_readable_without_install() {
     );
 
     // ── ④ yank すると掲載から消える ──
-    Registry::new(env.pool.clone())
-        .yank(&publisher, entry.id)
+    // 取り下げの口（InstallService::yank）はコードアプリだけを扱う（D-203）。skill の登録は SQL で取り下げた形にする。
+    sqlx::query("UPDATE registry_entry SET yanked = true WHERE tenant_id = $1 AND id = $2")
+        .bind(&tenant)
+        .bind(entry.id)
+        .execute(&env.pool)
         .await
         .expect("yank");
     let after_yank = env

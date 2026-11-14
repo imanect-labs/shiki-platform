@@ -4,7 +4,13 @@ import path from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// **フルツール・複雑タスク**のデモ動画（AI_FULL=1）。実 LLM＋実 SearXNG（web_search）＋
 /// web_fetch（ホストネイティブ取得・#348）＋code_interpreter（gVisor・numpy/pandas 同梱）＋

@@ -30,7 +30,7 @@ use crate::event::{
 };
 use crate::loop_detect::LoopDetector;
 use crate::plan;
-use crate::profile::{AgentOptions, AgentOutcome};
+use crate::profile::{AgentOptions, AgentOutcome, StepBudget, WindowFit};
 use crate::tool::Tool;
 
 /// 計画メタツールの名前（自律版のみ提示・ループが横取りしてツールへは dispatch しない）。
@@ -104,6 +104,7 @@ pub async fn run_agent(
         opts.system.as_deref(),
         &opts.budget,
         has_tools,
+        opts.budget_extension.is_some(),
     ));
     let opts = &run_opts;
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
@@ -122,12 +123,19 @@ pub async fn run_agent(
     let mut warned: std::collections::HashSet<crate::budget::BudgetKind> =
         std::collections::HashSet::new();
     // 剪定閾値はモデルの窓を天井にする（#529）。見積りは各ステップの実測 prompt で補正する。
-    let limits = crate::context::ContextLimits::resolve(
-        opts.context_soft_limit_tokens,
-        opts.context_keep_recent,
-        gateway.context_window_tokens(opts.model.as_deref()),
-        opts.max_tokens,
-    );
+    // 窓から空ける出力の上限は、予算を広げたら広げた値で引き直す（D-204）。
+    let window_tokens = gateway.context_window_tokens(opts.model.as_deref());
+    let resolve_limits = |max_output_tokens: Option<u32>| {
+        crate::context::ContextLimits::resolve(
+            opts.context_soft_limit_tokens,
+            opts.context_keep_recent,
+            window_tokens,
+            max_output_tokens,
+        )
+    };
+    let mut limits = resolve_limits(opts.max_tokens);
+    // 作成系の道具を呼んで予算を広げたか（この呼び出しの中での移り変わりを見るだけ・保存しない・D-204）。
+    let mut extended = false;
     // 実測の補正がまだ無い（新規開始・旧チェックポイント）なら、固定分（system＋ツール定義）を
     // 概算で入れておく。最初の 1 回で溢れて拒否されると、補正に必要な実測すら得られない。
     // 実測済みなら（0 でも）その値を使う。
@@ -150,12 +158,38 @@ pub async fn run_agent(
         if sink.is_cancelled() {
             break AgentStop::Cancelled;
         }
+        // 作成系の道具を呼んでいれば、広げた予算と 1 応答の上限で回す（毎ステップ履歴から導く・D-204）。
+        // 広げた上限はモデルの窓に収める。見積りの固定分には tool_search で読み込んだ定義の増分も入れる
+        // （拡張のある run だけ。剪定する自律版は下でも同じものを足す）。
+        if opts.budget_extension.is_some() {
+            gauge.observe_tools(context_tool_tokens(&state.messages));
+        }
+        let fit = WindowFit {
+            window_tokens,
+            overhead_tokens: gauge.overhead_tokens(),
+        };
+        let budget =
+            opts.step_budget_within(&state.messages, fit, state.spent.last_prompt_tokens());
+        if budget.extended && !extended {
+            extended = true;
+            // 元の上限に対して出した警告を引きずらない（広げた上限に近づいたら出し直す）。
+            warned.clear();
+            limits = resolve_limits(budget.max_tokens);
+            tracing::info!(
+                step = state.spent.steps,
+                max_steps = budget.budget.max_steps,
+                max_fresh_tokens = ?budget.budget.max_tokens,
+                max_cost_usd_micros = ?budget.budget.max_cost_usd_micros,
+                max_response_tokens = ?budget.max_tokens,
+                "作成系の道具を呼んだので、予算を 1 回だけ広げた"
+            );
+        }
         // --- 予算ガード（ステップに入る前に判定・Task 5.7）。 ---
-        match opts.budget.check(&state.spent, Instant::now()) {
+        match budget.budget.check(&state.spent, Instant::now()) {
             // 上限で畳む前に、**ツールを外した 1 ターンだけ**回して成果物を書かせる。
             BudgetCheck::Exceeded(kind) => {
                 // 着地の最中に止められたら、予算超過ではなくユーザー停止として返す。
-                if land_on_budget(gateway, run, opts, &mut state, sink).await? {
+                if land_on_budget(gateway, run, opts, budget.max_tokens, &mut state, sink).await? {
                     break AgentStop::Cancelled;
                 }
                 break AgentStop::Budget(kind);
@@ -189,6 +223,8 @@ pub async fn run_agent(
             tool_search.as_ref(),
             run,
             opts,
+            &budget,
+            fit,
             approver,
             &mut state,
             sink,
@@ -257,6 +293,8 @@ async fn land_on_budget(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    // このステップの 1 応答の出力上限（予算を広げていれば広げた値・D-204）。
+    max_tokens: Option<u32>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
 ) -> Result<bool, AgentError> {
@@ -278,9 +316,10 @@ async fn land_on_budget(
             messages: state.messages.clone(),
             tools: Vec::new(), // ← 追加の取得を構造的に不可能にする
             effort: opts.effort,
-            max_tokens: opts.max_tokens,
+            max_tokens,
             temperature: opts.temperature,
             session_id: opts.session_id.clone(),
+            response_format: None,
         },
     );
     let Some(stream) = await_unless_cancelled(setup, sink).await else {
@@ -357,7 +396,7 @@ async fn land_on_budget(
             crate::context_usage::ContextUsage::of_request(
                 gateway,
                 opts.model.as_deref(),
-                opts.max_tokens,
+                max_tokens,
                 opts.system.as_deref(),
                 [],
                 &state.messages,
@@ -384,6 +423,10 @@ async fn run_step(
     tool_search: Option<&crate::tool_search::ToolSearch>,
     run: &RunContext<'_>,
     opts: &AgentOptions,
+    // このステップの予算と 1 応答の出力上限（予算を広げていれば広げた値・D-204）。
+    budget: &StepBudget<'_>,
+    // 広げた 1 応答の上限を窓に収める材料（切れた呼び出しで広がる上限を知らせるのに使う・D-204）。
+    fit: WindowFit,
     approver: Option<&dyn Approver>,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
@@ -402,10 +445,11 @@ async fn run_step(
         } else {
             opts.effort
         },
-        max_tokens: opts.max_tokens,
+        max_tokens: budget.max_tokens,
         // skill のモデル既定（Task 6.9）。None は provider 既定。
         temperature: opts.temperature,
         session_id: opts.session_id.clone(),
+        response_format: None,
     };
     // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
     let started_at = chrono::Utc::now();
@@ -417,6 +461,8 @@ async fn run_step(
 
     let mut text_acc = String::new();
     let mut pending_names: HashMap<String, String> = HashMap::new();
+    // 始まり（`ToolUseStart`）の届いた呼び出しを届いた順に（引数の届かなかった呼び出しを拾う・BUG-225）。
+    let mut started: Vec<(String, String)> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     // assistant メッセージのブロックを**届いた順**に積む（推論アイテムは直後の本文・ツール呼び出しと
     // 対で送り返す必要があり、並べ替えると Responses が拒否する・#542）。本文は直前のブロックが本文なら
@@ -424,6 +470,8 @@ async fn run_step(
     let mut ordered: Vec<Block> = Vec::new();
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
+    // 思考を受け取ったか（思考だけで上限に達した応答の催促は、実際に思考した応答にだけ効かせる）。
+    let mut thought = false;
     let continuing = crate::agent_observation::is_text_continuation(&state.messages);
 
     loop {
@@ -445,6 +493,7 @@ async fn run_step(
                 sink.emit(AgentEvent::Text(text)).await?;
             }
             StreamDelta::ThinkingDelta { text } => {
+                thought = true;
                 // 本文の続きを書く生成では思考を画面へ流さない。思考が挟まると直前の本文と
                 // 別ブロックになり、表の行・```ブロックの途中から続く本文が別の Markdown として
                 // 描画されて壊れる（chat の sink・画面は思考を本文の区切りにする）。
@@ -453,6 +502,7 @@ async fn run_step(
                 }
             }
             StreamDelta::ToolUseStart { id, name } => {
+                started.push((id.clone(), name.clone()));
                 pending_names.insert(id, name);
             }
             StreamDelta::ToolUseInputDelta { .. } => {}
@@ -487,6 +537,33 @@ async fn run_step(
                 usage = u;
             }
         }
+    }
+
+    // 出力の上限で止まった応答で、始まりだけ届いて引数の届かなかった呼び出し（＝引数の途中で切れた呼び出し）。
+    // アダプタは読めない引数の呼び出しを渡さない（BUG-225・D-156 (d)）ので、ここで拾わないと、モデルには何も
+    // 返らず、作成系の道具の呼び出しで 1 応答の上限が広がることもない（D-204・D-216）。実行はしない。
+    // 履歴には `{}` の呼び出しとして積み、次のツール結果で「切れた」と閉じる（画面のツールカードも同じ）。
+    let cut: Vec<(String, String)> = if final_stop == StopReason::MaxTokens {
+        started
+            .into_iter()
+            .filter(|(id, _)| !calls.iter().any(|c| &c.id == id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for (id, name) in &cut {
+        sink.emit(AgentEvent::ToolCall {
+            id: id.clone(),
+            name: name.clone(),
+            input: serde_json::json!({}),
+            step: u32::try_from(step).unwrap_or(u32::MAX),
+        })
+        .await?;
+        ordered.push(Block::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: serde_json::json!({}),
+        });
     }
 
     // 会計＋Langfuse 計装（attempt/ステップ単位）＋予算の累積更新（Task 5.7）。
@@ -527,7 +604,7 @@ async fn run_step(
         crate::context_usage::ContextUsage::of_request(
             gateway,
             opts.model.as_deref(),
-            opts.max_tokens,
+            budget.max_tokens,
             opts.system.as_deref(),
             llm_gateway::tool_loading::context_tools(tool_defs, &state.messages),
             &state.messages,
@@ -540,18 +617,32 @@ async fn run_step(
     // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。
     // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
     // 積まない（content が空のメッセージを拒否するプロバイダがある）。
+    //
     // 思考だけで出力上限に達した（本文もツール呼び出しも無い）: 作業の途中で手が止まっただけで、
-    // 完了でも「本文の続き」でもない。思考を切り上げて次の手を出させる（何も積まずに次へ）。
+    // 完了でも「本文の続き」でもない。思考を切り上げて次の手を出させる（何も積まずに次へ・main の #1261）。
+    // 思考も無い空の応答（続きの催促に何も書けずに上限で止まったなど）は、思考を絞っても変わらないので催促しない。
+    // 催促を使い切っても思考だけで止まるなら、空応答の催促（「本文として書いて」）は誤った指示になるので、
+    // 空の assistant を積まずに打ち切りで止める。引数の途中で切れた呼び出し（`cut`）がある応答は、
+    // 下で「切れた」と返して書き直させる。
     if final_stop == StopReason::MaxTokens
+        && thought
         && calls.is_empty()
+        && cut.is_empty()
         && text_acc.trim().is_empty()
-        && crate::agent_observation::nudge_thinking_exhausted(&mut state.messages, opts.max_tokens)
+        && crate::agent_observation::nudge_thinking_exhausted(
+            &mut state.messages,
+            budget.max_tokens,
+        )
     {
         return Ok(StepOutcome::Continue);
     }
-
-    if text_acc.is_empty() && calls.is_empty() && nudge_empty_response(&mut state.messages) {
-        return Ok(StepOutcome::Continue);
+    if text_acc.is_empty() && calls.is_empty() && cut.is_empty() {
+        if final_stop == StopReason::MaxTokens {
+            return Ok(StepOutcome::Stop(AgentStop::Truncated));
+        }
+        if nudge_empty_response(&mut state.messages) {
+            return Ok(StepOutcome::Continue);
+        }
     }
 
     // assistant メッセージを履歴へ（届いた順のまま）。
@@ -560,12 +651,23 @@ async fn run_step(
         content: ordered,
     });
 
-    // ツール呼び出しの途中で出力上限に達した: 引数が切れているので実行せず、書き直させる。
-    if final_stop == StopReason::MaxTokens && !calls.is_empty() {
-        let ids: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
-        if let Some(mut blocks) =
-            crate::agent_observation::truncated_call_results(&state.messages, &ids, opts.max_tokens)
-        {
+    // ツール呼び出しの途中で出力上限に達した: どの呼び出しも実行せず、書き直させる。引数の途中で切れた呼び出し
+    // （`cut`）と、引数まで届いた呼び出し（`calls`）とで返す文を分ける（届いた方を「切れた」と言わない）。
+    if final_stop == StopReason::MaxTokens && !(calls.is_empty() && cut.is_empty()) {
+        let whole: Vec<(String, String)> = calls.into_iter().map(|c| (c.id, c.name)).collect();
+        // 切れた呼び出しも履歴に入れたので、残量と次の応答の上限は入れた後の予算で数える（D-204・下の通常の道と同じ）。
+        // 次の応答の上限は、次に送る prompt で窓に収めた値（実際に送る値と同じ）。
+        let observed =
+            opts.step_budget_within(&state.messages, fit, state.spent.last_prompt_tokens());
+        if let Some(mut blocks) = crate::agent_observation::truncated_call_results(
+            &state.messages,
+            &crate::agent_observation::TruncatedCalls {
+                cut: &cut,
+                whole: &whole,
+            },
+            budget.max_tokens,
+            observed.max_tokens,
+        ) {
             for b in &blocks {
                 if let Block::ToolResult {
                     tool_use_id,
@@ -581,12 +683,22 @@ async fn run_step(
                     .await?;
                 }
             }
-            append_budget_observation(&mut blocks, &opts.budget, &state.spent);
+            append_budget_observation(&mut blocks, &observed.budget, &state.spent);
             state.messages.push(LlmMessage {
                 role: LlmRole::Tool,
                 content: blocks,
             });
             return Ok(StepOutcome::Continue);
+        }
+        // 書き直させる回数を使い切った: 打ち切りで止める。出した画面のツールカードは、実行していないと閉じる
+        // （出たまま止まらない）。モデルにはもう返さないので、履歴には積まない。
+        for (id, _) in whole.iter().chain(&cut) {
+            sink.emit(AgentEvent::ToolResult {
+                tool_call_id: id.clone(),
+                ok: false,
+                content: "応答の出力上限で止まったため、実行していません。".to_string(),
+            })
+            .await?;
         }
         return Ok(StepOutcome::Stop(AgentStop::Truncated));
     }
@@ -594,8 +706,9 @@ async fn run_step(
     // 本文の途中で出力上限に達した: 完了ではないので、同じ run のまま続きを書かせる。
     // 次のステップへ進める予算が無ければ続けない（進んでも予算で止まり、未完の本文が
     // `Budget` の正常終了に見えてしまう。Truncated のまま畳んで中断の案内を出させる）。
+    // 予算はこのステップの予算（作成系の道具で広げた後の上限・D-204）で数える（D-224）。
     let can_continue = matches!(
-        opts.budget.check(&state.spent, Instant::now()),
+        budget.budget.check(&state.spent, Instant::now()),
         BudgetCheck::Ok | BudgetCheck::Warn(..)
     );
     if final_stop == StopReason::MaxTokens
@@ -665,7 +778,11 @@ async fn run_step(
     }
     // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
     // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
-    append_budget_observation(&mut result_blocks, &opts.budget, &state.spent);
+    // 通常の会話にも添える（#1176）。残量は**この呼び出しを履歴に入れた後の**予算で数える:
+    // このステップで初めて作成系の道具を呼んだなら、次の生成からは広げた上限で回るので、
+    // ステップの頭の（広げる前の）予算で「残り 1 手・畳め」と知らせない（D-204）。
+    let observed = opts.step_budget(&state.messages);
+    append_budget_observation(&mut result_blocks, &observed.budget, &state.spent);
     state.messages.push(LlmMessage {
         role: LlmRole::Tool,
         content: result_blocks,
@@ -713,10 +830,12 @@ fn preview(s: &str) -> String {
     format!("{}…", &s[..end])
 }
 
-/// 会計の利用元（管理画面の利用元別集計・#553）。ミニアプリ経由はミニアプリ、
-/// チャット制約版はチャット、自律版はエージェントとして数える。
+/// 会計の利用元（管理画面の利用元別集計・#553）。呼び出し側の上書き（ワークフローの agent.invoke）が
+/// あればそれ、無ければミニアプリ経由はミニアプリ、チャット制約版はチャット、自律版はエージェントとして数える。
 fn usage_source(opts: &AgentOptions, app_id: Option<uuid::Uuid>) -> llm_gateway::UsageSource {
-    if app_id.is_some() {
+    if let Some(source) = opts.usage_source {
+        source
+    } else if app_id.is_some() {
         llm_gateway::UsageSource::MiniApp
     } else if opts.profile.is_autonomous() {
         llm_gateway::UsageSource::Agent

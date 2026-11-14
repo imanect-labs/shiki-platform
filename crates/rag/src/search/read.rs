@@ -28,6 +28,10 @@ use crate::search::SearchService;
 /// 1 回に読む字数の既定と上限。全文一括はコンテキストを壊すので窓で返す。
 pub const DEFAULT_READ_CHARS: usize = 8_000;
 pub const MAX_READ_CHARS: usize = 20_000;
+/// 先頭から続けて読むときの字数の上限（[`SearchService::read_document_text`]・ワークフローの「ファイルを読む」）。
+pub const MAX_TEXT_CHARS: usize = 200_000;
+/// 続けて読むときに単位を引き足す回数の上限（1 回の SQL は [`UNITS_PER_QUERY`] 件まで）。
+const MAX_TEXT_BATCHES: usize = 64;
 /// 1 回の SQL で引く単位数の上限（実際は窓の字数から見積もる・[`SearchService::units`]）。
 const UNITS_PER_QUERY: i64 = 400;
 /// 位置が見つからなかったときに返す見出しの数。
@@ -121,56 +125,11 @@ impl SearchService {
     ) -> Result<DocRead, RagError> {
         let trail = trail.into();
         let max_chars = max_chars.clamp(1, MAX_READ_CHARS);
-        // 索引にある最新版と、その版にブロック列があるか（1 本の SQL で引く）。
-        let Some((version, has_blocks)) = sqlx::query_as::<_, (i64, bool)>(
-            "select c.version, exists(select 1 from doc_block b \
-                 where b.tenant_id = $1 and b.org = $2 and b.node_id = $3 \
-                   and b.version = c.version) \
-             from rag_chunk c \
-             where c.tenant_id = $1 and c.org = $2 and c.node_id = $3 \
-             order by c.version desc limit 1",
-        )
-        .bind(ctx.tenant_id())
-        .bind(ctx.org())
-        .bind(node.id)
-        .fetch_optional(&self.pool)
-        .await?
-        else {
-            return Ok(DocRead::NotIndexed);
+        let (version, source) = match self.readable_version(ctx, node).await? {
+            Ok(found) => found,
+            Err(read) => return Ok(read),
         };
-        let source = if has_blocks {
-            ReadSource::Blocks
-        } else {
-            ReadSource::Chunks
-        };
-        // 二段 authz の pre-filter 側: 呼び出し側の viewer 判定（post-filter 相当）とは独立に、
-        // 検索と同じ可読集合でこのファイルのチャンクの authz_tags を照合する。片方が誤って
-        // 許可しても本文は返さない。可読集合が上限を超えて縮退したときは検索と同じく
-        // tenant 境界だけになる（viewer 判定が最終の防壁）。
-        let readable =
-            readable_set(ctx, self.authz.as_ref(), self.config.readable_tags_max).await?;
-        if !readable.overflowed {
-            let allowed: bool = sqlx::query_scalar(
-                "select exists(select 1 from rag_chunk \
-                 where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
-                   and authz_tags && $5)",
-            )
-            .bind(ctx.tenant_id())
-            .bind(ctx.org())
-            .bind(node.id)
-            .bind(version)
-            .bind(&readable.tags)
-            .fetch_one(&self.pool)
-            .await?;
-            if !allowed {
-                return Ok(DocRead::Denied);
-            }
-        }
-
-        let source_name = match source {
-            ReadSource::Blocks => "blocks",
-            ReadSource::Chunks => "chunks",
-        };
+        let source_name = source_name(source);
         let Some(start) = self.locate(ctx, node, version, source, from).await? else {
             // 見出し一覧も文書の中身の一部なので、読み出しとして監査に残す。
             let outline = self.outline(ctx, node, version, source).await?;
@@ -218,6 +177,130 @@ impl SearchService {
             text,
             next,
         }))
+    }
+
+    /// `node` の索引済み最新版を、先頭から `max_chars` 字（[`MAX_TEXT_CHARS`] まで）続けて読む（D-111）。
+    ///
+    /// ワークフローの「ファイルを読む」が PDF・Office の本文を 1 回で受け取るためのもの。窓を 1 つにつなぐので、
+    /// [`Self::read_document`] を続けて呼んだときと違い、ページの印や「（前の続き）」が窓の境目に重ならず、監査も
+    /// 1 回で済む。認可（呼び出し側の viewer 判定の証拠と、可読集合の pre-filter）は [`Self::read_document`] と同じ。
+    /// 返すのは [`DocRead::Page`]（`next` があれば上限で切った）か、[`DocRead::NotIndexed`]・[`DocRead::Denied`]。
+    pub async fn read_document_text(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+        max_chars: usize,
+        trail: impl Into<crate::AuditTrail<'_>>,
+    ) -> Result<DocRead, RagError> {
+        let trail = trail.into();
+        let max_chars = max_chars.clamp(1, MAX_TEXT_CHARS);
+        let (version, source) = match self.readable_version(ctx, node).await? {
+            Ok(found) => found,
+            Err(read) => return Ok(read),
+        };
+        // 単位を上限の字数まで引き足す（1 回の SQL は件数に上限があるので、続きの位置から引き直す）。
+        let mut units: Vec<Unit> = Vec::new();
+        let mut chars = 0usize;
+        // 最後に引いた単位の後ろにまだあり得るか（上限の字数か回数で止めたときは、あり得るとして render に任せる）。
+        let mut more = true;
+        for _ in 0..MAX_TEXT_BATCHES {
+            let start = units.last().map_or(0, |u| u.ordinal + 1);
+            let budget = max_chars.saturating_sub(chars).max(1);
+            let (batch, batch_more) = self
+                .units(ctx, node, version, source, start, 0, budget)
+                .await?;
+            chars += batch
+                .iter()
+                .map(|u| usize::try_from(u.remaining).unwrap_or(0))
+                .sum::<usize>();
+            let empty = batch.is_empty();
+            units.extend(batch);
+            if empty || chars > max_chars {
+                more = !empty;
+                break;
+            }
+            if !batch_more {
+                // 件数の上限にも字数の上限にも届かずに引き終えた = 文書の終わり。
+                more = false;
+                break;
+            }
+        }
+        let (text, next) = render(&units, source, max_chars, 0, more);
+        self.audit_read(
+            ctx,
+            node,
+            trail,
+            serde_json::json!({
+                "version": version,
+                "source": source_name(source),
+                "from": units.first().map(|u| [u.ordinal, 0]),
+                "next": next.map(|c| [c.unit, i32::try_from(c.offset).unwrap_or(i32::MAX)]),
+                "chars": text.chars().count(),
+            }),
+        )
+        .await?;
+        Ok(DocRead::Page(DocReadPage {
+            version,
+            source,
+            text,
+            next,
+        }))
+    }
+
+    /// 索引にある最新版と本文の組み立て元（版のブロック列があるか）を引き、可読集合の pre-filter を通す。
+    ///
+    /// 索引が無ければ `Err(NotIndexed)`、pre-filter で読めなければ `Err(Denied)`（呼び出し側はそのまま返す）。
+    async fn readable_version(
+        &self,
+        ctx: &AuthContext,
+        node: &storage::Node,
+    ) -> Result<Result<(i64, ReadSource), DocRead>, RagError> {
+        // 索引にある最新版と、その版にブロック列があるか（1 本の SQL で引く）。
+        let Some((version, has_blocks)) = sqlx::query_as::<_, (i64, bool)>(
+            "select c.version, exists(select 1 from doc_block b \
+                 where b.tenant_id = $1 and b.org = $2 and b.node_id = $3 \
+                   and b.version = c.version) \
+             from rag_chunk c \
+             where c.tenant_id = $1 and c.org = $2 and c.node_id = $3 \
+             order by c.version desc limit 1",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(node.id)
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(Err(DocRead::NotIndexed));
+        };
+        let source = if has_blocks {
+            ReadSource::Blocks
+        } else {
+            ReadSource::Chunks
+        };
+        // 二段 authz の pre-filter 側: 呼び出し側の viewer 判定（post-filter 相当）とは独立に、
+        // 検索と同じ可読集合でこのファイルのチャンクの authz_tags を照合する。片方が誤って
+        // 許可しても本文は返さない。可読集合が上限を超えて縮退したときは検索と同じく
+        // tenant 境界だけになる（viewer 判定が最終の防壁）。
+        let readable =
+            readable_set(ctx, self.authz.as_ref(), self.config.readable_tags_max).await?;
+        if !readable.overflowed {
+            let allowed: bool = sqlx::query_scalar(
+                "select exists(select 1 from rag_chunk \
+                 where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
+                   and authz_tags && $5)",
+            )
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(node.id)
+            .bind(version)
+            .bind(&readable.tags)
+            .fetch_one(&self.pool)
+            .await?;
+            if !allowed {
+                return Ok(Err(DocRead::Denied));
+            }
+        }
+        Ok(Ok((version, source)))
     }
 
     /// 本文の読み出しを監査に残す（検索を経由しない本文の経路・#425）。
@@ -417,6 +500,14 @@ impl SearchService {
             .bind(OUTLINE_LIMIT)
             .fetch_all(&self.pool)
             .await?)
+    }
+}
+
+/// 監査に残す本文の組み立て元の名前。
+fn source_name(source: ReadSource) -> &'static str {
+    match source {
+        ReadSource::Blocks => "blocks",
+        ReadSource::Chunks => "chunks",
     }
 }
 

@@ -12,6 +12,9 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
   single＋provisioner 設定時は起動ログに warn が出る。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
+  shiki-server はこの資格情報で、組織の member と部署を利用者の所属グループと定期に照合する（D-136・
+  `deploy/keycloak/README.md`）。照合が読むのは利用者の所属グループと属性 `roles` で、`manage-users` に含まれる
+  `view-users` で足りる。
 - realm の User Profile で `tenant` / `roles` を**宣言済み・管理者のみ閲覧/編集**であること
   （`deploy/keycloak/README.md`「User Profile」・#809）。宣言が無いと Keycloak 26 は admin REST 経由の
   `tenant` も保存せず、作成したテナントの初期 admin がログインできない（プロビジョニングが黙って効かない）。
@@ -97,6 +100,38 @@ shiki-admin audit-retention --tenant acme --days 730
 - **テナント撤去の記録（`tenant.purge`）は消さない。** 撤去後は tombstone に残った保持期間で、ほかの行を
   消し続ける。テナント台帳に無いテナント（オンプレなど）は既定の 365 日で消す。
 - **短くする方向は次回の日次処理で効く。** 監査や法令で長く要るなら縮める前に書き出しておく。
+
+## ゴミ箱の保持期間
+
+```bash
+curl -s -X PUT "$SHIKI/admin/tenants/acme/trash-retention" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"days": 30}'
+# → 204（止めるときは {"days": null}）
+
+# 同じことを CLI で（off で止める・--actor は自己申告として metadata に残る）
+shiki-admin trash-retention --tenant acme --days 30
+shiki-admin trash-retention --tenant acme --days off
+```
+
+- **既定は無効**（`null`・自動では消さない・D-202）。範囲は 1〜3650 日。範囲外と `days` の省略は 400
+  （止めるときは `null` を明示する）。active でないテナントと、テナント台帳に行が無いテナントは 404。
+  `auth.tenancy=single`（オンプレ）はテナント作成の口が使えず台帳に行が無いので、今は設定できない。
+- 日数を入れると、ゴミ箱に入れてからその日数を過ぎたもの（ゴミ箱の一覧に出る削除の根。フォルダは中身ごと）を、
+  システムが完全に削除する（**元に戻せない**・版も消える）。消したことは `storage.trash_retention.purge`
+  （記録者 `system:trash-retention`）として、設定の変更は `tenant.trash_retention.set` として監査のチェーンに残る。
+- **日数を入れたときと短くしたときは、その時点から数え直す。** 期限は「ゴミ箱に入れた時刻」と「最後に日数を入れた・
+  短くした時刻」の遅いほうに日数を足した時刻。入れた直後・縮めた直後に、古いゴミ箱が一斉に消えることはない。
+  そのため、短くすると前の期限より後に消えるものもある。長くしたとき・止めたとき・同じ値を入れ直したときは数え直さない。
+- 中断アップロードの回収と同じ周（`storage.upload_gc.interval_secs`・既定 1 時間）に回る。1 回に消すのは、
+  全テナントを通して古い順に 100 件（中身を合わせて 2,000 件）まで。残りは次の回に回すので、古いゴミ箱が多いと
+  消えきるまで日がかかる。複数のレプリカが動いていても、進めるのは 1 台だけ（advisory lock）。
+- **`storage.upload_gc.enabled=false` にすると回らない**（完全削除の後片付け──権限のタプルと本体の削除──も
+  回らない）。起動時に warn が出る。
+- 削除したフォルダの中に削除されていないものが残っている（古い版の不具合で崩れた）ものは消さずに飛ばし、回ごとに
+  warn を出す。
+- 利用者が手で消す口（ゴミ箱の「完全に削除」「ゴミ箱を空にする」）は、保持期間とは別にいつでも使える。消せるのは
+  削除した根の持ち主と組織の管理者（D-201）。
 
 ## テナント削除（破壊的・不可逆）
 

@@ -10,8 +10,10 @@
 //!   攻撃はここでしか塞げない。
 //! - **リダイレクト非追従**（PIT-36）: 検証を迂回する誘導を遮断する。3xx は Location を
 //!   観測として返し、モデルが改めて（＝再検証を通して）取得できるようにする。
-//! - **シークレット非添付・プロキシ非経由**: 資格情報を載せず、環境プロキシで
-//!   アドレス固定を迂回されない（`no_proxy`）。
+//! - **シークレット非添付・環境のプロキシ非経由**: 資格情報を載せず、環境プロキシで
+//!   アドレス固定を迂回されない（`no_proxy`）。外へ出るのに中継が要る環境では、運用者が設定で明示した中継だけを
+//!   通す（[`WebFetchTool::with_proxy`]・GAP-72）。中継には検証済みの IP アドレスへの CONNECT を頼み（名前を渡さない）、
+//!   TLS はトンネルの中で URL の名前で結ぶ（`sandbox_client::egress_proxy`）。
 //! - 応答は untrusted（PIT-23）。実行経路は作らず、サイズ上限を課す。
 //!
 //! # コンテキスト効率（#405）
@@ -32,9 +34,10 @@ use std::time::Duration;
 
 use authz::AuthContext;
 use rag::DocumentParser;
+use sandbox_client::egress_proxy::{EgressProxy, ProxyTunnel};
 use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
-use super::public_fetch::{self, read_capped, PinError};
+use super::public_fetch::{self, read_capped, ConnectError, PinError};
 
 pub(crate) use render::Page;
 
@@ -64,6 +67,8 @@ pub(crate) mod tests;
 mod tests_documents;
 #[cfg(test)]
 mod tests_efficiency;
+#[cfg(test)]
+mod tests_proxy;
 
 /// テキスト応答の読み取り上限（モデル向け整形上限は [`render`] が別途掛ける）。
 const FETCH_BODY_CAP: usize = 256 * 1024;
@@ -99,6 +104,8 @@ pub struct WebFetchTool {
     parser: Option<Arc<dyn DocumentParser>>,
     /// モデルへ渡す本文の上限（文字）。
     max_chars: usize,
+    /// 運用者が設定した外への送信の中継（`egress.proxy_url`・無ければ直接つなぐ・GAP-72）。
+    proxy: Option<EgressProxy>,
     /// **テスト専用**の解決後 IP 検証スキップ（ループバックのスタブサーバへ繋ぐため）。
     /// `cfg(test)` 限定なのでリリースビルドにはこのフィールド自体が存在しない。
     #[cfg(test)]
@@ -118,6 +125,7 @@ impl WebFetchTool {
             resolver,
             parser: None,
             max_chars: DEFAULT_MAX_CHARS,
+            proxy: None,
             #[cfg(test)]
             skip_addr_guard: false,
         }
@@ -132,6 +140,13 @@ impl WebFetchTool {
         self
     }
 
+    /// 外への送信の中継を通す（`egress.proxy_url`・GAP-72）。検証済みのアドレスがすべて公開の IP のときだけ通す。
+    #[must_use]
+    pub fn with_proxy(mut self, proxy: Option<EgressProxy>) -> Self {
+        self.proxy = proxy;
+        self
+    }
+
     /// モデルへ渡す本文の上限（文字）を差し替える。
     #[must_use]
     pub fn with_max_chars(mut self, max_chars: usize) -> Self {
@@ -139,6 +154,43 @@ impl WebFetchTool {
             self.max_chars = max_chars;
         }
         self
+    }
+
+    /// 検証済みのアドレスにだけつなぐ HTTP の部品を組む（中継を使う設定なら、そのトンネルも返す・GAP-72）。
+    ///
+    /// トンネルは取得を終えるまで持つ（落とすと閉じる）。中継が開けなければ、取得の失敗の結果を返す（中継の場所と
+    /// 資格情報は出さない）。
+    async fn client_for(
+        &self,
+        target: &FetchTarget,
+        addrs: &[SocketAddr],
+    ) -> Result<Result<(reqwest::Client, Option<ProxyTunnel>), ToolOutcome>, ToolError> {
+        // 組み立て（中継のトンネル・アドレス固定・リダイレクト非追従・環境プロキシ非経由）は回答の画像の代理取得と
+        // 共有する（public_fetch::connect・#1044）。
+        match public_fetch::connect(
+            target,
+            addrs,
+            self.proxy.as_ref(),
+            FETCH_TIMEOUT,
+            USER_AGENT,
+        )
+        .await
+        {
+            Ok(connected) => Ok(Ok(connected)),
+            Err(ConnectError::Proxy(e)) => {
+                if let Some(proxy) = &self.proxy {
+                    tracing::warn!(target: "web_fetch", proxy = %proxy.endpoint(), url = %target.url,
+                        reason = ?e, "中継のトンネルを開けませんでした");
+                }
+                Ok(Err(ToolOutcome::error(format!(
+                    "取得に失敗しました: {}",
+                    e.message()
+                ))))
+            }
+            Err(ConnectError::Client(e)) => {
+                Err(ToolError::Unavailable(format!("http client: {e}")))
+            }
+        }
     }
 
     /// 解決結果を検証する（**接続先を確定させる唯一の関門**）。
@@ -156,6 +208,17 @@ impl WebFetchTool {
             return Ok(addrs);
         }
         net_guard::ensure_all_public(addrs)
+    }
+}
+
+/// 取得先の確定の失敗をツールの誤りに写す（文言は public_fetch の関門と同じ・#1044）。
+fn pin_error(e: PinError) -> ToolError {
+    match e {
+        PinError::ResolveTimeout => {
+            ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into())
+        }
+        PinError::Resolve(e) => ToolError::Invalid(format!("URL が不正です: {e}")),
+        PinError::Rejected(e) => ToolError::Invalid(format!("取得先が拒否されました: {e}")),
     }
 }
 
@@ -337,22 +400,17 @@ impl WebFetchTool {
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
         // （関門は public_fetch に一本化・画像プロキシと共有する・#1044）。
-        let client = public_fetch::pinned_client(
-            self.resolver.as_ref(),
-            &target,
-            |addrs| self.guard(addrs),
-            FETCH_TIMEOUT,
-            USER_AGENT,
-        )
+        let addrs = public_fetch::resolve_verified(self.resolver.as_ref(), &target, |addrs| {
+            self.guard(addrs)
+        })
         .await
-        .map_err(|e| match e {
-            PinError::ResolveTimeout => {
-                ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into())
-            }
-            PinError::Resolve(e) => ToolError::Invalid(format!("URL が不正です: {e}")),
-            PinError::Rejected(e) => ToolError::Invalid(format!("取得先が拒否されました: {e}")),
-            PinError::Client(e) => ToolError::Unavailable(format!("http client: {e}")),
-        })?;
+        .map_err(pin_error)?;
+
+        // 外へ出るのに中継が要る環境では、検証済みのアドレスへのトンネルを先に開く（取得を終えるまで持つ・GAP-72）。
+        let (client, _tunnel) = match self.client_for(&target, &addrs).await? {
+            Ok(v) => v,
+            Err(refused) => return Ok(Fetched::Observation(refused)),
+        };
 
         let response = match client.get(target.url.clone()).send().await {
             Ok(r) => r,

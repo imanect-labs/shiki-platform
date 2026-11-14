@@ -574,3 +574,96 @@ async fn inventory_tells_data_when_it_revokes_a_table_tuple() {
         "撤去したテーブルの配信の世代が進む: {before:?} → {after:?}"
     );
 }
+
+/// 同じ (scope, 対象) に relation の違う委譲を 1 回の有効化で送ると、タプルを書く前に全体を断る。台帳の一意キーは
+/// (委譲元, scope, 対象) なので、通すと台帳には後の relation の 1 行しか残らず、もう一方のタプルが台帳に載らないまま
+/// 残って、その後の取り消しで外れない（BUG-130 の残り）。同じ組の重なりはそのまま通る。
+#[tokio::test]
+async fn conflicting_relations_for_one_target_are_refused_before_writing() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let store = DelegationStore::new(pool.clone(), fga.clone());
+    let wf = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf.to_string());
+    let folder = alice.ns().folder("F");
+    fga.write_tuple(&alice.subject(), Relation::Editor, &folder)
+        .await
+        .unwrap();
+    let grant = |relation| GrantRequest {
+        scope: "storage.read".into(),
+        object: folder.clone(),
+        relation,
+    };
+
+    let res = store
+        .enable(
+            &alice,
+            wf,
+            1,
+            &["storage.read".into()],
+            &[grant(Relation::Viewer), grant(Relation::Editor)],
+        )
+        .await;
+    assert!(
+        matches!(res, Err(DelegationError::ConflictingGrants(_))),
+        "{res:?}"
+    );
+    for relation in [Relation::Viewer, Relation::Editor] {
+        assert!(
+            !fga.check(
+                &wf_subject,
+                relation,
+                &folder,
+                authz::Consistency::HigherConsistency
+            )
+            .await
+            .unwrap(),
+            "タプルは書かない（{relation:?}）"
+        );
+    }
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_delegation WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&tenant)
+    .bind(wf)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 0, "台帳にも書かない");
+
+    // 同じ組の重なり（relation も同じ）は 1 つの委譲として通る。
+    store
+        .enable(
+            &alice,
+            wf,
+            1,
+            &["storage.read".into()],
+            &[grant(Relation::Viewer), grant(Relation::Viewer)],
+        )
+        .await
+        .expect("same grant twice");
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT relation FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(&tenant)
+    .bind(wf)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, vec!["viewer".to_string()]);
+
+    for table in ["workflow_delegation", "workflow_registration"] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE tenant_id = $1 AND workflow_id = $2"
+        ))
+        .bind(&tenant)
+        .bind(wf)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+}

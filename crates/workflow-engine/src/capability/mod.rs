@@ -2,7 +2,8 @@
 //!
 //! ノード実行・script の HostCall はすべてここに合流する。手順（engine.md §9.2）:
 //! 1. **scope 天井交差**: 実効スコープ = 宣言スコープ ∩ 委譲（ノード設定で権限を拡大できない・縮小のみ）
-//! 2. **effect_journal dedupe**: 副作用 API は高々 1 回（storage.write / workflow.start）
+//! 2. **effect_journal dedupe**: 副作用 API は高々 1 回（storage.write / workflow.start）。外への呼び出し
+//!    （llm.invoke・http.request）も結果を記録し、拾い直しで繰り返さない（GAP-28・`nodes::outbound`）
 //! 3. rate limit（外部 API）・既存チョークポイント経由・監査記録
 //!
 //! 本モジュールはゲートの骨格（scope 天井・journal・監査フック）を提供する。個別能力の実処理は
@@ -15,7 +16,9 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::vocab::Scope;
-pub use journal::{op_digest, EffectJournal, JournalDecision, JournalError};
+pub use journal::{
+    op_digest, EffectJournal, JournalDecision, JournalError, OutboundCheck, EFFECT_IN_PROGRESS,
+};
 
 /// 能力呼び出しの監査シンク（run 監査・OTel へ流す）。実装は呼び出し側が注入する。
 pub trait CapabilityAudit: Send + Sync {
@@ -60,6 +63,8 @@ pub fn effective_scopes(declared: &[String], delegated: &[String]) -> BTreeSet<S
 
 /// スコープ不要の内部制御 API（明示許可・これ以外の未マップ API は fail-closed で拒否）。
 /// llm.invoke / agent.invoke は内部推論（外部到達は http.egress・データ到達は storage/rag で縛る）。
+/// agent.invoke の道具（rag.search・web.fetch・code.run など）は、呼び出しごとに道具の要求スコープで縛る
+/// （`nodes/agent_gateway.rs`・BUG-6）。
 /// script.run 自体は無スコープ（内部の `Shiki.*` ホスト呼び出しが個別に scope ceiling で縛られる）。
 const SCOPE_FREE_APIS: &[&str] = &[
     "control.branch",
@@ -69,11 +74,19 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "control.wait",
     "llm.invoke",
     "agent.invoke",
+    // 判定（FEAT-1・H14）も llm.invoke と同じ内部推論。判定の材料は前のノードが読んだもので、データへの到達は
+    // その data / storage のスコープで縛られる。判定のチョークポイント（LlmGateway::decide）が組織の許可・
+    // 利用上限・会計を持つ。
+    "ai.decide",
     "script.run",
     // skill.invoke 自体は専用スコープを持たない（内部推論・vocab/scope.rs:41）。skill が
-    // `.shiki` script / agent 経由で行う能力呼び出しは、その API のスコープが個別に効く
-    // （script の Shiki.* は HostBridge が、agent は agent.invoke 経路がゲートする・#344）。
+    // `.shiki` script で行う能力呼び出しは、その API のスコープが個別に効く
+    // （script の Shiki.* は HostBridge がゲートする・#344）。
     "skill.invoke",
+    // 結果を画面に返すだけ（値を整形する pure ノード・外部にもデータにも届かない・GAP-09）。
+    "workflow.reply",
+    // 日付を計算するだけ（pure・外部にもデータにも届かない・GAP-15）。
+    "transform.date",
 ];
 
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。
@@ -117,6 +130,36 @@ mod tests {
     fn empty_delegation_yields_empty_effective() {
         let eff = effective_scopes(&["storage.read".into()], &[]);
         assert!(eff.is_empty(), "委譲ゼロなら実効ゼロ（fail-closed）");
+    }
+
+    /// 結果を画面に返すノードはスコープを要さない（宣言が空の IR でも実行できる・GAP-09）。
+    #[test]
+    fn reply_is_scope_free() {
+        assert_eq!(
+            check_scope_ceiling("workflow.reply", &BTreeSet::new()),
+            ScopeCeiling::Allowed
+        );
+        assert_eq!(Scope::for_api("workflow.reply"), None);
+    }
+
+    /// 判定はスコープを要さない（llm.invoke と同じ内部推論・宣言が空の IR でも実行できる・H14）。
+    /// 外すと未マップの API として常に拒否される（fail-closed）。
+    #[test]
+    fn ai_decide_is_scope_free() {
+        assert_eq!(Scope::for_api("ai.decide"), None);
+        assert_eq!(
+            check_scope_ceiling("ai.decide", &BTreeSet::new()),
+            ScopeCeiling::Allowed
+        );
+        assert_eq!(
+            crate::vocab::required_scope(crate::vocab::NodeType::AiDecide),
+            None
+        );
+        // 似た名前の未知の API はすり抜けない。
+        assert_eq!(
+            check_scope_ceiling("ai.decide2", &BTreeSet::new()),
+            ScopeCeiling::Denied(DenyReason::OutOfScope)
+        );
     }
 
     #[test]

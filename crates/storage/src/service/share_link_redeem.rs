@@ -13,6 +13,7 @@ use crate::audit::AuditAction;
 
 use super::share_link_util::verify_password;
 use crate::model::GeneralAccessLevel;
+use crate::tuple_commit::{commit_with_tuples, TupleKey};
 
 /// token で引く redeem 対象リンク 1 行。
 #[derive(sqlx::FromRow)]
@@ -154,19 +155,15 @@ impl StorageService {
         // commit でロックが解放された隙に revoke がロックを取り、台帳を読み（行はある）→
         // delete_tuple（まだ無いので no-op）→ 行を revoked → commit、その後で write_tuple が着地し、
         // **台帳から参照されない孤児タプル＝恒久 fail-open** になる。
-        let ns = ctx.ns();
-        let obj = node_fga_object(&ns, l.kind, c.node_id);
-        let subject = ns.user(&ctx.principal().id);
-        let write = self
-            .authz
-            .write_tuple(&subject, l.role.relation_via_link(), &obj)
-            .await;
-
-        // **書き込み結果が不確定なエラーでも補償する**（Codex P1）。timeout や接続切断では
+        //
+        // 書き込み → commit の区間は別のタスクで最後まで走る（呼ぶ側が捨てられても、台帳行の無い via_link の
+        // タプルを残さない・BUG-134）。補償は tuple_commit の決まりのとおり:
+        //
+        // (a) **書き込み結果が不確定なエラーでも補償する**（Codex P1）。timeout や接続切断では
         // 「FGA はタプルを適用したが応答だけ失われた」が起こり得る。ここで tx をロールバックすると
         // 台帳行が無いままタプルが残り、per-user 取消もリンク失効も台帳から対象を見つけられないため
         // **恒久 fail-open** になる。delete_tuple は冪等（未存在は成功扱い）なので、適用されていなくても
-        // 無害。ロック保持下で消すので、この間に別経路がタプルを張り直すこともない。
+        // 無害。ロック保持下で消す（tx を捨てるのは補償の後）ので、この間に別経路がタプルを張り直すこともない。
         //
         // **commit 失敗パス（下）と非対称に、ここでは参照カウントを見ない**（CodeRabbit）。
         // 同じ (node,user,role) を別リンクの live grant が保持していると、その正当なタプルまで
@@ -174,39 +171,29 @@ impl StorageService {
         // 参照カウントを入れて「他リンクが保持しているから消さない」と判断した場合、実際には
         // タプルが適用されていた時に台帳から参照されない孤児が残る（fail-open）。巻き添えは
         // fail-closed 側の一時的なアクセス喪失で、どちらかのリンクを再 redeem すれば復旧する。
-        // 一方 commit 失敗パスは `granted == true`＝「この呼び出しで新規に張った」が確定して
-        // いるので、他リンクが頼っているタプルではあり得ず、無条件に消して安全。
-        let granted = match write {
-            Ok(granted) => granted,
-            Err(e) => {
-                let _ = self
-                    .authz
-                    .delete_tuple(&subject, l.role.relation_via_link(), &obj)
-                    .await;
-                tx.rollback().await?;
-                return Err(e.into());
+        //
+        // (b) commit 失敗時は、`write_tuple` が `true`（この呼び出しで**新規に**張った）のときだけ外す。
+        // 直前までタプルが存在しなかったので、同じ (node,user,role) を他リンクの live grant が頼っている
+        // ことはあり得ず、参照カウントを見ずに消して安全（CodeRabbit）。既存タプル（`false`）は残す。
+        // 補償は best-effort。取りこぼしても、次回 redeem が台帳行を必ず書き直す（記録は無条件）
+        // ので孤児タプルは自己修復する。
+        let ns = ctx.ns();
+        let obj = node_fga_object(&ns, l.kind, c.node_id);
+        let tuple = TupleKey::new(
+            ns.user(&ctx.principal().id),
+            l.role.relation_via_link(),
+            obj,
+        );
+        // 失効タイマの起こしも commit と同じタスクで行う（呼ぶ側が捨てられても、早い期限を取りこぼさない）。
+        let notify = l.expires_at.is_some().then(|| self.expiry_notify.clone());
+        commit_with_tuples(self.authz.clone(), vec![tuple], async move {
+            tx.commit().await?;
+            if let Some(n) = notify {
+                n.notify_one();
             }
-        };
-
-        if let Err(e) = tx.commit().await {
-            // 補償は best-effort。取りこぼしても、次回 redeem が台帳行を必ず書き直す（記録は無条件）
-            // ので孤児タプルは自己修復する。
-            //
-            // 参照カウントを見ずに消してよい理由（CodeRabbit）: `granted == true` は
-            // 「この呼び出しで**新規に**張った」＝直前までタプルが存在しなかったことを意味するので、
-            // 同じ (node,user,role) を他リンクの live grant が頼っていることはあり得ない。
-            // 既存タプルなら write_tuple は false を返し、ここには入らない。
-            if granted {
-                let _ = self
-                    .authz
-                    .delete_tuple(&subject, l.role.relation_via_link(), &obj)
-                    .await;
-            }
-            return Err(e.into());
-        }
-        if l.expires_at.is_some() {
-            self.expiry_notify.notify_one();
-        }
+            Ok::<(), StorageError>(())
+        })
+        .await?;
         Ok(())
     }
 
@@ -298,13 +285,31 @@ impl StorageService {
     }
 
     /// `lock_node` 取得後にリンクを再読みし、redeem を許してよいかを確定する（#376）。
-    /// active でない／パスワードハッシュが差し替わった／行が破損している場合は `None`（一律 403）。
+    /// ノードが無い（完全に削除された）／active でない／パスワードハッシュが差し替わった／行が破損している場合は
+    /// `None`（一律 403）。
+    ///
+    /// 先にノードの行を `FOR KEY SHARE` で Tx の終わりまで押さえ、完全削除（node の行を `FOR UPDATE` で押さえて
+    /// 消す・`purge`）と直列にする。完全削除が先なら行が無くて断り、redeem が先なら完全削除はこの commit
+    /// （台帳の行とタプルを書いた後）を待ってから、台帳の行を消してタプルを片付ける（消したノードに via_link の
+    /// タプルと台帳の行を残さない）。名前の変更・内容の更新（`FOR UPDATE` を取らない UPDATE）とは待ち合わない。
+    /// ロックの順は share_link: の advisory lock → node → 監査のチェーン（完全削除は share_link: を取らない）。
     async fn reverify_redeem_locked(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         ctx: &AuthContext,
         c: &RedeemCandidate,
     ) -> Result<Option<LockedLink>, StorageError> {
+        let node: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM node WHERE id = $1 AND tenant_id = $2 AND org = $3 FOR KEY SHARE",
+        )
+        .bind(c.node_id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if node.is_none() {
+            return Ok(None);
+        }
         let row: Option<LockedRow> = sqlx::query_as(
             "SELECT kind, audience, role, expires_at, password_hash FROM node_share_link \
              WHERE link_id = $1 AND tenant_id = $2 AND org = $3 \

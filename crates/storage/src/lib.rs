@@ -36,26 +36,34 @@ pub mod event;
 pub mod expiry_timer;
 pub mod indexing;
 pub mod model;
+pub mod naming;
 pub mod object_store;
 pub mod outbox_gc;
 pub mod pool_router;
 pub mod service;
 pub mod tenant;
 pub mod tenant_scope;
+pub mod trash_retention;
+pub mod tuple_commit;
 pub mod upload_gc_timer;
 
 pub use directory::{
-    escape_like, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
-    PrincipalProfile, ShareProfiles, DEFAULT_SEARCH_LIMIT,
+    escape_like, DirectoryEntry, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore,
+    DirectoryUser, PrincipalProfile, ShareProfiles, DEFAULT_SEARCH_LIMIT,
 };
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
-pub use indexing::{IndexerStorage, NodeSnapshot};
+pub use indexing::{IndexerStorage, NodeSnapshot, CONTENT_VERSION_SQL};
 pub use model::{
     ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccessLevel,
-    Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, UploadTicket,
+    Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, SharedPage,
+    SharedPosition, UploadTicket,
 };
+pub use naming::{numbered_name, OnNameTaken, MAX_NUMBERED_NAME};
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use pool_router::PoolRouter;
-pub use service::{RevertOutcome, StorageService, WriteAtOutcome};
+pub use service::{
+    named_scan_sql, shared_scan_sql, NodeLabel, RevertOutcome, StorageService, WriteAtOutcome,
+    MAX_NODE_LABELS, NODE_SCAN_MAX_CHECKS, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS,
+};
 pub use tenant::{Tenant, TenantPlacement, TenantStatus, TenantStore};

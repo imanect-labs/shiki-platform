@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// 選択→AI 指示（Task 11.10）: ノートで選択→「AI に依頼」→チップ→送信で
 /// ユーザーメッセージに選択コンテキストが付くことを一気通貫で検証する。
@@ -10,7 +16,8 @@ test("ノートの選択が AI への依頼チップになり送信される", a
   await page.goto("/drive");
   await page.getByRole("button", { name: "新規作成" }).click();
   await page.getByTestId("new-note").click();
-  await page.waitForURL(/\/notes\//, { timeout: 20_000 });
+  // 移った先は重い編集画面で、手元の next dev は初めての組み立てに 20 秒近くかかる（CI の本番ビルドでは組み立て済み）。
+  await page.waitForURL(/\/notes\//, { timeout: 60_000 });
 
   // 本文を入力して全選択 → バブルメニューの「AI に依頼」。
   const editor = page.locator(".tiptap").first();

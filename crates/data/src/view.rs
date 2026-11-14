@@ -484,10 +484,11 @@ impl DataViewStore {
 #[allow(clippy::needless_pass_by_value)]
 fn map_artifact(e: ArtifactError) -> DataError {
     match e {
-        ArtifactError::NotFound => DataError::NotFound,
+        // 公開していない版（ミニアプリの下書き・D-16）は、テーブルの面からは見つからないのと同じ。
+        ArtifactError::NotFound | ArtifactError::NotPublished { .. } => DataError::NotFound,
         ArtifactError::Forbidden => DataError::Forbidden,
         ArtifactError::Invalid(m) => DataError::Invalid(m),
-        ArtifactError::Conflict(m) => DataError::Conflict(m),
+        ArtifactError::Conflict(r) => DataError::Conflict(r.to_string()),
         ArtifactError::Internal(m) => DataError::Internal(format!("artifact: {m}")),
     }
 }

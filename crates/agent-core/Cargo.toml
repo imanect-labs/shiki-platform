@@ -17,6 +17,8 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-sandbox-client.workspace = true
 shiki-websearch.workspace = true
+# 文字コードの判定（BOM・UTF-8・推定）をファイルの読み取りと共有する（GAP-45）。
+shiki-textenc.workspace = true
 shiki-web-access.workspace = true
 # エージェントブラウザ（browser ツール・docs/agent/browser.md）。
 shiki-browser.workspace = true
@@ -64,7 +66,7 @@ proptest.workspace = true
 
 # lib 名 authz/rag/llm_gateway で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway", "shiki-sandbox-client", "shiki-websearch", "shiki-web-access", "shiki-browser"]
+ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway", "shiki-sandbox-client", "shiki-websearch", "shiki-textenc", "shiki-web-access", "shiki-browser"]
 
 [lints]
 workspace = true

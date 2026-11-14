@@ -22,7 +22,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tabular::{validate_read_only, RunnerConfig, RunnerOp, RunnerRequest, RunnerTable};
+use serde_json::json;
+use tabular::{
+    validate_read_only, InputFormat, RunnerConfig, RunnerOp, RunnerRequest, RunnerTable,
+};
 
 /// ランナーバイナリのパス。`SHIKI_TABULAR_RUNNER` 優先、無ければ除外クレートの既定 target。
 fn runner_path() -> Option<PathBuf> {
@@ -59,8 +62,10 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
     let req = RunnerRequest {
         op,
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
+        max_result_bytes: None,
         extra_tables: Vec::new(),
     };
     tabular::runner::run_isolated(&config, &req).await.unwrap()
@@ -127,6 +132,253 @@ async fn aggregation_query_infers_numeric_types() {
         Some("130".to_string()),
         "sum(amount) が数値集計される"
     );
+}
+
+/// 集計の結果: 日付・時刻・小数（DECIMAL）・リストを DuckDB の文字の形で返す（以前は `Date32(19753)` のような
+/// デバッグ表示だった）。値の種類を保った行（values）も返し、数・真偽・空は種類のまま、JavaScript で正確に扱えない
+/// 大きな整数は文字にする。結果の列の型と、打ち切らなかったときの行の数も返す（GAP-40）。
+#[tokio::test]
+async fn query_returns_readable_text_and_typed_values() {
+    let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    let csv = write_csv(
+        "品目,金額,済,日付,時刻\n\
+         交通費,1200,true,2024-01-31,2024-01-31 09:30:00\n\
+         会議費,,false,2024-02-29,2024-02-29 18:00:05\n",
+    );
+    let resp = run(
+        &csv,
+        RunnerOp::Query {
+            sql: "SELECT 品目, 金額, 済, 日付, 時刻, CAST(1.5 AS DECIMAL(10,2)) AS 単価, 金額 / 8 AS 割, \
+                  0.25 * 2 AS 半, 9007199254740993 AS 大, [1, 2] AS l FROM data ORDER BY 日付"
+                .into(),
+        },
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(
+        resp.columns,
+        ["品目", "金額", "済", "日付", "時刻", "単価", "割", "半", "大", "l"]
+    );
+    assert_eq!(
+        resp.column_types,
+        [
+            "VARCHAR",
+            "BIGINT",
+            "BOOLEAN",
+            "DATE",
+            "TIMESTAMP",
+            "DECIMAL(10,2)",
+            "DOUBLE",
+            "DECIMAL(13,2)",
+            "BIGINT",
+            "INTEGER[]"
+        ]
+    );
+    fn text(r: &[Option<String>]) -> Vec<Option<&str>> {
+        r.iter().map(|c| c.as_deref()).collect()
+    }
+    assert_eq!(
+        text(&resp.rows[0]),
+        [
+            Some("交通費"),
+            Some("1200"),
+            Some("true"),
+            Some("2024-01-31"),
+            Some("2024-01-31 09:30:00"),
+            Some("1.50"),
+            Some("150"),
+            Some("0.50"),
+            Some("9007199254740993"),
+            Some("[1, 2]")
+        ]
+    );
+    assert_eq!(
+        text(&resp.rows[1])[..5],
+        [
+            Some("会議費"),
+            None,
+            Some("false"),
+            Some("2024-02-29"),
+            Some("2024-02-29 18:00:05")
+        ]
+    );
+    assert_eq!(
+        resp.values,
+        [
+            vec![
+                json!("交通費"),
+                json!(1200),
+                json!(true),
+                json!("2024-01-31"),
+                json!("2024-01-31 09:30:00"),
+                json!(1.5),
+                json!(150),
+                json!(0.5),
+                json!("9007199254740993"),
+                json!("[1, 2]")
+            ],
+            vec![
+                json!("会議費"),
+                json!(null),
+                json!(false),
+                json!("2024-02-29"),
+                json!("2024-02-29 18:00:05"),
+                json!(1.5),
+                json!(null),
+                json!(0.5),
+                json!("9007199254740993"),
+                json!("[1, 2]")
+            ]
+        ]
+    );
+    assert_eq!(resp.total_rows, Some(2));
+    assert!(!resp.truncated);
+}
+
+/// 集計の SQL の末尾のセミコロンと `--` の注釈で失敗しない（包んだ SQL が壊れない）。同じ名前の列は DuckDB が
+/// `a_1` と付け直し、値が混ざらない。打ち切ったときは結果の行の数を返さない。
+#[tokio::test]
+async fn query_tolerates_trailing_semicolons_comments_and_duplicate_names() {
+    let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    let csv = write_csv("a,b\n1,x\n2,y\n");
+    for sql in [
+        "SELECT a FROM data ORDER BY a;",
+        "SELECT a FROM data ORDER BY a ; ;  ",
+        "SELECT a FROM data ORDER BY a -- 注釈",
+    ] {
+        let resp = run(&csv, RunnerOp::Query { sql: sql.into() }).await;
+        assert!(resp.ok, "{sql}: {:?}", resp.error);
+        assert_eq!(resp.values, [[json!(1)], [json!(2)]], "{sql}");
+    }
+    let resp = run(
+        &csv,
+        RunnerOp::Query {
+            sql: "SELECT a, b AS a FROM data ORDER BY 1".into(),
+        },
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.columns, ["a", "a_1"]);
+    assert_eq!(resp.values[0], [json!(1), json!("x")]);
+
+    let config = RunnerConfig::new(path.to_string_lossy().to_string(), Duration::from_secs(20));
+    let req = RunnerRequest {
+        op: RunnerOp::Query {
+            sql: "SELECT a FROM data".into(),
+        },
+        csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
+        memory_limit_mb: 256,
+        max_rows: 1,
+        max_result_bytes: None,
+        extra_tables: Vec::new(),
+    };
+    let cut = tabular::runner::run_isolated(&config, &req).await.unwrap();
+    assert!(cut.truncated);
+    assert_eq!(
+        (cut.rows.len(), cut.values.len(), cut.total_rows),
+        (1, 1, None)
+    );
+}
+
+/// 集計の結果の大きさの上限（GAP-92）: 上限を超える行の手前で打ち切り、truncated を立てる（total_rows は null）。
+/// 大きさはワークフローの結果に入れる形（rows の 1 行と items の 1 行を JSON にした大きさと区切り）で数える。上限に
+/// ちょうど収まる結果は打ち切らず、1 行目が収まらなければ行の無い結果になる。上限が無ければ（グリッドなど）全部返す。
+#[tokio::test]
+async fn query_results_stop_before_the_size_limit() {
+    let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    // 引用符・改行・制御文字・日本語を含む値（JSON にすると大きさが変わる）と、数・空。
+    let body: String = (0..50)
+        .map(|i| format!("n{i:02},\"本文 \"\"{i}\"\"\n\\改行\t\u{1}\",{i},\n"))
+        .collect();
+    let csv = write_csv(&format!("名前,メモ,数,空\n{body}"));
+    let config = RunnerConfig::new(path.to_string_lossy().to_string(), Duration::from_secs(20));
+    let run_with = |max_result_bytes: Option<u64>| {
+        let req = RunnerRequest {
+            op: RunnerOp::Query {
+                sql: "SELECT * FROM data ORDER BY 1".into(),
+            },
+            csv_path: csv.path().to_string_lossy().into_owned(),
+            format: InputFormat::Csv,
+            memory_limit_mb: 256,
+            max_rows: 1000,
+            max_result_bytes,
+            extra_tables: Vec::new(),
+        };
+        let config = config.clone();
+        async move { tabular::runner::run_isolated(&config, &req).await.unwrap() }
+    };
+    let full = run_with(None).await;
+    assert!(full.ok, "{:?}", full.error);
+    assert_eq!((full.rows.len(), full.truncated), (50, false));
+    // 1 行の大きさは、api がワークフローの結果に入れる rows と items の 1 行を JSON にした大きさと区切りの和。
+    let sizes: Vec<u64> = full
+        .rows
+        .iter()
+        .zip(&full.values)
+        .map(|(texts, values)| {
+            let item: serde_json::Map<String, serde_json::Value> = full
+                .columns
+                .iter()
+                .cloned()
+                .zip(values.iter().cloned())
+                .collect();
+            let json_len = serde_json::to_string(texts).unwrap().len()
+                + serde_json::to_string(&item).unwrap().len()
+                + 2;
+            let counted = tabular::protocol::result_row_bytes(&full.columns, texts, values);
+            assert_eq!(counted, json_len as u64, "{texts:?}");
+            counted
+        })
+        .collect();
+    let ten: u64 = sizes[..10].iter().sum();
+    let cut = run_with(Some(ten + sizes[10] - 1)).await;
+    assert!(cut.ok, "{:?}", cut.error);
+    assert!(cut.truncated);
+    assert_eq!(
+        (cut.rows.len(), cut.values.len(), cut.total_rows),
+        (10, 10, None)
+    );
+    assert_eq!(cut.rows[..], full.rows[..10]);
+    let exact = run_with(Some(sizes.iter().sum())).await;
+    assert_eq!(
+        (exact.rows.len(), exact.truncated, exact.total_rows),
+        (50, false, Some(50))
+    );
+    let none = run_with(Some(1)).await;
+    assert!(
+        none.ok && none.truncated && none.rows.is_empty(),
+        "{none:?}"
+    );
+}
+
+/// 列の案内（Schema）は、集計で読むときの列の型を返す。グリッドの行（Rows）は文字のまま（先頭の 0 を潰さない）。
+#[tokio::test]
+async fn schema_reports_the_types_the_query_reads() {
+    let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    let csv = write_csv("品目,金額,日付,番号\n交通費,1200,2024-01-31,007\n");
+    let schema = run(&csv, RunnerOp::Schema).await;
+    assert!(schema.ok, "{:?}", schema.error);
+    assert_eq!(
+        schema.column_types,
+        ["VARCHAR", "BIGINT", "DATE", "VARCHAR"]
+    );
+    let rows = run(&csv, RunnerOp::Rows { offset: 0 }).await;
+    assert_eq!(rows.rows[0][1].as_deref(), Some("1200"));
+    assert_eq!(rows.rows[0][3].as_deref(), Some("007"));
+    assert!(rows.values.is_empty(), "グリッドは文字の形だけ");
 }
 
 /// グリッド（Rows/Schema）は all_varchar 固定＝編集/往復の忠実性を保つ（先頭ゼロ等を潰さない）。
@@ -237,6 +489,7 @@ async fn cannot_reenable_external_access() {
 #[tokio::test]
 async fn quota_timeout_kills_runner_not_caller() {
     let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -250,8 +503,10 @@ async fn quota_timeout_kills_runner_not_caller() {
             sql: "SELECT count(*) FROM range(100000000) t1, range(1000) t2".into(),
         },
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
+        max_result_bytes: None,
         extra_tables: Vec::new(),
     };
     let result = tabular::runner::run_isolated(&config, &req).await;
@@ -261,6 +516,40 @@ async fn quota_timeout_kills_runner_not_caller() {
     );
     // 呼び出し側（このプロセス）は生きている＝プロセス境界で封じられた。
     assert_eq!(2 + 2, 4);
+}
+
+/// 区切りと改行の推定（BUG-144）。集計がタブで列を分ける CSV は、推定もタブと答える（編集が同じ区切りで読み書き
+/// する）。CRLF の CSV は CRLF と答える。推定は利用者の SQL を流さない。
+#[tokio::test]
+async fn dialect_reports_the_delimiter_the_query_uses() {
+    let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
+        return;
+    };
+    for (text, delimiter, newline) in [
+        (
+            "品目\t金額\r\n交通費\t1200\r\n宿泊費\t9800\r\n",
+            "\t",
+            "\r\n",
+        ),
+        ("品目,金額\n交通費,1200\n", ",", "\n"),
+        ("品目;金額\n交通費;1200\n宿泊費;9800\n", ";", "\n"),
+        ("品目|金額\r\n交通費|1200\r\n宿泊費|9800\r\n", "|", "\r\n"),
+        // 見出しだけの CSV（ドライブで作った直後など）。
+        ("品目,金額\n", ",", "\n"),
+    ] {
+        let csv = write_csv(text);
+        let resp = run(&csv, RunnerOp::Dialect).await;
+        assert!(resp.ok, "{text:?}: {:?}", resp.error);
+        let dialect = resp.dialect.expect("dialect");
+        assert_eq!(
+            (dialect.delimiter.as_str(), dialect.newline.as_str()),
+            (delimiter, newline),
+            "{text:?}"
+        );
+        let schema = run(&csv, RunnerOp::Schema).await;
+        assert_eq!(schema.columns, vec!["品目", "金額"], "{text:?}");
+    }
 }
 
 /// 追加テーブル付きでランナーを起動する（複数 CSV の JOIN・#1037）。
@@ -274,8 +563,10 @@ async fn run_with_tables(
     let req = RunnerRequest {
         op,
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
+        max_result_bytes: None,
         extra_tables: extra
             .iter()
             .map(|(name, f)| RunnerTable {
@@ -291,6 +582,7 @@ async fn run_with_tables(
 #[tokio::test]
 async fn joins_primary_with_extra_table() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let orders = write_csv("order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n");
@@ -321,6 +613,7 @@ async fn joins_primary_with_extra_table() {
 #[tokio::test]
 async fn runner_rejects_unsafe_extra_table_names() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -347,6 +640,7 @@ async fn runner_rejects_unsafe_extra_table_names() {
 #[tokio::test]
 async fn runner_rejects_reserved_word_table_names() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -384,6 +678,7 @@ async fn runner_rejects_reserved_word_table_names() {
 #[tokio::test]
 async fn runner_rejects_extra_tables_outside_query() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -396,6 +691,7 @@ async fn runner_rejects_extra_tables_outside_query() {
 #[tokio::test]
 async fn extra_tables_keep_external_access_locked() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -427,8 +723,10 @@ async fn reserved_words_lists_duckdb_reserved_keywords() {
     let req = RunnerRequest {
         op: RunnerOp::ReservedWords,
         csv_path: "/nonexistent/should-not-be-read.csv".into(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 0,
+        max_result_bytes: None,
         extra_tables: Vec::new(),
     };
     let resp = tabular::runner::run_isolated(&config, &req).await.unwrap();

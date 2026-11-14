@@ -23,6 +23,8 @@ mod ports;
 mod router;
 mod routes;
 mod scope_map;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod token;
 mod token_exchange;
 mod usage;
@@ -30,16 +32,21 @@ mod usage;
 pub use b1::{build_b1_router, bundle_csp, B1State};
 pub use builtin::{build_builtin_router, builtin_csp, BuiltinState};
 pub use installation::{
-    AiPin, AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation,
+    AiPin, AppInstallation, AppInstallationStore, ClientMarks, ClientsToRepair, InstallStatus,
+    NewAppInstallation, ResolvedInstallation, INSTALLED_IN_OTHER_ORG,
 };
 pub use notification::{AppNotification, NotificationStore};
-pub use oauth::{client_representation, ClientKind, OAuthClient, RegisteredClient};
+pub use oauth::{
+    client_representation, client_spec_fingerprint, default_client_scopes, ClientKind, OAuthClient,
+    RegisteredClient, RepairedClient, DEFAULT_GATEWAY_AUDIENCE,
+};
 pub use ports::{
     AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, FunctionInvokeSpec, FunctionPort, NoAgent,
     NoFunctions, NoRag, RagHit, RagPort,
 };
 pub use router::{build_gateway_router, CapabilityDeps, GatewayCtx, GatewayState};
-pub use scope_map::{required_scope_for, GatewayRoute, RouteScope};
+pub use routes::ai::{resolve_app_model, AiError};
+pub use scope_map::{required_scope_for, route_for, GatewayRoute, RouteScope};
 pub use token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver};
 pub use token_exchange::{exchange_for_user, exchange_params, ExchangedToken};
 pub use usage::{fetch_usage, CapabilityUsage};

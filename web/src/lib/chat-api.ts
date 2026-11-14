@@ -13,6 +13,7 @@ import type { UserSelectableTool } from "@/generated/gui-spec";
 import type { EffortLevel } from "@/lib/admin-ai-api";
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
+import { okWithReason } from "@/lib/artifact-api";
 import type { components } from "@/generated/api";
 import { newId } from "@/lib/chat-store";
 import type { SelectionContext } from "@/lib/selection-context";
@@ -37,6 +38,11 @@ export type SlideDraft = { name: string; content: string };
 
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。csv=CSV 本文。
 export type CsvDraft = { name: string; csv: string };
+
+/// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（builder_ref・D-204）。
+/// **`crates/chat` の `builder_obs::BuilderRef` から生成**した型（kind の語彙も backend が単一の定義）。
+export type BuilderRef = components["schemas"]["BuilderRef"];
+export type BuilderKind = components["schemas"]["BuilderKind"];
 
 /// AI が作成/編集した文書への参照（#381）。kind=office/note/slide/csv/file。
 export type DocumentRefPayload = {
@@ -112,6 +118,9 @@ export type Message = {
   boundActions?: string[];
   /// 本文の図のボタンで起動したワークフローの記録（押した順・メッセージごとに新しい 20 件まで）。
   uiRuns?: UiActionRun[];
+  /// 回答が途中で止まった理由（出力の上限・手数や費用の上限など・GAP-106）。自然に終わった回答は null。
+  /// 回答の下に注記を出す（生成の直後は done イベントの値、読み直したときはメッセージの値）。
+  stopReason?: StopReason | null;
   /// 生成直後に画面で確定した仮のメッセージ（id はサーバーのものではない）。読み直すまで図のボタンは押せない。
   /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
   provisional?: "reloading" | "stopped";
@@ -128,6 +137,14 @@ export type Message = {
 
 /// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
 export type UiActionRun = components["schemas"]["UiActionRun"];
+
+/// 回答が途中で止まった理由（GAP-106・codegen。Rust の `chat::StopReason`）。
+export type StopReason = components["schemas"]["StopReason"];
+
+/// 本人が会話の図のボタンで起動した 1 件を、画面に返した結果つきで読む（古い行を開いたとき・GAP-09）。
+export async function getChatUiRun(threadId: string, runId: string): Promise<UiActionRun> {
+  return ok<UiActionRun>(await apiFetch(`/threads/${threadId}/ui-runs/${runId}`));
+}
 
 export type Attachment = { node_id: string; name: string };
 export type Citation = Extract<ContentBlock, { type: "citation" }>;
@@ -288,7 +305,9 @@ export async function createThread(
     ? { mode: pins.workspace.mode, folder_id: pins.workspace.folderId }
     : undefined;
   const skills = pins?.skills?.length ? pins.skills.map((p) => toPin(p)) : undefined;
-  const data = await ok<ApiThread>(
+  // 誤りは本文の code・message を添えて投げる（アプリを付けた会話で、公開したバージョンが変わった 409 や、束ねた
+  // スキルを使えない 400 を画面が言い分ける）。
+  const data = await okWithReason<ApiThread>(
     await apiFetch("/threads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -461,6 +480,7 @@ export async function getThreadMessages(
       invokedActions: m.invoked_actions ?? [],
       boundActions: m.bound_actions ?? [],
       uiRuns: m.ui_runs ?? [],
+      stopReason: m.stop_reason ?? null,
       siblingIds: m.sibling_ids ?? [],
       createdAt: m.created_at,
     })),
@@ -564,6 +584,9 @@ export type StreamHandlers = {
   onSkillDraft?: (draft: unknown) => void;
   /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
   onDocumentRef?: (document: unknown) => void;
+  /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（D-204）。カードにする。
+  /// 値は backend が JSON のまま持つので、描く側が形を確かめる（`parseBuilderRef`）。
+  onBuilderRef?: (item: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
   onSkillInvoked?: (skill: SkillInvocation) => void;
   /// サブエージェント委譲の記録（#391）。担当範囲とステップ数を展開表示に足す。
@@ -584,7 +607,9 @@ export type StreamHandlers = {
   onAssistantMessageId?: (messageId: string) => void;
   /// 投稿が受理された発話の、サーバ上の ID（画面で足した仮の発話を置き換える・#1166）。
   onUserMessageId?: (messageId: string) => void;
-  onDone?: () => void;
+  /// 生成の終わり（done・取り消し・失敗）。`stopReason` は done で届く、回答が途中で止まった理由
+  /// （自然に終わった回答・取り消し・失敗では null・GAP-106）。
+  onDone?: (stopReason: StopReason | null) => void;
   onError?: (message: string) => void;
   /// 1 件のイベントを処理し終えた（`seq` は SSE の id）。再訪時の送り直しの終わりを知るのに使う（#1152）。
   onApplied?: (seq: number) => void;
@@ -697,6 +722,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
         break;
+      case "builder_ref":
+        handlers.onBuilderRef?.(kind.item);
+        break;
       case "subagent_run": {
         // payload は serde_json::Value（生成型では unknown）。形を検査してから渡す。
         const run = parseSubagentRun(kind.subagent);
@@ -743,7 +771,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         handlers.onStatus?.(kind.status);
         // キャンセル/失敗は端末状態。途中までを確定させて閉じる。
         if (kind.status === "cancelled" || kind.status === "failed") {
-          handlers.onDone?.();
+          handlers.onDone?.(null);
           finish();
         }
         break;
@@ -752,7 +780,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         finish();
         break;
       case "done":
-        handlers.onDone?.();
+        handlers.onDone?.(kind.stop_reason ?? null);
         finish();
         break;
       default:

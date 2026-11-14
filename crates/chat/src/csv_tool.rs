@@ -20,10 +20,15 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     if let TE::QueryFailed(m) = err {
         return ToolOutcome::error(format!("SQL の実行に失敗しました: {m}"));
     }
-    // テーブル指定の誤り（名前の形・重複・上限）も理由を返して自己修正させる（入力の検証のみ・
-    // ストレージに触れる前に弾くので存在秘匿の懸念なし）。
-    if let TE::InvalidTables(m) = err {
-        return ToolOutcome::error(format!("tables の指定が不正です: {m}"));
+    // 文字コードを決められない・文章でない CSV は、UTF-8 か Shift_JIS で保存し直すよう伝える。編集が元の文字コードで
+    // 書けない文字を含むときも、理由（どの文字か）を返してモデルに直させる（GAP-45）。Excel を編集・保存しようとした
+    // ときは、CSV だけを扱うことを伝える（D-17）。テーブル指定の誤り（名前の形・重複・上限）も理由を返して自己修正させる
+    // （入力の検証のみ・ストレージに触れる前に弾くので存在秘匿の懸念なし）。
+    match err {
+        TE::NotText(m) | TE::Unsupported(m) => return ToolOutcome::error(m.clone()),
+        TE::InvalidPatch(m) => return ToolOutcome::error(format!("CSV を編集できません: {m}")),
+        TE::InvalidTables(m) => return ToolOutcome::error(format!("tables の指定が不正です: {m}")),
+        _ => {}
     }
     let msg = match err {
         TE::Forbidden | TE::Authz(_) | TE::Storage(storage::StorageError::Forbidden) => {
@@ -45,10 +50,35 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     ToolOutcome::error(msg)
 }
 
-/// 結果テーブルをモデル向けに整形（列＋先頭 N 行）。
+/// 結果テーブルをモデル向けに整形（列＋先頭 N 行）。Excel はシートの一覧も添える（ほかのシートを名前で読める・GAP-84）。
 fn format_table(resp: &tabular::RunnerResponse, max_preview: usize) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("列: {}\n", resp.columns.join(", "));
+    let mut out = String::new();
+    if !resp.sheets.is_empty() {
+        let sheets: Vec<String> = resp
+            .sheets
+            .iter()
+            .map(|s| {
+                let mut name = format!("\"{}\"", s.name.replace('"', "\"\""));
+                if s.data {
+                    name.push_str("（data）");
+                } else if !s.usable {
+                    name.push_str("（名前で読めない）");
+                } else if s.hidden {
+                    name.push_str("（隠したシート）");
+                }
+                name
+            })
+            .collect();
+        let _ = writeln!(out, "シート: {}", sheets.join(", "));
+    }
+    if let Some(row) = resp.header_row {
+        let _ = writeln!(
+            out,
+            "data の列の名前: {row} 行目（上の行は表題として読まない）"
+        );
+    }
+    let _ = writeln!(out, "列: {}", resp.columns.join(", "));
     if let Some(total) = resp.total_rows {
         let _ = writeln!(out, "総行数: {total}");
     }
@@ -68,7 +98,10 @@ const QUERY_DESCRIPTION: &str = "CSV ファイルに読み取り専用 SQL（SEL
          `data`。例: SELECT category, count(*) FROM data GROUP BY category。複数の CSV を JOIN する\
          ときは tables に {name, node_id} を並べると、各 CSV が name のテーブルとして使える（最大 8 個）。\
          例: tables=[{name:\"customers\", node_id:…}] で SELECT c.name, sum(d.amount) FROM data d JOIN \
-         customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。";
+         customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。\
+         Excel（.xlsx）も読める。表示している左端のシートが `data` で、ほかのシートは FROM \"集計\" のように\
+         シートの名前で読める（結果にシートの一覧が出る）。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。\
+         tables（JOIN）は CSV どうしだけで、Excel には使えない。";
 
 /// csv.query の入力スキーマ。追加テーブルの上限・名前規則は tabular の定義を参照する（単一定義）。
 fn query_input_schema() -> serde_json::Value {
@@ -297,6 +330,8 @@ impl Tool for CsvWriteTool {
                 input.parent_id,
                 input.name.trim(),
                 input.csv.as_bytes(),
+                // AI の保存は同じ名前があると失敗にする（黙って別の名前で作らない）。
+                storage::OnNameTaken::Fail,
                 trace_id,
             )
             .await
@@ -514,6 +549,22 @@ mod tests {
         })
         .content
         .contains("他の編集で更新されています"));
+        // 読めない CSV と、元の文字コードで書けない編集は、理由を返してモデルに直させる（GAP-45）。
+        assert_eq!(
+            denied(&TE::NotText(
+                "UTF-8 か Shift_JIS で保存した CSV を選んでください。".into()
+            ))
+            .content,
+            "UTF-8 か Shift_JIS で保存した CSV を選んでください。"
+        );
+        assert!(denied(&TE::InvalidPatch("「😀」は書けません".into()))
+            .content
+            .contains("「😀」は書けません"));
+        // Excel を編集・保存しようとしたときは、CSV だけを扱うことを伝える（D-17）。
+        assert_eq!(
+            denied(&TE::Unsupported(tabular::input::NOT_EDITABLE.into())).content,
+            tabular::input::NOT_EDITABLE
+        );
         // フォールバック（_）: クォータ超過等は汎用メッセージへ。
         assert_eq!(
             denied(&TE::QuotaExceeded("mem".into())).content,
@@ -526,11 +577,10 @@ mod tests {
         RunnerResponse {
             ok: true,
             columns: vec!["a".into(), "b".into()],
-            column_types: vec![],
             rows,
             total_rows: total,
             truncated,
-            error: None,
+            ..RunnerResponse::default()
         }
     }
 
@@ -560,6 +610,48 @@ mod tests {
 
         let trunc = resp(vec![vec![Some("x".into()), Some("y".into())]], None, true);
         assert!(format_table(&trunc, 50).contains("一部のみ表示"));
+    }
+
+    /// Excel の表の上の表題の行を飛ばしたときは、見出しにした行を添える（GAP-83）。
+    #[test]
+    fn format_table_reports_the_header_row_after_title_rows() {
+        let mut r = resp(vec![vec![Some("1".into()), None]], Some(1), false);
+        assert!(!format_table(&r, 50).contains("行目"));
+        r.header_row = Some(3);
+        let out = format_table(&r, 50);
+        assert!(
+            out.starts_with("data の列の名前: 3 行目（上の行は表題として読まない）\n列: a, b\n"),
+            "{out}"
+        );
+    }
+
+    /// Excel は、シートの一覧（data・名前で読めないシート・隠したシート）と、表題を飛ばした見出しの行を添える（GAP-84・
+    /// GAP-83）。CSV は添えない。
+    #[test]
+    fn format_table_lists_excel_sheets_and_the_header_row() {
+        let sheet = |name: &str, hidden: bool, data: bool, usable: bool| tabular::SheetInfo {
+            name: name.into(),
+            hidden,
+            data,
+            usable,
+        };
+        let mut r = resp(vec![vec![Some("1".into()), None]], Some(1), false);
+        assert!(!format_table(&r, 50).contains("シート"));
+        r.sheets = vec![
+            sheet("明細", false, true, true),
+            sheet("集計 \"年\"", false, false, true),
+            sheet("Data", false, false, false),
+            sheet("マスタ", true, false, true),
+        ];
+        r.header_row = Some(3);
+        let out = format_table(&r, 50);
+        assert!(
+            out.starts_with(
+                "シート: \"明細\"（data）, \"集計 \"\"年\"\"\", \"Data\"（名前で読めない）, \"マスタ\"（隠したシート）\n"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("data の列の名前: 3 行目"), "{out}");
     }
 
     /// save_csv: 下書きが csv_drafts に載り（保存はしない）、.csv は表示名から落ちる。

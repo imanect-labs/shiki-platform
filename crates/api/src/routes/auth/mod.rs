@@ -7,8 +7,25 @@
 pub mod action;
 pub mod backchannel_logout;
 pub mod callback;
+// テストだけのファイルは *_tests.rs にする（単一チョークポイントとテナント条件の字句ゲートが本番のコードと分けて見る）。
+#[cfg(test)]
+#[path = "gateway_fixture_tests.rs"]
+mod gateway_fixture;
 pub mod login;
 pub mod logout;
+pub(crate) mod membership_audit;
+#[cfg(test)]
+mod membership_audit_tests;
+#[cfg(test)]
+mod membership_owner_tests;
+#[cfg(test)]
+mod membership_reconcile_tests;
+pub(crate) mod org_member;
+#[cfg(test)]
+mod org_member_it;
+#[cfg(test)]
+mod role_ledger_tests;
+pub(crate) mod role_member;
 pub mod session;
 
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -18,7 +35,7 @@ use serde::{Deserialize, Serialize};
 pub use action::start_account_action;
 pub use backchannel_logout::backchannel_logout;
 pub use callback::callback;
-pub(crate) use callback::provision_roles;
+pub(crate) use callback::sync_memberships;
 pub use login::login;
 pub use logout::logout;
 pub use session::session;

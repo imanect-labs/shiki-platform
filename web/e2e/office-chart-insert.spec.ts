@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// チャットの図を、開いている Excel・Word へグラフとして入れる（#731）。
 /// 実 Collabora（26.04 以上・Office エンジン）とスタブ LLM（`yui:bar` で棒グラフを返す）が要るため

@@ -62,7 +62,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 
 | 対象 | コマンド |
 | --- | --- |
-| Rust | `cargo fmt --all --check` ／ `cargo clippy --all-targets --all-features -- -D warnings` ／ `cargo nextest run --workspace --all-features`（絞るなら `-p <crate>`） |
+| Rust | `cargo fmt --all --check` ／ `cargo clippy --all-targets --all-features -- -D warnings` ／ `cargo nextest run --workspace --all-features`（絞るなら `-p <crate>`）／ `bash scripts/check-ts-bindings.sh`（ts-rs の書き出しが Rust の型と合っているか） |
 | 品質ゲート | `bash scripts/check-file-size.sh` ／ `bash scripts/check-migration-versions.sh` ／ `cargo machete crates` ／ `cargo deny --all-features check` |
 | カバレッジ | `cargo llvm-cov --all`（CI は PR で変更行の 80%・main で総計の 80% 未満なら fail。PR の変更行の判定手順は `pr` スキルの `references/gates.md`、除外パターンは ci.yml 参照） |
 | Web | `cd web && pnpm install --frozen-lockfile && pnpm gen:api && pnpm lint && pnpm build`（E2E は `pnpm e2e`） |

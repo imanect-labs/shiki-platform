@@ -82,6 +82,33 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
+**ドライブの `node` の索引（migration 0142 `node_shared_scan_idx`・0145 `node_name_scan_idx` と
+`node_name_scan_desc_idx`・BUG-162・BUG-187）** も、上と同じ手順で事前に作れる（どれも `create index if not exists`）。
+構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が大きな
+環境では事前に作るか、停止時間を取って当てる（読むのは止まらない）。
+
+```sql
+-- BUG-162 / migration 0142: ドライブの「共有されたもの」を更新の順に引く
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
+    ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
+
+-- BUG-187 / migration 0145: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
+    ON node (tenant_id, org, (kind <> 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_desc_idx
+    ON node (tenant_id, org, (kind = 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
+```
+
+`node_name_scan_idx` と `node_name_scan_desc_idx` は ICU の照合（`node_name_natural`・migration 0110）で並べる。
+Postgres の ICU の版が上がり、照合の版の違いを警告したら、この 2 本を作り直してから版を記録し直す（並びが比較と
+ずれたままだと、名前の検索の続きで欠けることがある。見えないものが出ることはない）。
+
+```sql
+REINDEX INDEX CONCURRENTLY node_name_scan_idx;
+REINDEX INDEX CONCURRENTLY node_name_scan_desc_idx;
+ALTER COLLATION node_name_natural REFRESH VERSION;
+```
+
 途中で失敗すると**無効な index が残り、プランナに使われないまま書込コストだけ増える**。
 必ず確認して落としてからやり直す。
 
@@ -252,8 +279,9 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
   `query would be affected by row-level security policy` で失敗する。`--enable-row-security` を付ける
   （移行モードでは文脈が未設定なので全行が出る）か、BYPASSRLS のロールでダンプする。
 - **新しいテナント表を足す migration** は、同じ `ENABLE` / `FORCE` / `CREATE POLICY shiki_tenant_isolation` を
-  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に式インデックスや
-  GIN（leakproof でない演算子でしか引けないインデックス）を足したときも同じテストが落ちる。
+  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に、leakproof で
+  ない関数・演算子を含む式インデックス（jsonb の `->>` など）や GIN（leakproof でない演算子でしか引けないインデックス）を
+  足したときも同じテストが落ちる。leakproof なものだけの式（`kind <> 'folder'` など）なら索引の条件に使える。
 - psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
   `SELECT set_config('app.tenant_id', '<tenant>', false)` する。
 

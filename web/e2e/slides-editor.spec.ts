@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 作ったスライド（ドライブのトップ）を片付ける（BUG-126）。別のコンテキストで作るテストは、コンテキストを閉じる前に
+// 片付ける（閉じた後は片付けの要求を送れない）。落ちたテストの分はテストの後に片付ける。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// スライドエディタ（Task 11.2）: GrapesJS 砂箱の起動・編集の Yjs 反映・2 コンテキスト収束。
 /// エディタバンドル（app-gateway /builtin）が未配備の環境ではスキップする
@@ -19,6 +24,7 @@ test("編集がもう一方のユーザーの画面に収束する（共同編�
   // ユーザー A がスライドを作成して編集する。
   const ctxA = await browser.newContext();
   const pageA = await ctxA.newPage();
+  trackCreatedResources(pageA, cleanup);
   await loginViaKeycloak(pageA);
   await pageA.goto("/drive");
   await pageA.getByRole("button", { name: "新規作成" }).click();
@@ -55,11 +61,13 @@ test("編集がもう一方のユーザーの画面に収束する（共同編�
     pageB.frameLocator('[data-testid="slide-frame"] iframe').first().getByText(typed),
   ).toBeVisible({ timeout: 20_000 });
 
+  await cleanup.run();
   await ctxA.close();
   await ctxB.close();
 });
 
 test("スライドの追加が反映され、切替時に未確定編集が失われない", async ({ page }) => {
+  trackCreatedResources(page, cleanup);
   await loginViaKeycloak(page);
   await page.goto("/drive");
   await page.getByRole("button", { name: "新規作成" }).click();

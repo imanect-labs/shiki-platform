@@ -389,6 +389,8 @@ fn base_config() -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 
@@ -484,6 +486,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     let audit_rec = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
+    let workflow_approvals = Arc::new(workflow_engine::ApprovalStore::new(db.clone()));
     let collab_hub = Arc::new(collab::CollabHub::new(
         db.clone(),
         Arc::new(AllowAll),
@@ -524,6 +527,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         workflow_registration,
         workflow_summaries,
         workflow_layout,
+        workflow_approvals,
         audit: audit_rec,
         workflow_runs: None,
         directory,
@@ -533,6 +537,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         llm: None,
         rag_admin,
         office: None,
+        egress_proxy: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",
@@ -853,6 +858,252 @@ async fn expired_access_token_is_refreshed_and_continues() {
     let updated = store.get("default", "sid-exp").await.unwrap().unwrap();
     assert!(updated.access_expires_at > now());
     assert_eq!(updated.principal.groups, vec!["/neworg".to_string()]);
+}
+
+/// 組織の member の直接タプルだけを持つ認可（セッションの更新での同期を見る・D-130）。ほかの check は通す。
+#[derive(Default)]
+struct OrgMembers(std::sync::Mutex<Vec<String>>);
+
+#[async_trait]
+impl AuthzClient for OrgMembers {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            return Ok(self.0.lock().unwrap().contains(&object.to_string()));
+        }
+        Ok(true)
+    }
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            self.0.lock().unwrap().push(object.to_string());
+        }
+        Ok(true)
+    }
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        let mut rows = self.0.lock().unwrap();
+        let before = rows.len();
+        if relation == Relation::Member {
+            rows.retain(|o| o != object.as_str());
+        }
+        Ok(rows.len() != before)
+    }
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(if object_type == ObjectType::Organization {
+            self.0.lock().unwrap().clone()
+        } else {
+            vec![]
+        })
+    }
+}
+
+/// 組織の member の付け外しを監査に残せる DB（`STORAGE_TEST_DATABASE_URL`・migrate 済み）。
+///
+/// 付けたことを監査に残せなければ、付けたタプルを外す（GAP-78）。届かない DB の記録係では付与が残らないので、付与を
+/// 見るテストは実 DB の記録係を渡す。未設定ならスキップする（`SHIKI_REQUIRE_IT=1` なら失敗）。
+async fn membership_audit_db() -> Option<sqlx::PgPool> {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("Postgres 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migration 適用");
+    Some(pool)
+}
+
+/// テナントの監査の最後の行の id（これより後の行を、このテストが書いた行として読む）。
+async fn last_audit_id(pool: &sqlx::PgPool, tenant: &str) -> i64 {
+    sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM audit_log WHERE tenant_id = $1")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// 監査の 1 行（主体・action・org の列・metadata・チェーンにつないだか）。
+type OrgMemberAuditRow = (String, String, String, serde_json::Value, bool);
+
+/// `after` より後に仕事 `source`（metadata の `source`）が書いた、利用者 `sub` の組織の付け外しの行（書いた順）。
+/// ログイン（auth_flow）とセッションの更新（http）のテストは、同じ sub・テナント・DB に行を書き、nextest はバイナリを
+/// またいで並べて走らせるので、仕事で絞って相手の行を拾わない。`want` 件そろうまで少し待つ（同期は
+/// 裏で走るので、応答の時点ではまだ書かれていないことがある）。
+async fn org_member_audit_rows(
+    pool: &sqlx::PgPool,
+    tenant: &str,
+    sub: &str,
+    after: i64,
+    source: &str,
+    want: usize,
+) -> Vec<OrgMemberAuditRow> {
+    let mut rows = Vec::new();
+    for _ in 0..100 {
+        let raw: Vec<(String, String, String, String, bool)> = sqlx::query_as(
+            "SELECT actor, action, org, metadata::text, chained FROM audit_log \
+             WHERE tenant_id = $1 AND object_type = 'user' AND object_id = $2 AND id > $3 \
+             AND metadata->>'source' = $4 AND decision = 'allow' \
+             AND action IN ('org.member.grant', 'org.member.revoke') ORDER BY id",
+        )
+        .bind(tenant)
+        .bind(sub)
+        .bind(after)
+        .bind(source)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows = raw
+            .into_iter()
+            .map(|(actor, action, org, metadata, chained)| {
+                (
+                    actor,
+                    action,
+                    org,
+                    serde_json::from_str(&metadata).unwrap(),
+                    chained,
+                )
+            })
+            .collect();
+        if rows.len() >= want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    rows
+}
+
+/// セッションの更新でも、所属グループから決まる組織の member にそろえる（D-130）。組織を移った人の前の組織の
+/// member は外れる（組織を離れた人が、アプリのゲートウェイでその組織に入り続けない）。付け外しは監査に残し、残せない
+/// 付与は外すので、実 DB が要る（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
+#[tokio::test]
+async fn refresh_moves_the_org_member_with_the_groups() {
+    let Some(pool) = membership_audit_db().await else {
+        return;
+    };
+    let after = last_audit_id(&pool, "default").await;
+    let new_access = fake_jwt(serde_json::json!({
+        "sub": "00000000-0000-0000-0000-000000000001",
+        "groups": ["/neworg"],
+    }));
+    let token_base = spawn_token_server(
+        StatusCode::OK,
+        serde_json::json!({ "access_token": new_access, "expires_in": 3600 }),
+    )
+    .await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sid-org",
+            &session_record(now() - 10, Some("refresh-token"), "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    // 前のトークンの groups（/acme）で付けた member。
+    let members = Arc::new(OrgMembers::default());
+    members
+        .0
+        .lock()
+        .unwrap()
+        .push("organization:default|acme".into());
+    let app = build_router(AppState {
+        authz: members.clone(),
+        audit: Arc::new(storage::audit::AuditRecorder::new(pool.clone())),
+        ..state_with(store.clone(), Some(token_base))
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/me")
+                .header(COOKIE, "shiki_session=sid-org.default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // 同期は裏で走る（リクエストの待ち時間に載せない）。
+    let mut rows = Vec::new();
+    for _ in 0..50 {
+        rows = members.0.lock().unwrap().clone();
+        if rows == ["organization:default|neworg"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(rows, ["organization:default|neworg"]);
+    // 付けた組織と外した組織を 1 行ずつ、同期の仕事を主体にして、ハッシュチェーンにつないで残す（GAP-78）。
+    // 行はテナント default のハッシュチェーンの途中に入る（後にほかの行がつながる）ので、消さずに残す。
+    let sync = "system:membership-sync";
+    assert_eq!(
+        org_member_audit_rows(
+            &pool,
+            "default",
+            &test_principal().id,
+            after,
+            "session_refresh",
+            2
+        )
+        .await,
+        [
+            (
+                sync.to_string(),
+                "org.member.grant".to_string(),
+                "neworg".to_string(),
+                serde_json::json!({ "source": "session_refresh", "org": "neworg" }),
+                true
+            ),
+            (
+                sync.to_string(),
+                "org.member.revoke".to_string(),
+                "acme".to_string(),
+                serde_json::json!({ "source": "session_refresh", "org": "acme" }),
+                true
+            ),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1364,6 +1615,328 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
     let (_, body) = get_with_session(app, "/me/chatgpt").await;
     assert_eq!(body["state"], "not_connected");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 検索の内訳（BUG-94）の試験用の認可: 組織の管理者かを切り替え、ファイルはどれも読めない（post-filter で
+/// 落ちる）。ほかの問い（メンバーなど）は通す。
+struct SearchGate {
+    admin: bool,
+}
+
+#[async_trait]
+impl AuthzClient for SearchGate {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        Ok(match relation {
+            Relation::Admin => self.admin,
+            Relation::Viewer if object.as_str().starts_with("file:") => false,
+            _ => true,
+        })
+    }
+
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+}
+
+/// 埋め込み・rerank は決まった値を返すだけ（検索の段の数を数える試験に中身は要らない）。
+struct FixedEmbedder;
+
+#[async_trait]
+impl rag::embedding::EmbeddingProvider for FixedEmbedder {
+    async fn embed(
+        &self,
+        _ctx: &authz::AuthContext,
+        _input: rag::embedding::EmbedInput,
+        texts: &[String],
+    ) -> Result<rag::embedding::EmbedResponse, rag::RagError> {
+        Ok(rag::embedding::EmbedResponse {
+            vectors: texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+            model_version: "fixed".into(),
+            dimension: 2,
+        })
+    }
+
+    fn model_version(&self) -> &str {
+        "fixed"
+    }
+}
+
+struct ZeroReranker;
+
+#[async_trait]
+impl rag::rerank::Reranker for ZeroReranker {
+    async fn rerank(
+        &self,
+        _ctx: &authz::AuthContext,
+        _query: &str,
+        passages: &[rag::rerank::RerankPassage],
+    ) -> Result<Vec<rag::rerank::RerankScore>, rag::RagError> {
+        Ok(passages
+            .iter()
+            .map(|p| rag::rerank::RerankScore {
+                id: p.id.clone(),
+                score: 0.0,
+            })
+            .collect())
+    }
+}
+
+/// どの問いにも、同じ 1 件（読めないファイルの箇所）を返すベクトル索引。
+struct OneHitVectors {
+    hit: rag::vector_store::ScoredChunk,
+}
+
+#[async_trait]
+impl rag::vector_store::VectorStore for OneHitVectors {
+    async fn ensure_ready(&self, _dimension: usize) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn upsert(
+        &self,
+        _ctx: &authz::AuthContext,
+        _points: &[rag::vector_store::ChunkPoint],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn delete_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn delete_stale_versions(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _keep_version: i64,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn set_authz_tags(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _tags: &[String],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn search(
+        &self,
+        _ctx: &authz::AuthContext,
+        query: &rag::vector_store::VectorSearch<'_>,
+    ) -> Result<Vec<rag::vector_store::ScoredChunk>, rag::RagError> {
+        Ok(if query.exclude.contains(&self.hit.chunk_id) {
+            vec![]
+        } else {
+            vec![self.hit.clone()]
+        })
+    }
+    async fn purge_tenant(&self, _tenant_id: &str) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+}
+
+/// 全文の索引は空。
+struct NoFulltext;
+
+impl rag::fulltext::FulltextIndex for NoFulltext {
+    fn replace_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _docs: &[rag::fulltext::FulltextDoc<'_>],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    fn delete_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    fn search(
+        &self,
+        _ctx: &authz::AuthContext,
+        _query_text: &str,
+        _limit: usize,
+        _prefilter: &rag::vector_store::PreFilter,
+        _scope_tags: &[String],
+        _exclude: &[uuid::Uuid],
+    ) -> Result<Vec<rag::vector_store::ScoredChunk>, rag::RagError> {
+        Ok(vec![])
+    }
+    fn purge_tenant(&self, _tenant_id: &str) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+}
+
+/// BUG-94・D-80: 文書検索の内訳（`debug`）は組織の管理者にだけ返す。管理者でない人が `debug: true` を
+/// 付けても 200 で結果だけを返し、権限で除いた文書の数（`authz_denied_files`）を返さない（403 にしない）。
+/// 検索の監査を書くので実 DB が要る（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
+#[tokio::test]
+async fn search_debug_is_returned_only_to_org_admins() {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .unwrap();
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let hit = rag::vector_store::ScoredChunk {
+        chunk_id: uuid::Uuid::new_v4(),
+        node_id: uuid::Uuid::new_v4(),
+        score: 0.9,
+    };
+    for admin in [false, true] {
+        let authz: Arc<dyn AuthzClient> = Arc::new(SearchGate { admin });
+        let search = rag::SearchService::new(
+            pool.clone(),
+            rag::RagConfig::default(),
+            Arc::new(FixedEmbedder),
+            Arc::new(ZeroReranker),
+            Arc::new(OneHitVectors { hit: hit.clone() }),
+            Arc::new(NoFulltext),
+            Arc::clone(&authz),
+            storage::audit::AuditRecorder::new(pool.clone()),
+        );
+        let state = AppState {
+            search: Some(Arc::new(search)),
+            ..state_with_authz(store_with_valid_session().await, authz)
+        };
+        let (status, body) = send_with_session(
+            build_router(state),
+            "POST",
+            "/search",
+            Some(serde_json::json!({ "query": "経費", "debug": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "admin={admin}: {body}");
+        assert_eq!(
+            body["results"],
+            serde_json::json!([]),
+            "admin={admin}: {body}"
+        );
+        if admin {
+            assert_eq!(
+                body["debug"]["authz_denied_files"], 1,
+                "管理者には内訳を返す: {body}"
+            );
+        } else {
+            assert!(
+                body.get("debug").is_none(),
+                "管理者でない人には内訳を返さない: {body}"
+            );
+            assert!(!body.to_string().contains("authz_denied_files"), "{body}");
+        }
+    }
+    // 検索の監査（このテストの 2 回分）を片付ける。
+    sqlx::query(
+        "DELETE FROM audit_log WHERE tenant_id = 'default' AND action LIKE 'search%' \
+         AND metadata::text LIKE $1",
+    )
+    .bind(format!("%{}%", hit.node_id))
+    .execute(&pool)
+    .await
+    .ok();
+}
+
+/// 社内文書の検索が使えない環境では、取り込み直し（ドライブのメニュー）とまとめての取り込み（管理コンソール）を、
+/// 画面にそのまま出せる文言で断る（D-126）。管理者の様子の取得は `enabled: false` を返す（画面が「この環境では
+/// 使えません」と言う材料）。管理者でない人は、まとめての取り込みの API に入れない。
+#[tokio::test]
+async fn search_ingest_refuses_when_search_is_disabled() {
+    let admin = build_router(state_with_authz(
+        store_with_valid_session().await,
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
+    ));
+    let disabled = "この環境では社内文書の検索が使えません。管理者に連絡してください。";
+    let (status, body) = send_with_session(
+        admin.clone(),
+        "POST",
+        &format!("/files/{}/reindex", uuid::Uuid::new_v4()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "search_disabled", "{body}");
+    assert_eq!(body["message"], disabled, "{body}");
+    let (status, body) = get_with_session(admin.clone(), "/org-admin/search/backfill").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], false, "{body}");
+    assert!(body["backfill"].is_null(), "{body}");
+    let (status, body) = send_with_session(admin, "POST", "/org-admin/search/backfill", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "search_disabled", "{body}");
+    assert_eq!(body["message"], disabled, "{body}");
+
+    let member = build_router(state_with_authz(
+        store_with_valid_session().await,
+        Arc::new(AdminGate {
+            admin: false,
+            auditor: false,
+        }),
+    ));
+    let (status, _) = get_with_session(member.clone(), "/org-admin/search/backfill").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send_with_session(member, "POST", "/org-admin/search/backfill", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[path = "http/bug_reports.rs"]

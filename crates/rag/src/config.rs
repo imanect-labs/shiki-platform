@@ -50,8 +50,8 @@ pub struct RagConfig {
     pub max_parse_bytes: i64,
 
     /// pre-filter に使う可読タグ集合の上限（PIT-1）。超過時は tenant-only へ縮退し
-    /// post-filter 全依存＋over-fetch 引き上げで正しさを維持する。OpenFGA ListObjects の
-    /// 応答上限（既定 1000）未満に設定し「切り詰められた不完全集合を正として使う」事故を防ぐ。
+    /// post-filter 全依存＋over-fetch 引き上げで正しさを維持する。OpenFGA ListObjects の応答が
+    /// 上限（既定 1000）に届いた集合は、この値によらず縮退する（切り詰められた不完全な集合を正として使わない・BUG-190）。
     #[serde(default = "default_readable_tags_max")]
     pub readable_tags_max: usize,
 

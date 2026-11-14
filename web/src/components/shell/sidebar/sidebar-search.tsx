@@ -192,7 +192,9 @@ export function SidebarSearch({
             query={query}
             items={drive.items}
             loading={drive.loading}
+            incomplete={drive.incomplete}
             onOpen={openDriveItem}
+            onSearchMore={openDriveSearch}
           />
 
           {groups.length > 0 ? (

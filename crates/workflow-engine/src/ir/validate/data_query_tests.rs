@@ -1,0 +1,706 @@
+//! 「データを検索」の列の保存時検証（BUG-244）の単体テスト。
+#![allow(clippy::unwrap_used, clippy::needless_pass_by_value)]
+
+use std::collections::BTreeMap;
+
+use serde_json::json;
+
+use super::*;
+use crate::ir::validate::CatalogTable;
+
+const ITEMS: &str = "00000000-0000-0000-0000-0000000000c4";
+const HIDDEN: &str = "00000000-0000-0000-0000-0000000000b3";
+const BARE: &str = "00000000-0000-0000-0000-0000000000d5";
+/// 品目の `maker` が指すテーブル（材料にある）。
+const MAKERS: &str = "00000000-0000-0000-0000-0000000000a7";
+/// メーカーの `country` が指すテーブル（材料に無い）。
+const COUNTRIES: &str = "00000000-0000-0000-0000-0000000000f8";
+/// 品目の `orders` が指すテーブル（材料に無い）。
+const ORDERS: &str = "00000000-0000-0000-0000-0000000000e6";
+
+/// 保存者の見え方の定義（`secret` は読めないので入っていない）。
+fn schema() -> TableSchema {
+    let mut s: TableSchema = serde_json::from_value(json!({ "fields": [
+        { "key": "sku", "type": "text", "unique": true },
+        { "key": "name", "type": "text", "indexed": true, "searchable": true },
+        { "key": "memo", "display_name": "メモ", "type": "text" },
+        { "key": "stock", "type": "number", "indexed": true },
+        { "key": "price", "type": "number" },
+        { "key": "tags", "type": "multi_select", "indexed": true, "options": ["a"] },
+        { "key": "orders", "type": "record_ref", "indexed": true,
+          "ref_table": "00000000-0000-0000-0000-0000000000e6",
+          "link": { "cardinality": "one_to_many", "reverse": true } },
+        { "key": "maker", "type": "record_ref", "ref_table": MAKERS }
+    ] }))
+    .unwrap();
+    for (i, f) in s.fields.iter_mut().enumerate() {
+        f.id = 10 + u16::try_from(i).unwrap();
+    }
+    s
+}
+
+/// リンク先（メーカー）の、保存者の見え方の定義（`secret` は読めないので入っていない）。
+fn makers() -> TableSchema {
+    let mut s: TableSchema = serde_json::from_value(json!({ "fields": [
+        { "key": "code", "type": "text", "unique": true },
+        { "key": "memo", "display_name": "備考", "type": "text" },
+        { "key": "score", "type": "number", "indexed": true },
+        { "key": "country", "type": "record_ref", "ref_table": COUNTRIES }
+    ] }))
+    .unwrap();
+    for (i, f) in s.fields.iter_mut().enumerate() {
+        f.id = 10 + u16::try_from(i).unwrap();
+    }
+    s
+}
+
+fn catalog() -> Catalog {
+    Catalog {
+        tables: Some(BTreeMap::from([
+            (
+                ITEMS.to_string(),
+                CatalogTable {
+                    schema: Some(schema()),
+                    ..CatalogTable::default()
+                },
+            ),
+            // 定義の無い材料（承認の照合だけに引いたもの）は照合しない。
+            (BARE.to_string(), CatalogTable::default()),
+            (
+                MAKERS.to_string(),
+                CatalogTable {
+                    schema: Some(makers()),
+                    ..CatalogTable::default()
+                },
+            ),
+        ])),
+        ..Catalog::default()
+    }
+}
+
+fn ir(nodes: serde_json::Value) -> WorkflowIr {
+    WorkflowIr::from_json(&json!({
+        "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+        "nodes": nodes, "edges": []
+    }))
+    .unwrap()
+}
+
+fn query_node(id: &str, table: serde_json::Value, query: serde_json::Value) -> serde_json::Value {
+    json!({ "id": id, "type": "data.query", "params": { "table": table, "query": query } })
+}
+
+fn located(errs: &[ValidationError]) -> Vec<(&str, &str, &str)> {
+    errs.iter()
+        .map(|e| {
+            (
+                e.code.as_str(),
+                e.node_id.as_deref().unwrap_or_default(),
+                e.path.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// 索引の無い列で絞る（all / any / not の中も）・並べる・まとめる・集計する IR は、書いた位置を指して止める。
+/// 索引のある列・重複を許さない列・システムの列は通る。
+#[test]
+fn columns_without_an_index_are_refused_where_written() {
+    let ir = ir(json!([
+        query_node(
+            "ok",
+            json!(ITEMS),
+            json!({
+                "filter": { "all": [
+                    { "cmp": { "field": "sku", "op": "eq", "value": { "$from": "input", "path": "/sku" } } },
+                    { "any": [ { "cmp": { "field": "stock", "op": "lt", "value": 3 } },
+                               { "not": { "cmp": { "field": "_created_at", "op": "gte", "value": "2026-01-01T00:00:00Z" } } } ] },
+                    { "cmp": { "field": "name", "op": "contains", "value": "ねじ" } }
+                ] },
+                "sort": [ { "field": "_updated_at", "descending": true }, { "field": "stock" } ]
+            })
+        ),
+        query_node(
+            "bad",
+            json!(ITEMS),
+            json!({
+                "filter": { "all": [
+                    { "cmp": { "field": "sku", "op": "eq", "value": "A" } },
+                    { "any": [ { "not": { "cmp": { "field": "memo", "op": "eq", "value": "x" } } } ] }
+                ] },
+                "sort": [ { "field": "price" } ]
+            })
+        ),
+        query_node(
+            "sum",
+            json!(ITEMS),
+            // 結合先（注文）は材料に無いので、結合先の列（j.name）は照らさない。
+            json!({
+                "joins": [ { "alias": "j", "field": "orders" } ],
+                "group_by": ["memo", "j.name"],
+                "aggregate": [ { "metric": "count" }, { "metric": "sum", "field": "price" } ]
+            })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    assert_eq!(
+        located(&errors),
+        vec![
+            (
+                FIELD_NOT_INDEXED,
+                "bad",
+                "/params/query/filter/all/1/any/0/not/cmp/field"
+            ),
+            (FIELD_NOT_INDEXED, "bad", "/params/query/sort/0/field"),
+            (FIELD_NOT_INDEXED, "sum", "/params/query/group_by/0"),
+            (FIELD_NOT_INDEXED, "sum", "/params/query/aggregate/1/field"),
+        ]
+    );
+    // 表示名のある列は「表示名」（参照名）で、無い列は参照名で言う（画面は表示名を、AI は参照名を読む）。
+    let m = &errors[0].message;
+    assert!(
+        m.contains("「メモ」（memo）は索引の無い列なので、絞り込みの条件に使えません")
+            && m.contains("索引のある列か重複を許さない列を使う"),
+        "{m}"
+    );
+    let m = &errors[1].message;
+    assert!(
+        m.starts_with("「price」は索引の無い列なので、並べ替えに使えません"),
+        "{m}"
+    );
+}
+
+/// 件数（count）は列を読まない（実行時の束縛は field を見ずに件数を返す・SQL の COUNT(列) もこの形）ので、count に
+/// 索引の無い列・数でない列・無い列を書いても止めない（aggregate・having・group_sort のどれでも）。合計などは止める。
+#[test]
+fn count_reads_no_column() {
+    let count = |field: &str| json!({ "metric": "count", "field": field });
+    let ir = ir(json!([
+        query_node(
+            "count",
+            json!(ITEMS),
+            json!({
+                "group_by": ["sku"],
+                "aggregate": [ count("memo"), count("name"), count("nope"), count("id") ],
+                "having": { "all": [ { "cmp": { "metric": count("memo"), "op": "gt", "value": 1 } } ] },
+                "group_sort": [ { "metric": count("memo"), "descending": true } ]
+            })
+        ),
+        query_node(
+            "sum",
+            json!(ITEMS),
+            json!({
+                "group_by": ["sku"],
+                "aggregate": [ { "metric": "count" } ],
+                "having": { "cmp": { "metric": { "metric": "sum", "field": "memo" }, "op": "gt", "value": 1 } },
+                "group_sort": [ { "metric": { "metric": "max", "field": "name" } } ]
+            })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    assert_eq!(
+        located(&errors),
+        vec![
+            (
+                FIELD_NOT_INDEXED,
+                "sum",
+                "/params/query/having/cmp/metric/field"
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "sum",
+                "/params/query/group_sort/0/metric/field"
+            ),
+        ]
+    );
+}
+
+/// 無い列と読めない列は同じ `ir.unknown_field`（同じ文言）。部分一致は検索の対象の列だけ、逆向きのリンク・複数の値の
+/// 並べ替え・システムの列のまとめ・数でない列の集計は使えない。
+#[test]
+fn other_refusals_follow_the_binder() {
+    let ir = ir(json!([
+        query_node(
+            "missing",
+            json!(ITEMS),
+            json!({ "filter": { "cmp": { "field": "nope", "op": "eq", "value": 1 } } })
+        ),
+        query_node(
+            "unreadable",
+            json!(ITEMS),
+            json!({ "filter": { "cmp": { "field": "secret", "op": "eq", "value": 1 } } })
+        ),
+        query_node(
+            "partial",
+            json!(ITEMS),
+            json!({ "filter": { "cmp": { "field": "sku", "op": "contains", "value": "A" } } })
+        ),
+        query_node(
+            "reverse",
+            json!(ITEMS),
+            json!({ "filter": { "cmp": { "field": "orders", "op": "exists" } } })
+        ),
+        query_node(
+            "multi",
+            json!(ITEMS),
+            json!({ "sort": [ { "field": "tags" } ] })
+        ),
+        query_node(
+            "system",
+            json!(ITEMS),
+            json!({ "group_by": ["_created_at"], "aggregate": [ { "metric": "count" } ] })
+        ),
+        query_node(
+            "text_sum",
+            json!(ITEMS),
+            json!({ "aggregate": [ { "metric": "avg", "field": "sku" } ] })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let codes: Vec<(&str, &str)> = located(&errors).iter().map(|(c, n, _)| (*c, *n)).collect();
+    assert_eq!(
+        codes,
+        vec![
+            (UNKNOWN_FIELD, "missing"),
+            (UNKNOWN_FIELD, "unreadable"),
+            (FIELD_NOT_INDEXED, "partial"),
+            (FIELD_NOT_USABLE, "reverse"),
+            (FIELD_NOT_USABLE, "multi"),
+            (FIELD_NOT_USABLE, "system"),
+            (FIELD_NOT_USABLE, "text_sum"),
+        ]
+    );
+    assert_eq!(
+        errors[0].message.replace("nope", "<K>"),
+        errors[1].message.replace("secret", "<K>"),
+        "無い列と読めない列を言い分けない"
+    );
+    assert!(
+        errors[2].message.contains("部分一致で検索できる列ではない"),
+        "{}",
+        errors[2].message
+    );
+    assert!(
+        errors[3].message.contains("逆向きのリンクの列"),
+        "{}",
+        errors[3].message
+    );
+}
+
+/// テーブルを参照で決めるノード・見えないテーブル・定義の無い材料・材料の無い構成は照合しない。前の版の書き方
+/// （`sort: {field}`）は、その項目の位置を指す。
+#[test]
+fn only_literal_tables_with_a_definition_are_checked() {
+    let bad = json!({ "filter": { "cmp": { "field": "memo", "op": "eq", "value": "x" } } });
+    let ir = ir(json!([
+        query_node(
+            "dynamic",
+            json!({ "$from": "input", "path": "/t" }),
+            bad.clone()
+        ),
+        query_node("hidden", json!(HIDDEN), bad.clone()),
+        query_node("bare", json!(BARE), bad.clone()),
+        query_node(
+            "old_form",
+            json!(ITEMS.to_uppercase()),
+            json!({ "sort": { "field": "memo" } })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    assert_eq!(
+        located(&errors),
+        vec![(FIELD_NOT_INDEXED, "old_form", "/params/query/sort")]
+    );
+    let mut none = Vec::new();
+    v4(&ir, &Catalog::default(), &mut none);
+    assert!(none.is_empty(), "材料が無い構成は照合しない");
+}
+
+/// 保存の検証の全体（`validate`）でも止まる（保存 API・検証 API・emit_workflow が通る口）。
+#[test]
+fn validate_refuses_queries_on_columns_without_an_index() {
+    let wf = json!({
+        "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+        "nodes": [query_node("q", json!(ITEMS), json!({ "sort": [ { "field": "memo" } ] }))],
+        "edges": []
+    });
+    let (wf, _) = crate::ir::scopes::complete_declared_scopes(&wf);
+    let errs = super::super::validate(&wf, &catalog()).unwrap_err();
+    assert_eq!(
+        located(&errs),
+        vec![(FIELD_NOT_INDEXED, "q", "/params/query/sort/0/field")]
+    );
+}
+
+fn link(field: &str, filter: Option<serde_json::Value>) -> serde_json::Value {
+    match filter {
+        Some(f) => json!({ "link": { "field": field, "filter": f } }),
+        None => json!({ "link": { "field": field } }),
+    }
+}
+
+fn cmp(field: &str, op: &str) -> serde_json::Value {
+    json!({ "cmp": { "field": field, "op": op, "value": "x" } })
+}
+
+/// リンクの条件（`link`・入れ子も）は、辿る列がリンクの列であることと、中の比較の列をリンク先の定義で照らす（GAP-129）。
+/// 中の列は、リンク先の表を言い、リンク先の表の「列の編集」を言う。リンク先が材料に無い（見えない）ときは中を照らさない。
+#[test]
+fn link_conditions_are_checked_in_the_linked_table() {
+    let ir = ir(json!([
+        query_node(
+            "ok",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("maker", Some(cmp("code", "eq"))),
+                link("maker", None),
+                // 逆向きのリンクも辿れる（リンク先は材料に無いので中は照らさない）。
+                link("orders", Some(cmp("anything", "eq")))
+            ] } })
+        ),
+        query_node(
+            "inner",
+            json!(ITEMS),
+            json!({ "filter": { "not": link("maker", Some(json!({ "any": [
+                cmp("memo", "eq"),
+                cmp("code", "contains"),
+                cmp("secret", "eq"),
+                link("country", Some(cmp("anything", "eq")))
+            ] }))) } })
+        ),
+        query_node(
+            "field",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("name", Some(cmp("code", "eq"))),
+                link("secret", None),
+                link("nope", None),
+                link("maker", Some(link("memo", None)))
+            ] } })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let inner = "/params/query/filter/not/link/filter/any";
+    assert_eq!(
+        located(&errors),
+        vec![
+            (
+                FIELD_NOT_INDEXED,
+                "inner",
+                format!("{inner}/0/cmp/field").as_str()
+            ),
+            (
+                FIELD_NOT_INDEXED,
+                "inner",
+                format!("{inner}/1/cmp/field").as_str()
+            ),
+            (
+                UNKNOWN_FIELD,
+                "inner",
+                format!("{inner}/2/cmp/field").as_str()
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "field",
+                "/params/query/filter/all/0/link/field"
+            ),
+            (
+                UNKNOWN_FIELD,
+                "field",
+                "/params/query/filter/all/1/link/field"
+            ),
+            (
+                UNKNOWN_FIELD,
+                "field",
+                "/params/query/filter/all/2/link/field"
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "field",
+                "/params/query/filter/all/3/link/filter/link/field"
+            ),
+        ]
+    );
+    let m = &errors[0].message;
+    assert!(
+        m.starts_with("「備考」（memo）は索引の無い列なので、リンク先の絞り込みの条件に使えません")
+            && m.contains("リンク先のテーブルの「列の編集」でこの列の索引をオンに"),
+        "{m}"
+    );
+    let m = &errors[2].message;
+    assert_eq!(
+        m,
+        "リンク先の絞り込みの条件の「secret」は、リンク先のテーブルに無いか、読めない列です。"
+    );
+    let m = &errors[3].message;
+    assert!(
+        m.starts_with("「name」はリンクの列ではないので、リンクの条件に使えません。"),
+        "{m}"
+    );
+    assert_eq!(
+        errors[4].message.replace("secret", "<K>"),
+        errors[5].message.replace("nope", "<K>"),
+        "無い列と読めない列を言い分けない"
+    );
+    assert!(
+        errors[6]
+            .message
+            .starts_with("「備考」（memo）はリンクの列ではない"),
+        "{}",
+        errors[6].message
+    );
+}
+
+/// API 層が引き足すリンク先は、照合と同じ歩き方で決まる: 中の条件のあるリンクの、材料に無いリンク先だけ。引き足すと、その
+/// 先のリンク先が分かる。リンクの列でない列・中の条件の無いリンク・テーブルを参照で決めるノードは引かない。
+#[test]
+fn link_tables_to_load_follow_the_walk() {
+    let ir = ir(json!([
+        query_node(
+            "q",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("orders", None),
+                link("name", Some(cmp("code", "eq"))),
+                link("maker", Some(link("country", Some(cmp("code", "eq")))))
+            ] } })
+        ),
+        query_node(
+            "dynamic",
+            json!({ "$from": "input", "path": "/t" }),
+            json!({ "filter": link("maker", Some(cmp("code", "eq"))) })
+        )
+    ]));
+    let ids =
+        |v: &[&str]| -> BTreeSet<Uuid> { v.iter().map(|s| Uuid::parse_str(s).unwrap()).collect() };
+    let mut tables = catalog().tables.unwrap();
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[COUNTRIES]));
+    tables.remove(MAKERS);
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[MAKERS]));
+    // 中の条件の無いリンク（orders）は、リンク先が材料に無くても引かない。
+    assert!(!query_link_tables(&ir, &tables).contains(&Uuid::parse_str(ORDERS).unwrap()));
+}
+
+/// 結合（`joins`）は、辿る列（`joins[].field`）がリンクの列であることと、結合の条件（`joins[].filter`）とまとめる列・
+/// 集計の列の `別名.参照名` を、結合先の定義で照らす（GAP-129）。別名が結合に無い `別名.参照名` も止める。結合元
+/// （`from`）が先の結合の別名なら、その結合先の定義で辿る列を照らす。結合先を辿れない・材料に無い（見えない）ときは
+/// その先を照らさない。絞り込みと並べ替えには結合先の列を書けない（実行と同じく止める）。
+#[test]
+fn join_columns_are_checked_in_the_joined_table() {
+    let metric = |m: &str, f: &str| json!({ "metric": m, "field": f });
+    let ir = ir(json!([
+        query_node(
+            "ok",
+            json!(ITEMS),
+            json!({
+                "joins": [ { "alias": "m", "field": "maker", "filter": cmp("code", "eq") } ],
+                "group_by": ["m.code", "sku"],
+                "aggregate": [ { "metric": "count" }, metric("sum", "m.score") ]
+            })
+        ),
+        query_node(
+            "bad",
+            json!(ITEMS),
+            json!({
+                "joins": [
+                    { "alias": "m", "field": "maker", "filter": { "all": [
+                        cmp("memo", "eq"),
+                        link("country", Some(cmp("anything", "eq")))
+                    ] } },
+                    { "alias": "x", "field": "name" },
+                    { "alias": "y", "field": "nope" },
+                    { "alias": "z", "from": "m", "field": "memo" }
+                ],
+                "group_by": ["m.memo", "q.code", "x.title"],
+                "aggregate": [ metric("sum", "m.code"), metric("avg", "m.memo") ],
+                "having": { "cmp": { "metric": metric("max", "m.memo"), "op": "gt", "value": 1 } },
+                "group_sort": [ { "metric": metric("min", "m.code") } ]
+            })
+        ),
+        query_node(
+            "base",
+            json!(ITEMS),
+            json!({
+                "joins": [ { "alias": "m", "field": "maker" } ],
+                "filter": cmp("m.code", "eq"),
+                "sort": [ { "field": "m.code" } ]
+            })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let q = "/params/query";
+    let at = |p: &str| format!("{q}/{p}");
+    let want = [
+        (
+            FIELD_NOT_INDEXED,
+            "bad",
+            at("joins/0/filter/all/0/cmp/field"),
+        ),
+        (FIELD_NOT_USABLE, "bad", at("joins/1/field")),
+        (UNKNOWN_FIELD, "bad", at("joins/2/field")),
+        (FIELD_NOT_USABLE, "bad", at("joins/3/field")),
+        (FIELD_NOT_INDEXED, "bad", at("group_by/0")),
+        (FIELD_NOT_USABLE, "bad", at("group_by/1")),
+        (FIELD_NOT_USABLE, "bad", at("aggregate/0/field")),
+        (FIELD_NOT_INDEXED, "bad", at("aggregate/1/field")),
+        (FIELD_NOT_INDEXED, "bad", at("having/cmp/metric/field")),
+        (FIELD_NOT_USABLE, "bad", at("group_sort/0/metric/field")),
+        (UNKNOWN_FIELD, "base", at("filter/cmp/field")),
+        (FIELD_NOT_USABLE, "base", at("sort/0/field")),
+    ];
+    let want: Vec<(&str, &str, &str)> = want.iter().map(|(c, n, p)| (*c, *n, p.as_str())).collect();
+    assert_eq!(located(&errors), want);
+    let m = |i: usize| errors[i].message.as_str();
+    assert!(
+        m(0).starts_with("「備考」（memo）は索引の無い列なので、表をつなぐ条件に使えません")
+            && m(0).contains("つないだテーブル（m）の「列の編集」でこの列の索引をオンに"),
+        "{}",
+        m(0)
+    );
+    assert!(
+        m(1).starts_with("「name」はリンクの列ではないので、表をつなぐのに使えません"),
+        "{}",
+        m(1)
+    );
+    assert_eq!(
+        m(2),
+        "表をつなぐ列の「nope」は、このテーブルに無いか、読めない列です。"
+    );
+    assert!(
+        m(3).starts_with("「備考」（memo）はリンクの列ではない"),
+        "{}",
+        m(3)
+    );
+    assert!(
+        m(4).starts_with("「備考」（m.memo）は索引の無い列なので、まとめる列に使えません"),
+        "{}",
+        m(4)
+    );
+    assert!(
+        m(5).contains("「q.code」の「q」は、つないだ表の別名（joins の alias）にありません"),
+        "{}",
+        m(5)
+    );
+    assert!(
+        m(6).starts_with("「m.code」は数の列ではないので"),
+        "{}",
+        m(6)
+    );
+    assert!(
+        m(10).contains("「m.code」のような、つないだ表の列は書けません")
+            && m(10).contains("その表をつなぐ設定（joins）の filter に"),
+        "{}",
+        m(10)
+    );
+}
+
+/// 結合先は、結合ごとに引き足す（次の結合の結合元にもなるので、条件や列の参照が無くても引く）。結合元の別名が
+/// 引けていない結合の先は、引けてから分かる。
+#[test]
+fn join_tables_to_load_follow_the_walk() {
+    let ir = ir(json!([query_node(
+        "q",
+        json!(ITEMS),
+        json!({ "joins": [
+            { "alias": "o", "field": "orders" },
+            { "alias": "c", "from": "o", "field": "customer" },
+            { "alias": "m", "field": "maker" },
+            { "alias": "k", "from": "m", "field": "country" }
+        ] })
+    )]));
+    let ids =
+        |v: &[&str]| -> BTreeSet<Uuid> { v.iter().map(|s| Uuid::parse_str(s).unwrap()).collect() };
+    let mut tables = catalog().tables.unwrap();
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[ORDERS, COUNTRIES]));
+    tables.remove(MAKERS);
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[ORDERS, MAKERS]));
+}
+
+/// キーワード（`search`）で探す列（`search_fields`）は、実行時の束縛と同じ判定で照らす（GAP-129）。書いた列は 1 つずつ
+/// 照らして位置を指す（部分一致で検索できない列・無い列と読めない列〔同じ文言〕・逆向きのリンク・つないだ表の列・
+/// システムの列）。空の指定と、省略して探せる列が無いテーブルは欄を指す。キーワードが空なら照らさない。
+#[test]
+fn search_fields_are_checked_like_the_binder() {
+    let search = |text: &str, fields: Option<serde_json::Value>| match fields {
+        Some(f) => json!({ "search": text, "search_fields": f }),
+        None => json!({ "search": text }),
+    };
+    let ir = ir(json!([
+        query_node("ok", json!(ITEMS), search("ねじ", None)),
+        query_node(
+            "listed",
+            json!(ITEMS),
+            search("ねじ", Some(json!(["name"])))
+        ),
+        query_node("blank", json!(ITEMS), search("", Some(json!(["memo"])))),
+        query_node(
+            "bad",
+            json!(ITEMS),
+            search(
+                "ねじ",
+                Some(json!([
+                    "name", "memo", "nope", "secret", "orders", "j.name", "_owner"
+                ]))
+            )
+        ),
+        query_node("empty", json!(ITEMS), search("ねじ", Some(json!([])))),
+        query_node("unsearchable", json!(MAKERS), search("ねじ", None))
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let at = |i: usize| format!("/params/query/search_fields/{i}");
+    let want = [
+        (FIELD_NOT_INDEXED, "bad", at(1)),
+        (UNKNOWN_FIELD, "bad", at(2)),
+        (UNKNOWN_FIELD, "bad", at(3)),
+        (FIELD_NOT_USABLE, "bad", at(4)),
+        (UNKNOWN_FIELD, "bad", at(5)),
+        (FIELD_NOT_INDEXED, "bad", at(6)),
+        (
+            FIELD_NOT_USABLE,
+            "empty",
+            "/params/query/search_fields".to_string(),
+        ),
+        (
+            FIELD_NOT_USABLE,
+            "unsearchable",
+            "/params/query/search".to_string(),
+        ),
+    ];
+    let want: Vec<(&str, &str, &str)> = want.iter().map(|(c, n, p)| (*c, *n, p.as_str())).collect();
+    assert_eq!(located(&errors), want);
+    let m = |i: usize| errors[i].message.as_str();
+    assert!(
+        m(0).starts_with(
+            "「メモ」（memo）は部分一致で検索できる列ではないので、キーワードで探す列に使えません"
+        ) && m(0).contains("「部分一致で検索できる」をオンに"),
+        "{}",
+        m(0)
+    );
+    assert_eq!(
+        m(1).replace("nope", "<K>"),
+        m(2).replace("secret", "<K>"),
+        "無い列と読めない列を言い分けない"
+    );
+    assert!(
+        m(4).contains("つないだ表の列「j.name」では探せません"),
+        "{}",
+        m(4)
+    );
+    assert!(
+        m(6).starts_with("キーワードで探す列（search_fields）が空です"),
+        "{}",
+        m(6)
+    );
+    assert!(
+        m(7).contains("部分一致で検索できる列が無いので"),
+        "{}",
+        m(7)
+    );
+}

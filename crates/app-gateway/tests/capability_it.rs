@@ -215,7 +215,7 @@ async fn data_capability_matrix() {
     assert_eq!(schema["id"], owned.to_string());
 
     // 利用量: data.read / data.write / data.schema が (alice×app) で計上されている。
-    let usage = fetch_usage(&pool, &tenant, app_id, 100)
+    let usage = fetch_usage(&pool, &tenant, "acme", app_id, 100)
         .await
         .expect("usage");
     let calls = |cap: &str| {
@@ -366,6 +366,82 @@ async fn data_links_do_not_reach_unowned_tables() {
     }
 }
 
+/// 子一覧の続きの位置は、テナントとフォルダーに束縛した不透明な文字列（BUG-187）。名前を含む生の位置を出さず、
+/// 読めない位置・別のフォルダーの位置は 400 で断る。
+#[tokio::test]
+async fn storage_children_cursor_is_sealed() {
+    use std::fmt::Write as _;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, _owned, _foreign) = fixture(&pool, &tenant).await;
+    let app = build_gateway_router(state_with(
+        pool.clone(),
+        &tenant,
+        Arc::new(StubAuthz::default()),
+    ));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    let (s, folder) = request_json(
+        &app,
+        "POST",
+        "/gw/storage/folders",
+        Some(&tok),
+        &json!({ "parent_id": null, "name": "アプリ出力" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{folder}");
+    let folder_id = folder["id"].as_str().expect("folder id");
+
+    let mut kids = Vec::new();
+    for name in ["見積-1", "見積-2"] {
+        let (s, f) = request_json(
+            &app,
+            "POST",
+            "/gw/storage/folders",
+            Some(&tok),
+            &json!({ "parent_id": folder_id, "name": name }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{f}");
+        kids.push(f["id"].as_str().expect("id").to_string());
+    }
+    let hex = |s: &str| {
+        s.bytes().fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+    };
+    let page_url = |cursor: Option<&str>| {
+        let base = format!("/gw/storage/nodes/{folder_id}/children?limit=1");
+        cursor.map_or(base.clone(), |c| format!("{base}&cursor={c}"))
+    };
+    let (s, first) = get(&app, &page_url(None), Some(&tok)).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(first["items"][0]["id"], kids[0].as_str());
+    let next = first["next_cursor"]
+        .as_str()
+        .expect("続きがある")
+        .to_string();
+    assert!(
+        !next.contains(&hex("見積-1")) && !next.contains(&kids[0]),
+        "生の位置（名前・id）を出さない: {next}"
+    );
+    let (s, second) = get(&app, &page_url(Some(&next)), Some(&tok)).await;
+    assert_eq!(s, StatusCode::OK, "{second}");
+    assert_eq!(second["items"][0]["id"], kids[1].as_str());
+    let raw = hex(&format!("n{}見積-1", kids[0]));
+    for bad in [raw.as_str(), "garbage"] {
+        let (s, body) = get(&app, &page_url(Some(bad)), Some(&tok)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+    let (s, body) = get(
+        &app,
+        &format!("/gw/storage/nodes/{}/children?cursor={next}", kids[0]),
+        Some(&tok),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "別のフォルダーの位置: {body}");
+}
+
 #[tokio::test]
 async fn storage_rag_identity_notify_matrix() {
     let Some(pool) = setup().await else { return };
@@ -480,7 +556,7 @@ async fn storage_rag_identity_notify_matrix() {
     let bob = token_as(&client, ALL_SCOPES, &tenant, "bob");
     let (s, _) = get(&app, "/gw/identity/me", Some(&bob)).await;
     assert_eq!(s, StatusCode::OK);
-    let usage = fetch_usage(&pool, &tenant, app_id, 100)
+    let usage = fetch_usage(&pool, &tenant, "acme", app_id, 100)
         .await
         .expect("usage");
     assert!(
@@ -495,6 +571,9 @@ async fn storage_rag_identity_notify_matrix() {
             .any(|u| u.capability == "identity.read" && u.user_sub == "bob"),
         "{usage:?}"
     );
+    // 別の組織から引いても、この組織のアプリの利用量は出さない（PIT-45・BUG-197）。
+    let beta = fetch_usage(&pool, &tenant, "beta", app_id, 100).await;
+    assert!(beta.unwrap().is_empty(), "別の組織には出さない");
     assert!(
         usage
             .iter()
@@ -769,4 +848,289 @@ async fn transition_without_expected_rev_uses_the_current_rev() {
     assert_eq!(s, StatusCode::OK, "{moved}");
     assert_eq!(moved["data"]["status"], "approved");
     assert_eq!(moved["rev"], 3);
+}
+
+/// D-113: アプリ所有テーブルを「追加だけ」で持つ利用者（インストールの `submitter_roles`）は、アプリから
+/// 作成（data.write）・定義の参照（data.schema）・自分の行の読取（data.read）ができ、他人の行は「無い」と
+/// 同じ応答、書き換え・削除は拒否される（実効権限 = スコープ ∩ 本人の ReBAC）。一覧には追加だけの印が付く。
+#[tokio::test]
+async fn data_add_only_user_creates_and_reads_only_own_records() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, foreign) = fixture(&pool, &tenant).await;
+    let authz = Arc::new(StubAuthz {
+        objects: vec![format!("data_table:{tenant}|{owned}")],
+        add_only_user: Some("bob".into()),
+        ..StubAuthz::default()
+    });
+    let app = build_gateway_router(state_with(pool.clone(), &tenant, authz));
+    let alice = token(&client, ALL_SCOPES, &tenant);
+    let bob = token_as(&client, ALL_SCOPES, &tenant, "bob");
+    let records = format!("/gw/data/tables/{owned}/records");
+
+    let (s, theirs) = request_json(
+        &app,
+        "POST",
+        &records,
+        Some(&alice),
+        &json!({ "data": { "title": "alice の申請" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{theirs}");
+    let (s, mine) = request_json(
+        &app,
+        "POST",
+        &records,
+        Some(&bob),
+        &json!({ "data": { "title": "bob の申請", "amount": 300 } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "追加だけでも作れる: {mine}");
+    assert_eq!(mine["owner"], "bob");
+
+    // 自分の行だけ（一覧・クエリ・1 件）。他人の行は「無い」と同じ。
+    let (s, listed) = get(&app, &format!("{records}?limit=50"), Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{listed}");
+    assert_eq!(items[0]["data"]["title"], "bob の申請");
+    let (s, q) = request_json(
+        &app,
+        "POST",
+        &format!("/gw/data/tables/{owned}/query"),
+        Some(&bob),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert_eq!(q["items"].as_array().map(Vec::len), Some(1), "{q}");
+    let (hidden, _) = get(
+        &app,
+        &format!("{records}/{}", theirs["id"].as_str().unwrap()),
+        Some(&bob),
+    )
+    .await;
+    let (missing, _) = get(&app, &format!("{records}/{}", Uuid::new_v4()), Some(&bob)).await;
+    assert_eq!(hidden, StatusCode::NOT_FOUND);
+    assert_eq!(hidden, missing);
+    let (s, _) = get(
+        &app,
+        &format!("{records}/{}", mine["id"].as_str().unwrap()),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // 定義と一覧（追加だけの印）。
+    let (s, schema) = get(&app, &format!("/gw/data/tables/{owned}/schema"), Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK, "{schema}");
+    let (s, tables) = get(&app, "/gw/data/tables", Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(tables[0]["add_only"], json!(true), "{tables}");
+    let (_, alice_tables) = get(&app, "/gw/data/tables", Some(&alice)).await;
+    assert!(alice_tables[0].get("add_only").is_none(), "{alice_tables}");
+
+    // 書き換え・削除は拒否（自分の行でも）。
+    let mine_id = mine["id"].as_str().unwrap();
+    let (s, _) = request_json(
+        &app,
+        "PATCH",
+        &format!("{records}/{mine_id}"),
+        Some(&bob),
+        &json!({ "patch": { "amount": 1 }, "expected_rev": 1 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = request_json(
+        &app,
+        "DELETE",
+        &format!("{records}/{mine_id}?expected_rev=1"),
+        Some(&bob),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // 片付け（このテストのテーブル・レコード）。
+    for t in [owned, foreign] {
+        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
+            .bind(&tenant)
+            .bind(t)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// D-127・GAP-52: アプリ所有テーブルを「追加だけ」で持つ利用者（bob）も、状態の進め方で作成者の列の人に許した
+/// 出し直し（差し戻し → 申請中）と、そのあいだの自分のレコードの書き換えは、アプリから（data.write）できる。
+/// 申請中・承認の後の書き換えと、作成者に許していない進め方・削除は断る（REST と同じ単一の判定）。
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // 準備（列・状態の進め方）→ 申請 → 差し戻し → 直す → 出し直すを 1 つの流れで確かめる。
+async fn data_add_only_user_resubmits_own_sent_back_record() {
+    use data::{CmpOp, FsmBody, FsmStore, FsmTransition, PolicyExpr, PolicyOperand, SaveTableFsm};
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, foreign) = fixture(&pool, &tenant).await;
+    // 所有テーブルに承認者・作成者の列と状態を足し、状態の進め方を付ける（持ち主の操作・認可はスタブで通す）。
+    let all = Arc::new(StubAuthz::allow_all());
+    let store = data::DataStore::new(pool.clone(), all.clone(), Arc::new(common::FixedResolver));
+    let fsms = FsmStore::new(
+        Arc::new(artifact::ArtifactStore::new(pool.clone(), all.clone())),
+        store.clone(),
+    );
+    let mut schema = simple_schema();
+    let mut approver = field("approver", FieldType::UserRef);
+    approver.indexed = true;
+    let mut status = field("status", FieldType::Select);
+    status.options = vec!["申請中".into(), "承認".into(), "差し戻し".into()];
+    status.indexed = true;
+    schema
+        .fields
+        .extend([approver, field("made_by", FieldType::CreatedBy), status]);
+    let admin = ctx(&tenant);
+    let t = store
+        .update_table_schema(&admin, owned, schema, Some(1), None)
+        .await
+        .expect("列を足す");
+    let me = |f: &str, op: CmpOp| PolicyExpr::FieldCmp {
+        field: f.into(),
+        op,
+        value: PolicyOperand::UserId,
+    };
+    let who = PolicyExpr::All(vec![me("approver", CmpOp::Eq), me("made_by", CmpOp::Ne)]);
+    let mv = |from: &str, to: &str, actor: PolicyExpr| FsmTransition {
+        from: from.into(),
+        to: to.into(),
+        actor,
+    };
+    fsms.save_for_table(
+        &admin,
+        owned,
+        &SaveTableFsm {
+            status_field: "status".into(),
+            body: FsmBody {
+                states: vec!["申請中".into(), "承認".into(), "差し戻し".into()],
+                transitions: vec![
+                    mv("申請中", "承認", who.clone()),
+                    mv("申請中", "差し戻し", who.clone()),
+                    mv("差し戻し", "承認", who),
+                    mv("差し戻し", "申請中", me("made_by", CmpOp::Eq)),
+                ],
+            },
+            applicant_write_lock: Some("made_by".into()),
+            expected_schema_version: t.schema_version,
+        },
+        None,
+    )
+    .await
+    .expect("状態の進め方");
+
+    let authz = Arc::new(StubAuthz {
+        objects: vec![format!("data_table:{tenant}|{owned}")],
+        add_only_user: Some("bob".into()),
+        ..StubAuthz::default()
+    });
+    let app = build_gateway_router(state_with(pool.clone(), &tenant, authz));
+    let alice = token(&client, ALL_SCOPES, &tenant);
+    let bob = token_as(&client, ALL_SCOPES, &tenant, "bob");
+    let records = format!("/gw/data/tables/{owned}/records");
+    let (s, mine) = request_json(
+        &app,
+        "POST",
+        &records,
+        Some(&bob),
+        &json!({ "data": { "title": "bob の申請", "approver": "alice" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{mine}");
+    let id = mine["id"].as_str().unwrap().to_string();
+    let patch = |rev: &serde_json::Value| json!({ "patch": { "title": "bob の申請（直した）" }, "expected_rev": rev });
+    let transition = format!("{records}/{id}/transition");
+    // 申請中: 直せない。
+    let (s, e) = request_json(
+        &app,
+        "PATCH",
+        &format!("{records}/{id}"),
+        Some(&bob),
+        &patch(&mine["rev"]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    // alice（承認者）が差し戻す。
+    let (s, back) = request_json(
+        &app,
+        "POST",
+        &transition,
+        Some(&alice),
+        &json!({ "to": "差し戻し" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{back}");
+    // 作成者に許していない進め方（差し戻し → 承認）と削除は断る。
+    let (s, e) = request_json(
+        &app,
+        "POST",
+        &transition,
+        Some(&bob),
+        &json!({ "to": "承認" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, e) = request_json(
+        &app,
+        "DELETE",
+        &format!("{records}/{id}?expected_rev={}", back["rev"]),
+        Some(&bob),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    // 差し戻しのあいだは直して、申請中へ出し直せる。
+    let (s, fixed) = request_json(
+        &app,
+        "PATCH",
+        &format!("{records}/{id}"),
+        Some(&bob),
+        &patch(&back["rev"]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{fixed}");
+    assert_eq!(fixed["data"]["title"], "bob の申請（直した）");
+    let (s, again) = request_json(
+        &app,
+        "POST",
+        &transition,
+        Some(&bob),
+        &json!({ "to": "申請中" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{again}");
+    assert_eq!(again["data"]["status"], "申請中");
+    // 出し直した後は直せない。
+    let (s, e) = request_json(
+        &app,
+        "PATCH",
+        &format!("{records}/{id}"),
+        Some(&bob),
+        &patch(&again["rev"]),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+
+    // 片付け（このテストのテーブル・レコード・状態の進め方の定義）。
+    store.purge_tenant(&tenant).await.unwrap();
+    for t in [owned, foreign] {
+        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
+            .bind(&tenant)
+            .bind(t)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DELETE FROM artifact WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
 }

@@ -1,0 +1,56 @@
+# 評価基盤 eval/app-builder（AI によるワークフロー作成の評価・GAP-30）の単体テスト。
+#
+# ジョブの手順はここだけに置き、2 つの経路で起こす（GAP-110）。
+# - ci.yml の eval-app-builder（workflow_call）: ci.yml の on のとおりに走る。PR とマージキューは paths で絞らずに
+#   ci.yml を起こすので、eval/app-builder/** や .claude/skills/pr/scripts/** だけの PR もこちらで拾う。
+# - ここの push（paths）: main への push の ci.yml は .claude/** を paths-ignore で外すので、
+#   .claude/skills/pr/scripts/** だけを変える push でも走らせる。dev-up.sh の引数を省いた経路を固定の記録と比べる
+#   テスト（tests/test_dev_up_args.py）が、dev-up.sh だけの変更で走らないのを防ぐ。
+# dev-up.sh とほかのファイルを一緒に main へ push すると両方の経路で 1 回ずつ走る（重いジョブではないので許す）。
+# action の SHA は ci.yml と同じものに固定する（片方を上げたら、もう片方も上げる）。
+name: eval-app-builder
+
+on:
+  workflow_call:
+  push:
+    branches: [main]
+    paths:
+      - ".claude/skills/pr/scripts/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python (eval/app-builder ruff / pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # 呼び出し元ごとに分ける（github.workflow は workflow_call では呼び出し元の名前になる）。
+    # 止めるのは PR だけ（ci.yml の workflow の concurrency と同じ・#920）。main への push の run を止めると、
+    # ci.yml の ci-ok（needs に eval-app-builder を含む）が cancelled で赤くなり、uv のキャッシュも保存されない。
+    concurrency:
+      group: eval-app-builder-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: eval/app-builder
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Takumi Guard: uv sync 前に PyPI プロキシを設定（匿名＝ブロックのみ）。
+      - uses: flatt-security/setup-takumi-guard-pypi@a01b3b2a6436d3df60d4e29c805ad83a704aadc5 # v1.3.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "eval/app-builder/uv.lock"
+      - name: uv sync
+        run: uv sync --frozen
+      - name: ruff
+        run: uv run ruff check .
+      # ネットワーク・LLM・サーバーなしで流す（conftest がループバック以外と手元の中継への接続を止める）。
+      # サーバーの要るもの（server）と ir_lint のバイナリの要るもの（lint_bin・Rust のビルドをこのジョブに
+      # 持ち込まない・ir_lint の example のテストは ci.yml の rust のジョブが流す）は除く。shell のテストは bash と
+      # git だけで動く（docker・cargo などは shim）。
+      - name: pytest (not server, not lint_bin)
+        run: uv run pytest -m "not server and not lint_bin" -q

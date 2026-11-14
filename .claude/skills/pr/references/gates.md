@@ -29,7 +29,7 @@ PR の CI に `paths-ignore` は無い。`docs/**` / 最上位の `*.md` / `.cla
 
 | CI ジョブ | ローカルで回す | 回す条件 |
 | --- | --- | --- |
-| Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features` | `crates/` 差分 |
+| Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features`<br>`bash scripts/check-ts-bindings.sh`（ts-rs の書き出しが Rust の型と合っているか。import の拡張子の差は見ない） | `crates/` 差分 |
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
 | Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`python3 -m unittest discover -s scripts -p 'test_*.py'`<br>`python3 scripts/ci-select.py check`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加・E2E spec／ページ／クレート追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
@@ -121,11 +121,15 @@ export RAG_TEST_QDRANT_URL=http://localhost:6333
 export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
 # tabular の IT（tabular_http_it / workflow_nodes_it の csv.*）は隔離ランナーが要る（無いと黙ってスキップ）
 export SHIKI_TABULAR_RUNNER=$PWD/crates/tabular/runner/target/release/shiki-tabular-runner
+# Keycloak を要る IT（app-gateway の keycloak_it・app-platform の install_it 等・BUG-193）。compose の Keycloak（realm shiki）
+export KEYCLOAK_TEST_URL=http://localhost:8081
 ```
 
 - **`SHIKI_REQUIRE_IT=1` を付けて回す。** 接続先が未設定の結合テストはスキップして pass に数えられるので、
   env を 1 つ渡し忘れても緑に見える。これを付けると未設定が失敗になる（`crates/testenv`・CI の coverage ジョブと同じ）。
-  CI が用意しない依存（実 Keycloak・実 LLM 等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を `SHIKI_REQUIRE_IT_EXCEPT` に渡す。
+  CI が用意しない依存（実 LLM・Office エンジン・VM 系サンドボックス等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を
+  `SHIKI_REQUIRE_IT_EXCEPT` に渡す。Keycloak（`KEYCLOAK_TEST_URL`）と隔離ランナー（`SHIKI_TABULAR_RUNNER`）は CI の
+  coverage ジョブが渡して必須にしているので、例外に入っていない（上のとおり渡す）。
   新しい結合テストの接続先は `shiki_testenv::var("…")` で読む（`std::env::var` 直読みは quality ジョブの it-env gate が落とす）。
 - tabular の IT はアップロードした blob を content-addressing で共有する。**別バケットで同じ DB を使い回すと**
   「同じ内容は既にある」扱いで実体が上がらず `ObjectStore(NotFound)` の 500 になる。再実行で落ちたら DB を作り直す。
@@ -185,8 +189,11 @@ cargo llvm-cov report --summary-only --ignore-filename-regex '<ci.yml と同じ 
 - **ゲートを回すと追跡済みの生成物が書き換わる。`git add -A` を無条件に使わない。**
   ts-rs のバインディング出力（`crates/*/bindings/*.ts`）はテスト実行時に生成されるため、
   `cargo nextest run --workspace --all-features`（＝ CI と同じコマンド）を回すと
-  リポジトリにコミット済みのファイルが書き換わる。`--all-features` が ts-rs の追加 feature を
-  有効にし、`import ... from "./X"` が `"./X.js"` になるため。
+  リポジトリにコミット済みのファイルが書き換わる。`--workspace` で回すと、vendor/secure-exec の
+  vm-config が ts-rs の `import-esm` を有効にし（feature の統合）、`import ... from "./X"` が
+  `"./X.js"` になるため。
   この状態で `git add -A` すると**無関係な生成物が数十件コミットに混入する**（実際に 82 件混入した）。
   CI も同じコマンドを使う＝ CI 側でも同じ差分が出るだけなので、**CI はこの混入を検出できない**。
   → ゲート実行後は必ず `git status` / `git diff --stat` を見てから、**パスを明示して add する**。
+  中身の差（型を変えたのに書き出しを commit し忘れた）は、rust ジョブの `scripts/check-ts-bindings.sh` が落とす。
+  拡張子だけの差は検査が見ないので、`git checkout -- crates/*/bindings` で戻してよい（#422）。

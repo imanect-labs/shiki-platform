@@ -87,6 +87,8 @@ pub struct AppState {
     pub workflow_summaries: Arc<workflow_engine::WorkflowSummaryStore>,
     /// dnd エディタのレイアウト永続化（Task 10.12・IR 外・非バージョン）。
     pub workflow_layout: Arc<workflow_engine::EditorLayoutStore>,
+    /// 承認の受信箱の台帳（human.approval・GAP-08）。行は承認者本人の権限で data から読み直す。
+    pub workflow_approvals: Arc<workflow_engine::ApprovalStore>,
     /// API 層の監査レコーダ（有効化/無効化等の管理操作を 1 操作 1 行で記録）。
     pub audit: Arc<storage::audit::AuditRecorder>,
     /// ユーザーディレクトリ（共有相手検索。tenant_id スコープ）。
@@ -112,6 +114,9 @@ pub struct AppState {
     /// Markdown → .docx 合成（POST /documents・#332）。ingestion-worker のみ必要で
     /// Collabora（office.enabled）に依存しないため常時配線する（markdown 省略時は worker も不要）。
     pub docx_composer: Arc<office::DocxComposer>,
+    /// 外への送信の中継（`egress.proxy_url`・GAP-72）。回答の画像の代理取得が通す（無ければ直接つなぐ）。
+    /// ワークフローの外部への送信・web.fetch・ミニアプリの関数と同じ 1 つを共有する。
+    pub egress_proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// Office 統合の実行時依存（Task 11.5/11.6）。

@@ -75,7 +75,8 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   // テーブルの画面の「SQL」から開くと、そのテーブルの例が入る。
   await page.goto(`/data/${d.id}`);
   await page.getByTestId("open-sql-table").click();
-  await expect(page).toHaveURL(new RegExp(`/data/sql\\?table=${d.id}$`));
+  // 手元の next dev は初めて開く画面をその場でコンパイルする（5 秒を超える）ので、移った先の URL は長めに待つ。
+  await expect(page).toHaveURL(new RegExp(`/data/sql\\?table=${d.id}$`), { timeout: 20_000 });
   // 入力欄は CodeMirror（contenteditable）。中身は .cm-content の文字で確かめる。
   const editor = page.getByTestId("sql-editor").locator(".cm-content");
   await expect(editor).toHaveText(`SELECT title, amount FROM "${deal}" LIMIT 50`);
@@ -83,7 +84,7 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   // 一覧の「SQL」からも開ける。
   await page.goto("/data");
   await page.getByTestId("open-sql").click();
-  await expect(page).toHaveURL(/\/data\/sql$/);
+  await expect(page).toHaveURL(/\/data\/sql$/, { timeout: 20_000 });
   await expect(editor).toBeVisible();
 
   // 参照一覧から列名を入れられる（押すとカーソル位置に入る）。

@@ -57,6 +57,14 @@ export type ImportErrorsResponse = S["ImportErrorsResponse"];
 export type FsmBody = S["FsmBody"];
 export type AllowedTransitions = S["AllowedTransitions"];
 export type FsmResponse = S["FsmResponse"];
+export type FsmTransition = S["FsmTransition"];
+export type PolicyExpr = S["PolicyExpr"];
+/// テーブルの設定の「状態の進め方」（持ち主だけ・GAP-44）。
+export type TableFsmResponse = S["TableFsmResponse"];
+export type SaveTableFsmRequest = S["SaveTableFsmRequest"];
+export type PendingApprovalMove = S["PendingApprovalMove"];
+export type WorkflowStateUse = S["WorkflowStateUse"];
+export type FsmInUseBody = S["FsmInUseBody"];
 /// 構造化した誤りの本文（400 入力の誤り・403 列が使えない・409 競合・要求の形の誤り）。
 export type BadRequestBody = S["BadRequestBody"];
 export type ForbiddenBody = S["ForbiddenBody"];
@@ -145,6 +153,19 @@ export class DataApiError extends Error {
     return this.status === 403 && this.code === "field_unavailable";
   }
 
+  /// 保存すると、承認を待っているレコードが判断できなくなる（`code=fsm_in_use`・判断できなくなる組と数）。
+  get fsmInUse(): PendingApprovalMove[] | null {
+    if (this.status !== 409 || this.code !== "fsm_in_use") return null;
+    const p = this.body?.pending;
+    return Array.isArray(p) ? (p as PendingApprovalMove[]) : [];
+  }
+
+  /// 書き込みの決まりを付けると、誰も書き換え・削除できなくなるレコードがある（`code=fsm_locks_records`・数だけ）。
+  get fsmLocksRecords(): { count: number; more: boolean } | null {
+    if (this.status !== 409 || this.code !== "fsm_locks_records") return null;
+    return { count: Number(this.body?.count ?? 0), more: this.body?.more === true };
+  }
+
   /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
   get derivedRecomputing(): { field: string } | null {
     if (this.status !== 409 || this.code !== "derived_recomputing") return null;
@@ -207,7 +228,11 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
     case "snapshot_unsupported":
       return "この並べ替えでは固定の読み取りができません";
     case "fsm_invalid":
-      return "状態の遷移の定義が正しくありません";
+      return "状態の進め方が正しくありません";
+    case "fsm_in_use":
+      return "承認を待っているレコードが、この変更で判断できなくなります";
+    case "fsm_locks_records":
+      return "誰も書き換えられなくなるレコードがあります";
     // 要求の形の誤り（RequestErrorBody・サーバは日本語の message を付けるので、無いときの予備）。
     case "payload_too_large":
       return "送る内容が大きすぎます";
@@ -295,9 +320,62 @@ const enc = encodeURIComponent;
 // テーブル
 // ---------------------------------------------------------------------------
 
+export type TableListPage = S["TableListResponse"];
+
+/// 自分が使えるテーブルの 1 ページ（更新の新しい順・GAP-42）。`q` は名前に含む文字（大文字小文字を区別しない）、
+/// `cursor` は前のページの `next_cursor`、`limit` は 1〜200（省略で 200）。
+export async function listTablesPage(
+  opts: { q?: string; cursor?: string | null; limit?: number } = {},
+  init?: RequestInit,
+): Promise<TableListPage> {
+  const params = new URLSearchParams();
+  if (opts.q?.trim()) params.set("q", opts.q.trim());
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return ok<TableListPage>(await apiFetch(`/data/tables${qs ? `?${qs}` : ""}`, init));
+}
+
+/// 続きを読みにいく回数の上限（[`listTablesUpTo`]・1 回は最大 200 件）。
+const TABLE_LIST_MAX_PAGES = 5;
+
+/// 自分が使えるテーブルを、`want` 件たまるか続きが無くなるまで読む（更新の新しい順・往復は最大 5 回）。
+///
+/// 見られるテーブルが多い人では、1 ページが `limit` より少ないか 0 件のまま、続きの位置だけが付いて返ることがある
+/// （サーバーが OpenFGA に問う数を抑えるため・BUG-149）。先頭の 1 ページだけを読むと、あるテーブルを無いと見せる。
+/// 往復の上限で止まったら `next_cursor` を返す（画面は「さらに読み込む」で続きを読む）。
+export async function listTablesUpTo(
+  opts: { want?: number; cursor?: string | null; q?: string } = {},
+): Promise<{ items: DataTable[]; next_cursor: string | null }> {
+  const want = opts.want ?? 200;
+  const items: DataTable[] = [];
+  let cursor = opts.cursor ?? null;
+  for (let page = 0; page < TABLE_LIST_MAX_PAGES; page += 1) {
+    const p = await listTablesPage({ q: opts.q, cursor, limit: Math.min(200, Math.max(1, want - items.length)) });
+    items.push(...p.items);
+    cursor = p.next_cursor ?? null;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor };
+}
+
+/// 自分が使えるテーブルの先頭の 200 件（更新の新しい順・続きの位置をたどって読む）。それより先は
+/// [`listTablesPage`] で名前で探すか続きを読む。
 export async function listTables(): Promise<DataTable[]> {
-  const r = await ok<S["TableListResponse"]>(await apiFetch("/data/tables"));
-  return r.items;
+  return (await listTablesUpTo()).items;
+}
+
+/// 名前がちょうど `name` のテーブル（名前で探して、続きの位置をたどる・見つからなければ `null`）。
+export async function findTableByName(name: string): Promise<DataTable | null> {
+  let cursor: string | null = null;
+  for (let page = 0; page < TABLE_LIST_MAX_PAGES; page += 1) {
+    const p: TableListPage = await listTablesPage({ q: name, cursor, limit: 50 });
+    const hit = p.items.find((t) => t.name === name);
+    if (hit) return hit;
+    cursor = p.next_cursor ?? null;
+    if (!cursor) return null;
+  }
+  return null;
 }
 
 export async function getTable(id: string): Promise<DataTable> {
@@ -426,6 +504,19 @@ export async function getAllowedTransitions(tableId: string, recordId: string): 
 export async function getFsm(id: string, version?: number): Promise<FsmResponse> {
   const q = version != null ? `?version=${version}` : "";
   return ok<FsmResponse>(await apiFetch(`/data/fsms/${enc(id)}${q}`));
+}
+
+/// テーブルの状態の進め方と、変えたときに影響を受けるもの（承認を待っているレコードの数・状態を使う
+/// ワークフロー）。テーブルの持ち主だけ（ほかの人は 403、見えないテーブルは 404）。
+export async function getTableFsm(tableId: string): Promise<TableFsmResponse> {
+  return ok<TableFsmResponse>(await apiFetch(`/data/tables/${enc(tableId)}/fsm`));
+}
+
+/// テーブルの状態の進め方を保存する（状態の列の選択肢・使う版・書き込みの決まりを 1 回で替える）。承認を待って
+/// いるレコードが判断できなくなる変更は、`confirm_pending` が無ければ 409（`DataApiError.fsmInUse`）。書き込みの
+/// 決まりで誰も書き換えられなくなるレコードがあれば、`confirm_locked` が無ければ 409（`DataApiError.fsmLocksRecords`）。
+export async function saveTableFsm(tableId: string, req: SaveTableFsmRequest): Promise<DataTable> {
+  return ok<DataTable>(await apiFetch(`/data/tables/${enc(tableId)}/fsm`, send("PUT", req)));
 }
 
 export async function getRecord(tableId: string, recordId: string): Promise<DataRecord> {

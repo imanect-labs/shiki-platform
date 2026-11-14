@@ -1,0 +1,78 @@
+{
+  "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-09T13:59:28+00:00",
+    "results": {
+      "port_next": {
+        "errors": [
+          "ir.unknown_port"
+        ],
+        "warnings": []
+      },
+      "template_var": {
+        "errors": [
+          "ir.bad_template"
+        ],
+        "warnings": []
+      },
+      "unknown_folder": {
+        "errors": [],
+        "warnings": []
+      }
+    }
+  },
+  "binary_sha256": "b4e9311436cbe9c4e34075b879b3ea21069f80bde317204edb0f3c9675af1cc6",
+  "built_at": "2026-11-07T04:13:23Z",
+  "commit": "71e9b79aaad518ab6736038d42a49be38f6ec921",
+  "feasible": {
+    "grader": 11,
+    "result": {
+      "app01-claim-submit": null,
+      "app02-triage": null,
+      "app05-screening-text": null,
+      "app06-reorder-check": "正解がこの版で保存できない: CaseError: app06-reorder-check/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'match_on' は使えません\", 'node_id': 'save_drafts', 'path': '/params/match_on'}, {'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'encoding' は使えません\", 'node_id': 'write_csv', 'path': '/p",
+      "app06-stock-move": null,
+      "app10-survey-csv": null,
+      "app11-checkout": "正解がこの版で通らない: available: unexpected_status run の状態が failed（期待 succeeded）／available: 照合 status 状態 ['failed']（期待 succeeded）／available: 照合 rows:count loans {}: 0 行（期待 1）／available: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）／available: 落ちた step log: data.record.create: data: $from run /date が解決できません（値が無く default もありません）",
+      "app11-return": "正解がこの版で通らない: back: unexpected_status run の状態が failed（期待 succeeded）／back: 照合 status 状態 ['failed']（期待 succeeded）／back: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code'／back: 落ちた step close: data.record.update: patch: $from run /date が解決できません（値が無く default もありません）",
+      "app12-faq-table": null,
+      "basic-branch-amount": null,
+      "basic-map-rows": null,
+      "basic-summary-file": "正解がこの版で保存できない: CaseError: basic-summary-file/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'on_name_taken' は使えません\", 'node_id': 'save', 'path': '/params/on_name_taken'}]",
+      "basic-switch-category": null
+    },
+    "tasks_sha": "2f89229aa999108a3faf7d145ce5b069fa4549dda12cbebaa4d9fc360237f777"
+  },
+  "label": "v1",
+  "node_types": [
+    "agent.invoke",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.transition",
+    "http.request",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "workflow.start"
+  ],
+  "runner_lock_diff_sha256": "a9012c9ddf9d7fb2e1cd198b9ff73f71797c490b55f734a3398541acda6585c7",
+  "runner_lock_updated": true,
+  "runner_sha256": "203d52bed3c8a759560179bd9f86c0c3ceef13c0e4414a4ed83e493791568f35",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "tree_clean": true
+}

@@ -21,6 +21,7 @@ import {
   Share2,
   Table2,
   Upload,
+  Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -32,6 +33,7 @@ import { ImportDialog, importProgress, useImportJob } from "@/components/data/im
 import { RecordDialog } from "@/components/data/record-dialog";
 import { useFsm } from "@/components/data/transition-editor";
 import { SchemaEditor } from "@/components/data/schema-editor";
+import { StateFlowEditor } from "@/components/data/state-flow-editor";
 import { TableShareDialog } from "@/components/data/table-share-dialog";
 import {
   ColumnsControl,
@@ -117,6 +119,17 @@ function PeerStrip({ peers, label }: { peers: Peer[]; label: (p: Peer) => string
   );
 }
 
+/// 追加だけの人の帯の、自分が追加したレコードでできることの 1 文（D-127）。`edit_in` は `move_from` の一部。
+function ownRecordsNote(own: { move_from: string[]; edit_in: string[] }, fsmLabel: string): string {
+  const quoted = (xs: string[]) => xs.map((x) => `「${x}」`).join("と");
+  const cell = `「${fsmLabel}」のセルを開いて進められ`;
+  if (own.edit_in.length === 0) return `自分が追加したレコードは、${quoted(own.move_from)}のとき${cell}ます。`;
+  if (own.edit_in.length === own.move_from.length) {
+    return `自分が追加したレコードは、${quoted(own.move_from)}のあいだ直せ、${cell}ます。`;
+  }
+  return `自分が追加したレコードは、${quoted(own.move_from)}のとき${cell}、${quoted(own.edit_in)}のあいだは直せます。`;
+}
+
 function countLabel(s: DataGridStatus | null): string {
   if (!s) return "";
   const c = s.count;
@@ -148,7 +161,7 @@ export function TableWorkspace({
   // 読めない列（古いサーバは名前を返す。新しいサーバは読めない列をスキーマから外して返し、ここは空・2-B-P2-1）。
   const masked = React.useMemo(() => new Set(viewer.masked_fields ?? []), [viewer]);
   const gridRef = React.useRef<DataGridHandle>(null);
-  const fsm = useFsm(table);
+  const fsm = useFsm(table, viewer);
   // 閲覧者が読める列（サーバの文言の参照名を表示名に直す）。
   const readableFields = React.useMemo(() => table.schema.fields.filter((f) => !masked.has(f.key)), [table, masked]);
 
@@ -173,12 +186,24 @@ export function TableWorkspace({
     | null
   >(null);
   const [schemaOpen, setSchemaOpen] = React.useState(false);
+  // 状態の進め方（GAP-44）。ワークフローのエディターの案内（`?panel=states`）から開いて来たら、最初から開く。
+  const [statesOpen, setStatesOpen] = React.useState(() => params.get("panel") === "states");
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [viewLoading, setViewLoading] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   // テーブルの共有は owner だけ。ミニアプリ所有のテーブルはアプリのインストールで配るので共有しない（サーバも 403）。
   const canShare = viewer.can_manage && !table.app_id;
+  // 追加だけの共有（D-113）: 追加の操作と自分が追加したレコードだけを出す（取込・保存ビューは出さない）。作成者として
+  // 許された状態（D-127・`own_records`）では、自分が追加したレコードの状態を進め、直せる。
+  const addOnly = viewer.add_only;
+  const myId = me.data?.id ?? null;
+  const fsmLabel = fsm ? (readableFields.find((f) => f.key === fsm.field)?.display_name || fsm.field) : "";
+  const ownRecords = addOnly ? (viewer.own_records ?? null) : null;
+  const ownEdit = React.useMemo(
+    () => (ownRecords && myId ? { me: myId, moveFrom: ownRecords.move_from, editIn: ownRecords.edit_in } : null),
+    [ownRecords, myId],
+  );
   const importJob = useImportJob(table.id);
   const [peers, setPeers] = React.useState<Peer[]>([]);
   const [names, setNames] = React.useState<Map<string, string>>(new Map());
@@ -493,22 +518,26 @@ export function TableWorkspace({
         {loaded.viewId ? <p className="truncate text-xs text-muted-foreground">{loaded.name}</p> : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <ViewSwitcher
-          table={table}
-          views={views}
-          current={loaded}
-          mine={mine}
-          dirty={dirty}
-          body={body}
-          onOpen={(id) => router.push(id ? `/data/${table.id}?view=${id}` : `/data/${table.id}`)}
-          onSaved={(id, version, name) => {
-            onViewsChanged();
-            setLoaded((l) => ({ ...l, viewId: id, version, name, owner: me.data?.id ?? l.owner, spec: body.display, query: body.query }));
-            if (id !== loaded.viewId) router.replace(`/data/${table.id}?view=${id}`);
-          }}
-        />
-        {viewLoading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="ビューを読み込み中" /> : null}
-        <div className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden />
+        {addOnly ? null : (
+          <>
+            <ViewSwitcher
+              table={table}
+              views={views}
+              current={loaded}
+              mine={mine}
+              dirty={dirty}
+              body={body}
+              onOpen={(id) => router.push(id ? `/data/${table.id}?view=${id}` : `/data/${table.id}`)}
+              onSaved={(id, version, name) => {
+                onViewsChanged();
+                setLoaded((l) => ({ ...l, viewId: id, version, name, owner: me.data?.id ?? l.owner, spec: body.display, query: body.query }));
+                if (id !== loaded.viewId) router.replace(`/data/${table.id}?view=${id}`);
+              }}
+            />
+            {viewLoading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="ビューを読み込み中" /> : null}
+            <div className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden />
+          </>
+        )}
         <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none max-sm:-mx-1 max-sm:w-full max-sm:px-1">
           <FilterControl
             columns={columns}
@@ -545,6 +574,18 @@ export function TableWorkspace({
             >
               <Settings2 className="size-4" aria-hidden />
               <span className="max-sm:sr-only">列の編集</span>
+            </Button>
+          ) : null}
+          {viewer.can_manage ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-[13px]"
+              onClick={() => setStatesOpen(true)}
+              data-testid="state-flow-open"
+            >
+              <Workflow className="size-4" aria-hidden />
+              <span className="max-sm:sr-only">状態の進め方</span>
             </Button>
           ) : null}
         </div>
@@ -633,7 +674,7 @@ export function TableWorkspace({
               </span>
             </Button>
           ) : null}
-          {viewer.can_edit ? (
+          {viewer.can_add ? (
             <Button size="sm" className="h-8" onClick={() => setRecordOpen(true)} data-testid="add-record">
               <Plus className="size-4" aria-hidden />
               <span className="max-sm:sr-only">レコード</span>
@@ -641,6 +682,13 @@ export function TableWorkspace({
           ) : null}
         </div>
       </div>
+
+      {addOnly ? (
+        <p className="text-xs text-muted-foreground" data-testid="data-add-only-note">
+          このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードと、個別に共有されたレコードです。
+          {ownRecords ? ownRecordsNote(ownRecords, fsmLabel) : ""}
+        </p>
+      ) : null}
 
       {problem && !(problem.kind === "preparing" && spec.kind === "grid") ? (
         <div
@@ -712,6 +760,8 @@ export function TableWorkspace({
               onPeers={setPeers}
               importing={importJob.running}
               onAddRecord={() => setRecordOpen(true)}
+              addOnly={addOnly}
+              ownEdit={ownEdit}
               fields={readableFields}
               fsm={fsm}
               onSchemaChanged={onSchemaStale}
@@ -746,6 +796,19 @@ export function TableWorkspace({
         />
       ) : null}
       <SchemaEditor open={schemaOpen} onOpenChange={setSchemaOpen} table={table} onSaved={onTableChanged} />
+      <StateFlowEditor
+        open={statesOpen}
+        onOpenChange={(o) => {
+          setStatesOpen(o);
+          // 案内のリンクで開いたときの印（?panel=states）は、閉じたら外す（再読み込みで開き直さない）。
+          if (!o && params.get("panel")) router.replace(viewParam ? `/data/${table.id}?view=${viewParam}` : `/data/${table.id}`);
+        }}
+        table={table}
+        onSaved={onTableChanged}
+        // 状態の進め方の画面は、保存していない変更を確かめてから自分で閉じる（onOpenChange で ?panel=states も外す）。
+        onOpenSchema={() => setSchemaOpen(true)}
+        onOpenShare={canShare ? () => setShareOpen(true) : undefined}
+      />
       <RecordDialog
         open={recordOpen}
         onOpenChange={setRecordOpen}

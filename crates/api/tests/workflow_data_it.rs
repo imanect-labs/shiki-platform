@@ -76,6 +76,8 @@ fn user(tenant: &str, id: &str) -> AuthContext {
 struct Env {
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
+    /// テストが作った OpenFGA のストア（片付けで消す）。
+    fga_store: (String, String),
     data: Arc<DataStore>,
     executor: Arc<dyn NodeExecutor>,
     workflows: WorkflowStore,
@@ -104,18 +106,18 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
     let http = reqwest::Client::new();
-    let fga = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-data-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    ) as Arc<dyn AuthzClient>;
+    let client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-data-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    let fga_store = (fga_url, client.store_id().to_string());
+    let fga = Arc::new(client) as Arc<dyn AuthzClient>;
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -181,10 +183,11 @@ async fn setup() -> Option<Env> {
         tabular: None,
         skill_artifacts: None,
         launcher: launcher.clone(),
-        http: reqwest::Client::new(),
+        http: api::workflow_runtime::HttpEgress::default(),
         db: pool.clone(),
         data: Some(Arc::clone(&data)),
         fsms: Some(fsms),
+        web_search: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let executor: Arc<dyn NodeExecutor> = Arc::new(
@@ -194,6 +197,7 @@ async fn setup() -> Option<Env> {
     Some(Env {
         pool,
         fga,
+        fga_store,
         data,
         executor,
         workflows,
@@ -250,6 +254,55 @@ impl Env {
         .fetch_one(&self.pool)
         .await
         .unwrap()
+    }
+
+    /// 有効な委譲（委譲元・scope・relation）の一覧（委譲元・scope の順）。
+    async fn active_delegations(&self, tenant: &str, wf: Uuid) -> Vec<(String, String, String)> {
+        sqlx::query_as(
+            "SELECT delegator, scope, relation FROM workflow_delegation \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+             ORDER BY delegator, scope",
+        )
+        .bind(tenant)
+        .bind(wf)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 再同意が委譲を組の単位で置き換えるようになる前（BUG-130）の台帳を作る: 別の委譲元が同じ対象を別の relation で
+    /// 委譲した行（とタプル）を、今の同意の横に足す。いまの有効化では作られない状態で、書込の主体の選び方
+    /// （`active_delegator` が relation を見る・R3-2）は、こうした保存済みの台帳でも守られなければならない。
+    async fn legacy_delegation(
+        &self,
+        tenant: &str,
+        wf: Uuid,
+        delegator: &str,
+        scope: &str,
+        object: &authz::FgaObject,
+        relation: Relation,
+    ) {
+        sqlx::query(
+            "INSERT INTO workflow_delegation \
+             (tenant_id, workflow_id, delegator, scope, object_ref, relation) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (tenant_id, workflow_id, delegator, scope, object_ref) \
+             DO UPDATE SET relation = $6, revoked_at = NULL, granted_at = now() - interval '1 minute'",
+        )
+        .bind(tenant)
+        .bind(wf)
+        .bind(delegator)
+        .bind(scope)
+        .bind(object.as_str())
+        .bind(relation.as_str())
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        let subject = authz::Namespace::for_tenant(tenant).workflow_principal(&wf.to_string());
+        self.fga
+            .write_tuple(&subject, relation, object)
+            .await
+            .unwrap();
     }
 }
 
@@ -554,6 +607,21 @@ async fn writes_run_only_as_a_delegator_who_delegated_write() {
         )
         .await
         .expect("alice の再有効化");
+    // 再同意は委譲を alice の同意の組に置き換えるので、bob の書込の委譲は外れる（BUG-130）。
+    assert_eq!(
+        env.active_delegations(&tenant, wf).await,
+        vec![("alice".into(), "data.read".into(), "viewer".into())]
+    );
+    // 置き換える前の台帳（bob の書込の委譲が残っている）で、書込の主体の選び方を確かめる。
+    env.legacy_delegation(
+        &tenant,
+        wf,
+        "bob",
+        "data.write",
+        &table_obj,
+        Relation::Editor,
+    )
+    .await;
 
     let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
     let (status, _, err) = env.step(&tenant, run, "u").await;
@@ -828,6 +896,21 @@ async fn workflow_cannot_follow_links_into_undelegated_tables() {
         )
         .await
         .expect("alice の有効化（A・B の読取）");
+    // 再同意は委譲を alice の同意の組に置き換える（bob の書込の委譲は外れる・BUG-130）。置き換える前の台帳で確かめる。
+    assert!(env
+        .active_delegations(&tenant, w_wf)
+        .await
+        .iter()
+        .all(|(d, _, _)| d == "alice"));
+    env.legacy_delegation(
+        &tenant,
+        w_wf,
+        "bob",
+        "data.write",
+        &orders_obj,
+        Relation::Editor,
+    )
+    .await;
     env.fire_schedule_and_run(&tenant, w_wf, 181).await;
     let (status, out, err) = latest_q(w_wf).await;
     assert_eq!(status, "succeeded", "{err:?}");
@@ -919,6 +1002,41 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .await
         .unwrap();
     assert_eq!(workflow_engine::semantics_warnings(&prefix_ir).len(), 1);
+    // BUG-14: 大小比較のしきい値を数字の文字列で保存した定義（数値との比較は run の失敗に変わる）も載る。
+    let threshold = json!({
+        "ir_version": 1, "name": "amount-threshold",
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [ { "id": "big", "type": "control.branch", "params": { "condition":
+            { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gte", "right": "50000" } } } } ],
+        "edges": []
+    });
+    let (wf_threshold, _) = env
+        .workflows
+        .create(&alice, &threshold, &Catalog::default(), None)
+        .await
+        .unwrap();
+    // テンプレートの `{{key}}` は保存時の警告には出るが、条件の一覧には混ぜない（DB の事前絞り込みは
+    // eq で通る）。
+    let template = json!({
+        "ir_version": 1, "name": "template-branch",
+        "triggers": [ { "kind": "interactive" } ],
+        "nodes": [
+            { "id": "br", "type": "control.branch", "params": { "condition":
+                { "cmp": { "left": { "$from": "input", "path": "/n" }, "op": "eq", "right": 3 } } } },
+            { "id": "ask", "type": "llm.invoke", "params": { "prompt": {
+                "$template": "数は {{n}} です", "vars": { "n": { "$from": "input", "path": "/n" } } } } }
+        ],
+        "edges": [ { "from": "br", "from_port": "true", "to": "ask" } ]
+    });
+    let (_, template_ir) = env
+        .workflows
+        .create(&alice, &template, &Catalog::default(), None)
+        .await
+        .unwrap();
+    assert!(workflow_engine::semantics_warnings(&template_ir).is_empty());
+    let saved = workflow_engine::save_warnings(&template_ir, &workflow_engine::Catalog::default());
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(saved[0].code, workflow_engine::TEMPLATE_ESCAPED_VAR);
 
     // 一覧化（1 件ずつのページで keyset を回す）。
     let mut after = None;
@@ -939,7 +1057,16 @@ async fn saved_workflows_with_array_conditions_are_listed() {
             None => break,
         }
     }
-    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(
+        found.iter().all(|f| f.name != "template-branch"),
+        "テンプレートの警告は条件の一覧に出ない: {found:?}"
+    );
+    let threshold_hit = found
+        .iter()
+        .find(|f| f.workflow_id == wf_threshold)
+        .expect("amount-threshold");
+    assert_eq!(threshold_hit.node_id.as_deref(), Some("big"));
     let eq_hit = found
         .iter()
         .find(|f| f.workflow_id == wf)
@@ -951,4 +1078,817 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .find(|f| f.workflow_id == wf_prefix)
         .expect("tags-prefix");
     assert_eq!(sw_hit.node_id.as_deref(), Some("sw"));
+}
+
+/// 列がすべて文章（索引つき・探す条件に使える）の、決まりの無いテーブルの定義。
+fn text_schema(keys: &[&str]) -> TableSchema {
+    plain_schema(
+        keys.iter()
+            .map(|k| {
+                let mut f = data::FieldDef::new(*k, FieldType::Text);
+                f.indexed = true;
+                f
+            })
+            .collect(),
+    )
+}
+
+impl Env {
+    /// テナントで作ったものを片付ける（実行・副作用の記録・ワークフロー・テーブル・イベント・OpenFGA のストア）。
+    async fn cleanup_tenant(&self, tenant: &str) {
+        for table in [
+            "workflow_run",
+            "effect_journal",
+            "artifact",
+            "storage_event_outbox",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(tenant)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+        self.data.purge_tenant(tenant).await.unwrap();
+        let (base, store) = &self.fga_store;
+        let res = reqwest::Client::new()
+            .delete(format!("{base}/stores/{store}"))
+            .send()
+            .await
+            .expect("OpenFGA のストアを消す");
+        assert!(res.status().is_success(), "delete store: {}", res.status());
+    }
+}
+
+/// D-123・BUG-152: 繰り返しの中のブロックは、繰り返しの手前の「レコードを探す」の結果を参照できる。承認者の表を
+/// 先に引いて、入力の 3 件をそれぞれ書く組み方が、保存でき（以前は ir.bad_ref で止まった）、実行で 3 件とも
+/// 引いた承認者で書かれる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocks_in_a_map_use_a_query_made_before_the_map() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let approvers = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "approvers".into(),
+                    schema: text_schema(&["name", "role"]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        for (name, role) in [("佐藤", "経理"), ("鈴木", "総務")] {
+            env.data
+                .create_record(
+                    &alice,
+                    approvers.id,
+                    json!({ "name": name, "role": role }),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let tasks = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "tasks".into(),
+                    schema: text_schema(&["title", "approver"]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let ir = json!({
+            "ir_version": 1, "name": "assign-each",
+            "declared_scopes": ["data.read", "data.write"],
+            "input_schema": { "type": "object", "properties": {
+                "titles": { "type": "array", "items": { "type": "string" } } } },
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "find_approver", "type": "data.query", "params": {
+                    "table": approvers.id.to_string(),
+                    "query": { "filter": { "cmp": { "field": "role", "op": "eq", "value": "経理" } } } } },
+                { "id": "each_title", "type": "control.map",
+                  "params": { "items": { "$from": "input", "path": "/titles" } } },
+                { "id": "write", "type": "data.record.create", "parent": "each_title", "params": {
+                    "table": tasks.id.to_string(),
+                    "data": {
+                        "title": { "$from": "each", "path": "/item" },
+                        "approver": { "$from": "nodes.find_approver.output", "path": "/items/0/data/name" } } } }
+            ],
+            "edges": [ { "from": "find_approver", "to": "each_title" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("繰り返しの手前の結果を中で参照する定義を保存できる");
+        let run = env
+            .launcher
+            .start_interactive(
+                &alice,
+                wf,
+                &json!({ "titles": ["交通費", "宿泊費", "会議費"] }),
+            )
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let steps: Vec<(String, String, Option<Value>)> = sqlx::query_as(
+            "SELECT step_path, status, error FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 ORDER BY step_path",
+        )
+        .bind(&tenant)
+        .bind(run)
+        .fetch_all(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            env.runs.run_status(&tenant, run).await.unwrap(),
+            Some(RunStatus::Succeeded),
+            "{steps:?}"
+        );
+        let page = env
+            .data
+            .list_records(&alice, tasks.id, &data::ListRecordsOptions::default(), None)
+            .await
+            .unwrap();
+        let mut written: Vec<(String, String)> = page
+            .items
+            .iter()
+            .map(|r| {
+                (
+                    r.data["title"].as_str().unwrap_or_default().to_string(),
+                    r.data["approver"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        written.sort();
+        let mut want: Vec<(String, String)> = ["交通費", "宿泊費", "会議費"]
+            .iter()
+            .map(|t| ((*t).to_string(), "佐藤".to_string()))
+            .collect();
+        want.sort();
+        assert_eq!(written, want);
+    };
+    // 落ちても片付けてから結果を返す。
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// D-127・GAP-52: 「追加だけ」の申請者（carol）が手動で実行したワークフローは、本人の権限で、差し戻された自分の
+/// レコードを直して出し直せる（本番のポートの `data.record.update` → `data.transition`）。承認の後に同じ
+/// ワークフローを実行すると、書き換えで断る（作成者に許した状態ではない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_only_applicant_resubmits_through_a_workflow() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let (alice, bob, carol) = (
+        user(&tenant, "alice"),
+        user(&tenant, "bob"),
+        user(&tenant, "carol"),
+    );
+    let body = async {
+        let fsms = FsmStore::new(
+            Arc::new(artifact::ArtifactStore::new(
+                env.pool.clone(),
+                Arc::clone(&env.fga),
+            )),
+            (*env.data).clone(),
+        );
+        let mut title = data::FieldDef::new("title", FieldType::Text);
+        title.indexed = true;
+        let mut approver = data::FieldDef::new("approver", FieldType::UserRef);
+        approver.indexed = true;
+        let made_by = data::FieldDef::new("made_by", FieldType::CreatedBy);
+        let mut status = data::FieldDef::new("status", FieldType::Select);
+        status.indexed = true;
+        status.options = vec!["申請中".into(), "承認".into(), "差し戻し".into()];
+        let t = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "requests".into(),
+                    schema: plain_schema(vec![title, approver, made_by, status]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let me = |field: &str, op: CmpOp| PolicyExpr::FieldCmp {
+            field: field.into(),
+            op,
+            value: PolicyOperand::UserId,
+        };
+        let who = PolicyExpr::All(vec![me("approver", CmpOp::Eq), me("made_by", CmpOp::Ne)]);
+        let mv = |from: &str, to: &str, actor: PolicyExpr| data::FsmTransition {
+            from: from.into(),
+            to: to.into(),
+            actor,
+        };
+        fsms.save_for_table(
+            &alice,
+            t.id,
+            &data::SaveTableFsm {
+                status_field: "status".into(),
+                body: data::FsmBody {
+                    states: vec!["申請中".into(), "承認".into(), "差し戻し".into()],
+                    transitions: vec![
+                        mv("申請中", "承認", who.clone()),
+                        mv("申請中", "差し戻し", who),
+                        mv("差し戻し", "申請中", me("made_by", CmpOp::Eq)),
+                    ],
+                },
+                applicant_write_lock: Some("made_by".into()),
+                expected_schema_version: t.schema_version,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let obj = alice.ns().data_table(&t.id.to_string());
+        env.fga
+            .write_tuple(&carol.subject(), Relation::Submitter, &obj)
+            .await
+            .unwrap();
+        env.fga
+            .write_tuple(&bob.subject(), Relation::Editor, &obj)
+            .await
+            .unwrap();
+        let rec = env
+            .data
+            .create_record(
+                &carol,
+                t.id,
+                json!({ "title": "carol の出張", "approver": "bob" }),
+                None,
+            )
+            .await
+            .unwrap();
+        let back = fsms
+            .transition(&bob, t.id, rec.id, "差し戻し", rec.rev, None)
+            .await
+            .unwrap();
+        let ir = json!({
+            "ir_version": 1, "name": "resubmit",
+            "declared_scopes": ["data.read", "data.write"],
+            "input_schema": { "type": "object", "properties": { "record": { "type": "string" } } },
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "fix", "type": "data.record.update", "params": {
+                    "table": t.id.to_string(),
+                    "record": { "$from": "input", "path": "/record" },
+                    "patch": { "title": "carol の出張（直した）" } } },
+                { "id": "resubmit", "type": "data.transition", "params": {
+                    "table": t.id.to_string(),
+                    "record": { "$from": "input", "path": "/record" },
+                    "to": "申請中" } }
+            ],
+            "edges": [ { "from": "fix", "to": "resubmit" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .unwrap();
+        env.fga
+            .write_tuple(
+                &carol.subject(),
+                Relation::Viewer,
+                &alice.ns().artifact(&wf.to_string()),
+            )
+            .await
+            .unwrap();
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        let input = json!({ "record": rec.id.to_string() });
+        let run = env
+            .launcher
+            .start_interactive(&carol, wf, &input)
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let fixed = env.data.get_record(&bob, t.id, rec.id, None).await.unwrap();
+        assert_eq!(
+            env.runs.run_status(&tenant, run).await.unwrap(),
+            Some(RunStatus::Succeeded),
+            "{:?}",
+            env.step(&tenant, run, "fix").await
+        );
+        assert_eq!(fixed.data["title"], "carol の出張（直した）");
+        assert_eq!(fixed.data["status"], "申請中");
+        assert!(fixed.rev > back.rev);
+        // 承認の後に同じワークフローを実行すると、書き換え（作成者に許した状態ではない）で断る。
+        fsms.transition(&bob, t.id, rec.id, "承認", fixed.rev, None)
+            .await
+            .unwrap();
+        let again = env
+            .launcher
+            .start_interactive(&carol, wf, &input)
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        assert_eq!(
+            env.runs.run_status(&tenant, again).await.unwrap(),
+            Some(RunStatus::Failed)
+        );
+        let (status, _, error) = env.step(&tenant, again, "fix").await;
+        assert_eq!(status, "failed", "{error:?}");
+        assert_eq!(
+            error.as_ref().and_then(|e| e["code"].as_str()),
+            Some("forbidden"),
+            "{error:?}"
+        );
+        let kept = env.data.get_record(&bob, t.id, rec.id, None).await.unwrap();
+        assert_eq!(kept.data["status"], "承認");
+    };
+    // 落ちても片付けてから結果を返す。
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// GAP-16: スケジュールで動く「足す数」と「レコードを追加か更新」は、いまの値を書込を委譲した人の見え方で読む。
+///
+/// 書込を委譲した bob は在庫の列を読める（経理）。後から読取だけを委譲した carol は在庫の列を読めない（置き換える前の
+/// 台帳・R3-2 と同じ組み）。読取の口は最新の読取の委譲元（carol）で読むので、それで足すと在庫を 0 から足して
+/// 上書きしてしまう。書き込む人（bob）の見え方で読んで足すので、40 → 41 → 42 になる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_adds_read_the_current_value_as_the_write_delegator() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let (alice, bob, carol) = (
+        user(&tenant, "alice"),
+        user(&tenant, "bob"),
+        user(&tenant, "carol"),
+    );
+    let body = async {
+        let mut sku = data::FieldDef::new("sku", FieldType::Text);
+        sku.unique = true;
+        let stock = data::FieldDef::new("stock", FieldType::Number);
+        let mut schema = plain_schema(vec![sku, stock]);
+        schema.field_policy = vec![data::FieldPolicy {
+            field: "stock".into(),
+            readable_by: PolicyExpr::HasRole {
+                role: "keiri".into(),
+                subtree: true,
+            },
+        }];
+        let table = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "items".into(),
+                    schema,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let ns = alice.ns();
+        let table_obj = ns.data_table(&table.id.to_string());
+        for (who, rel) in [(&bob, Relation::Editor), (&carol, Relation::Viewer)] {
+            env.fga
+                .write_tuple(&who.subject(), rel, &table_obj)
+                .await
+                .unwrap();
+        }
+        // 読めない列へは書けない（PIT-19）ので、在庫を入れる alice も経理にする。
+        for who in [&alice, &bob] {
+            env.fga
+                .write_tuple(&who.subject(), Relation::Member, &ns.role("keiri"))
+                .await
+                .unwrap();
+        }
+        let rec = env
+            .data
+            .create_record(&alice, table.id, json!({ "sku": "A-1", "stock": 40 }), None)
+            .await
+            .unwrap();
+        let t = table.id.to_string();
+        let ir = json!({
+            "ir_version": 1, "name": "restock",
+            "declared_scopes": ["data.read", "data.write"],
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+            "nodes": [
+                { "id": "add", "type": "data.record.update", "params": {
+                    "table": t, "record": rec.id.to_string(), "add": { "stock": 1 } } },
+                { "id": "up", "type": "data.record.upsert", "params": {
+                    "table": t, "match_on": "sku", "data": { "sku": "A-1" }, "add": { "stock": 1 } } }
+            ],
+            "edges": [ { "from": "add", "to": "up" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .unwrap();
+        let parsed = WorkflowIr::from_json(&ir).unwrap();
+        env.registration
+            .enable(
+                &bob,
+                wf,
+                1,
+                &parsed,
+                &[GrantRequest {
+                    scope: "data.write".into(),
+                    object: table_obj.clone(),
+                    relation: Relation::Editor,
+                }],
+            )
+            .await
+            .expect("bob の有効化");
+        env.registration
+            .enable(
+                &carol,
+                wf,
+                1,
+                &parsed,
+                &[GrantRequest {
+                    scope: "data.read".into(),
+                    object: table_obj.clone(),
+                    relation: Relation::Viewer,
+                }],
+            )
+            .await
+            .expect("carol の再有効化");
+        env.legacy_delegation(
+            &tenant,
+            wf,
+            "bob",
+            "data.write",
+            &table_obj,
+            Relation::Editor,
+        )
+        .await;
+
+        let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
+        for node in ["add", "up"] {
+            let (status, _, err) = env.step(&tenant, run, node).await;
+            assert_eq!(status, "succeeded", "{node}: {err:?}");
+        }
+        let (_, out, _) = env.step(&tenant, run, "up").await;
+        assert_eq!(out.unwrap()["created"], false);
+        let now = env
+            .data
+            .get_record(&alice, table.id, rec.id, None)
+            .await
+            .unwrap();
+        assert_eq!(now.data["stock"], 42, "書き込む人の見え方の 40 に足す");
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// GAP-15: スケジュールの run は、予定の時刻を実行情報の予定の日時（`$from run` の `scheduled_at`）として持ち、
+/// 「日付を計算」は基準を省くとそこから数える。入力ときっかけの内容は今までどおり null。本番のスケジューラ →
+/// 起動口 → run の行 → ワーカーの順に通す（発火の記録の run_id は run を作った後に書くので、ワーカーが最初の
+/// step を取る時点でも予定の時刻が読めることを、run の行に書いた値で確かめる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_runs_count_dates_from_the_scheduled_time() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let ir = json!({
+            "ir_version": 1, "name": "weekly-dates",
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "Asia/Tokyo" } ],
+            "nodes": [
+                { "id": "today", "type": "transform.date", "params": {} },
+                { "id": "last_week", "type": "transform.date", "params": {
+                    "shift": { "amount": -1, "unit": "week" }, "period": "week" } },
+                { "id": "seen", "type": "script.run", "params": {
+                    "source": { "inline": "function main(input) { return input; }" },
+                    "input": { "run": { "$from": "run" },
+                               "input": { "$from": "input" },
+                               "trigger": { "$from": "trigger" } } } }
+            ],
+            "edges": [ { "from": "today", "to": "last_week" }, { "from": "last_week", "to": "seen" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("保存（日付を計算はスコープが要らない）");
+        let parsed = WorkflowIr::from_json(&ir).unwrap();
+        env.registration
+            .enable(&alice, wf, 1, &parsed, &[])
+            .await
+            .expect("有効化");
+
+        let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
+        let (planned, started, input): (chrono::DateTime<Utc>, chrono::DateTime<Utc>, Value) =
+            sqlx::query_as(
+                "SELECT o.scheduled_at, r.started_at, r.input FROM schedule_occurrence o \
+                 JOIN workflow_run r ON r.tenant_id = o.tenant_id AND r.run_id = o.run_id \
+                 WHERE o.tenant_id = $1 AND o.run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            input,
+            Value::Null,
+            "スケジュールの run の入力は null のまま"
+        );
+        // 予定の時刻は、tick に渡した先の時刻までの分の境目（実行を始めた時刻より後）。
+        assert!(planned > started, "予定 {planned} / 始めた {started}");
+        // 日本時間（夏時間が無いので +09:00 の固定の時差と同じ）。
+        let jst = |t: chrono::DateTime<Utc>| {
+            t.with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
+        };
+
+        for node in ["today", "last_week", "seen"] {
+            let (status, _, err) = env.step(&tenant, run, node).await;
+            assert_eq!(status, "succeeded", "{node}: {err:?}");
+        }
+        let (_, seen, _) = env.step(&tenant, run, "seen").await;
+        let seen = seen.unwrap();
+        assert_eq!(
+            seen["run"]["scheduled_at"],
+            jst(planned).to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+            "予定の日時はスケジュールの予定の時刻（日本時間）: {seen}"
+        );
+        assert_ne!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+        assert_eq!(seen["input"], Value::Null);
+        assert_eq!(seen["trigger"], Value::Null);
+
+        let (_, today, _) = env.step(&tenant, run, "today").await;
+        let today = today.unwrap();
+        let planned_day = jst(planned).date_naive();
+        assert_eq!(today["date"], planned_day.format("%Y-%m-%d").to_string());
+        let (_, last_week, _) = env.step(&tenant, run, "last_week").await;
+        let last_week = last_week.unwrap();
+        let monday = planned_day
+            - chrono::Duration::days(i64::from(
+                chrono::Datelike::weekday(&planned_day).num_days_from_monday(),
+            ))
+            - chrono::Duration::days(7);
+        assert_eq!(last_week["start"], monday.format("%Y-%m-%d").to_string());
+        assert_eq!(
+            last_week["end"],
+            (monday + chrono::Duration::days(6))
+                .format("%Y-%m-%d")
+                .to_string()
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for table in ["schedule_occurrence", "workflow_registration"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// GAP-90・GAP-88: 「別のワークフローを実行」で始めた子の run は、始めた run の予定の日時を引き継ぐ。スケジュールの
+/// run から始めた子はその回の予定の時刻、予定の日時を指定して手動で試した run から始めた子はその日時で、子の「日付を
+/// 計算」も同じ日を数える。予定の日時の無い run（ふつうの手動の実行）から始めた子は引き継がない（子が始めた日時）。
+/// 本番のスケジューラ → 起動口 → workflow.start の口（`ProdNodePorts::workflow_start` → `start_child`）→ ワーカーの
+/// 順に通す。実行履歴の読み口は、由来を schedule・specified・parent と言い分ける。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn child_runs_inherit_the_parents_scheduled_time() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let child_ir = json!({
+            "ir_version": 1, "name": "child-dates",
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "today", "type": "transform.date", "params": {} },
+                { "id": "seen", "type": "script.run", "params": {
+                    "source": { "inline": "function main(input) { return input; }" },
+                    "input": { "run": { "$from": "run" } } } }
+            ],
+            "edges": [ { "from": "today", "to": "seen" } ]
+        });
+        let (child, _) = env
+            .workflows
+            .create(&alice, &child_ir, &Catalog::default(), None)
+            .await
+            .expect("子の保存");
+        let parent_ir = json!({
+            "ir_version": 1, "name": "parent-dates",
+            "declared_scopes": ["workflow.start"],
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "Asia/Tokyo" } ],
+            "nodes": [ { "id": "start", "type": "workflow.start", "params": { "name": "child-dates" } } ],
+            "edges": []
+        });
+        let (parent, _) = env
+            .workflows
+            .create(&alice, &parent_ir, &Catalog::default(), None)
+            .await
+            .expect("親の保存");
+        let parsed = WorkflowIr::from_json(&parent_ir).unwrap();
+        // 自動実行では、子を見る権限を有効化で委譲する（有効化の確認が勧める形・workflow.start の viewer）。
+        let grants = [GrantRequest {
+            scope: "workflow.start".into(),
+            object: alice.ns().artifact(&child.to_string()),
+            relation: Relation::Viewer,
+        }];
+        env.registration
+            .enable(&alice, parent, 1, &parsed, &grants)
+            .await
+            .expect("有効化");
+        let jst = |t: chrono::DateTime<Utc>| {
+            t.with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+        };
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        // 子の run（親ごとに 1 つ）の予定の日時と、子の「日付を計算」と実行情報の結果。
+        let child_of = |parent_run: Uuid| {
+            let env = &env;
+            let tenant = tenant.clone();
+            async move {
+                let (run, at): (Uuid, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+                    "SELECT run_id, scheduled_at FROM workflow_run \
+                     WHERE tenant_id = $1 AND cause_run_id = $2",
+                )
+                .bind(&tenant)
+                .bind(parent_run)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+                for node in ["today", "seen"] {
+                    let (status, _, err) = env.step(&tenant, run, node).await;
+                    assert_eq!(status, "succeeded", "{node}: {err:?}");
+                }
+                let (_, today, _) = env.step(&tenant, run, "today").await;
+                let (_, seen, _) = env.step(&tenant, run, "seen").await;
+                (run, at, today.unwrap(), seen.unwrap())
+            }
+        };
+        let scheduled_of = |run: Uuid| {
+            let env = &env;
+            let tenant = tenant.clone();
+            async move {
+                let at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+                    "SELECT scheduled_at FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+                )
+                .bind(&tenant)
+                .bind(run)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+                at
+            }
+        };
+
+        // --- スケジュールの run から始めた子は、その回の予定の時刻を引き継ぐ。
+        let scheduled_parent = env.fire_schedule_and_run(&tenant, parent, 61).await;
+        let (status, _, err) = env.step(&tenant, scheduled_parent, "start").await;
+        assert_eq!(status, "succeeded", "workflow.start: {err:?}");
+        let planned = scheduled_of(scheduled_parent).await.expect("予定の時刻");
+        let (scheduled_child, at, today, seen) = child_of(scheduled_parent).await;
+        assert_eq!(at, Some(planned), "子の行に親の予定の時刻を書く");
+        assert_eq!(seen["run"]["scheduled_at"], jst(planned), "{seen}");
+        assert_ne!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+        assert_eq!(today["date"], &jst(planned)[..10], "{today}");
+
+        // --- 予定の日時を指定して手動で試した run から始めた子は、その日時を引き継ぐ。
+        let trial_at = chrono::DateTime::parse_from_rfc3339("2026-11-09T09:00:00+09:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let trial_parent = env
+            .launcher
+            .start_interactive_trial(
+                &alice,
+                parent,
+                &json!({}),
+                workflow_engine::RunTrial {
+                    scheduled_at: Some(trial_at),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("手動で試す")
+            .expect("run を作る");
+        // --- 予定の日時の無い run から始めた子は引き継がない。
+        let plain_parent = env
+            .launcher
+            .start_interactive(&alice, parent, &json!({}))
+            .await
+            .expect("手動の実行")
+            .expect("run を作る");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let (trial_child, at, today, seen) = child_of(trial_parent).await;
+        assert_eq!(at, Some(trial_at));
+        assert_eq!(seen["run"]["scheduled_at"], "2026-11-09T09:00:00+09:00");
+        assert_eq!(today["date"], "2026-11-09");
+        let (plain_child, at, _, seen) = child_of(plain_parent).await;
+        assert_eq!(at, None, "予定の日時の無い親からは引き継がない");
+        assert_eq!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+
+        // --- 実行履歴の読み口は、予定の日時と由来を返す（一覧と詳細で同じ）。
+        let parents = env
+            .runs
+            .list_runs(
+                &tenant,
+                parent,
+                &workflow_engine::RunListFilter::default(),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        let from_of = |items: &[workflow_engine::RunListItem], run: Uuid| {
+            let item = items.iter().find(|i| i.run_id == run).expect("一覧に出る");
+            (item.scheduled_at, item.scheduled_from.clone())
+        };
+        assert_eq!(
+            from_of(&parents, scheduled_parent),
+            (Some(planned), Some("schedule".into()))
+        );
+        assert_eq!(
+            from_of(&parents, trial_parent),
+            (Some(trial_at), Some("specified".into()))
+        );
+        assert_eq!(from_of(&parents, plain_parent), (None, None));
+        let children = env
+            .runs
+            .list_runs(
+                &tenant,
+                child,
+                &workflow_engine::RunListFilter::default(),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            from_of(&children, scheduled_child),
+            (Some(planned), Some("parent".into()))
+        );
+        assert_eq!(
+            from_of(&children, trial_child),
+            (Some(trial_at), Some("parent".into()))
+        );
+        assert_eq!(from_of(&children, plain_child), (None, None));
+        let detail = env
+            .runs
+            .run_detail(&tenant, child, scheduled_child)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (detail.scheduled_at, detail.scheduled_from.as_deref()),
+            (Some(planned), Some("parent"))
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for table in [
+        "schedule_occurrence",
+        "workflow_registration",
+        "workflow_delegation",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
 }

@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use crate::tuple_commit::run_to_end;
 
 /// 共有先 subject の検証。subject 識別子（`user:<tenant>|<id>` / `role:<tenant>|<id>#member`）を
 /// 壊す/曖昧化する id を弾く。文字ポリシーの正本は [`authz::validate_local_id`]
@@ -27,6 +28,79 @@ fn validate_share_target(target: &ShareTarget) -> Result<(), StorageError> {
     authz::validate_local_id(id)
         .map_err(|violation| StorageError::Invalid(format!("共有先 id が不正です: {violation}")))?;
     Ok(())
+}
+
+/// 共有の付け外しのどちらか。
+#[derive(Debug, Clone, Copy)]
+enum ShareChange {
+    Grant,
+    Revoke,
+}
+
+impl ShareChange {
+    fn action(self) -> AuditAction {
+        match self {
+            ShareChange::Grant => AuditAction::NodeShare,
+            ShareChange::Revoke => AuditAction::NodeUnshare,
+        }
+    }
+}
+
+/// 共有の付け外しの監査に残す中身（別のタスクへ渡すので借りずに持つ）。
+struct ShareAudit {
+    node_id: Uuid,
+    obj: FgaObject,
+    target: ShareTarget,
+    role: ShareRole,
+    trace_id: Option<String>,
+}
+
+impl ShareAudit {
+    fn new(
+        node_id: Uuid,
+        obj: FgaObject,
+        target: &ShareTarget,
+        role: ShareRole,
+        trace_id: Option<&str>,
+    ) -> Self {
+        ShareAudit {
+            node_id,
+            obj,
+            target: target.clone(),
+            role,
+            trace_id: trace_id.map(str::to_owned),
+        }
+    }
+
+    /// 共有/解除の監査を**ハッシュチェーンに連結**して記録する（権限変更は改竄検知対象）。
+    async fn record(
+        &self,
+        recorder: &AuditRecorder,
+        ctx: &AuthContext,
+        action: AuditAction,
+    ) -> Result<(), StorageError> {
+        let object_type = if self.obj.as_str().starts_with("folder:") {
+            "folder"
+        } else {
+            "file"
+        };
+        recorder
+            .record_chained(
+                ctx,
+                AuditEntry {
+                    action,
+                    object_type,
+                    object_id: &self.node_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id: self.trace_id.as_deref(),
+                    metadata: json!({
+                        "target": self.target,
+                        "role": self.role,
+                    }),
+                },
+            )
+            .await
+    }
 }
 
 impl StorageService {
@@ -51,33 +125,12 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, AuditAction::NodeShare, trace_id)
             .await?;
-        // 付与は冪等。granted=true なら実際に新規付与した。
-        let granted = self
-            .authz
-            .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await?;
-        if let Err(e) = self
-            .record_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeShare,
-                target,
-                role,
-                trace_id,
-            )
-            .await
-        {
-            // 実際に付与した時だけ巻き戻す（no-op を剥奪して既存共有を壊さない）。
-            if granted {
-                let _ = self
-                    .authz
-                    .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
-            }
-            return Err(e);
-        }
-        Ok(())
+        self.change_share(
+            ctx,
+            ShareChange::Grant,
+            ShareAudit::new(node_id, obj, target, role, trace_id),
+        )
+        .await
     }
 
     /// 共有を解除する（owner 権限・冪等）。
@@ -97,33 +150,51 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, AuditAction::NodeUnshare, trace_id)
             .await?;
-        // 剥奪は冪等。revoked=true なら実際に剥奪した。
-        let revoked = self
-            .authz
-            .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await?;
-        if let Err(e) = self
-            .record_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeUnshare,
-                target,
-                role,
-                trace_id,
-            )
-            .await
-        {
-            // 実際に剥奪した時だけ巻き戻す（no-op を付与して権限昇格を起こさない）。
-            if revoked {
-                let _ = self
-                    .authz
-                    .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
+        self.change_share(
+            ctx,
+            ShareChange::Revoke,
+            ShareAudit::new(node_id, obj, target, role, trace_id),
+        )
+        .await
+    }
+
+    /// 共有の付け外しの FGA の区間（タプルの付け外し → 監査 → 監査の失敗で戻す）を、別のタスクで最後まで
+    /// 走らせる（BUG-134）。
+    ///
+    /// 区間の途中で呼ぶ側のフューチャが捨てられる（HTTP の切断・チャットの中止）と、監査の無い共有の付与・
+    /// 解除が残る（NFR-6）。タスクにしても補償の決まりは変えない: 監査に失敗したら、実際に変えたとき
+    /// （付与は `write_tuple`・解除は `delete_tuple` が `true`）だけ戻す。タプルの付け外しの誤りはそのまま返す。
+    async fn change_share(
+        &self,
+        ctx: &AuthContext,
+        change: ShareChange,
+        audit: ShareAudit,
+    ) -> Result<(), StorageError> {
+        let authz = self.authz.clone();
+        let recorder = self.audit.clone();
+        let ctx = ctx.clone();
+        let subject = audit.target.subject(&ctx.ns());
+        let relation = audit.role.relation();
+        run_to_end(async move {
+            let obj = &audit.obj;
+            // 付け外しは冪等。changed=true なら実際に変えた。
+            let changed = match change {
+                ShareChange::Grant => authz.write_tuple(&subject, relation, obj).await?,
+                ShareChange::Revoke => authz.delete_tuple(&subject, relation, obj).await?,
+            };
+            if let Err(e) = audit.record(&recorder, &ctx, change.action()).await {
+                // 実際に変えた時だけ戻す（no-op を巻き戻して既存共有を壊す・権限昇格を起こすのを防ぐ）。
+                if changed {
+                    let _ = match change {
+                        ShareChange::Grant => authz.delete_tuple(&subject, relation, obj).await,
+                        ShareChange::Revoke => authz.write_tuple(&subject, relation, obj).await,
+                    };
+                }
+                return Err(e);
             }
-            return Err(e);
-        }
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     /// このノードの共有相手一覧を返す（owner 権限）。
@@ -177,97 +248,6 @@ impl StorageService {
             .collect())
     }
 
-    /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ）。
-    ///
-    /// OpenFGA の `list-objects`（viewer 実効集合・継承込み）で id を引き、DB で生存ノードの
-    /// メタへ keyset `(updated_at, id)` 降順で 1 ページ解決する。作成者本人のノード（≒owner）は
-    /// 「共有された」一覧から除く。全件取得はせず `next_cursor` で無限スクロールする。
-    pub async fn list_shared_with_me(
-        &self,
-        ctx: &AuthContext,
-        cursor: Option<&str>,
-        limit: usize,
-        trace_id: Option<&str>,
-    ) -> Result<ChildPage, StorageError> {
-        let limit = limit.clamp(1, 100);
-        let subject = ctx.subject();
-        let mut ids: Vec<Uuid> = Vec::new();
-        for object_type in [ObjectType::File, ObjectType::Folder] {
-            let objs = self
-                .authz
-                .list_objects(&subject, Relation::Viewer, object_type)
-                .await?;
-            for o in objs {
-                // "file:<tenant>|<uuid>" / "folder:<tenant>|<uuid>" から自テナントの id 部を取り出す。
-                // strip_object_id が tenant 不一致を弾くため、共用ストアでも越境オブジェクトは混入しない
-                // （FGA 側の名前空間化に加え、DB 側 org+tenant フィルタと二重防御）。
-                let Some((_, id_part)) = o.split_once(':') else {
-                    continue;
-                };
-                if let Some(local) = ctx.ns().strip_object_id(id_part) {
-                    if let Ok(uuid) = Uuid::parse_str(local) {
-                        ids.push(uuid);
-                    }
-                }
-            }
-        }
-        if ids.is_empty() {
-            return Ok(ChildPage {
-                items: Vec::new(),
-                next_cursor: None,
-            });
-        }
-        let (after_ts, after_id) = match cursor {
-            Some(c) => {
-                let (ts, id) = decode_ts_cursor(c)?;
-                (Some(ts), Some(id))
-            }
-            None => (None, None),
-        };
-        // FGA の viewer 集合（id）を DB メタへ keyset ページングで解決する。
-        let sql = format!(
-            "SELECT {NODE_COLS} FROM node \
-             WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 \
-               AND deleted_at IS NULL AND created_by <> $4 \
-               AND ($5::text IS NULL OR (updated_at, id) < ($5::timestamptz, $6)) \
-             ORDER BY updated_at DESC, id DESC LIMIT $7"
-        );
-        let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-            .bind(&ids)
-            .bind(ctx.org())
-            .bind(ctx.tenant_id())
-            .bind(&ctx.principal().id)
-            .bind(after_ts.as_deref())
-            .bind(after_id)
-            .bind(limit as i64)
-            .fetch_all(&self.db)
-            .await?;
-        let next_cursor = if rows.len() == limit {
-            rows.last()
-                .map(|r| encode_ts_cursor(&r.updated_at.to_rfc3339(), r.id))
-        } else {
-            None
-        };
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::NodeSharedWithMeList,
-                    object_type: "organization",
-                    object_id: ctx.org(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "count": rows.len() }),
-                },
-            )
-            .await?;
-        let items = rows
-            .into_iter()
-            .map(row_to_node)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ChildPage { items, next_cursor })
-    }
-
     /// 共有管理（share/unshare/list）の前段: ノードの存在確認＋owner 認可。FGA object を返す。
     /// 一般アクセス（#338）の set/clear/get も同じ owner ゲートを再利用する（confused-deputy 防御）。
     pub(crate) async fn authorize_share_admin(
@@ -290,45 +270,6 @@ impl StorageService {
         )
         .await?;
         Ok(obj)
-    }
-
-    /// 共有/解除の監査を**ハッシュチェーンに連結**して記録する（権限変更は改竄検知対象）。
-    #[allow(clippy::too_many_arguments)] // 監査記録に必要なフィールド一式。
-    async fn record_share_audit(
-        &self,
-        ctx: &AuthContext,
-        node_id: Uuid,
-        obj: &FgaObject,
-        action: AuditAction,
-        target: &ShareTarget,
-        role: ShareRole,
-        trace_id: Option<&str>,
-    ) -> Result<(), StorageError> {
-        let object_type = if obj.as_str().starts_with("folder:") {
-            "folder"
-        } else {
-            "file"
-        };
-        let mut tx = self.db.begin().await?;
-        audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action,
-                object_type,
-                object_id: &node_id.to_string(),
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({
-                    "target": target,
-                    "role": role,
-                }),
-            },
-            Chain::Yes,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     // --- テナント・プロビジョニング/撤去（SAAS.2 / #87・admin プレーン） ---

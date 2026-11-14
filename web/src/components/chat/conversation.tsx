@@ -28,6 +28,7 @@ import {
   notifyThreadsChanged,
   resumeMessage,
   setAutonomousMode,
+  getChatUiRun,
   streamMessage,
   submitApproval,
   subscribeThreadsChanged,
@@ -41,6 +42,7 @@ import {
   type Message as ChatMessageT,
   type PlanSubtask,
   type RunStatus,
+  type StopReason,
   type StreamHandlers,
   type UiActionRun,
 } from "@/lib/chat-api";
@@ -63,8 +65,8 @@ import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
 import {
-  hasOpenRuns,
   hasYuiBlock,
+  useRunsRefresh,
   YuiActionContext,
   type YuiActionHost,
 } from "@/components/prompt-kit/yui-actions";
@@ -98,6 +100,7 @@ import {
 import { Composer } from "./composer";
 import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
+import { BuilderRefCard, parseBuilderRef } from "./builder-ref-card";
 import { BugReportActionContext, HelpResolutionCard, BugReportDraftCard } from "./bug-report-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
@@ -133,6 +136,7 @@ import {
   type TaskActivity,
 } from "./task-panel";
 import { ApprovalAnnouncer, ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
+import { StopReasonNote } from "./stop-reason-note";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
 import { useMarkThreadViewing } from "@/lib/thread-viewing";
@@ -165,6 +169,8 @@ type StreamState = {
   skillDrafts: unknown[];
   /// AI が作成/編集した文書の参照（#381・save_document / save_sheet / 各編集ツール）。
   documentRefs: unknown[];
+  /// AI が作った・直したテーブル・ビュー・アプリ・ワークフローの参照（D-204・builder_ref）。
+  builderRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
   plan: PlanSubtask[];
   /// ツール呼び出し（この出現のキー）→ 呼び出した時点で進行中だったサブタスク id（タスクパネルの詳細）。
@@ -221,6 +227,7 @@ const EMPTY_STREAM: StreamState = {
   csvDrafts: [],
   skillDrafts: [],
   documentRefs: [],
+  builderRefs: [],
   plan: [],
   taskTools: {},
   approval: null,
@@ -482,15 +489,19 @@ export function Conversation({
   // 戻った直後の送り直しを待つ間にストリームが終わったら（完了・停止・エラー）、待ちを先に終える
   // （畳みと位置の復元をタイマーまで遅らせない）。関数は下で定義するので写しで呼ぶ。
   const finishRestoreRef = React.useRef<() => void>(() => {});
-  const flushStream = React.useCallback((provisional: "reloading" | "stopped") => {
-    finishRestoreRef.current();
-    const s = streamRef.current;
-    if (s) finalizeStream(s, setMessages, provisional);
-    if (s) settleTasks(s, provisional === "stopped" || runInterruptedRef.current);
-    runInterruptedRef.current = false;
-    streamRef.current = null;
-    setStream(null);
-  }, []);
+  // `stopReason` は done で届いた、回答が途中で止まった理由（回答の下に注記を出す・GAP-106）。
+  const flushStream = React.useCallback(
+    (provisional: "reloading" | "stopped", stopReason: StopReason | null = null) => {
+      finishRestoreRef.current();
+      const s = streamRef.current;
+      if (s) finalizeStream(s, setMessages, provisional, stopReason);
+      if (s) settleTasks(s, provisional === "stopped" || runInterruptedRef.current);
+      runInterruptedRef.current = false;
+      streamRef.current = null;
+      setStream(null);
+    },
+    [],
+  );
 
   // 実行中の会話へ戻った直後の送り直しが届き終わった: ここまでの操作を畳み、いまの手順から見せる。
   const restoreTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -563,8 +574,8 @@ export function Conversation({
           };
         }),
       // 成否と観測テキストを保持する（失敗を成功と同じ見た目にしない・#358/#386）。
-      // **同じ id が複数ステップで再利用され得る**（stub の `loop:` は毎ステップ
-      // `stubtool_1` を出す）。全件更新すると過去行の成否まで上書きされるため、
+      // **同じ id が複数ステップで再利用され得る**（プロバイダが id を使い回す場合。
+      // stub は呼び出しごとに一意の id を出す）。全件更新すると過去行の成否まで上書きされるため、
       // 同一 id の中で**まだ実行中の最初の 1 件**にだけ結果を対応付ける。
       onToolResult: (res) =>
         updateStream((s) => {
@@ -621,6 +632,8 @@ export function Conversation({
       onReportRef: (block) => updateStream((s) => s ? { ...s, reportRefs: [...s.reportRefs, block] } : s),
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
+      onBuilderRef: (item) =>
+        updateStream((s) => (s ? { ...s, builderRefs: [...s.builderRefs, item] } : s)),
       onTranslation: (raw) =>
         updateStream((s) => (s ? { ...s, translations: [...s.translations, raw] } : s)),
       onNoteDraft: (raw) => {
@@ -728,11 +741,11 @@ export function Conversation({
         if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
         runInterruptedRef.current = status === "cancelled" || status === "failed";
       },
-      onDone: () => {
+      onDone: (stopReason) => {
         // 本文の ```ui の図を含む応答はサーバ確定の message id が要る（ボタンの照合先・
         // 束縛はサーバーが回答の確定時に解決する・#604）ため、ローカル確定ではなく再読込で置き換える。
         const hadUi = hasYuiBlock(streamRef.current?.text ?? "");
-        flushStream("reloading");
+        flushStream("reloading", stopReason);
         cancelRef.current = null;
         notifyThreadsChanged();
         // 順番待ちがあるなら読み直す: サーバは次の run を「いま映すべき run」として返すので、
@@ -1051,8 +1064,12 @@ export function Conversation({
         // 経路の本当の末尾（空の回答も含む）。順番待ちがあれば、その末尾が表示中の枝の葉。
         leafRef.current = msgs.at(-1)?.id ?? null;
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
-        // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
-        const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));
+        // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。ただし途中で
+        // 止まった理由のある回答（出力の上限で本文の前に切れた等・GAP-106）は注記を出すので残す
+        // （理由は確定のときにだけ付くので、プレースホルダには付かない）。
+        const shown = msgs.filter(
+          (m) => !(m.role === "assistant" && isEmptyContent(m.content) && !m.stopReason),
+        );
         // 順番待ちの発話はストリーム行の下へ回す（会話の並びとして「AI が答えている最中に
         // 積んだ次の発話」が後ろに来るのが自然）。
         const queuedRunOf = new Map(queuedRuns.map((q) => [q.userMessageId, q.runId]));
@@ -1243,6 +1260,7 @@ export function Conversation({
                       boundActions={m.boundActions}
                       uiRuns={m.uiRuns}
                       provisional={m.provisional}
+                      stopReason={m.stopReason}
                       onUiAction={reload}
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
@@ -1446,6 +1464,7 @@ function finalizeStream(
   s: StreamState,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessageT[]>>,
   provisional: NonNullable<ChatMessageT["provisional"]>,
+  stopReason: StopReason | null,
 ) {
   const blocks: ContentBlock[] = [];
   // 本文・思考・ツールは起きた順に残す（サーバの projection と同じ並び）。生成中と同じ配置で
@@ -1485,7 +1504,13 @@ function finalizeStream(
   for (const draft of s.skillDrafts) blocks.push({ type: "skill_draft", draft });
   // AI が作成/編集した文書への参照カード（#381）。
   for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
-  if (blocks.length === 0) return;
+  // 作ったテーブル・ビュー・アプリ・ワークフローへの参照カード（D-204）。形の崩れたものは残さない。
+  for (const raw of s.builderRefs) {
+    const item = parseBuilderRef(raw);
+    if (item) blocks.push({ type: "builder_ref", item });
+  }
+  // 本文が無くても、途中で止まった理由があれば注記だけの行を残す（黙って消えた回答にしない・GAP-106）。
+  if (blocks.length === 0 && !stopReason) return;
   setMessages((prev) => [
     ...prev,
     {
@@ -1493,6 +1518,7 @@ function finalizeStream(
       role: "assistant",
       content: blocks,
       provisional,
+      stopReason,
       createdAt: new Date().toISOString(),
       serverId: s.assistantMessageId ?? undefined,
     },
@@ -1734,6 +1760,7 @@ const AssistantRow = React.memo(function AssistantRow({
   boundActions,
   uiRuns,
   provisional,
+  stopReason = null,
   onUiAction,
   onSaveAsApp,
   latest = false,
@@ -1753,6 +1780,8 @@ const AssistantRow = React.memo(function AssistantRow({
   uiRuns?: readonly UiActionRun[];
   /// 生成直後の仮のメッセージ（読み直すまで図のボタンは押せない）。
   provisional?: ChatMessageT["provisional"];
+  /// 回答が途中で止まった理由（回答の下に注記を出す・GAP-106）。
+  stopReason?: StopReason | null;
   onUiAction: () => void;
   /// 図を「アプリとして保存」するダイアログを開く。
   onSaveAsApp: (target: SaveAsAppTarget) => void;
@@ -1778,17 +1807,15 @@ const AssistantRow = React.memo(function AssistantRow({
       uiRuns: uiRuns ?? [],
       unsaved: provisional,
       onChanged,
+      // 結果が付いていない古い記録は、開いたときに 1 件だけ読む（押した本人の分だけ返る・GAP-09）。
+      loadRun: (runId) => getChatUiRun(threadId, runId),
       saveAsApp: (block, title) => onSaveAsApp({ threadId, messageId, block, title }),
     }),
     [threadId, messageId, boundActions, invokedActions, uiRuns, provisional, onChanged, onSaveAsApp],
   );
-  // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。
-  const openRuns = hasOpenRuns(uiRuns);
-  React.useEffect(() => {
-    if (!openRuns) return;
-    const t = window.setTimeout(onChanged, 4000);
-    return () => window.clearTimeout(t);
-  }, [openRuns, uiRuns, onChanged]);
+  // 図のボタンで起動したワークフローが終わるまで、会話を少しずつ読み直して状態を出す。待機中（承認など）
+  // だけなら間隔を空け、画面に戻ったときに読み直す（BUG-20）。
+  useRunsRefresh(uiRuns, onChanged, uiRuns, 4000);
   // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
   const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
   // 出典の画像は shiki-server 経由で読む（#1044）。サーバ上の回答 ID がまだ無い間は読まない。
@@ -1841,6 +1868,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const documentRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
   );
+  const builderRefs = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "builder_ref" }> => b.type === "builder_ref",
+  );
   // レガシー下書き（#381 で廃止）。過去スレッドを黙って空にしないため読み取り専用で残す。
   const legacyDocumentDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_draft" }> => b.type === "document_draft",
@@ -1850,7 +1880,10 @@ const AssistantRow = React.memo(function AssistantRow({
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
       <HelpCitationsProvider citations={helpCitations} text={text}>
       <Message className="group justify-start">
-        <div className="w-full min-w-0">
+        {/* 回答の行の状態（saved: 読み込んだ確定の行・reloading: 生成直後の仮の行で、読み直すと確定の行に置き換わる・
+            stopped: 止めた生成の仮の行）。図を含む回答は仮の行から確定の行へ置き換わり、図が描き直されて、開いていた表示や
+            カーソルの表示が消える。E2E は確定の行の図を操作する。 */}
+        <div className="w-full min-w-0" data-message-state={provisional ?? "saved"}>
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
               <MessageTimeline
@@ -1867,6 +1900,9 @@ const AssistantRow = React.memo(function AssistantRow({
           ))}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
+          ))}
+          {builderRefs.map((b, i) => (
+            <BuilderRefCard key={i} raw={b.item} />
           ))}
           {blocks.map((b, i) => b.type === "help_case_ref" ? <HelpResolutionCard key={`help-${i}`} threadId={threadId} caseId={b.case_id} /> : b.type === "bug_report_draft" ? <BugReportDraftCard key={`bug-${i}`} reportId={b.report_id} /> : null)}
           {noteRefs.map((b, i) => (
@@ -1892,6 +1928,8 @@ const AssistantRow = React.memo(function AssistantRow({
           <CitationSources />
           <HelpSources />
           {evidenceOpen ? <EvidenceTable /> : null}
+          {/* 途中で止まった回答は、本文と成果物の後ろ・操作の前に理由と続け方を添える（GAP-106）。 */}
+          <StopReasonNote reason={stopReason} />
           {text || translations.length > 0 ? (
             <MessageFooter text={text} pinned={latest}>
               <MessageExportMenu
@@ -2028,6 +2066,9 @@ function StreamingRow({
           ))}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
+          ))}
+          {stream.builderRefs.map((item, i) => (
+            <BuilderRefCard key={i} raw={item} />
           ))}
           {stream.noteDrafts.map((draft, i) => (
             <NoteDraftCard key={i} raw={draft} threadId={threadId} />

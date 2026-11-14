@@ -6,7 +6,8 @@
 //! - 認可（配置先 editor@folder / member@org、読み取りは viewer@file）を必ず通す。
 //! - content-addressing（sha256 キー・blob dedup・refcount＝node_version 行数）。
 //! - 監査・書込イベント（RAG 増分索引トリガ）を同一 txn で原子的に記録する。
-//! - FGA tuple は commit 前に書き、失敗時は revoke して DB/FGA の不整合を残さない。
+//! - FGA tuple は commit 前に書き、失敗時は revoke して DB/FGA の不整合を残さない（区間は別のタスクで
+//!   最後まで走る・[`crate::tuple_commit`]）。
 //!
 //! `service.rs`（親）が持つ struct/フィールド/自由関数を `use super::*` で参照する。
 
@@ -15,8 +16,12 @@
 use super::*;
 use crate::audit::AuditAction;
 
+use super::upload::{lock_parent_for_create, BlobBody};
 use crate::content_address::sha256_hex;
+use crate::naming::{numbered_name, OnNameTaken};
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 use serde_json::Value;
+use sqlx::Connection as _;
 
 /// 内部書込の結果（冪等版が dedup を区別するため）。
 enum WriteCoreOut {
@@ -24,9 +29,6 @@ enum WriteCoreOut {
     Written(Box<Node>),
     Deduped(Value),
 }
-
-/// 最大リネーム試行回数（`無題のノート (2).md` … を試す上限）。
-const MAX_NAME_ATTEMPTS: u32 = 50;
 
 /// 書込結果の要約（effect_journal / 次ノードへ渡す・**本文は含めない**）。
 fn write_summary(node: &Node) -> Value {
@@ -91,22 +93,22 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        match self
-            .write_file_core(ctx, parent_id, name, bytes, content_type, trace_id, None)
-            .await?
-        {
-            WriteCoreOut::Written(node) => Ok(*node),
-            // idem=None は決して dedup しない。
-            WriteCoreOut::Deduped(_) => Err(StorageError::Integrity(
-                "idem 無し書込が dedup を返した".into(),
-            )),
-        }
+        self.write_file_named(
+            ctx,
+            parent_id,
+            name,
+            bytes,
+            content_type,
+            OnNameTaken::Fail,
+            trace_id,
+        )
+        .await
     }
 
-    /// 同名衝突時に ` (2)` `(3)` … を付けてリトライする新規作成（Drive 風・上限あり・#381）。
+    /// 同名衝突時に ` (2)` `(3)` … を付けて保存する新規作成（Drive 風・上限あり・#381）。
     ///
     /// 「新規作成」の入口（`/notes`・`/slides`・`/documents`・AI の Office 作成ツール）が共有する
-    /// 振る舞い。呼び出し側で写すと連番規則が分岐するため、チョークポイント側に置く。
+    /// 振る舞い。番号の規則は [`numbered_name`]（ワークフローの「ファイルを保存」と同じ・D-112）。
     /// 上限まで空きが無ければ [`StorageError::Conflict`]（黙って上書きしない・fail-closed）。
     pub async fn write_file_unique_internal(
         &self,
@@ -117,28 +119,52 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        let (stem, ext) = file_name
-            .rsplit_once('.')
-            .map_or((file_name, ""), |(s, e)| (s, e));
-        for attempt in 1..=MAX_NAME_ATTEMPTS {
-            let candidate = if attempt == 1 {
-                file_name.to_string()
-            } else if ext.is_empty() {
-                format!("{stem} ({attempt})")
-            } else {
-                format!("{stem} ({attempt}).{ext}")
-            };
-            match self
-                .write_file_internal(ctx, parent_id, &candidate, bytes, content_type, trace_id)
-                .await
-            {
-                Ok(node) => return Ok(node),
-                // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
-                Err(StorageError::Conflict) => {}
-                Err(e) => return Err(e),
-            }
+        self.write_file_named(
+            ctx,
+            parent_id,
+            file_name,
+            bytes,
+            content_type,
+            OnNameTaken::AddNumber,
+            trace_id,
+        )
+        .await
+    }
+
+    /// 同じ名前のファイルがあるときの扱いを選んで新規作成する（冪等キーなし・D-112）。
+    ///
+    /// [`Self::write_file_internal`]（失敗にする）と [`Self::write_file_unique_internal`]（番号を付ける）の
+    /// 共通の本体。扱いを呼び出し側の入力で決める入口（CSV の新規保存など）が使う。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn write_file_named(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        bytes: &[u8],
+        content_type: &str,
+        on_taken: OnNameTaken,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        match self
+            .write_file_core(
+                ctx,
+                parent_id,
+                name,
+                bytes,
+                content_type,
+                on_taken,
+                trace_id,
+                None,
+            )
+            .await?
+        {
+            WriteCoreOut::Written(node) => Ok(*node),
+            // idem=None は決して dedup しない。
+            WriteCoreOut::Deduped(_) => Err(StorageError::Integrity(
+                "idem 無し書込が dedup を返した".into(),
+            )),
         }
-        Err(StorageError::Conflict)
     }
 
     /// バイト列を **冪等キー付きで** 保存する（チョークポイント側 in-TX effect_journal・PIT-31）。
@@ -147,6 +173,9 @@ impl StorageService {
     /// **高々 1 バージョン**にする（reserve→write→record→commit が原子的・crash は tx rollback で
     /// 予約ごと消える）。並行ワーカーは `INSERT ON CONFLICT` が相手 tx の commit を待つため、
     /// 後続は確定済みの結果要約を dedup で受け取る。返り値は書込結果の要約（本文は含まない）。
+    ///
+    /// 同じ名前のファイルがあるときは `on_taken` に従う。番号を付けるときも予約・記録は頼まれた書込 1 つで、
+    /// 空いている名前を同じ TX の中で探す（試し直しは記録済みの結果＝前に付けた名前を返す・D-112）。
     #[allow(clippy::too_many_arguments)]
     pub async fn write_file_internal_idempotent(
         &self,
@@ -155,6 +184,7 @@ impl StorageService {
         name: &str,
         bytes: &[u8],
         content_type: &str,
+        on_taken: OnNameTaken,
         idempotency_key: &str,
         op_digest: &str,
         trace_id: Option<&str>,
@@ -166,6 +196,7 @@ impl StorageService {
                 name,
                 bytes,
                 content_type,
+                on_taken,
                 trace_id,
                 Some((idempotency_key, op_digest)),
             )
@@ -226,6 +257,7 @@ impl StorageService {
         name: &str,
         bytes: &[u8],
         content_type: &str,
+        on_taken: OnNameTaken,
         trace_id: Option<&str>,
         idem: Option<(&str, &str)>,
     ) -> Result<WriteCoreOut, StorageError> {
@@ -245,6 +277,7 @@ impl StorageService {
 
         // content-addressing: バイトを所持しているのでメモリ上でハッシュし、新規 blob のみ書き込む。
         // 既存 blob があれば上書きしない（並行 finalize が参照する共有本体を壊さない・dedup）。
+        // ここの put はロックの外なので、行を新しく作ったときは bump_blob がロックの中で本体を確かめ直す。
         let sha256 = sha256_hex(bytes);
         let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
@@ -289,17 +322,22 @@ impl StorageService {
                 .fetch_one(&mut *tx)
                 .await?;
                 if existing_digest != digest {
-                    // 同一冪等キーで別操作（permanent）。
-                    return Err(StorageError::Conflict);
+                    // 同一冪等キーで別操作（permanent）。名前の衝突（Conflict）とは分ける（BUG-97）。
+                    return Err(StorageError::IdempotencyConflict);
                 }
                 return match summary {
                     Some(v) => Ok(WriteCoreOut::Deduped(v)),
                     // 孤児予約（cross-TX 経路の未完）: 上位で回収/リトライさせる。
-                    None => Err(StorageError::Conflict),
+                    None => Err(StorageError::IdempotencyConflict),
                 };
             }
         }
 
+        // 親を Tx の中で確かめ直して押さえる（ロックの順 node → blob → 監査のチェーン・bump_blob より前）。
+        // 論理削除と互いに待ち、削除したフォルダの下に生きたファイルを残さない。
+        if let Some(p) = parent_id {
+            lock_parent_for_create(&mut tx, ctx, p).await?;
+        }
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -308,10 +346,20 @@ impl StorageService {
             size,
             content_type,
             &final_key,
+            BlobBody::Bytes(bytes),
         )
         .await?;
         let node = self
-            .create_file_node(&mut tx, ctx, parent_id, name, &sha256, size, content_type)
+            .create_file_node_named(
+                &mut tx,
+                ctx,
+                parent_id,
+                name,
+                on_taken,
+                &sha256,
+                size,
+                content_type,
+            )
             .await?;
         // 初版（version 1）を履歴に記録する（content-addressing で同一内容は blob 共有）。
         self.record_version(
@@ -372,50 +420,67 @@ impl StorageService {
             .await?;
         }
 
-        // DB 側が確定したので FGA tuple を書く（commit 前）。
+        // DB 側が確定したので owner・parent の FGA tuple を書いてから commit する。区間は別のタスクで
+        // 最後まで走り、呼ぶ側が捨てられても DB に無いノードのタプルを残さない（補償の決まりは tuple_commit・BUG-134）。
         let file_obj = ctx.ns().file(&node.id.to_string());
-        // owner tuple（失敗時は tx を drop でロールバック＝何も残らない）。
-        self.authz
-            .write_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-            .await
-            .map_err(StorageError::Authz)?;
-        // parent tuple（folder 配下のみ）。失敗時は owner を revoke してロールバック。
-        if let Some(p) = parent_id {
-            if let Err(e) = self
-                .authz
-                .write_tuple(
-                    &Subject::object(&ctx.ns().folder(&p.to_string())),
-                    Relation::Parent,
-                    &file_obj,
+        commit_tx_with_tuples(
+            self.authz.clone(),
+            tx,
+            node_creation_tuples(ctx, parent_id, &file_obj),
+        )
+        .await?;
+        Ok(WriteCoreOut::Written(Box::new(node)))
+    }
+
+    /// 同じ名前のファイルがあるときの扱い（`on_taken`）に従って名前を決め、ファイルのノードを作る（同じ txn の中）。
+    ///
+    /// 番号を付けるときは、名前ごとに savepoint を置き、名前の衝突（[`StorageError::Conflict`]）だけを巻き戻して
+    /// 次の名前（[`numbered_name`]）を試す。予約・blob・認可は 1 回で済み、書込は 1 つの TX のまま（打ち切りでも
+    /// 予約ごと巻き戻る）。番号を付けた名前も [`validate_name`] に通す（長すぎる名前は `Invalid`）。
+    #[allow(clippy::too_many_arguments)]
+    async fn create_file_node_named(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        on_taken: OnNameTaken,
+        sha256: &str,
+        size: i64,
+        content_type: &str,
+    ) -> Result<Node, StorageError> {
+        if on_taken == OnNameTaken::Fail {
+            // 1 回しか試さないので savepoint は要らない（衝突は TX ごと巻き戻る）。
+            return self
+                .create_file_node(conn, ctx, parent_id, name, sha256, size, content_type)
+                .await;
+        }
+        for attempt in 1..=on_taken.tries() {
+            let candidate = numbered_name(name, attempt);
+            validate_name(&candidate)?;
+            let mut sp = conn.begin().await?;
+            match self
+                .create_file_node(
+                    &mut sp,
+                    ctx,
+                    parent_id,
+                    &candidate,
+                    sha256,
+                    size,
+                    content_type,
                 )
                 .await
             {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                    .await;
-                return Err(StorageError::Authz(e));
+                Ok(node) => {
+                    sp.commit().await?;
+                    return Ok(node);
+                }
+                // 名前の衝突は次の名前へ。それ以外の失敗はそのまま返す。
+                Err(StorageError::Conflict) => sp.rollback().await?,
+                Err(e) => return Err(e),
             }
         }
-        // commit 失敗時は書いた owner/parent tuple を revoke して FGA を作成前へ戻す。
-        if let Err(e) = tx.commit().await {
-            let _ = self
-                .authz
-                .delete_tuple(&ctx.subject(), Relation::Owner, &file_obj)
-                .await;
-            if let Some(p) = parent_id {
-                let _ = self
-                    .authz
-                    .delete_tuple(
-                        &Subject::object(&ctx.ns().folder(&p.to_string())),
-                        Relation::Parent,
-                        &file_obj,
-                    )
-                    .await;
-            }
-            return Err(StorageError::from(e));
-        }
-        Ok(WriteCoreOut::Written(Box::new(node)))
+        Err(StorageError::Conflict)
     }
 
     /// ファイル内容をサーバ内で読み戻す（内部読み取り・viewer 認可＋監査つき）。

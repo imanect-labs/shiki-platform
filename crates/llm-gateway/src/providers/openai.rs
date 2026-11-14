@@ -14,10 +14,14 @@ use serde_json::{json, Value};
 use super::identity::IdentityHeaders;
 use super::think_tags::{split_content, Piece, ThinkSplitter};
 use super::timeouts::RequestClock;
+use super::tool_args;
 use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::structured::{
+    openai_response_format, schema_rejection, with_json_body, OPENAI_SCHEMA_AT,
+};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 /// OpenAI 互換アダプタ。
@@ -108,6 +112,11 @@ impl OpenAiProvider {
         // 載せない（カタログの supports_effort で落とす）ので、ここに来たら素直に写す。
         if let Some(effort) = req.effort {
             body["reasoning_effort"] = json!(effort.as_str());
+        }
+        // 構造化出力。ここに来るのはカタログで json_schema / json_object を有効にしたモデルだけ
+        // （既定の prompt モードでは gateway が system の指示に落として外す）。
+        if let Some(format) = &req.response_format {
+            body["response_format"] = openai_response_format(format);
         }
         // 遅延ツールは読み込まれた分だけ載せる（OpenAI 互換に参照の展開は無い・tool_loading）。
         let tools = context_tools(&req.tools, &req.messages);
@@ -247,6 +256,8 @@ struct ToolAcc {
     calls: BTreeMap<i64, (String, String, String)>,
     /// 枠（index）→ プロバイダ固有の `extra_content`（届いたものだけ。ID は取り出すときに引く）。
     extras: BTreeMap<i64, Value>,
+    /// `ToolUseStart` を出した呼び出しの ID（1 回だけ出す）。
+    started: std::collections::BTreeSet<String>,
 }
 
 impl ToolAcc {
@@ -325,28 +336,40 @@ impl ToolAcc {
             .collect()
     }
 
-    /// 完了イベント（ToolUseStop 列）へ落とす。
-    fn drain_stops(&mut self) -> Vec<StreamDelta> {
-        std::mem::take(&mut self.calls)
+    /// 完了イベント（ToolUseStop 列）へ落とす。引数の JSON が読めない呼び出しは `{}` にして渡さず、応答の止まり方
+    /// `stop` が出力の上限でなければ誤りにする（[`super::tool_args`]・BUG-225）。
+    fn drain_stops(&mut self, stop: StopReason) -> Result<Vec<StreamDelta>, LlmError> {
+        let mut broken = 0;
+        let stops = std::mem::take(&mut self.calls)
             .into_values()
             .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
-            .map(|(id, name, args)| {
-                let input: Value = serde_json::from_str(args.trim()).unwrap_or(json!({}));
-                let _ = name; // name は id で参照済み（tool_use 側で保持）
-                StreamDelta::ToolUseStop { id, input }
+            .filter_map(|(id, _name, args)| {
+                let Some(input) = tool_args::parse("openai", &id, &args) else {
+                    broken += 1;
+                    return None;
+                };
+                Some(StreamDelta::ToolUseStop { id, input })
             })
-            .collect()
+            .collect();
+        match tool_args::refuse("openai", broken, stop) {
+            Some(e) => Err(e),
+            None => Ok(stops),
+        }
     }
 
-    fn starts(&self) -> Vec<StreamDelta> {
-        self.calls
-            .values()
-            .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
-            .map(|(id, name, _)| StreamDelta::ToolUseStart {
-                id: id.clone(),
-                name: name.clone(),
-            })
-            .collect()
+    /// 新しく ID と名前の揃った呼び出しの `ToolUseStart`（呼び出しごとに 1 回）。wire 名（サニタイズ済み）は元の
+    /// ローカル名へ逆写しする。
+    fn new_starts(&mut self, names: &ToolNameMap) -> Vec<StreamDelta> {
+        let mut out = Vec::new();
+        for (id, name, _) in self.calls.values() {
+            if !id.is_empty() && !name.is_empty() && self.started.insert(id.clone()) {
+                out.push(StreamDelta::ToolUseStart {
+                    id: id.clone(),
+                    name: names.local(name),
+                });
+            }
+        }
+        out
     }
 }
 
@@ -367,6 +390,7 @@ fn map_finish_reason(fr: Option<&str>) -> StopReason {
     match fr {
         Some("tool_calls") => StopReason::ToolUse,
         Some("length") => StopReason::MaxTokens,
+        Some("content_filter") => StopReason::Refusal,
         Some("stop") => StopReason::EndTurn,
         _ => StopReason::Other,
     }
@@ -385,7 +409,7 @@ impl LlmProvider for OpenAiProvider {
         let think_tags = body["model"]
             .as_str()
             .is_some_and(|m| self.think_tag_models.contains(m));
-        let mut builder = self.http.post(&url).json(&body);
+        let mut builder = with_json_body(self.http.post(&url), &body, req, &OPENAI_SCHEMA_AT);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
@@ -395,18 +419,8 @@ impl LlmProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
-            // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
-            // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
-            // `LlmError::Unavailable` の doc どおり一時障害として扱う。
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                return Err(LlmError::RateLimited(crate::provider::rate_limit_message(
-                    &text,
-                )));
-            }
-            if status.is_client_error() {
-                return Err(LlmError::BadRequest(format!("openai {status}: {text}")));
-            }
-            return Err(LlmError::Unavailable(format!("openai {status}: {text}")));
+            let structured = body.get("response_format").is_some();
+            return Err(status_error(status, &text, structured));
         }
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
@@ -414,11 +428,11 @@ impl LlmProvider for OpenAiProvider {
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
             let mut acc = ToolAcc::default();
-            let mut started: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
-            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）。
-            let mut said_stop = false;
+            // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）・
+            // モデルが拒否を返したか（`delta.refusal`。本文として流し、停止理由を拒否にする）。
+            let (mut said_stop, mut refused) = (false, false);
             // 終わりの合図（`[DONE]` か finish_reason）を受け取ったか・SSE でない行（[`cut_short`]）。
             let (mut completed, mut stray) = (false, String::new());
             // 本文先頭の `<think>…</think>` は思考として流す（対象モデルだけ・#584）。
@@ -461,6 +475,10 @@ impl LlmProvider for OpenAiProvider {
                                 let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
                         }
+                        if let Some(d) = refusal_delta(delta) {
+                            refused = true;
+                            let _ = tx.unbounded_send(Ok(d));
+                        }
                         // vLLM / 一部モデルは reasoning_content で思考を返す。
                         if let Some(think) = delta.get("reasoning_content").and_then(Value::as_str)
                         {
@@ -473,16 +491,8 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(tc) = delta.get("tool_calls") {
                             acc.ingest(tc);
                             // 新規に name/id が確定したツールへ Start を 1 回出す。
-                            // wire 名（サニタイズ済み）を元のローカル名へ逆写しして返す。
-                            for s in acc.starts() {
-                                if let StreamDelta::ToolUseStart { id, name } = s {
-                                    if started.insert(id.clone()) {
-                                        let _ = tx.unbounded_send(Ok(StreamDelta::ToolUseStart {
-                                            id,
-                                            name: names.local(&name),
-                                        }));
-                                    }
-                                }
+                            for s in acc.new_starts(&names) {
+                                let _ = tx.unbounded_send(Ok(s));
                             }
                         }
                     }
@@ -507,12 +517,21 @@ impl LlmProvider for OpenAiProvider {
             for s in acc.drain_extras() {
                 let _ = tx.unbounded_send(Ok(s));
             }
-            let stops = acc.drain_stops();
+            let stops = match acc.drain_stops(stop) {
+                Ok(stops) => stops,
+                Err(e) => {
+                    let _ = tx.unbounded_send(Err(e));
+                    return;
+                }
+            };
             // Gemini API はツールを呼んでも `finish_reason: "stop"` を返す。呼び出しがあるのに
             // EndTurn で返すと、エージェントがツールを実行せずに終わる。finish_reason が
             // 届かずに切れたストリーム（引数が途中かもしれない）は昇格させない。
             if !stops.is_empty() && said_stop {
                 stop = StopReason::ToolUse;
+            }
+            if refused {
+                stop = StopReason::Refusal;
             }
             for s in stops {
                 let _ = tx.unbounded_send(Ok(s));
@@ -525,6 +544,39 @@ impl LlmProvider for OpenAiProvider {
 
         Ok(rx.boxed())
     }
+}
+
+/// 成功でない応答の誤り（本文 `text` は読み終えたもの）。`structured` は構造化出力を求めた要求か。
+fn status_error(status: reqwest::StatusCode, text: &str, structured: bool) -> LlmError {
+    // 429 は 4xx だが**こちらの組み立てが悪いわけではない**（プロバイダ側の枠）。
+    // BadRequest に落とすと「直せば通る」と誤解され、リトライ方針も表示も間違える。
+    // `LlmError::Unavailable` の doc どおり一時障害として扱う。
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return LlmError::RateLimited(crate::provider::rate_limit_message(text));
+    }
+    if status.is_client_error() {
+        // 構造化出力のスキーマを拒んだもの（vLLM の guided decoding 等）は定型文にする。
+        if let Some(e) = structured
+            .then(|| schema_rejection("openai", status, text))
+            .flatten()
+        {
+            return e;
+        }
+        return crate::provider::rejection("openai", status, text);
+    }
+    crate::provider::unavailable("openai", status, text)
+}
+
+/// モデルの拒否（`delta.refusal`）を本文の差分にする。通常の応答でも `"refusal": null`
+/// （実装によっては `""`）が来るので、中身のあるものだけを拒否とみなす。
+fn refusal_delta(delta: &Value) -> Option<StreamDelta> {
+    let r = delta
+        .get("refusal")
+        .and_then(Value::as_str)
+        .filter(|r| !r.is_empty())?;
+    Some(StreamDelta::TextDelta {
+        text: r.to_string(),
+    })
 }
 
 /// 429 の指示どおりに待つ上限（これより長い待ちは、利用者へ「上限に達した」と返す）。
@@ -593,13 +645,14 @@ fn cut_short(completed: bool, stray: &str) -> Option<LlmError> {
     if completed {
         return None;
     }
+    // SSE でない行はプロバイダの誤りの本文なので、文言には誤りの種類の語だけを載せる（本文はログだけ・BUG-210）。
     let why = if stray.is_empty() {
-        "stream ended before completion".to_string()
+        "openai stream ended before completion".to_string()
     } else {
-        format!("stream ended with: {stray}")
+        crate::provider::midstream_failure("openai", stray)
     };
     Some(LlmError::Unavailable(format!(
-        "{}openai {why}",
+        "{}{why}",
         crate::provider::CUT_BY_PROVIDER
     )))
 }
@@ -736,7 +789,7 @@ mod tests {
             &json!([{"index":0,"id":"t1","function":{"name":"doc_search","arguments":"{\"q"}}]),
         );
         acc.ingest(&json!([{"index":0,"function":{"arguments":"uery\":\"経費\"}"}}]));
-        let stops = acc.drain_stops();
+        let stops = acc.drain_stops(StopReason::ToolUse).unwrap();
         assert_eq!(stops.len(), 1);
         match &stops[0] {
             StreamDelta::ToolUseStop { id, input } => {
@@ -745,6 +798,40 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    /// 引数の JSON が読めない呼び出しは `{}` にして渡さない（BUG-225）。出力の上限で止まった応答なら、その呼び出しを
+    /// 渡さないだけにし、それ以外は誤りにする。引数の無い呼び出しは `{}` で渡す。
+    #[test]
+    fn tool_acc_does_not_hand_over_unreadable_arguments() {
+        let ingest = |acc: &mut ToolAcc| {
+            acc.ingest(&json!([
+                {"index":0,"id":"t1","function":{"name":"list_items","arguments":"{\"filter\":"}},
+                {"index":1,"id":"t2","function":{"name":"list_items","arguments":""}}
+            ]));
+        };
+        let mut acc = ToolAcc::default();
+        ingest(&mut acc);
+        match acc.drain_stops(StopReason::ToolUse) {
+            Err(LlmError::Unavailable(m)) => assert_eq!(
+                m,
+                format!(
+                    "{}openai: {}",
+                    crate::provider::CUT_BY_PROVIDER,
+                    tool_args::BROKEN_TOOL_INPUT
+                )
+            ),
+            other => panic!("{other:?}"),
+        }
+        let mut acc = ToolAcc::default();
+        ingest(&mut acc);
+        assert_eq!(
+            acc.drain_stops(StopReason::MaxTokens).unwrap(),
+            [StreamDelta::ToolUseStop {
+                id: "t2".into(),
+                input: json!({})
+            }]
+        );
     }
 
     #[test]
@@ -777,7 +864,8 @@ mod tests {
             [("c1".into(), json!({"k":1})), ("c3".into(), json!({"k":3}))]
         );
         let stops: Vec<(String, Value)> = acc
-            .drain_stops()
+            .drain_stops(StopReason::ToolUse)
+            .unwrap()
             .into_iter()
             .map(|d| match d {
                 StreamDelta::ToolUseStop { id, input } => (id, input),

@@ -23,12 +23,14 @@ import {
   deleteFile,
   deleteFolder,
   isConflict,
-  listChildren,
+  listChildrenUpTo,
+  reindexFile,
   triggerDownload,
   updateFile,
   updateFolder,
   type CrumbResponse,
   type NodeResponse,
+  type ReindexResponse,
   type SortField,
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -38,11 +40,13 @@ import { DriveChrome } from "./drive-chrome";
 import { NewFab, NewMenuDesktop, type CreateHandlers } from "./new-menu";
 import { NodeCard } from "./node-card";
 import { NodeRow, type NodeAction } from "./node-row";
+import { MoreRows, sentinelEnabled } from "./more-rows";
 import { Breadcrumbs, ListHeader, LoadingRow, MobileBreadcrumbs } from "./primitives";
 import { ShareDialog } from "./share-dialog";
 import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
 import { UploadConflictDialog } from "./upload-conflict-dialog";
 import { useDriveUploads } from "./use-drive-uploads";
+import { useRevealNode } from "./use-reveal-node";
 import { VersionsDialog } from "./versions-dialog";
 
 /// 列見出しをクリックした時の既定の並び順（名前は昇順、更新日時・サイズは降順）。
@@ -51,6 +55,22 @@ const DEFAULT_DESC: Record<SortField, boolean> = { name: false, updated: true, s
 type DialogKind = "newfolder" | "rename" | "move" | "share" | "versions" | "delete" | null;
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// 「検索に取り込み直す」の答えごとの通知（D-126）。取り込み中・取り込み済みは積まずにそう答える。
+const REINDEX_TOAST: Record<ReindexResponse["status"], (name: string) => { title: string; description: string }> = {
+  queued: (name) => ({
+    title: `「${name}」の取り込み直しを受け付けました`,
+    description: "取り込みが終わると、社内文書の検索で見つかるようになります。",
+  }),
+  in_progress: (name) => ({
+    title: "取り込みの途中です",
+    description: `「${name}」はいま取り込んでいます。終わるまで、少し待ってください。`,
+  }),
+  indexed: (name) => ({
+    title: "取り込み済みです",
+    description: `「${name}」は、いまの内容で社内文書の検索に取り込まれています。`,
+  }),
+};
 
 /// Drive 本体。フォルダブラウズ（無限スクロール・パンくず・ソート）＋ D&D アップロード
 /// ＋ 移動/リネーム/削除/共有/版履歴を提供する。現在フォルダは `?folder=<id>` で表す。
@@ -130,6 +150,17 @@ export function DriveBrowser() {
     }
   };
 
+  // 社内文書の検索に取り込み直す（D-126）。断られたとき（編集できない・取り込めない種類・この環境で使えない）は、
+  // サーバーが返す理由をそのまま出す。
+  const reindex = async (node: NodeResponse) => {
+    try {
+      const res = await reindexFile(node.id);
+      toast(REINDEX_TOAST[res.status](node.name));
+    } catch (e) {
+      toast({ variant: "destructive", title: "取り込み直せませんでした", description: errorText(e) });
+    }
+  };
+
   // 検索: 入力は即時、クエリは少し待ってから反映（打鍵ごとの再取得を抑える）。
   // ⌘K パレットの「"q"で検索」からは ?q= で遷移してくるため、URL からも初期化・追従する。
   const urlQuery = searchParams.get("q") ?? "";
@@ -174,27 +205,47 @@ export function DriveBrowser() {
   const versionInputRef = React.useRef<HTMLInputElement>(null);
   const versionTargetRef = React.useRef<NodeResponse | null>(null);
 
+  // 見えないものが多い場所（トップ・名前の検索）では、サーバーが短いか 0 件のページに続きの位置だけを付けて返すことが
+  // ある（BUG-187）。1 回の読み込みで続きを数回たどり、それでも見つからなければ末尾に「さらに読み込む」を出す。
   const fetchPage = React.useCallback(
-    (cursor?: string) =>
-      listChildren({
+    (cursor?: string, signal?: AbortSignal) =>
+      listChildrenUpTo({
         // 検索中はフォルダを跨いで横断検索（parent を渡さない）。
         parentId: searching ? undefined : (folderId ?? undefined),
         sort,
         desc,
         cursor,
-        limit: 50,
+        want: 50,
         q: searching ? query : undefined,
+        // 打ち直した語・移ったフォルダーでは、前の読み込みの残りの往復を止める。
+        signal,
       }),
     [folderId, sort, desc, searching, query],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [folderId, sort, desc, searching, query]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, list.hasMore && !list.loading);
+  const sentinelRef = useInfiniteSentinel(list.loadMore, sentinelEnabled(list), list.items.length);
   // 表示する内容一致行（名前一致にも出るファイルは名前行に譲る）。件数表示と共有する。
   const contentRows = searching
     ? contentSearch.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
     : [];
 
-  const uploader = useDriveUploads({ folderId, onChanged: list.reload });
+  // 作った・名前を変えたものは、一覧の最初のページの外でも、すぐに見せる（続きを読み込んでその行へ移る・BUG-125）。
+  // 見せるのは今の一覧に来るものだけにする。名前の検索中は名前に合わないと来ず、ほかのフォルダーのもの（内容の検索で
+  // 見つけたファイルの新しいバージョン・アップロードの途中で移ったフォルダー）も来ないので、読み直すだけにする（続きを
+  // 上限まで読み込んでから諦めない）。
+  const revealNode = useRevealNode(list);
+  const reloadList = list.reload;
+  const reveal = React.useCallback(
+    (node: Pick<NodeResponse, "id" | "parent_id">) => {
+      if (!searching && (node.parent_id ?? null) === (folderId ?? null)) revealNode(node.id);
+      else reloadList();
+    },
+    [searching, folderId, revealNode, reloadList],
+  );
+  const uploader = useDriveUploads({
+    folderId,
+    onChanged: (saved) => (saved.length > 0 ? reveal(saved[0]) : list.reload()),
+  });
 
   // パンくず（現在フォルダが変わるたび取得）。ルートは空。
   React.useEffect(() => {
@@ -265,6 +316,9 @@ export function DriveBrowser() {
       case "newversion":
         versionTargetRef.current = node;
         versionInputRef.current?.click();
+        break;
+      case "reindex":
+        void reindex(node);
         break;
       default:
         setActiveNode(node);
@@ -514,7 +568,7 @@ export function DriveBrowser() {
           <LoadingRow />
         ) : list.error ? (
           <p className="px-3 py-10 text-center text-sm text-destructive">{list.error}</p>
-        ) : list.items.length === 0 ? (
+        ) : list.items.length === 0 && !list.hasMore ? (
           searching ? (
             contentSearch.loading ? (
               <LoadingRow />
@@ -535,8 +589,8 @@ export function DriveBrowser() {
               <NodeCard key={node.id} node={node} onAction={handleAction} />
             ))}
             {list.hasMore ? (
-              <div ref={sentinelRef} className="col-span-full">
-                {list.loadingMore ? <LoadingRow /> : null}
+              <div className="col-span-full">
+                <MoreRows list={list} sentinelRef={sentinelRef} />
               </div>
             ) : null}
           </div>
@@ -545,7 +599,7 @@ export function DriveBrowser() {
             {list.items.map((node) => (
               <NodeRow key={node.id} node={node} onAction={handleAction} meId={me.data?.id} />
             ))}
-            {list.hasMore ? <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div> : null}
+            <MoreRows list={list} sentinelRef={sentinelRef} />
           </div>
         )}
       </div>
@@ -570,14 +624,15 @@ export function DriveBrowser() {
         label="フォルダ名"
         submitLabel="作成"
         onSubmit={async (name) => {
+          let created: NodeResponse;
           try {
-            await createFolder(name, folderId ?? undefined);
+            created = await createFolder(name, folderId ?? undefined);
           } catch (e) {
             // 入力欄の下に出る。番号だけのエラーにしない。
             if (isConflict(e)) throw new Error("同じ名前のフォルダがあります");
             throw e;
           }
-          list.reload();
+          reveal(created);
         }}
       />
 
@@ -606,7 +661,7 @@ export function DriveBrowser() {
             if (isConflict(e)) throw new Error("この場所に同じ名前のファイルまたはフォルダがあります");
             throw e;
           }
-          list.reload();
+          reveal(activeNode);
         }}
       />
 
@@ -620,7 +675,9 @@ export function DriveBrowser() {
             if (activeNode.kind === "folder") await updateFolder(activeNode.id, { move: dest });
             else await updateFile(activeNode.id, { move: dest });
           } catch (e) {
-            if (isConflict(e)) throw new Error("移動先に同じ名前のファイルまたはフォルダがあります");
+            if (isConflict(e)) {
+              throw new Error("移動先に同じ名前のファイルかフォルダーがあるため、移動できませんでした。名前を変えてから、もう一度移動してください。");
+            }
             throw e;
           }
           list.reload();
@@ -644,7 +701,7 @@ export function DriveBrowser() {
         open={dialog === "delete"}
         onOpenChange={(o) => (o ? null : closeDialog())}
         title={activeNode ? `「${activeNode.name}」をゴミ箱へ移動` : "削除"}
-        description="ゴミ箱からはいつでも復元できます。"
+        description="ゴミ箱から復元できます。"
         confirmLabel="ゴミ箱へ移動"
         destructive
         onConfirm={async () => {

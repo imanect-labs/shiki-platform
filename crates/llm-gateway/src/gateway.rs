@@ -25,6 +25,7 @@ use crate::providers::{
     openai_responses::OpenAiResponsesProvider, stub::StubProvider,
 };
 use crate::retry::{resume_unsettled, stream_with_retry, MIDSTREAM_RETRIES, UNAVAILABLE_BACKOFF};
+use crate::structured;
 use crate::tenant::{
     self, apply_patch, resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, SettingsError,
     SettingsPatch, TenantLlmSettings, TenantLlmStore,
@@ -34,7 +35,16 @@ use std::sync::Arc;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
+/// 判定のチョークポイントと決定器の構築（同上・FEAT-1）。
+mod decide;
+/// ノード（ワークフロー・ミニアプリ）のモデル解決（同上）。
+mod node_choice;
+/// 利用者ごとのプロバイダの許可（同上・#1014）。
 mod user_provider_gate;
+/// ワークフローを編集する人から見たモデルの設定（同上・D-169）。
+mod workflow_editor;
+
+pub use workflow_editor::WorkflowEditorSettings;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -123,6 +133,10 @@ struct Inner {
     langfuse: Option<LangfuseClient>,
     /// ChatGPT プランのアダプタ（生成は呼び出し主体に結び付けて行う・#854）。
     chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
+    /// 判定用のモデルの ID → 決定器（構築時にカタログから組む・FEAT-1）。
+    deciders: decide::Deciders,
+    /// 判定の決定キャッシュ（ai.decide の step 属性 `cache`・T10）。
+    decision_cache: crate::decision::cache::DecisionCacheStore,
 }
 
 impl LlmGateway {
@@ -176,36 +190,9 @@ impl LlmGateway {
                 m.provider_id()
             )));
         }
-        let mut user_providers = user_provider_gate::UserProviders::new();
-        for rule in &config.user_provider_rules {
-            if authz::validate_tenant_id(&rule.tenant_id).is_err()
-                || rule.user_sub.trim().is_empty()
-                || rule.user_sub.trim() != rule.user_sub
-            {
-                return Err(LlmError::Config(
-                    "user provider rule requires a valid tenant_id and nonempty, unpadded user_sub"
-                        .into(),
-                ));
-            }
-            if let Some(id) = rule
-                .providers
-                .iter()
-                .find(|id| !providers.contains_key(*id))
-            {
-                return Err(LlmError::Config(format!(
-                    "user provider rule refers to unknown provider: {id}"
-                )));
-            }
-            let users = user_providers.entry(rule.tenant_id.clone()).or_default();
-            if let Some(allowed) = users.get_mut(&rule.user_sub) {
-                allowed.retain(|id| rule.providers.contains(id));
-            } else {
-                users.insert(
-                    rule.user_sub.clone(),
-                    rule.providers.iter().cloned().collect(),
-                );
-            }
-        }
+        config.check_prompt_cache()?;
+        let deciders = decide::build_deciders(&config, &providers, &http)?;
+        let user_providers = user_provider_gate::build_user_providers(&config, &providers)?;
         Ok(LlmGateway {
             inner: Arc::new(Inner {
                 providers,
@@ -213,9 +200,11 @@ impl LlmGateway {
                 accounting: UsageRecorder::new(db.clone()),
                 tenants: TenantLlmStore::new(db.clone()),
                 usage: UsageReporter::new(db.clone()),
+                decision_cache: crate::decision::cache::DecisionCacheStore::new(db.clone()),
                 limits: UsageLimiter::new(db),
                 langfuse,
                 chatgpt_plan,
+                deciders,
                 config,
             }),
         })
@@ -250,15 +239,17 @@ impl LlmGateway {
             .collect()
     }
 
-    /// モデルが思考強度を受け付けるか（カタログの明示 → プロバイダ種別の既定）。
+    /// モデルが思考強度を受け付けるか（カタログの明示 → プロバイダ種別の既定）。判定用のモデルは
+    /// 受け付けない（元のモデルへ送る思考の深さはカタログの `decision.effort` で決まる）。
     #[must_use]
     pub fn supports_effort(&self, entry: &ModelEntry) -> bool {
-        entry.supports_effort.unwrap_or_else(|| {
-            self.inner
-                .providers
-                .get(entry.provider_id())
-                .is_some_and(|s| s.config.kind.effort_by_default())
-        })
+        entry.is_chat()
+            && entry.supports_effort.unwrap_or_else(|| {
+                self.inner
+                    .providers
+                    .get(entry.provider_id())
+                    .is_some_and(|s| s.config.kind.effort_by_default())
+            })
     }
 
     /// テナントの AI 設定を読む（行が無ければ既定＝全モデル有効・Auto）。
@@ -393,9 +384,12 @@ impl LlmGateway {
     /// 最大 2 回再試行する（[`UNAVAILABLE_BACKOFF`]・フォールバックの床）。思考強度に
     /// 対応しないモデルへは effort を落としてから送る。
     ///
+    /// `response_format` はモデルの構造化出力のモードに合わせて整えてから渡す（[`structured::apply_mode`]）。
+    ///
     /// 呼び出し元の組織が許可していないモデルはここで拒否する（#553）。チャット・ミニアプリ・
     /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での許可・無効化
-    /// （国外処理モデルを止める等）が経路によらず効く。
+    /// （国外処理モデルを止める等）が経路によらず効く。判定用のモデルは生成に使えない（`Config`・
+    /// 判定は [`Self::decide`]）。
     pub async fn stream(
         &self,
         ctx: &AuthContext,
@@ -411,43 +405,45 @@ impl LlmGateway {
             .catalog
             .get(&logical)
             .ok_or_else(|| LlmError::Config(format!("unknown model: {logical}")))?;
-        let slot = self
-            .inner
-            .providers
-            .get(entry.provider_id())
-            .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
-        if !self.provider_allowed_for(ctx, entry.provider_id()) {
-            return Err(LlmError::Config(
-                "provider is not enabled for this user".into(),
-            ));
+        if entry.is_decision() {
+            return Err(LlmError::Config(format!(
+                "decision model cannot generate text: {logical}"
+            )));
         }
+        let slot = self.slot_for(entry)?;
+        // 利用者ごとのプロバイダの許可（一覧と生成と判定で同じ判定・DB に触れる前・#1014）。
+        self.ensure_provider_allowed(ctx, entry)?;
         if slot.config.kind == ProviderKind::ChatgptPlan {
             // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
             self.ensure_chatgpt_owner(ctx)?;
         }
-        let permitted = self
-            .inner
-            .tenants
-            .permits(ctx, entry)
-            .await
-            .map_err(|e| LlmError::Unavailable(format!("tenant llm settings: {e}")))?;
-        if !permitted {
-            return Err(LlmError::Config(format!(
-                "model is not enabled for this organization: {logical}"
-            )));
-        }
+        self.ensure_permitted(ctx, entry).await?;
         self.check_limits(ctx, &slot.config).await?;
         if !self.supports_effort(entry) {
             req.effort = None;
         }
+        // 構造化出力はモデルのモードに合わせ、写せないものは system の指示に落とす（GAP-13）。
+        structured::apply_mode(&mut req, structured::mode_for(slot.config.kind, entry));
         req.model = Some(entry.resolved_id().to_string());
 
-        // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
-        if let (Some(p), ProviderKind::ChatgptPlan) = (&self.inner.chatgpt_plan, slot.config.kind) {
-            return stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await;
-        }
-        // 流れ始めた後に切れても、まだ何も確定していなければ送り直す（#897）。
-        let provider = Arc::clone(&slot.provider);
+        self.open_stream(ctx, slot, req).await
+    }
+
+    /// 確かめを済ませた要求を振り先のプロバイダで流す。接続前の一時障害は待ってから送り直し、流れ始めた後に
+    /// 切れても、まだ何も確定していなければ送り直す（#897）。
+    ///
+    /// 連携者の ChatGPT プランも同じく送り直す（BUG-224）。プランは連携した本人の呼び出しにだけ使える（D-30）ので、
+    /// 送り直すのも本人の生成だけで、トークンの取得時に呼び出し主体と照合し直す（送り直しのたびにも）。
+    async fn open_stream(
+        &self,
+        ctx: &AuthContext,
+        slot: &ProviderSlot,
+        req: GenerateRequest,
+    ) -> Result<DeltaStream, LlmError> {
+        let provider: Arc<dyn LlmProvider> = match (&self.inner.chatgpt_plan, slot.config.kind) {
+            (Some(p), ProviderKind::ChatgptPlan) => Arc::new(p.for_caller(ctx)),
+            _ => Arc::clone(&slot.provider),
+        };
         let first = stream_with_retry(provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await?;
         Ok(resume_unsettled(provider, req, first, MIDSTREAM_RETRIES))
     }
@@ -517,6 +513,11 @@ impl LlmGateway {
     ///
     /// 会計は同期（金額クリティカル・冪等）、Langfuse は best-effort（非同期・失敗は warn）。
     pub async fn record_generation(&self, ctx: &AuthContext, rec: &GenerationRecord) {
+        self.record_named(ctx, rec, "chat.generation").await;
+    }
+
+    /// [`Self::record_generation`] の本体（`name` は Langfuse の generation 名）。
+    async fn record_named(&self, ctx: &AuthContext, rec: &GenerationRecord, name: &str) {
         // **会計より先に取る。** 会計 DB が詰まると、その待ち時間が
         // そのまま生成の所要時間として記録されてしまう。
         let ended_at = chrono::Utc::now();
@@ -566,7 +567,7 @@ impl LlmGateway {
                 first_in_trace: rec.first_in_trace,
                 started_at: rec.started_at,
                 ended_at,
-                name: "chat.generation",
+                name,
                 model: &rec.model,
                 provider: &provider,
                 input: &rec.input_preview,
@@ -631,6 +632,10 @@ fn build_provider(
         );
     match pc.kind {
         ProviderKind::Stub => Ok(Arc::new(StubProvider::new().with_timeouts(timeouts))),
+        // 判定専用（文章を生成しない・決定器は gateway/decide.rs が組む・FEAT-1 の T9）。
+        ProviderKind::TypesafeSystemone => {
+            Ok(Arc::new(crate::providers::typesafe::DecisionOnlyProvider))
+        }
         ProviderKind::Openai => {
             let base = pc
                 .base_url
@@ -679,6 +684,7 @@ fn build_provider(
                 AnthropicProvider::new(http, base, key, default_real)
                     .with_user_agent(pc.user_agent.as_deref())?
                     .with_session_header(pc.session_header.as_deref())?
+                    .with_prompt_cache_models(catalog.prompt_cache_models(id))
                     .with_timeouts(timeouts),
             ))
         }

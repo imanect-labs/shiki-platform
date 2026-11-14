@@ -59,6 +59,67 @@ pub fn summarize_response(status: u16, host: &str) -> Value {
     json!({ "status": status, "host": host })
 }
 
+/// 相手が誤り（400〜499。429 を除く）を返したときの code（`fail_on_error_status`・permanent・BUG-99・D-95）。
+///
+/// 送る内容・URL・シークレットを直すまで通らないので、やり直さない（失敗の分類は設定の誤り）。
+pub const HTTP_ERROR_STATUS: &str = "http_error_status";
+
+/// 相手が一時的な誤り（500 以上と 408・425・429）を返したときの code（`fail_on_error_status`・retryable・BUG-99・D-95）。
+///
+/// 試す回数が 2 以上ならやり直す（失敗の分類は一時障害）。408（Request Timeout）と 425（Too Early）は、同じ要求を
+/// 後で送り直せば通りうる（送る内容を直す誤りではない）。並行上限の順番待ちの `rate_limited` とは分ける
+/// （あちらは試す回数を消費しないので、相手の 429 に使うと何度でも送り直してしまう）。
+pub const HTTP_RETRYABLE_STATUS: &str = "http_retryable_status";
+
+/// 外部への送信が届いたかを確かめられないので、送り直さずに止めたときの code（retryable・GAP-28）。
+///
+/// 前の実行（リースが切れた・落ちたワーカー）が送っている途中で止まり、結果を記録しないまま効果の記録の予約の回収の
+/// 猶予を過ぎたとき（`nodes::outbound`）と、送った応答が大きくて記録しておらず次のブロックに渡せないときに使う。
+/// 予約は消すので、試す回数が残っていればやり直しで、残っていなければ再開で、もう一度送る（作成者か利用者が送り直すと
+/// 決めたもの）。失敗の分類は一時障害。
+pub const HTTP_DELIVERY_UNKNOWN: &str = "http_delivery_unknown";
+
+/// 送り先の名前が内部のネットワークの IP にもつながるので送らなかったときの code（ポートの送り口が名前解決の後に
+/// 断る・permanent・BUG-181・D-135）。
+///
+/// 管理者がデプロイ設定 `workflow.http_internal_hosts`（内部の送り先・送れる先の許可 `http_allowlist` とは別）に
+/// そのホストを書いたときだけ、内部の IP へ送れる。
+pub const DESTINATION_INTERNAL: &str = "destination_internal";
+
+/// 送り先の名前がリンクローカル・クラウドのメタデータの IP につながるので送らなかったときの code（管理者の許可が
+/// あっても断る・permanent・BUG-181・D-135）。
+pub const DESTINATION_LINK_LOCAL: &str = "destination_link_local";
+
+/// 送り先の名前のアドレスが無い（NXDOMAIN・名前はあるがアドレスが無い）ので送れなかったときの code（URL のドメインの
+/// 誤り・permanent・BUG-202）。
+///
+/// DNS に届かない・一時的に引けないとき（やり直せる `unavailable`）とは分ける。見分けられないときは `unavailable` のまま
+/// （`sandbox_client::net_guard::NO_SUCH_HOST`）。試す回数を増やしたブロックでも、URL の誤りではやり直さない。
+pub const DESTINATION_NOT_FOUND: &str = "destination_not_found";
+
+/// 運用者が設定した外への送信の中継（プロキシ）が、認証か方針で送信を断ったときの code（permanent・GAP-72）。
+///
+/// 送り先には何も送っていない。中継の設定（利用者名・パスワード・送れる先）を管理者が直すまで通らないので、やり直さない
+/// （失敗の分類はこの環境の問題）。中継へつなげない・中継が送り先へつなげないときは、やり直せる `unavailable`。
+pub const EGRESS_PROXY_REFUSED: &str = "egress_proxy_refused";
+
+/// 送り先のアドレスで断った失敗か（エンジンが監査に残す）。
+#[must_use]
+pub fn destination_refused(code: &str) -> bool {
+    code == DESTINATION_INTERNAL || code == DESTINATION_LINK_LOCAL
+}
+
+/// 応答のステータスコードを失敗に分ける（`fail_on_error_status` のときだけ使う）。成功（399 以下）は `None`、
+/// 失敗は（code・やり直せるか）。
+#[must_use]
+pub fn classify_error_status(status: u16) -> Option<(&'static str, bool)> {
+    match status {
+        0..=399 => None,
+        408 | 425 | 429 | 500.. => Some((HTTP_RETRYABLE_STATUS, true)),
+        _ => Some((HTTP_ERROR_STATUS, false)),
+    }
+}
+
 /// リダイレクト方針: 既定は拒否（engine.md §9.5）。`follow` が真でも allowlist 内のみ許可する
 /// 前提だが Stage A は一律拒否で安全側に倒す。
 #[must_use]
@@ -69,6 +130,28 @@ pub fn redirect_denied(status: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 4xx はやり直さない失敗、5xx と 408・425・429 はやり直せる失敗、399 以下は成功（BUG-99）。
+    #[test]
+    fn error_statuses_are_classified() {
+        for s in [200, 204, 304, 399] {
+            assert_eq!(classify_error_status(s), None, "{s}");
+        }
+        for s in [400, 401, 403, 404, 409, 422, 499] {
+            assert_eq!(
+                classify_error_status(s),
+                Some((HTTP_ERROR_STATUS, false)),
+                "{s}"
+            );
+        }
+        for s in [408, 425, 429, 500, 502, 503, 599] {
+            assert_eq!(
+                classify_error_status(s),
+                Some((HTTP_RETRYABLE_STATUS, true)),
+                "{s}"
+            );
+        }
+    }
 
     fn binding(hosts: &[&str]) -> DestinationBinding {
         DestinationBinding::new(hosts.iter().map(|s| (*s).to_string()).collect())

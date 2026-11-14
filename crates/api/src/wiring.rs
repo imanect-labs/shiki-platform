@@ -81,7 +81,9 @@ pub(crate) async fn wire_storage(
         );
     } else {
         tracing::warn!(
-            "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）"
+            "upload_gc.enabled=false: 中断アップロードの staging/incoming が回収されません（#468）。\
+             同じ周に相乗りしている、ゴミ箱の保持期間を過ぎたものの完全削除（GAP-108c）と、\
+             完全削除の片付け（OpenFGA のタプル・本体の削除・GAP-108）も回りません"
         );
     }
     // 監査ログの保持期間（#831）。期限（テナントごと・既定 365 日）を過ぎた行を日次で消し、
@@ -339,8 +341,9 @@ fn provider_kind(backend: LlmBackend) -> anyhow::Result<llm_gateway::ProviderKin
         LlmBackend::Anthropic => ProviderKind::Anthropic,
         LlmBackend::OpenaiResponses => ProviderKind::OpenaiResponses,
         LlmBackend::Stub => ProviderKind::Stub,
+        LlmBackend::TypesafeSystemone => ProviderKind::TypesafeSystemone,
         other => anyhow::bail!(
-            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub のみ）"
+            "llm.backend={other:?} は未実装です（openai-compat/openai_responses/anthropic/stub/typesafe_systemone のみ）"
         ),
     })
 }
@@ -378,6 +381,12 @@ pub(crate) async fn wire_chat(
     office_runtime: Option<&api::state::OfficeRuntime>,
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
+    // 会話の AI の試運転（try_workflow・T04）の起動の入口と run の要約（`workflow.enabled=false` なら両方 None）。
+    tries: (
+        Option<&Arc<workflow_engine::WorkflowRunLauncher>>,
+        Option<&Arc<workflow_engine::RunStore>>,
+    ),
     bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
@@ -446,6 +455,10 @@ pub(crate) async fn wire_chat(
             .chat
             .sandbox_backend
             .unwrap_or_else(|| chat::WorkerConfig::default().sandbox_backend),
+        // web_fetch は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
+        egress_proxy: egress_proxy.cloned(),
+        // 作成系の道具を使う会話の予算（未指定の項目は WorkerConfig の既定・D-53 の HD-4・T03）。
+        app_builder: config.chat.app_builder.resolve(),
         // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
         ..chat::WorkerConfig::default()
     };
@@ -456,6 +469,17 @@ pub(crate) async fn wire_chat(
         .as_ref()
         .map(|_| Arc::new(chat::StorageArtifactStore::new(Arc::clone(storage))) as _);
     let web_search = crate::wiring_websearch::wire_websearch(config, http)?;
+    // emit_workflow のカタログ源。保存 API（build_catalog）と同じ材料で照合する: 説明文と照合のモデルは組織の
+    // 許可リスト（BUG-11）、AI エージェントの web.fetch の天井（BUG-6）、承認のテーブル（FSM・状態・列・V4・GAP-08）。
+    let workflow_catalog = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+        secrets.cloned(),
+        Some(Arc::clone(skill_installs)),
+        api::workflow_catalog::WorkflowModels::new(Some(gateway.clone()), Vec::new()),
+    )
+    .with_web_ceiling(config.workflow.agent_web_ceiling())
+    .with_data(Arc::clone(data))
+    .with_artifacts(Arc::clone(skill_artifacts))
+    .with_storage(Arc::clone(storage));
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),
@@ -481,13 +505,8 @@ pub(crate) async fn wire_chat(
             // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
             // カタログ源は保存 API（build_catalog）と同一実装を注入する（検証乖離の禁止）。
             workflow_store: Some(Arc::clone(workflows)),
-            workflow_catalog: Some(Arc::new(
-                api::workflow_catalog::ApiWorkflowCatalogSource::new(
-                    secrets.cloned(),
-                    Some(Arc::clone(skill_installs)),
-                    config.llm.models.iter().map(|m| m.id.clone()).collect(),
-                ),
-            )),
+            // 上で組んだカタログ源（保存 API と同じ材料・モデルは呼び出し主体から見た組織の許可リスト）。
+            workflow_catalog: Some(Arc::new(workflow_catalog)),
             // AI ノート共同編集（document.edit / document.read・Task 11P.4）。
             collab: Some(Arc::clone(collab)),
             // CSV ツール（csv.query / csv.patch / csv.write・Task 11P.9）。
@@ -532,6 +551,14 @@ pub(crate) async fn wire_chat(
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
     // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
     .with_workflow_directory(workflow_directory(skill_artifacts, db));
+    // 会話の AI の試運転（try_workflow・T04）。ワークフローの実行時が組んだ launcher/runs があるときだけ提示する
+    // （`workflow.enabled=false` なら run を進めるワーカーが無いので提示しない）。
+    let worker = match tries {
+        (Some(launcher), Some(runs)) => {
+            worker.with_workflow_tries(Arc::clone(launcher), Arc::clone(runs))
+        }
+        _ => worker,
+    };
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
     worker.spawn(config.chat.worker_concurrency);
     tracing::info!(
@@ -574,6 +601,8 @@ pub(crate) async fn wire_workflow(
     tabular: &Arc<tabular::TabularService>,
     artifacts: &Arc<artifact::ArtifactStore>,
     data: (&Arc<data::DataStore>, &Arc<data::FsmStore>),
+    // http.request・`Shiki.http.request`・web.fetch が通す外への送信の中継（`egress.proxy_url`・GAP-72）。
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -594,6 +623,8 @@ pub(crate) async fn wire_workflow(
     let runs = workflow_engine::RunStore::new(db.clone(), config.workflow.lease_secs);
     let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz))
         .with_data((**data.0).clone());
+    // 消したワークフローに残る委譲の掃除（scheduler の tick・BUG-128）は、API と同じ委譲の経路を使う。
+    let registration = workflow_engine::RegistrationService::new(db.clone(), delegation.clone());
     let launcher =
         workflow_engine::WorkflowRunLauncher::new(delegation, (**workflows).clone(), runs.clone());
     let gateway = Arc::new(build_gateway(config, http, db)?);
@@ -612,12 +643,15 @@ pub(crate) async fn wire_workflow(
         tabular: Some(Arc::clone(tabular)),
         // skill.invoke の実行時解決（実行主体 ReBAC・fail-closed・#344）。
         skill_artifacts: Some(Arc::clone(artifacts)),
-        http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),
         // data ノード・`Shiki.data.*`（Task 15.7）は API と同じ DataStore / FsmStore を共有する。
         data: Arc::clone(data.0),
         fsms: Arc::clone(data.1),
+        // agent.invoke の web.search はチャットと同じ検索の設定を使う（BUG-6）。
+        web_search: crate::wiring_websearch::wire_websearch(config, http)?,
+        registration,
+        egress_proxy: egress_proxy.cloned(),
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))
@@ -716,8 +750,19 @@ pub(crate) fn wire_bug_report(
 
 #[cfg(test)]
 mod tests {
-    use super::{non_empty, primary_provider};
+    use super::{non_empty, primary_provider, provider_kind};
     use api::config::{LlmBackend, LlmConfig};
+
+    /// TypeSafe System One 互換（判定専用・実験的）は設定の backend 名で選べる（設定に書いたときだけ組まれる）。
+    #[test]
+    fn the_typesafe_backend_maps_to_its_provider_kind() {
+        let b: LlmBackend = serde_json::from_str("\"typesafe_systemone\"").unwrap();
+        assert_eq!(
+            provider_kind(b).unwrap(),
+            llm_gateway::ProviderKind::TypesafeSystemone
+        );
+        assert!(provider_kind(LlmBackend::Gemini).is_err());
+    }
 
     #[tokio::test]
     async fn bug_report_disabled_and_github_wiring_validate_startup() {

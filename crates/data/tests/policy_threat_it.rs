@@ -9,6 +9,14 @@
 //!    同一 Tx に破棄され、値が読めず・ソートに使えなくなる（PIT-71）
 //! ⑩ SSE 差分配信（Task 15.6）でも、見えない行・マスク列・可視→不可視の行の値が流れない
 //!    （PIT-73。購読者ごとに行述語とマスクを評価し、可視→不可視は id だけの removed）
+//! ⑫ テーブルの「追加だけ」（D-113）: 追加だけの人には自分が作った行だけが、どの経路でも見える
+//!    （[`submitter`]）
+//! ⑬ 作成者の列（D-122）: 作成者で埋まり書けない。行の決まりの比べがどの経路でも作成者で効き、申請者の列を
+//!    書き換えても作成者を除く判定をすり抜けられない（[`created_by`]）
+//! ⑭ 追加だけの人の出し直し（D-127）: 作成者の列で本人を指す進め方と書き込みの決まりの分だけ、自分のレコードを
+//!    直して進められる。他人のレコード・許していない状態と進め方・削除・取込は断る（[`resubmit`]）
+//! ⑮ ListObjects の応答の上限（BUG-161）: 上限の外の個別共有も見え、所属ロールが上限に届いたら fail-closed
+//!    （[`share_cap`]）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -43,6 +51,18 @@ use uuid::Uuid;
 /// 届くはずのイベントを待つ上限（届けばすぐ抜ける）。カバレッジ計測のビルドは遅く、共有 DB に先行テストの
 /// outbox が溜まっていると配信が数秒遅れるので、短すぎると誤って落ちる。
 const SSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[path = "policy_threat/submitter.rs"]
+mod submitter;
+
+#[path = "policy_threat/created_by.rs"]
+mod created_by;
+
+#[path = "policy_threat/resubmit.rs"]
+mod resubmit;
+
+#[path = "policy_threat/share_cap.rs"]
+mod share_cap;
 
 struct AllowRefs;
 
@@ -3351,6 +3371,23 @@ async fn structured_errors_and_table_definitions_never_reveal_masked_columns() {
     for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
         assert!(!text.contains(leak), "一覧 {leak}: {text}");
     }
+    // 名前で探す 1 ページ（GAP-42）も同じ規則で絞る。
+    let page = store
+        .list_tables_for_viewer_page(
+            &bob,
+            &data::TableListQuery {
+                q: Some("staff".into()),
+                cursor: None,
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    let text = serde_json::to_string(&page.items).unwrap();
+    for leak in ["emp_no", "secret_code", "bmgr", "hidden-row"] {
+        assert!(!text.contains(leak), "名前で探す一覧 {leak}: {text}");
+    }
     // carol（bmgr・owner ではない）は列は見えるが、ポリシーの定義は見えない。
     let seen = store
         .get_table_for_viewer(&carol, t.id, None)
@@ -4078,4 +4115,164 @@ async fn sales_answers(store: &DataStore, bob: &AuthContext) -> Vec<String> {
         });
     }
     out
+}
+
+/// ⑬ まとめ取り（承認の受信箱の読み直し・BUG-43）も、1 件の読取と同じ合成（行述語・ロール・個別共有・剥奪の
+/// 即時反映）で 1 本のクエリに載せる。不可視と不存在は区別しない（どちらも `None`）。テーブルが見えない主体には、
+/// 読取の口（`get_records`）は 404、候補の絞り込みの口（`filter_visible_records`・件数の `filter_visible_states`）は `None`。
+#[tokio::test]
+async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let f = fixture(pool, authz).await;
+    let missing = Uuid::new_v4();
+    let ids = [f.alice_rec, f.bob_rec, missing];
+    let seen = |rows: &[Option<data::DataRecord>]| -> Vec<Option<Uuid>> {
+        rows.iter().map(|r| r.as_ref().map(|r| r.id)).collect()
+    };
+    // 1 件の読取で見える行と同じ行だけが見える。
+    let single = |who: &AuthContext| {
+        let who = who.clone();
+        let store = f.store.clone();
+        let table = f.table_id;
+        async move {
+            let mut out = Vec::new();
+            for id in ids {
+                out.push(
+                    store
+                        .get_record(&who, table, id, None)
+                        .await
+                        .ok()
+                        .map(|r| r.id),
+                );
+            }
+            out
+        }
+    };
+    // 件数の口（状態だけ・BUG-43）も同じ行が見える。
+    let states_seen = |who: &AuthContext| {
+        let who = who.clone();
+        let store = f.store.clone();
+        let table = f.table_id;
+        async move {
+            store
+                .filter_visible_states(&who, table, &ids)
+                .await
+                .unwrap()
+                .map(|s| {
+                    ids.iter()
+                        .zip(s)
+                        .map(|(id, s)| s.map(|_| *id))
+                        .collect::<Vec<_>>()
+                })
+        }
+    };
+    for who in [&f.alice, &f.bob] {
+        let got = f
+            .store
+            .get_records(who, f.table_id, &ids, None)
+            .await
+            .unwrap();
+        assert_eq!(seen(&got), single(who).await, "{}", who.principal().id);
+        let filtered = f
+            .store
+            .filter_visible_records(who, f.table_id, &ids)
+            .await
+            .unwrap()
+            .expect("テーブルは見える");
+        assert_eq!(seen(&filtered.records), seen(&got));
+        assert_eq!(
+            states_seen(who).await,
+            Some(seen(&got)),
+            "{}",
+            who.principal().id
+        );
+    }
+    let got = f
+        .store
+        .get_records(&f.bob, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [None, Some(f.bob_rec), None]);
+
+    // ロールの述語: 経理になった bob には alice の行も見える。
+    join_role(&f.authz, &f.bob, "keiri").await;
+    let keiri = ctx(f.bob.tenant_id(), "bob");
+    let got = f
+        .store
+        .get_records(&keiri, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [Some(f.alice_rec), Some(f.bob_rec), None]);
+    assert_eq!(states_seen(&keiri).await, Some(seen(&got)));
+    f.authz
+        .delete_tuple(
+            &f.bob.subject(),
+            Relation::Member,
+            &f.bob.ns().role("keiri"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        states_seen(&keiri).await,
+        Some(vec![None, Some(f.bob_rec), None]),
+        "ロールを外すと直ちに見えない"
+    );
+
+    // 個別共有: 共有した行が追加で見え、解除で直ちに見えなくなる。
+    let carol = ctx(f.bob.tenant_id(), "carol");
+    f.authz_grant_editor(&carol, f.table_id).await;
+    let target = storage::ShareTarget::User { id: "carol".into() };
+    f.store
+        .share_record(
+            &f.alice,
+            f.table_id,
+            f.alice_rec,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = f
+        .store
+        .filter_visible_records(&carol, f.table_id, &ids)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(seen(&got.records), [Some(f.alice_rec), None, None]);
+    assert_eq!(states_seen(&carol).await, Some(seen(&got.records)));
+    f.store
+        .unshare_record(
+            &f.alice,
+            f.table_id,
+            f.alice_rec,
+            &target,
+            RecordShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = f
+        .store
+        .get_records(&carol, f.table_id, &ids, None)
+        .await
+        .unwrap();
+    assert_eq!(seen(&got), [None, None, None]);
+    assert_eq!(states_seen(&carol).await, Some(vec![None, None, None]));
+
+    // テーブルが見えない主体: 読取の口は 404（不在と同形）、絞り込みの口は None。
+    let dave = ctx(f.bob.tenant_id(), "dave");
+    let denied = f.store.get_records(&dave, f.table_id, &ids, None).await;
+    let absent = f.store.get_records(&dave, Uuid::new_v4(), &ids, None).await;
+    assert!(matches!(denied, Err(DataError::NotFound)), "{denied:?}");
+    assert_eq!(format!("{denied:?}"), format!("{absent:?}"));
+    assert!(f
+        .store
+        .filter_visible_records(&dave, f.table_id, &ids)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(states_seen(&dave).await, None);
 }

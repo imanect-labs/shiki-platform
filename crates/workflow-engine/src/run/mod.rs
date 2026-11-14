@@ -5,14 +5,23 @@
 //! - [`graph`]: IR から前進に必要な隣接情報を前計算する。
 //! - [`store`]: run/step の永続化（durable の claim/リース/fencing に載る）＋前進 TX。
 //! - [`worker`]: ready step を claim して実行し前進させるワーカーループ。
+//! - [`step_timeout`]: step の時間の上限（ノード種の既定と上限・打ち切りはやり直せる失敗）。
+//! - [`node_panic`]: ブロックの実行中の panic（捕まえて step を失敗にし、ワーカーを止めない・BUG-215）。
+//! - [`planned`]: run の予定の日時の由来と、手動の実行で試す値の読み方（GAP-88・GAP-89・GAP-90）。
 //!
 //! ノード種ごとの実処理は [`NodeExecutor`] トレイト裏（能力ノードは Task 10.6a/10.8/10.10）。
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
 
+pub mod failure;
 pub mod graph;
+pub mod launch_skip;
 pub mod launcher;
 pub mod model;
+pub mod node_panic;
+pub mod outcome;
+pub mod planned;
 pub mod readiness;
+pub mod step_timeout;
 pub mod store;
 pub mod worker;
 
@@ -21,11 +30,24 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub use launcher::{LauncherError, WorkflowRunLauncher};
+pub use launch_skip::{LaunchSkip, SkipCause};
+pub use launcher::{
+    record_try_run_allowed, try_run_audit_entry, LauncherError, RunTrial, WorkflowRunLauncher,
+    TRY_RUN_AUDIT_OBJECT_TYPE,
+};
 pub use model::{idempotency_key, RunStatus, StepStatus};
+pub use outcome::{
+    FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, ResumeAdvice, ResumeHint,
+    RunFailure, RunReply, WaitingFor,
+};
+pub use planned::{parse_trial_scheduled_at, ScheduledAtSource};
 pub use store::{
-    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, RunStatusReader, RunStore, RunStoreError, StepDetail, StepOverview,
+    ApprovalWait, CancelOutcome, DataWaitCandidate, DigestError, DigestMapCount, DigestRecord,
+    DigestSkip, DigestStep, DueApprovalCursor, DueApprovalPage, DueSweepLimits, EventWaitGate,
+    EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState, OwnOutcome, PendingApproval,
+    PromoteReport, RecordChange, ResolvedApproval, ResumeOutcome, RunDetail, RunDigest,
+    RunEventRow, RunListFilter, RunListItem, RunOrigin, RunOutcomeReader, RunStatusReader,
+    RunStore, RunStoreError, StepDetail, StepOverview, DIGEST_OUTPUT_CHARS, MAX_DIGEST_RECORDS,
     WORKFLOW_GC_QUEUE,
 };
 pub use worker::{ConcurrencyLimits, WorkerConfig, WorkflowWorker, DEFAULT_LEASE_SECS};
@@ -39,6 +61,11 @@ pub struct NodeContext {
     pub tenant_id: String,
     pub org: String,
     pub run_id: Uuid,
+    /// 実行を始めた時刻（`$from run` の日時の源・やり直しても同じ値・D-97）。
+    pub run_started_at: chrono::DateTime<chrono::Utc>,
+    /// 予定の日時（スケジュールの予定の時刻・手動の実行で指定した日時・親の run から引き継いだ日時の 3 つだけ・
+    /// [`planned`]。`None` なら実行情報の `scheduled_at` は始めた時刻・GAP-15）。
+    pub run_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub step_path: String,
     /// 冪等キー（attempt 非依存）。
     pub idempotency_key: String,
@@ -63,6 +90,58 @@ pub struct NodeContext {
     /// 「操作の要求スコープ ∈ scope_ceiling」を検証してから OpenFGA check を行う（二重ゲート）。
     /// run 開始時に declared ⊆ 委譲 が保証されるため実効スコープ = declared_scopes。
     pub scope_ceiling: Vec<String>,
+    /// 実行中の step を止める合図（run の取り消し・リースの喪失・時間の上限でワーカーが立てる・engine.md §9.3）。
+    /// 長く走るノード（agent.invoke）が手順の境界で見て止まる。ほかのノードは見なくてよい。時間の上限の期限も
+    /// 持つ（script は wasm をその期限で止める・engine.md §9.4）。
+    pub cancel: CancelSignal,
+    /// 実行中の run のワークフロー（ai.decide の決定キャッシュの範囲・T10）。ノード実行外・試験は nil。
+    pub workflow_id: Uuid,
+    /// ノードの step 属性 `cache`（ai.decide の決定キャッシュ・既定は使わない・ir.md §7.11）。
+    pub cache: Option<crate::ir::StepCache>,
+}
+
+/// 実行中の step を止める合図（[`NodeContext::cancel`]）。複製は同じ合図を共有する。
+///
+/// ワーカーは heartbeat が「取り消し要求あり」（`Some(true)`）か「リースを失った」（fencing 不一致・`None`）を
+/// 返したときに立てる。リースを失ったのに走り続けると、別のワーカーが同じ step を最初から走らせている間も
+/// 費用がかかり続ける（BUG-6 の R3）。
+#[derive(Debug, Clone, Default)]
+pub struct CancelSignal(std::sync::Arc<SignalState>);
+
+#[derive(Debug, Default)]
+struct SignalState {
+    cancelled: std::sync::atomic::AtomicBool,
+    /// step の時間の上限の期限（ワーカーが実行の前に置く・打ち切らない種は無い）。
+    deadline: std::sync::OnceLock<std::time::Instant>,
+}
+
+impl CancelSignal {
+    /// 合図を立てる（一度立てたら戻さない）。
+    pub fn cancel(&self) {
+        self.0
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// 合図が立っているか。
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// step の時間の上限の期限を置く（ワーカーが実行の前に 1 回だけ置く。2 回目からは変えない）。
+    pub fn set_deadline(&self, at: std::time::Instant) {
+        let _ = self.0.deadline.set(at);
+    }
+
+    /// 時間の上限の期限までの残り（期限が無ければ `None`・過ぎていれば 0）。
+    #[must_use]
+    pub fn remaining(&self) -> Option<std::time::Duration> {
+        self.0
+            .deadline
+            .get()
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
+    }
 }
 
 /// ノード実行の結果（成功/失敗と出力ポート）。
@@ -93,18 +172,24 @@ pub enum Suspend {
     /// wait(event): イベント購読で `waiting_event`。マッチャがイベント到来で起床する。
     Event {
         source: String,
-        /// テーブル/フォルダ束縛（祖先束縛あり）。
+        /// テーブル/フォルダ束縛（フォルダは祖先束縛あり・データ変更の record は停止時に解決済み）。
         scope: Value,
-        /// 条件木（イベントペイロードに対して評価・省略可）。
+        /// 条件木（イベントペイロードに対して評価・省略可）。イベント以外の参照は停止時に束縛済み。
         filter: Option<Value>,
         /// on_timeout の期限（None=無期限）。
         timeout_at: Option<DateTime<Utc>>,
         on_timeout: OnTimeout,
+        /// 行に束縛したデータ変更の wait の、停止時の行の rev（これ以下の変更では起きない・GAP-07）。
+        suspend_rev: Option<i64>,
     },
+    /// human.approval: 束縛した行の遷移を待つ（`waiting_event`。台帳・担当者・購読を checkpoint の同じ Tx で
+    /// 書く・GAP-08）。
+    Approval(Box<crate::approval::ApprovalSuspend>),
 }
 
-/// wait(event) のタイムアウト方針（ir.md §7.5）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// wait(event) のタイムアウト方針（ir.md §7.5）。承認の購読の spec にも `fail` / `continue` で載る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OnTimeout {
     /// 期限切れで run を失敗させる。
     Fail,

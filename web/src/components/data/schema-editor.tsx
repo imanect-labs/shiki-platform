@@ -117,8 +117,10 @@ export function SchemaEditor({
   // 属性の警告の材料（行ポリシー・マスク。owner には定義が返る）。
   const traits: TableTraits = React.useMemo(
     () => ({
-      rowPolicy: Boolean(table.schema.row_policy),
+      // 読む決まりが「全員」なら行の見え方は絞っていない（書き込みの決まりだけ・状態の進め方の既定・D-115）。
+      rowPolicy: Boolean(table.schema.row_policy && table.schema.row_policy.read !== "public"),
       masked: new Set((table.schema.field_policy ?? []).map((p) => p.field)),
+      stateField: table.schema.fsm_ref ? (table.schema.status_field ?? null) : null,
     }),
     [table.schema],
   );
@@ -306,8 +308,12 @@ export function SchemaEditor({
             {fields.map((f, i) => {
               const derived = isDerived(f.type);
               const reverse = Boolean(f.link?.reverse);
+              // 作成者の列はいつでも絞り込み・並べ替えに使える（サーバが追加した人の索引で引く）ので切り替えない。
               const canIndex =
-                !f.isNew && !(derived && f.materialization !== "invariant") && f.type !== "record_ref";
+                !f.isNew &&
+                !(derived && f.materialization !== "invariant") &&
+                f.type !== "record_ref" &&
+                f.type !== "created_by";
               const name = f.display_name || f.key;
               return (
                 <li key={f.key} data-testid={`schema-field-${f.key}`}>

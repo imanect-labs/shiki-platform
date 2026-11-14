@@ -186,6 +186,7 @@ function codeClassName(child: React.ReactNode): string | undefined {
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
 /// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
 /// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
+/// `external` は外から来た文章（ワークフローが画面に返した結果・エージェントの回答・GAP-09）。外部リンクにホスト名を添える。
 /// `page` は外部ページ由来の本文（Web ページの訳文）。図・表・引用番号にせず、リンク先を見せる。
 /// 数式と、出所の判定を通った画像だけは描く（docs/agent/web-translate.md §4.6）。
 /// `linkSources` は回答の出典のホスト（lib/answer-links）。あれば、出典に無い外部リンクは確認してから開く（#1143）。
@@ -194,6 +195,7 @@ const SourceContext = React.createContext<{
   text: string;
   streaming: boolean;
   untrusted: boolean;
+  external: boolean;
   page: boolean;
   imageSources: ImageSources;
   imageProxy: ImageProxy | null;
@@ -202,6 +204,7 @@ const SourceContext = React.createContext<{
   text: "",
   streaming: false,
   untrusted: false,
+  external: false,
   page: false,
   imageSources: NO_IMAGE_SOURCES,
   imageProxy: null,
@@ -226,6 +229,26 @@ function fenceMeta(node: ExtraProps["node"]): string | undefined {
   const code = node?.children?.[0];
   const meta = code && "data" in code ? (code.data as { meta?: unknown } | undefined)?.meta : undefined;
   return typeof meta === "string" ? meta.trim().split(/\s+/)[0] : undefined;
+}
+
+/// URL のホスト名（読めなければ空）。
+function hostOf(url: string): string {
+  try {
+    return new URL(url, typeof window !== "undefined" ? window.location.href : "https://localhost").host;
+  } catch {
+    return "";
+  }
+}
+
+/// 解決すると自分のオリジンになるリンクか（外から来た文章のホストの注記を省くだけに使う。遷移の判定は `isAppPath`）。
+/// サーバー側の描画（window が無い）では決められないので、自分のオリジンと見なさない（注記を出す側に倒す）。
+function isSameOrigin(url: string): boolean {
+  if (!url || typeof window === "undefined") return false;
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 /// 利用者が書いたリンク。表示の文字と行き先が違うときは行き先のホストを添える（文字で行き先を偽れない）。
@@ -388,6 +411,12 @@ function BlockedImage({
   );
 }
 
+/// 表のセルの寄せだけを取り出す（Markdown の表の区切り行の `:` から来る。ほかの style は受け取らない）。
+function cellAlign(style: React.CSSProperties | undefined): React.CSSProperties | undefined {
+  const align = style?.textAlign;
+  return align === "left" || align === "center" || align === "right" ? { textAlign: align } : undefined;
+}
+
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
 /// ノートの ```ui の図（NodeView）も同じ描き方にする。
 export function renderFigureTable(markdown: string) {
@@ -455,7 +484,7 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
 
 /// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
 function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
-  const { untrusted, page, linkSources } = React.useContext(SourceContext);
+  const { untrusted, external, page, linkSources } = React.useContext(SourceContext);
   const url = href ?? "";
   // 外部ページの本文のリンクも、引用番号・アプリ内の遷移にしない（http(s) だけ・行き先のホストを見せる）。
   if (untrusted || page) return <UserLink href={url}>{children}</UserLink>;
@@ -497,10 +526,20 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
       );
     }
   }
-  return (
+  const link = (
     <a href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
       {children}
     </a>
+  );
+  // 外から来た文章の外部リンクにはホスト名を添える（釣りのリンクに気づきやすくする・GAP-09）。自分のオリジンへの
+  // 絶対 URL・相対リンクには添えない（BUG-276）。
+  const host = external && !isSameOrigin(url) ? hostOf(url) : "";
+  if (!host) return link;
+  return (
+    <>
+      {link}
+      <span className="ml-0.5 text-[0.85em] text-muted-foreground">（{host}）</span>
+    </>
   );
 }
 
@@ -601,16 +640,23 @@ const components: Components = {
   thead({ children }) {
     return <thead className="bg-muted/50">{children}</thead>;
   },
-  th({ children }) {
+  // 列の寄せ（`---:` の右寄せ・`:---:` の中央）は react-markdown が style の textAlign で渡す。落とさずに使う（BUG-299）。
+  th({ children, style }) {
     return (
-      <th className="whitespace-nowrap border-b border-border px-3 py-2 text-left font-semibold">
+      <th
+        className="whitespace-nowrap border-b border-border px-3 py-2 text-left font-semibold"
+        style={cellAlign(style)}
+      >
         {children}
       </th>
     );
   },
-  td({ children }) {
+  td({ children, style }) {
     return (
-      <td className="min-w-[7rem] border-b border-border/60 px-3 py-2 [overflow-wrap:break-word]">
+      <td
+        className="min-w-[7rem] border-b border-border/60 px-3 py-2 [overflow-wrap:break-word]"
+        style={cellAlign(style)}
+      >
         {children}
       </td>
     );
@@ -634,6 +680,7 @@ export function Markdown({
   streaming = false,
   breaks = false,
   untrusted = false,
+  external = false,
   page = false,
   imageSources = NO_IMAGE_SOURCES,
   imageProxy = null,
@@ -648,6 +695,9 @@ export function Markdown({
   /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
   /// リンクには行き先のホストを添える。
   untrusted?: boolean;
+  /// 外から来た文章（ワークフローが画面に返した結果・エージェントの回答・GAP-09）。外部リンクにホスト名を添える。
+  /// 図・表は描く（操作は呼び出し側が無効の文脈で包む）。画像は `imageSources` に無いので読み込まずリンクにする。
+  external?: boolean;
   /// 外部ページ由来の本文（Web ページの訳文）。図・表・引用番号・アプリ内リンクにせず、リンクには
   /// 行き先のホストを添える。数式は描き、画像は `imageSources` の出所の判定に従う。
   page?: boolean;
@@ -672,7 +722,9 @@ export function Markdown({
         className,
       )}
     >
-      <SourceContext.Provider value={{ text, streaming, untrusted, page, imageSources, imageProxy, linkSources }}>
+      <SourceContext.Provider
+        value={{ text, streaming, untrusted, external, page, imageSources, imageProxy, linkSources }}
+      >
         <ReactMarkdown
           remarkPlugins={[
             remarkGfm,

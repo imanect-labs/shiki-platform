@@ -6,19 +6,19 @@
 //!
 //! - `.shiki` script を持つ skill → script-runtime（script.run と同じ engine/HostBridge・
 //!   `Shiki.*` は同じ能力ゲートウェイに合流＝scope ceiling が効く）
-//! - instructions のみの skill → agent.invoke 経路（サンドボックス・egress 全遮断）
+//! - instructions のみの skill → llm.invoke 経路（instructions を system・入力を prompt にした 1 回の生成）
 
 use serde_json::{json, Value};
 
-use crate::control::eval::resolve_value;
 use crate::ir::params::SkillInvokeParams;
 use crate::ir::validate::parse_skill_ref;
 use crate::run::NodeContext;
 
 use super::capability::parse_params;
+use super::capability_ai::resolved_model;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{ExecCtx, LlmInvokeReq, PortError};
-use super::resolver::ParamResolver;
+use super::resolver::{opt_param, ParamResolver};
 
 impl CapabilityNodeExecutor {
     pub(super) async fn node_skill_invoke(
@@ -39,10 +39,8 @@ impl CapabilityNodeExecutor {
         // 実行時再検証（保存時 OK でもアンインストール/剥奪で消えている・fail-closed）。
         let skill = self.ports.skill_resolve(ec, name, version).await?;
 
-        let input = p
-            .input
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
+        // input を省いたときだけステップ入力を渡す（書いた参照が解決できなければ失敗・BUG-13）。
+        let input = opt_param(p.input.as_ref(), r, "skill.invoke: input")?
             .unwrap_or_else(|| ctx.input.clone());
 
         let out = if let Some(source) = &skill.shiki_script {
@@ -50,7 +48,8 @@ impl CapabilityNodeExecutor {
             let engine = self
                 .script_engine
                 .as_ref()
-                .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+                // スクリプトを動かす仕組みの無い構成（作成者には直せない・やり直しても同じ・BUG-175・付録 D）。
+                .ok_or_else(|| super::ports::not_configured("スクリプトを持つスキル"))?
                 .get()
                 .await
                 .map_err(|e| {
@@ -79,11 +78,10 @@ impl CapabilityNodeExecutor {
             .await?
         } else {
             // instructions のみ: llm.invoke 経路（instructions を system・入力を prompt に）。
-            // agent_invoke ポートはコードのサンドボックス実行（ExecRequest::Python）であり、
-            // 自然言語 instructions を code として渡すと Python として実行されてしまう
-            // （レビュー指摘）。エージェンティックなツールループが要るスキルはチャット側の
-            // skill ツール（PR #354）が担い、ワークフローの instructions-only skill は
-            // 「skill 指示付きの LLM 呼び出し」として実行する。
+            // エージェンティックなツールループが要るスキルはチャット側の skill ツール（PR #354）が担い、
+            // ワークフローの instructions-only skill は「skill 指示付きの LLM 呼び出し」として実行する
+            // （agent.invoke のツールループへ移すかは後で決める・BUG-6）。モデルは指定しない（ポートが
+            // 実行主体の組織の既定で解決する・BUG-12）。
             self.rate_check(ec, "llm.invoke").await?;
             self.ports
                 .llm_invoke(
@@ -94,17 +92,23 @@ impl CapabilityNodeExecutor {
                         prompt: input.to_string(),
                         max_tokens: None,
                         idempotency_key: ctx.idempotency_key.clone(),
+                        effort: None,
+                        output_schema: None,
+                        repair: None,
+                        call_suffix: None,
                     },
                 )
-                .await?
+                .await
+                .map(super::capability_ai::without_stop_reason)?
         };
 
-        self.audit(
-            &ec.tenant_id,
-            "skill.invoke",
-            true,
-            &json!({ "skill": p.skill, "via": if skill.shiki_script.is_some() { "script" } else { "llm" } }),
-        );
+        // llm 経由のときは実際に使ったモデル（組織の既定で解決した名前）も残す。
+        let meta = if skill.shiki_script.is_some() {
+            json!({ "skill": p.skill, "via": "script" })
+        } else {
+            json!({ "skill": p.skill, "via": "llm", "model": resolved_model(&out, None) })
+        };
+        self.audit(&ec.tenant_id, "skill.invoke", true, &meta);
         Ok(out)
     }
 }

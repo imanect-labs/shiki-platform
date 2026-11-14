@@ -33,6 +33,7 @@ fn message(role: Role, files: &[(&str, &str)]) -> Message {
         invoked_actions: vec![],
         bound_actions: vec![],
         ui_runs: vec![],
+        stop_reason: None,
         created_at: chrono::Utc::now(),
     }
 }

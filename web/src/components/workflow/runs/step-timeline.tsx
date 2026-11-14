@@ -21,20 +21,37 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { STORAGE_READ_INDEX_WAIT_MAX_MINUTES } from "@/generated/workflow-catalog";
 import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-api";
 import { nodeIcon } from "@/components/workflow/editor/icons";
-import { formatDateTime, STEP_STATUS_LABELS } from "./status";
+import { AgentResult, isAgentOutput } from "./agent-result";
+import { DecideRaised } from "./decide-result";
+import { formatDateTime, STEP_STATUS_LABELS, WAITING_LABELS } from "./status";
+import { nodePortLabel } from "../port-labels";
 
-/// node_id → 表示情報（run にピンされた version の IR から引く）。
-export type NodeInfo = { label: string; type: string };
+/// node_id → 表示情報（run にピンされた version の IR から引く）。`params` は出口の名前（判定の選択肢の名前）を
+/// 引くのに使う。
+export type NodeInfo = { label: string; type: string; params?: unknown };
 
-const PORT_LABELS: Record<string, string> = {
-  true: "はい",
-  false: "いいえ",
-  error: "エラー時",
-  timeout: "時間切れ",
-  default: "その他",
-};
+/// step の状態の文言。待っている step は、サーバーが返す待っているもの（承認・変更・時刻）で言う
+/// （保留中の承認の台帳があれば承認待ち・GAP-08・BUG-119）。
+function stepStatusLabel(step: StepOverview): string {
+  if (step.waitingFor === "approval") return `${WAITING_LABELS.approval}（承認者の「承認」の画面に出ています）`;
+  // 取り込みを待つ間は失敗にせず、試す回数を使わずに読み直す（待つ上限は Rust の定数から生成した値・D-125）。
+  if (step.waitingFor === "index") return "ファイルの取り込みを待っています";
+  if (step.waitingFor) return WAITING_LABELS[step.waitingFor];
+  return STEP_STATUS_LABELS[step.status] ?? step.status;
+}
+
+/// やり直しを待つ step の、次に動く時刻の文。取り込みを待つ step は試す回数を使わないので、何回目かによらず出す。
+function retryAtLabel(step: StepOverview): string | null {
+  if (!step.nextRetryAt || step.status !== "ready") return null;
+  if (new Date(step.nextRetryAt).getTime() <= Date.now()) return null;
+  if (step.waitingFor === "index") {
+    return `${formatDateTime(step.nextRetryAt)} にもう一度読みます（最大 ${STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待ちます）`;
+  }
+  return step.attempt > 0 ? `${formatDateTime(step.nextRetryAt)} にもう一度実行します` : null;
+}
 
 function statusIcon(status: string): React.ReactNode {
   switch (status) {
@@ -57,12 +74,13 @@ function statusIcon(status: string): React.ReactNode {
   }
 }
 
-function errorMessage(error: unknown): string | null {
+/// step の誤りの文言と、添えるコード（`actor_unavailable` など）。コードは文言の後ろに括弧で添えて出す。
+function errorMessage(error: unknown): { text: string; code: string | null } | null {
   if (!error) return null;
-  if (typeof error === "string") return error;
+  if (typeof error === "string") return { text: error, code: null };
   const e = error as { message?: string; code?: string };
-  if (e.message) return e.code ? `${e.message}（${e.code}）` : e.message;
-  return JSON.stringify(error);
+  if (e.message) return { text: e.message, code: e.code || null };
+  return { text: JSON.stringify(error), code: null };
 }
 
 function JsonBlock({ title, value }: { title: string; value: unknown }) {
@@ -95,6 +113,7 @@ function StepRow({
   const failed = step.status === "failed";
   const running = step.status === "running";
   const message = errorMessage(step.error);
+  const retryAt = retryAtLabel(step);
   const expandable = step.hasOutput || step.error !== null;
   const Icon = info ? nodeIcon(info.type) : null;
 
@@ -145,28 +164,41 @@ function StepRow({
               .filter((p) => p !== "next" && p !== "out")
               .map((p) => (
                 <Badge key={p} variant="muted" className="px-1.5 py-0 text-[10px]">
-                  {PORT_LABELS[p] ?? p}
+                  {nodePortLabel(info ?? undefined, p)}
                 </Badge>
               ))}
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span>{STEP_STATUS_LABELS[step.status] ?? step.status}</span>
+            <span>{stepStatusLabel(step)}</span>
             {step.stepPath !== step.nodeId ? (
               <span className="truncate font-mono">{step.stepPath}</span>
             ) : null}
             {step.wakeAt && step.status.startsWith("waiting") ? (
               <span>{formatDateTime(step.wakeAt)} に再開予定</span>
             ) : null}
-            {/* next_retry_at は実行リースにも使われるため、待ち状態のときだけ意味を持つ */}
-            {step.nextRetryAt &&
-            (step.status === "pending" || step.status === "ready") ? (
-              <span>{formatDateTime(step.nextRetryAt)} に再試行</span>
-            ) : null}
+            {/* next_retry_at は実行リースにも使われ、作ったときの時刻も入っている。やり直しを待つ
+                （1 回は試した・順番待ちに戻った・取り込みを待つ・まだ来ていない時刻）ときだけ出す。前のブロックを
+                待つ step はやり直さないので出さない。 */}
+            {retryAt ? <span data-testid="step-retry-at">{retryAt}</span> : null}
           </span>
           {failed && message ? (
             <span className="mt-1 flex items-start gap-1 text-[11px] text-destructive">
               <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden />
-              <span className="min-w-0 break-all">{message}</span>
+              {/* 文言は語の区切りで折り、収まらない長い語だけを途中で折る。コードは語の途中で折らない
+                  （括弧ごと 1 つの塊にし、行に収まらなければ次の行へ送る。1 行にも収まらなければ省略する・
+                  全文は開いたときの「エラーの詳細」と title に出る・BUG-72）。 */}
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                {message.text}
+                {message.code ? (
+                  <span
+                    className="inline-block max-w-full truncate align-bottom"
+                    title={message.code}
+                    data-testid="step-error-code"
+                  >
+                    （{message.code}）
+                  </span>
+                ) : null}
+              </span>
             </span>
           ) : null}
         </span>
@@ -193,6 +225,12 @@ function StepRow({
             <>
               {detail.error != null ? (
                 <JsonBlock title="エラーの詳細" value={detail.error} />
+              ) : null}
+              {info?.type === "agent.invoke" && isAgentOutput(detail.output) ? (
+                <AgentResult output={detail.output} />
+              ) : null}
+              {info?.type === "ai.decide" ? (
+                <DecideRaised output={detail.output} params={info.params} />
               ) : null}
               {detail.output !== null && detail.output !== undefined ? (
                 <JsonBlock title="このブロックの結果" value={detail.output} />

@@ -76,12 +76,15 @@ pub enum UiActionResult {
 /// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
 /// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
 pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
-    match e {
-        ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
+    let invalid = |m: &str| {
+        ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,
             "title": "Bad Request",
             "errors": [{ "code": "ui_action.invalid", "message": m }],
-        })),
+        }))
+    };
+    match e {
+        ActionError::Invalid(m) => invalid(&m),
         other => map_action_err(other),
     }
 }
@@ -104,6 +107,10 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
                 "field": field,
                 "progress": progress,
             }))
+        }
+        // ミニアプリの、使う人に出していない版のボタン・表（開いた後に公開した版が変わった・D-16）。
+        ActionError::AppVersionChanged { published } => {
+            super::gui_errors::app_version_conflict(published)
         }
         ActionError::Internal(m) => ApiError::Internal(m),
     }
@@ -187,6 +194,43 @@ pub async fn invoke_chat_ui_action(
     Ok(Json(UiActionResponse { result }))
 }
 
+/// 本人が会話の図のボタンで起動した 1 件（ワークフローが画面に返した結果を必ず付ける・GAP-09）。
+///
+/// スレッドの取得は、結果を未確定の run とメッセージごとの最新の終わった 1 件にだけ付ける。古い行を開いたときは
+/// これで読む。会話の閲覧者で、その run を押した本人のときだけ返す（他人が押した run は存在を区別せず 404）。
+#[utoipa::path(
+    get,
+    path = "/threads/{thread_id}/ui-runs/{run_id}",
+    params(
+        ("thread_id" = Uuid, Path, description = "スレッド ID"),
+        ("run_id" = Uuid, Path, description = "起動した run の ID"),
+    ),
+    responses(
+        (status = 200, description = "起動の記録と結果", body = chat::UiActionRun),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "会話を読めない"),
+        (status = 404, description = "存在しない・本人が押した run ではない"),
+        (status = 503, description = "チャットが無効"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn get_chat_ui_run(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((thread_id, run_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<chat::UiActionRun>, ApiError> {
+    let chat = state
+        .chat
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("チャットが無効です".into()))?;
+    let run = chat
+        .my_ui_run(&ctx, thread_id, run_id, trace.as_deref())
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(run))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -213,6 +257,32 @@ mod tests {
         };
         assert_eq!(body["code"], "index_preparing");
         assert_eq!(body["field"], "dept");
+        // 開いた後に公開した版が変わったミニアプリのボタンは、二重送信（素の 409）と見分けられる構造化した 409
+        // （画面は開き直しを促す・D-16）。まだ公開していなければ not_published。
+        let ApiError::ConflictJson(body) =
+            map_yui_action_err(ActionError::AppVersionChanged { published: Some(3) })
+        else {
+            unreachable!("公開した版の変化は構造化した 409")
+        };
+        assert_eq!(body["code"], "app_version_changed");
+        assert_eq!(body["published_version"], 3);
+        let ApiError::ConflictJson(body) =
+            map_yui_action_err(ActionError::AppVersionChanged { published: None })
+        else {
+            unreachable!("未公開も構造化した 409")
+        };
+        assert_eq!(body["code"], "not_published");
+        // 解決（開く）の誤りも同じ形にする。汎用の版の口は、見つからないのと同じ 404。
+        let ApiError::ConflictJson(body) = super::super::gui_errors::map_gui_err(
+            gui::GuiError::Artifact(artifact::ArtifactError::NotPublished { published: Some(2) }),
+        ) else {
+            unreachable!("ミニアプリの口は構造化した 409")
+        };
+        assert_eq!(body["code"], "app_version_changed");
+        assert!(matches!(
+            ApiError::from(artifact::ArtifactError::NotPublished { published: Some(2) }),
+            ApiError::NotFound
+        ));
     }
 
     /// OpenAPI の [`UiActionResult`] が `gui::ActionDispatcher` の組む JSON と同じ形であること

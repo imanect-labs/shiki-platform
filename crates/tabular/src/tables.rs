@@ -11,23 +11,15 @@
 //!   [`is_valid_table_name`] を通す（多層防御）。
 //! - 追加テーブル数は [`MAX_EXTRA_TABLES`] まで（1 プロセスに載せるファイル数の上限）。
 
-use std::collections::HashSet;
-
 use uuid::Uuid;
 
 use crate::error::TabularError;
 
-/// 主ファイルのテーブル名（既存の単一 CSV クエリと同じ）。
-pub const PRIMARY_TABLE: &str = "data";
-
-/// 1 クエリで追加できるテーブル数の上限（主ファイルを含まない）。
-pub const MAX_EXTRA_TABLES: usize = 8;
-
-/// テーブル名の最大長（DuckDB の識別子としても十分短い）。
-const MAX_NAME_LEN: usize = 63;
-
-/// [`is_valid_table_name`] と同じ規則の正規表現（JSON Schema 等へ出す用・単一定義）。
-pub const TABLE_NAME_PATTERN: &str = "^[a-z_][a-z0-9_]{0,62}$";
+// 名前の決まり（形・上限・主ファイルの名前）はランナーと共有するクレートにある（ランナーも同じ関数で再検証する・GAP-95）。
+pub use tabular_protocol::tables::{
+    is_valid_table_name, table_name_issue, too_many_tables, TableNameIssue, MAX_EXTRA_TABLES,
+    PRIMARY_TABLE, TABLE_NAME_PATTERN,
+};
 
 /// 追加テーブル（利用者が付けた名前 → CSV ファイル）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,49 +30,30 @@ pub struct TableRef {
     pub file_id: Uuid,
 }
 
-/// テーブル名として安全か（英小文字/数字/`_`・先頭は数字以外・63 文字以内）。
-///
-/// 引用符・空白・ドット・非 ASCII を一切許さないため、`CREATE TABLE "<name>"` へ埋め込んでも
-/// 識別子の外へ出られない。ランナーもこの関数で再検証する。
-pub fn is_valid_table_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    if bytes.is_empty() || bytes.len() > MAX_NAME_LEN {
-        return false;
-    }
-    let head_ok = bytes[0].is_ascii_lowercase() || bytes[0] == b'_';
-    head_ok
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
-}
-
 /// 追加テーブル指定を検証する（名前の形・`data` との衝突・重複・上限）。
 pub fn validate_tables(tables: &[TableRef]) -> Result<(), TabularError> {
-    if tables.len() > MAX_EXTRA_TABLES {
+    if too_many_tables(tables.len()) {
         return Err(TabularError::InvalidTables(format!(
             "追加できるテーブルは {MAX_EXTRA_TABLES} 個までです（{} 個指定）",
             tables.len()
         )));
     }
-    let mut seen = HashSet::with_capacity(tables.len());
-    for t in tables {
-        if !is_valid_table_name(&t.name) {
-            return Err(TabularError::InvalidTables(format!(
+    for (i, t) in tables.iter().enumerate() {
+        let earlier = tables[..i].iter().map(|e| e.name.as_str());
+        let message = match table_name_issue(&t.name, earlier) {
+            None => continue,
+            Some(TableNameIssue::Shape) => format!(
                 "テーブル名 `{}` は使えません（英小文字・数字・_ のみ、先頭は数字以外、63 文字以内）",
                 t.name
-            )));
-        }
-        if t.name == PRIMARY_TABLE {
-            return Err(TabularError::InvalidTables(format!(
-                "テーブル名 `{PRIMARY_TABLE}` は主ファイルに予約されています"
-            )));
-        }
-        if !seen.insert(t.name.as_str()) {
-            return Err(TabularError::InvalidTables(format!(
-                "テーブル名 `{}` が重複しています",
-                t.name
-            )));
-        }
+            ),
+            Some(TableNameIssue::Reserved) => {
+                format!("テーブル名 `{PRIMARY_TABLE}` は主ファイルに予約されています")
+            }
+            Some(TableNameIssue::Duplicate) => {
+                format!("テーブル名 `{}` が重複しています", t.name)
+            }
+        };
+        return Err(TabularError::InvalidTables(message));
     }
     Ok(())
 }
@@ -93,39 +66,6 @@ mod tests {
         TableRef {
             name: name.into(),
             file_id: Uuid::nil(),
-        }
-    }
-
-    /// 正規表現の定数と判定関数が同じ規則であること（片方だけ変えて食い違わせない）。
-    #[test]
-    fn pattern_matches_validator_rules() {
-        // 長さの上限は MAX_NAME_LEN と同じ（先頭 1 文字＋残り MAX_NAME_LEN-1 文字）。
-        assert!(TABLE_NAME_PATTERN.contains(&format!("{{0,{}}}", MAX_NAME_LEN - 1)));
-        assert!(TABLE_NAME_PATTERN.starts_with("^[a-z_][a-z0-9_]"));
-    }
-
-    #[test]
-    fn accepts_simple_identifiers() {
-        for n in ["orders", "_tmp", "t1", "customer_master", &"a".repeat(63)] {
-            assert!(is_valid_table_name(n), "should accept: {n}");
-        }
-    }
-
-    #[test]
-    fn rejects_unsafe_identifiers() {
-        for n in [
-            "",
-            "1abc",
-            "Orders",
-            "my table",
-            "a\"b",
-            "a;drop",
-            "main.data",
-            "顧客",
-            "a-b",
-            &"a".repeat(64),
-        ] {
-            assert!(!is_valid_table_name(n), "should reject: {n:?}");
         }
     }
 

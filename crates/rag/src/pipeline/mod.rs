@@ -1,7 +1,8 @@
 //! インジェスト・パイプライン（Task 2.8/2.9）。
 //!
 //! storage の outbox（Task 1.8）→ jobq（`rag_ingest` キュー）→ consumer
-//! （parse → chunk → embed → Qdrant/Tantivy/rag_chunk）の配線。
+//! （parse → chunk → embed → Qdrant/Tantivy/rag_chunk）の配線。取り込みの記録が無いファイルのまとめての
+//! 取り込み（[`backfill`]・D-126）も、リーダーが outbox へ少しずつ積む。
 //!
 //! # リーダー選出（advisory lock）
 //!
@@ -10,10 +11,12 @@
 //! ライタ二重起動が構造的に起きない。ロック接続が切れたら自動で再獲得を試みる
 //! （その間、待機プロセスが昇格する）。
 
+pub mod backfill;
 pub mod consumer;
 pub mod indexer;
 pub mod job_state;
 pub mod relay;
+mod text_source;
 
 use std::sync::Arc;
 
@@ -147,7 +150,23 @@ async fn run_as_leader(deps: &Arc<PipelineDeps>) -> Result<(), crate::error::Rag
         }
     };
 
-    // どちらも無限ループ。ロック接続の死活を監視し、切れたら返ってリーダー再選出へ。
+    // 取り込みの記録が無いファイルのまとめての取り込み（D-126）。リーダーだけが少しずつ outbox へ積む。
+    let backfill_deps = Arc::clone(deps);
+    let backfill_loop = async move {
+        loop {
+            let pause = match backfill::step_once(&backfill_deps).await {
+                Ok(backfill::StepOutcome::Advanced { done: false, .. }) => backfill::BUSY,
+                Ok(_) => backfill::IDLE,
+                Err(e) => {
+                    tracing::error!(error = %e, "取り込みのまとめての取り込みに失敗（次周期で再試行）");
+                    backfill::IDLE
+                }
+            };
+            tokio::time::sleep(pause).await;
+        }
+    };
+
+    // どれも無限ループ。ロック接続の死活を監視し、切れたら返ってリーダー再選出へ。
     // 接続が生きたまま抜ける経路（select の他アーム完了）ではロック解放のため接続を返す。
     let health_loop = async move {
         loop {
@@ -168,6 +187,7 @@ async fn run_as_leader(deps: &Arc<PipelineDeps>) -> Result<(), crate::error::Rag
     let mut lock_conn = tokio::select! {
         () = relay_loop => None,
         () = consume_loop => None,
+        () = backfill_loop => None,
         conn = health_loop => conn,
     };
     // 接続がまだ生きている経路では advisory lock を明示解放する（sqlx は pool 返却時に

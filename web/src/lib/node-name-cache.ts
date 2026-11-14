@@ -154,6 +154,34 @@ export function isUnresolvable(id: string): boolean {
   return !!hit && hit.name === null && Date.now() - hit.at < TTL_MS;
 }
 
+/// 覚えている名前（未解決・期限切れは `undefined`、削除済み・権限なしと確定した id は `null`）。
+///
+/// フックを使わずに描く場所（データのグリッドの canvas のセル）用。引くのは {@link resolveNodeNames}。
+export function cachedNodeName(id: string): string | null | undefined {
+  const hit = resolved.get(id);
+  if (!hit || Date.now() - hit.at >= TTL_MS) return undefined;
+  return hit.name;
+}
+
+/// 同時に引く数（1 件 1 リクエストなので、表の行が多くても一度に送りすぎない）。
+const RESOLVE_CONCURRENCY = 6;
+
+/// 取り直しが要る id の名前を引く（同じ id の同時要求は 1 本にまとめる）。何か引いたら true（名前が引けなかった
+/// id も「開けない」と確定するので、呼び出し側は描き直す）。
+export async function resolveNodeNames(ids: Iterable<string>): Promise<boolean> {
+  const todo = [...new Set(ids)].filter((id) => id && isStale(id));
+  if (todo.length === 0) return false;
+  let next = 0;
+  const work = async () => {
+    while (next < todo.length) {
+      const id = todo[next++];
+      await fetchName(id);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(RESOLVE_CONCURRENCY, todo.length) }, work));
+  return true;
+}
+
 /// 取り直し時刻を過ぎた・未解決なら再取得が要る。
 function isStale(id: string): boolean {
   const hit = resolved.get(id);

@@ -12,6 +12,12 @@
 //! | `workflow_run` | 本モジュールが直接 DELETE |
 //! | `step_execution` / `run_event` / `wait_subscription` | FK の `ON DELETE CASCADE` |
 //! | `effect_journal` | run に FK で紐づかないので TTL で別途 DELETE（§7.3） |
+//! | `llm_decision_cache` | ai.decide の決定キャッシュ。期限切れ・保持期間より前に書いた行・ワークフローが無い行を DELETE |
+//!
+//! 決定キャッシュ（llm-gateway が読み書きする・ir.md §7.11）は判定の答え（確率込み）を持つので、run の step の
+//! 出力と同じく保持期間を超えて残さない（D-52 の H5）。ワークフローの論理削除ではトリガが同じ TX で消す
+//! （migration 0131）ので、ここで拾うのは期限切れ・保持期間切れと、削除と同時に走っていた run が後から書いた行・
+//! テナントの消去で artifact ごと消えた行。
 //!
 //! **削除は必ずバッチで行う。** 数百万行を 1 トランザクションで消すと、長時間のロックと巨大な
 //! WAL を生んで本番を止める。1 バッチごとにコミットし、消えなくなるまで繰り返す。
@@ -54,6 +60,9 @@ pub struct GcReport {
     pub runs_deleted: u64,
     /// 削除した effect_journal の行数。
     pub journal_deleted: u64,
+    /// 削除した決定キャッシュ（llm_decision_cache）の行数。
+    #[serde(default)]
+    pub decision_cache_deleted: u64,
     /// バッチ上限に当たって消し残した場合 true（次回の日次ジョブが続きを消す）。
     pub truncated: bool,
     /// 失敗して飛ばしたテナント数。1 件でもあればジョブ全体を Err にして jobq に再試行させる。
@@ -138,6 +147,26 @@ const PURGE_JOURNAL_SQL: &str = "\
      WHERE e.tenant_id = v.tenant_id AND e.idempotency_key = v.idempotency_key \
      RETURNING e.created_at";
 
+/// 決定キャッシュの掃除（1 バッチ）。`$1`=tenant_id・`$2`=保持日数・`$3`=件数。
+///
+/// 期限切れ（`expires_at`）・保持期間より前に書いた行（`created_at`・ノードの期限が保持期間より長くても）・
+/// ワークフローが無い行（論理削除済み・物理削除済み）を消す。候補は `ctid` で固定してから消す（0129 の書き込み時の
+/// 掃除と同じ形）。キャッシュは消しても外れになるだけなので、ロックの順序は気にしない。
+const PURGE_DECISION_CACHE_SQL: &str = "\
+    DELETE FROM llm_decision_cache WHERE ctid = ANY(ARRAY( \
+        SELECT c.ctid FROM llm_decision_cache c \
+         WHERE c.tenant_id = $1 \
+           AND (c.expires_at <= now() \
+                OR c.created_at < now() - make_interval(days => $2) \
+                OR NOT EXISTS ( \
+                    SELECT 1 FROM artifact a \
+                     WHERE a.tenant_id = c.tenant_id AND a.id = c.workflow_id \
+                       AND a.deleted_at IS NULL)) \
+         LIMIT $3))";
+
+/// 1 バッチで消す決定キャッシュの行数（1 行が小さく CASCADE も無い）。
+const DECISION_CACHE_BATCH: i64 = 2_000;
+
 impl RunStore {
     /// **1 テナント分**の保持期間 GC を実行する（外部から呼べる唯一の入口）。
     ///
@@ -178,9 +207,10 @@ impl RunStore {
         let mut last_error = None;
         for (tenant_id, days) in tenants {
             match self.purge_one_tenant(&tenant_id, days).await {
-                Ok((runs, journal, left)) => {
+                Ok((runs, journal, decisions, left)) => {
                     report.runs_deleted += runs;
                     report.journal_deleted += journal;
+                    report.decision_cache_deleted += decisions;
                     report.truncated |= left;
                 }
                 Err(e) => {
@@ -199,18 +229,31 @@ impl RunStore {
         Ok(report)
     }
 
-    /// 1 テナント分を消す。戻り値は (run 削除数, journal 削除数, 消し残しの有無)。
+    /// 1 テナント分を消す。戻り値は (run 削除数, journal 削除数, 決定キャッシュの削除数, 消し残しの有無)。
     async fn purge_one_tenant(
         &self,
         tenant_id: &str,
         days: i32,
-    ) -> Result<(u64, u64, bool), RunStoreError> {
+    ) -> Result<(u64, u64, u64, bool), RunStoreError> {
         // run を先に消す。journal はその結果（run 行の消滅）を見て消せるようになる。
         let (runs, runs_left) = self
             .purge_in_batches(PURGE_RUNS_SQL, tenant_id, days, RUN_BATCH)
             .await?;
         let (journal, journal_left) = self.purge_journal_in_batches(tenant_id, days).await?;
-        Ok((runs, journal, runs_left || journal_left))
+        let (decisions, decisions_left) = self
+            .purge_in_batches(
+                PURGE_DECISION_CACHE_SQL,
+                tenant_id,
+                days,
+                DECISION_CACHE_BATCH,
+            )
+            .await?;
+        Ok((
+            runs,
+            journal,
+            decisions,
+            runs_left || journal_left || decisions_left,
+        ))
     }
 
     /// 1 テナント分を「消えなくなるまで」バッチ削除する。戻り値は (削除数, 消し残しの有無)。
@@ -442,6 +485,7 @@ impl HistoryGcWorker {
                     Ok(Some(report)) => tracing::info!(
                         runs_deleted = report.runs_deleted,
                         journal_deleted = report.journal_deleted,
+                        decision_cache_deleted = report.decision_cache_deleted,
                         truncated = report.truncated,
                         failed_tenants = report.failed_tenants,
                         "実行履歴 GC を実行しました"

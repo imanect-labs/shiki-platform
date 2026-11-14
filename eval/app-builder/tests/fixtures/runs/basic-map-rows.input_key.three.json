@@ -1,0 +1,168 @@
+{
+ "task": "basic-map-rows",
+ "variant": "input_key",
+ "case": "three",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-e7055b-input-key",
+   "display_name": "参加者を名簿に登録",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "event": {
+      "type": "string"
+     },
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "event",
+     "names"
+    ],
+    "x-order": [
+     "event",
+     "names"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "per_person",
+     "type": "control.map",
+     "label": "1 人ずつ",
+     "params": {
+      "items": {
+       "$from": "input",
+       "path": "/names"
+      }
+     }
+    },
+    {
+     "id": "add",
+     "type": "data.record.create",
+     "label": "名簿に追加",
+     "params": {
+      "table": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+      "data": {
+       "event": {
+        "$from": "input",
+        "path": "/event_x"
+       },
+       "name": {
+        "$from": "each",
+        "path": "/item"
+       }
+      }
+     },
+     "parent": "per_person"
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add": [
+    "out"
+   ],
+   "per_person": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "1b4eebdf-6421-4865-84de-6119d8631b65",
+    "status": "failed",
+    "input": {
+     "event": "新人研修",
+     "names": [
+      "田中",
+      "山本",
+      "中村"
+     ]
+    },
+    "steps": [
+     {
+      "step_path": "per_person[0].add",
+      "node_id": "add",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /event_x が解決できません（値が無く default もありません）",
+       "node_id": "add",
+       "retryable": false
+      }
+     },
+     {
+      "step_path": "per_person[1].add",
+      "node_id": "add",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /event_x が解決できません（値が無く default もありません）",
+       "node_id": "add",
+       "retryable": false
+      }
+     },
+     {
+      "step_path": "per_person",
+      "node_id": "per_person",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 0,
+       "code": "map_item_failed",
+       "message": "map 要素が失敗しました（fail_map）",
+       "node_id": "per_person"
+      }
+     },
+     {
+      "step_path": "per_person[2].add",
+      "node_id": "add",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /event_x が解決できません（値が無く default もありません）",
+       "node_id": "add",
+       "retryable": false
+      }
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:11.442727+00:00"
+   }
+  ],
+  "rows": {
+   "roster": []
+  },
+  "rows_before": {
+   "roster": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:43:08.951124+00:00"
+ }
+}

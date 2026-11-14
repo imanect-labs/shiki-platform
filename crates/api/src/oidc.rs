@@ -18,6 +18,12 @@ pub enum OidcError {
     /// token エンドポイントが 4xx/5xx を返した（invalid_grant 等）。
     #[error("OIDC token エンドポイントがエラー応答: status={status} body={body}")]
     Status { status: u16, body: String },
+    /// logout エンドポイント（[`end_sso_session`]）への到達自体が失敗（ネットワーク等）。
+    #[error("OIDC logout エンドポイントへの接続に失敗: {0}")]
+    LogoutTransport(String),
+    /// logout エンドポイント（[`end_sso_session`]）が 4xx/5xx を返した（失効した refresh token 等）。
+    #[error("OIDC logout エンドポイントがエラー応答: status={status} body={body}")]
+    LogoutStatus { status: u16, body: String },
 }
 
 impl OidcError {
@@ -26,7 +32,11 @@ impl OidcError {
     /// `true` ならセッションを破棄してよい。`false`（transport/5xx）は一過性障害として
     /// セッションを破棄せず継続/リトライさせるための判定に使う。
     pub fn is_client_error(&self) -> bool {
-        matches!(self, OidcError::Status { status, .. } if (400..500).contains(status))
+        matches!(
+            self,
+            OidcError::Status { status, .. } | OidcError::LogoutStatus { status, .. }
+                if (400..500).contains(status)
+        )
     }
 }
 
@@ -84,6 +94,40 @@ pub async fn refresh_tokens(
         form.push(("client_secret", secret));
     }
     post_token(http, auth, &form).await
+}
+
+/// refresh token で Keycloak の SSO セッションをサーバ側から終える（ブラウザを通さない end-session）。
+///
+/// Keycloak の logout エンドポイントは、client の資格情報と refresh token を form で受けると、その token の SSO
+/// セッションを終えて 204 を返す。ブラウザのログアウト（`routes/auth/logout.rs`）と違い、確認の画面も
+/// `post_logout_redirect_uri` の登録も要らず、トークンもブラウザに出ない。
+pub async fn end_sso_session(
+    http: &reqwest::Client,
+    auth: &AuthConfig,
+    refresh_token: &str,
+) -> Result<(), OidcError> {
+    let mut form = vec![
+        ("client_id", auth.client_id.as_str()),
+        ("refresh_token", refresh_token),
+    ];
+    if let Some(secret) = auth.client_secret.as_deref() {
+        form.push(("client_secret", secret));
+    }
+    let resp = http
+        .post(auth.backchannel_end_session_endpoint())
+        .form(&form)
+        .send()
+        .await
+        .map_err(|e| OidcError::LogoutTransport(e.to_string()))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = resp.text().await.unwrap_or_default();
+    Err(OidcError::LogoutStatus {
+        status: status.as_u16(),
+        body,
+    })
 }
 
 async fn post_token(
@@ -245,5 +289,25 @@ mod tests {
         assert!(OidcError::Transport("refused".into())
             .to_string()
             .contains("refused"));
+    }
+
+    #[test]
+    fn logout_errors_name_the_logout_endpoint() {
+        // SSO セッションを終える失敗は、token エンドポイントの失敗と読み違えないよう logout と書く。
+        let status = OidcError::LogoutStatus {
+            status: 400,
+            body: "invalid_grant".into(),
+        };
+        let msg = status.to_string();
+        assert!(msg.contains("logout") && msg.contains("400") && msg.contains("invalid_grant"));
+        assert!(!msg.contains("token"));
+        assert!(status.is_client_error());
+        assert!(!OidcError::LogoutStatus {
+            status: 503,
+            body: String::new()
+        }
+        .is_client_error());
+        let transport = OidcError::LogoutTransport("refused".into());
+        assert!(transport.to_string().contains("logout") && !transport.is_client_error());
     }
 }

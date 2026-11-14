@@ -135,7 +135,11 @@ async fn stream_cut_before_completed_is_an_error() {
     let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
     let out = drain(&provider(&base), &req).await;
     assert!(matches!(out[0], Ok(StreamDelta::TextDelta { .. })));
-    assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(_)))));
+    // プロバイダが切った印を付ける（まだ何も確定していなければ gateway が送り直す・BUG-224）。
+    assert!(
+        matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.starts_with("cut by provider: responses: ")),
+        "{out:?}"
+    );
 }
 
 #[tokio::test]
@@ -160,6 +164,18 @@ async fn http_errors_map_to_bad_request_and_rate_limited() {
         err,
         LlmError::RateLimited(m) if m.starts_with("利用上限に達しました") && !m.contains("usage limit")
     ));
+
+    // 5xx の本文も出さない（誤りの種類の語だけ・BUG-210）。
+    let (base, _) = spawn_mock(
+        StatusCode::BAD_GATEWAY,
+        "{\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed for org-secret\"}}",
+    )
+    .await;
+    let err = provider(&base).stream(&req).await.err().unwrap();
+    assert!(
+        matches!(&err, LlmError::Unavailable(m) if m.contains("server_error") && !m.contains("org-secret")),
+        "{err}"
+    );
 }
 
 /// 実エンドポイント向けのプロバイダ（`OPENAI_RESPONSES_TEST_*` から組む）。
@@ -285,7 +301,11 @@ async fn endless_line_without_newline_is_cut_off_with_an_error() {
     let (base, _) = spawn_mock(StatusCode::OK, body).await;
     let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
     let out = drain(&provider(&base), &req).await;
-    assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit")));
+    assert!(
+        matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit") && m.starts_with("cut by provider: ")),
+        "{:?}",
+        out.last()
+    );
 }
 
 /// 推論アイテムの往復（#542）: 推論 → ツール呼び出し → 推論アイテムを先頭に戻した 2 ターン目。

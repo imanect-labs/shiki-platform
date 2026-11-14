@@ -14,6 +14,8 @@ use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
 use serde_json::{json, Map, Value};
 
+use crate::tool_args::{accept_object_args, SKILL_DRAFT};
+
 /// スキル名の最大文字数（artifact の参照名の上限と同じ）。
 const MAX_NAME_CHARS: usize = 128;
 
@@ -154,9 +156,11 @@ impl Tool for SaveSkillTool {
     async fn call(
         &self,
         _ctx: &AuthContext,
-        input: Value,
+        mut input: Value,
         _trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
+        // JSON の文字列で来た knowledge_scope・model は 1 段だけ読み、object と同じ検証を通す（道具で共通・GAP-130）。
+        accept_object_args(&mut input, &SKILL_DRAFT).map_err(ToolError::Invalid)?;
         let Value::Object(input) = input else {
             return Err(ToolError::Invalid(
                 "入力はオブジェクトで指定してください".into(),
@@ -341,6 +345,59 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("allowed_tools"), "{}", out.content);
+    }
+
+    /// knowledge_scope・model は、object でも JSON の文字列でも同じ下書きになる。壊れた文字列・配列の文字列は、
+    /// object のまま渡すよう言って断る（道具で共通の受け口・GAP-130）。
+    #[tokio::test]
+    async fn object_args_may_come_as_json_strings() {
+        let tool = SaveSkillTool::new();
+        let scope = json!({ "folders": ["00000000-0000-0000-0000-000000000001"], "files": [] });
+        let model = json!({ "model": "fast", "temperature": 0.2 });
+        let draft = |scope: Value, model: Value| {
+            let tool = &tool;
+            async move {
+                let input = json!({
+                    "name": "x", "description": "d", "instructions": "i",
+                    "knowledge_scope": scope, "model": model
+                });
+                tool.call(&ctx(), input, None).await
+            }
+        };
+        let as_object = draft(scope.clone(), model.clone()).await.unwrap();
+        assert!(!as_object.is_error, "{}", as_object.content);
+        let as_string = draft(json!(scope.to_string()), json!(model.to_string()))
+            .await
+            .unwrap();
+        assert!(!as_string.is_error, "{}", as_string.content);
+        assert_eq!(as_string.skill_drafts, as_object.skill_drafts);
+        assert_eq!(
+            as_object.skill_drafts[0]["skill"]["knowledge_scope"], scope,
+            "{:?}",
+            as_object.skill_drafts
+        );
+
+        let refused = |scope: Value, model: Value| async move {
+            match draft(scope, model).await {
+                Err(ToolError::Invalid(msg)) => msg,
+                other => panic!("断る: {other:?}"),
+            }
+        };
+        let broken = refused(json!(r#"{"folders": ["#), model.clone()).await;
+        assert!(
+            broken.starts_with("knowledge_scope の文字列を JSON として読めませんでした（")
+                && broken.ends_with(
+                    "knowledge_scope は JSON の文字列にせず、オブジェクトのまま渡してください\
+                     （folders・files を持つオブジェクト）。"
+                ),
+            "{broken}"
+        );
+        let array = refused(scope.clone(), json!(format!("[{model}]"))).await;
+        assert_eq!(
+            array,
+            "model は JSON の文字列にせず、オブジェクトのまま渡してください\
+             （model・temperature・max_tokens を持つオブジェクト）。"
+        );
     }
 
     #[tokio::test]

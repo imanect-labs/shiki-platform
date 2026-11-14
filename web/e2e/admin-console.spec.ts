@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak } from "./helpers";
+import { loginAs, loginViaKeycloak, stubChatModel } from "./helpers";
 
 /// 管理コンソール（AI）とチャットのモデル選択（#553）の E2E。
 /// 前提: dev seed で alice が組織管理者（organization#admin）、bob は一般メンバー。LLM=stub。
@@ -62,13 +62,16 @@ test.describe("チャットのモデル選択", () => {
     await page.goto("/");
     const button = page.getByTestId("model-button");
     await expect(button).toHaveText(/Auto/);
+    // 送信まで流すので、実 LLM を呼ばない stub のモデルを選ぶ（手元の設定では一覧の先頭が実 LLM・BUG-85）。
+    const stub = await stubChatModel(page);
+    test.skip(!stub, "組織で使える stub のモデルが無い（実 LLM を呼ばないよう止める）");
 
-    // 一覧（#583）の先頭のモデルを選ぶ。
+    // 一覧（#583）から stub のモデルを選ぶ。
     await button.click();
     await expect(page.getByTestId("model-picker")).toBeVisible();
-    const first = page.locator('[data-testid^="model-option-"]:not([data-testid="model-option-default"])').first();
-    const label = (await first.locator("[data-label]").innerText()).trim();
-    await first.click();
+    const option = page.getByTestId(`model-option-${stub!.id}`);
+    const label = (await option.locator("[data-label]").innerText()).trim();
+    await option.click();
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("model-picker")).toHaveCount(0);
     await expect(button).toContainText(label);

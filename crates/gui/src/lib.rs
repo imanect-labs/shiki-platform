@@ -6,7 +6,14 @@
 //!   違反は拒否する（暗黙補正なし）。ミニアプリの画面は Yui の ```ui を含む Markdown。
 //! - **宣言的バックエンド束縛**（[`action`] / [`dispatch`]）: 図のボタンからの操作はサーバーが
 //!   引いた束縛経由のみ・実行ユーザー権限で認可（アンビエント権限なし・confused-deputy 防御）。
+//! - **下書きと公開**（[`miniapp_publish`]・D-16）: ミニアプリの保存は下書きの版になり、使う人には公開した版だけを
+//!   出す。公開は editor が版を選んで行う。
 //! - **ワークフロー名の解決**（[`resolver`]）: ボタンの `-> workflow 名前` を版に固定する。
+//! - **画面の入力とワークフローの入力項目の突き合わせ**（[`miniapp_inputs`]・GAP-12）: 部品の候補の手がかりを作り、
+//!   保存のときに食い違いを注意として返す。
+//! - **束ねた部品の新しいバージョン**（[`miniapp_pins`]・GAP-11）: 固定した版を最新に上げると変わるところを返す。
+//! - **使う人の権限の確かめ**（[`access`]・GAP-37）: アプリの部品とワークフローが要る権限を、共有の相手ごと
+//!   （作る人）と自分（使う人）について前もって確かめる。判定は OpenFGA の BatchCheck だけで、実際の読み書きの認可は変えない。
 //! - **表のデータ束縛**（[`data_grid`]・Task 15.7）: 画面の ```data_grid は束ねた保存ビューの
 //!   ピン版を、閲覧者本人の権限で毎回評価して描く（[`ActionBinding::DataView`]）。
 
@@ -23,12 +30,19 @@
     )
 )]
 
+pub mod access;
+mod access_parts;
 pub mod action;
 pub mod data_grid;
 pub mod dispatch;
+pub mod input_problems;
 pub mod miniapp;
 pub mod miniapp_actions;
 mod miniapp_data;
+pub mod miniapp_inputs;
+pub mod miniapp_pins;
+pub mod miniapp_publish;
+pub mod miniapp_runs;
 pub mod miniapp_store;
 pub mod resolver;
 pub mod skill;
@@ -38,14 +52,39 @@ pub mod store;
 pub mod validate;
 pub mod vocab;
 
+pub use access::{
+    AccessChecker, AccessKind, AccessNeedView, AccessObject, AccessPart, AccessReport,
+    AccessStatus, AccessTarget, AccessUnchecked, MyAccessItem, MyAppAccess, MyPartAccess,
+    MyWorkflowAccess, PartNeed, PartNeeds, SubjectAccess, UncheckedBlock, MAX_ACCESS_CHECKS,
+    MAX_ACCESS_OBJECTS, MAX_ACCESS_SUBJECTS,
+};
+pub use access_parts::workflow_needs;
 pub use action::{ActionBinding, DataViewBinding, HandlerBinding, WorkflowBinding, WorkflowPin};
 pub use data_grid::{data_grid_action_id, data_grid_alias, data_grid_blocks, DataGridBlock};
 pub use dispatch::{
     ActionDispatcher, ActionError, ActionHandler, ActionLedger, ActionSource, WorkflowStarter,
 };
-pub use miniapp::{ComponentPin, MiniAppBody, NamedComponentPin};
+pub use input_problems::{
+    collect_input_problems, from_launcher_error, with_field_labels, ButtonSurface, InputProblem,
+    INPUT_MISMATCH_FALLBACK,
+};
+pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
-pub use miniapp_store::{MiniAppStore, ResolvedMiniApp};
+pub use miniapp_inputs::{
+    input_hints, input_warnings, screen_input_warnings, InputHintType, WorkflowInputHint,
+    MAX_CHECK_HINTS,
+};
+pub use miniapp_pins::{
+    diff_versions, AccessChange, AccessChangeKind, PinAccess, PinDiff, PinUpdate, SkillPart,
+    VersionDiff,
+};
+pub use miniapp_publish::{
+    diff_bodies, problems_block_publish, MiniAppChange, PinChange, PublishPreview,
+};
+pub use miniapp_runs::displayable_reply;
+pub use miniapp_store::{
+    MiniAppStore, PinnedInputs, ResolvedMiniApp, ResolvedSkill, SaveMode, SavedMiniApp,
+};
 pub use resolver::WorkflowResolver;
 pub use skill::{
     validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,

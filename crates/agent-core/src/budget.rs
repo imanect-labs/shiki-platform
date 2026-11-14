@@ -9,6 +9,10 @@
 
 use std::time::Instant;
 
+use llm_gateway::{Block, Message};
+
+use crate::vocab::ToolName;
+
 /// 予算の種別（どの軸で警告/超過したか）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BudgetKind {
@@ -224,6 +228,65 @@ impl Budget {
             seconds,
             landing,
         }
+    }
+}
+
+/// 作成系の道具を初めて呼んだときに 1 回だけ広げる予算（D-53 の HD-4 (c)・D-204）。
+///
+/// 通常の会話の予算（既定 6 手）は、道具を探す・スキーマを読む・作る・直して送り直す・答える、で尽きる。
+/// 全体を上げると全会話の最悪の費用が上がるので、作成系の道具（`on_tools`）を呼んだ run だけを広げる。
+///
+/// - **広げたかどうかは保存しない。** 毎ステップ、履歴（[`crate::Checkpoint::messages`]）に `on_tools` の
+///   呼び出し（`Block::ToolUse`）があるかから導く（[`Self::called`]）。チェックポイントの形を変えずに、再開・
+///   古いチェックポイント・takeover でも広げた状態がずれない（再開した直後に元の手数へ戻らない）。
+/// - 失敗・却下された呼び出しも「呼んだ」に数える（直して送り直す手数が要るのはむしろそのとき）。
+///   `tool_search` で定義を読み込んだだけでは広げない（呼び出しは `tool_search` のもの）。
+/// - 上限は固定値なので、何度呼んでも広がるのは 1 回ぶん（プロンプト注入で呼ばせても、それ以上は増えない）。
+/// - 広げるのは手数・トークン（新規ぶん）・費用・1 応答の出力上限だけ。元より小さい値には下げず、上限の
+///   無い軸は無いままにする。時間の上限・思考強度・system は変えない（キャッシュと一貫性のため）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetExtension {
+    /// 呼んだら広げる道具。
+    pub on_tools: Vec<ToolName>,
+    /// 広げた後の最大ステップ。
+    pub max_steps: usize,
+    /// 広げた後の累積トークン上限（新規ぶん＝[`Spent::fresh_tokens`] の軸）。
+    pub max_fresh_tokens: u64,
+    /// 広げた後の累積コスト上限（マイクロ USD）。
+    pub max_cost_usd_micros: i64,
+    /// 広げた後の 1 応答の出力上限（`max_tokens`）。
+    pub max_response_tokens: u32,
+}
+
+impl BudgetExtension {
+    /// 履歴に `on_tools` の呼び出しがあるか（広げるかの判定・毎ステップ導く）。
+    #[must_use]
+    pub fn called(&self, messages: &[Message]) -> bool {
+        messages.iter().flat_map(|m| &m.content).any(|b| match b {
+            Block::ToolUse { name, .. } => self.on_tools.iter().any(|t| t.as_str() == name),
+            _ => false,
+        })
+    }
+
+    /// 広げた予算。元より小さい値には下げず、上限の無い軸（`None`）は無いままにする。
+    #[must_use]
+    pub fn extend(&self, budget: &Budget) -> Budget {
+        Budget {
+            max_steps: budget.max_steps.max(self.max_steps),
+            max_tokens: budget.max_tokens.map(|m| m.max(self.max_fresh_tokens)),
+            max_cost_usd_micros: budget
+                .max_cost_usd_micros
+                .map(|m| m.max(self.max_cost_usd_micros)),
+            ..budget.clone()
+        }
+    }
+
+    /// 広げた 1 応答の出力上限（元より小さくはしない）。
+    #[must_use]
+    pub fn extend_response_tokens(&self, max_tokens: Option<u32>) -> Option<u32> {
+        Some(max_tokens.map_or(self.max_response_tokens, |m| {
+            m.max(self.max_response_tokens)
+        }))
     }
 }
 
@@ -453,6 +516,122 @@ mod tests {
         assert_eq!(
             b.check(&spent(1, 0, 0), start + Duration::from_secs(79)),
             BudgetCheck::Ok
+        );
+    }
+
+    fn extension() -> BudgetExtension {
+        BudgetExtension {
+            on_tools: vec![ToolName::EmitWorkflow],
+            max_steps: 24,
+            max_fresh_tokens: 600_000,
+            max_cost_usd_micros: 2_000_000,
+            max_response_tokens: 32_768,
+        }
+    }
+
+    fn assistant_calls(name: &str) -> Message {
+        Message {
+            role: llm_gateway::Role::Assistant,
+            content: vec![Block::ToolUse {
+                id: "c1".into(),
+                name: name.into(),
+                input: serde_json::json!({}),
+            }],
+        }
+    }
+
+    fn tool_result(content: &str, is_error: bool, loaded: &[&str]) -> Message {
+        Message {
+            role: llm_gateway::Role::Tool,
+            content: vec![Block::ToolResult {
+                tool_use_id: "c1".into(),
+                content: content.into(),
+                is_error,
+                tool_references: loaded.iter().map(|s| (*s).to_string()).collect(),
+            }],
+        }
+    }
+
+    /// 呼び出しがあれば広げる。失敗した呼び出しも数え、`tool_search` で読み込んだだけでは広げない（D-204）。
+    #[test]
+    fn extension_is_derived_from_calls_in_the_history() {
+        let ext = extension();
+        let user = Message::text(llm_gateway::Role::User, "経費のワークフローを作って");
+        assert!(!ext.called(std::slice::from_ref(&user)));
+        // tool_search が emit_workflow の定義を読み込んだだけ（呼び出しは tool_search のもの）。
+        let loaded = [
+            user.clone(),
+            assistant_calls("tool_search"),
+            tool_result("emit_workflow を読み込みました", false, &["emit_workflow"]),
+        ];
+        assert!(!ext.called(&loaded), "読み込んだだけでは広げない");
+        // 本文に名前が出るだけでも広げない（呼び出しではない）。
+        let named = [
+            user.clone(),
+            Message::text(llm_gateway::Role::Assistant, "emit_workflow で作ります"),
+        ];
+        assert!(!ext.called(&named));
+        // 検証で断られた呼び出しも「呼んだ」に数える。
+        let failed = [
+            user.clone(),
+            assistant_calls("emit_workflow"),
+            tool_result("ir.unknown_node", true, &[]),
+        ];
+        assert!(ext.called(&failed));
+        // 関係のない道具では広げない。
+        let other = [user, assistant_calls("doc_search")];
+        assert!(!ext.called(&other));
+    }
+
+    /// 広げた予算は固定値まで。元より小さい値には下げず、上限の無い軸は無いまま。時間の上限は変えない。
+    #[test]
+    fn extension_raises_only_steps_tokens_cost_and_response() {
+        let ext = extension();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let base = Budget {
+            deadline: Some(deadline),
+            max_tokens: Some(300_000),
+            max_cost_usd_micros: Some(1_000_000),
+            ..Budget::chat(6)
+        };
+        let wide = ext.extend(&base);
+        assert_eq!(wide.max_steps, 24);
+        assert_eq!(wide.max_tokens, Some(600_000));
+        assert_eq!(wide.max_cost_usd_micros, Some(2_000_000));
+        assert_eq!(wide.deadline, Some(deadline), "時間の上限は変えない");
+        assert!((wide.warn_at_fraction - base.warn_at_fraction).abs() < f64::EPSILON);
+        // 広げた後にもう一度広げても同じ（何度呼んでも 1 回ぶん）。
+        assert_eq!(ext.extend(&wide).max_steps, 24);
+        assert_eq!(ext.extend(&wide).max_tokens, Some(600_000));
+        // 元の方が大きい軸は下げない。上限の無い軸は無いまま。
+        let big = Budget {
+            max_tokens: None,
+            max_cost_usd_micros: Some(8_000_000),
+            ..Budget::chat(50)
+        };
+        let kept = ext.extend(&big);
+        assert_eq!(kept.max_steps, 50);
+        assert_eq!(kept.max_tokens, None);
+        assert_eq!(kept.max_cost_usd_micros, Some(8_000_000));
+        // 1 応答の出力上限。
+        assert_eq!(ext.extend_response_tokens(Some(8192)), Some(32_768));
+        assert_eq!(ext.extend_response_tokens(Some(65_536)), Some(65_536));
+        assert_eq!(ext.extend_response_tokens(None), Some(32_768));
+    }
+
+    /// 6 手で止まる会話も、広げた予算では続く（判定は広げた値で行う）。
+    #[test]
+    fn extended_budget_lets_the_run_continue_past_the_base_steps() {
+        let base = Budget::chat(6);
+        assert_eq!(
+            base.check(&spent(6, 0, 0), Instant::now()),
+            BudgetCheck::Exceeded(BudgetKind::Steps)
+        );
+        let wide = extension().extend(&base);
+        assert_eq!(wide.check(&spent(6, 0, 0), Instant::now()), BudgetCheck::Ok);
+        assert_eq!(
+            wide.check(&spent(24, 0, 0), Instant::now()),
+            BudgetCheck::Exceeded(BudgetKind::Steps)
         );
     }
 

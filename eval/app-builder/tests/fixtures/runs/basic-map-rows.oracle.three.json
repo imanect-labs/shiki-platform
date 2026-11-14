@@ -1,0 +1,248 @@
+{
+ "task": "basic-map-rows",
+ "variant": "oracle",
+ "case": "three",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-e7055b-main",
+   "display_name": "参加者を名簿に登録",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "event": {
+      "type": "string"
+     },
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": [
+     "event",
+     "names"
+    ],
+    "x-order": [
+     "event",
+     "names"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "per_person",
+     "type": "control.map",
+     "label": "1 人ずつ",
+     "params": {
+      "items": {
+       "$from": "input",
+       "path": "/names"
+      }
+     }
+    },
+    {
+     "id": "add",
+     "type": "data.record.create",
+     "label": "名簿に追加",
+     "params": {
+      "table": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+      "data": {
+       "event": {
+        "$from": "input",
+        "path": "/event"
+       },
+       "name": {
+        "$from": "each",
+        "path": "/item"
+       }
+      }
+     },
+     "parent": "per_person"
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add": [
+    "out"
+   ],
+   "per_person": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "b2dd73f4-baf7-44f1-ae49-e3e25643748b",
+    "status": "succeeded",
+    "input": {
+     "event": "新人研修",
+     "names": [
+      "田中",
+      "山本",
+      "中村"
+     ]
+    },
+    "steps": [
+     {
+      "step_path": "per_person[0].add",
+      "node_id": "add",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-07T00:43:09.163634Z",
+       "data": {
+        "event": "新人研修",
+        "name": "田中"
+       },
+       "id": "811da446-41f7-450f-9a65-3603bbca6584",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+       "updated_at": "2026-11-07T00:43:09.163634Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_person[1].add",
+      "node_id": "add",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-07T00:43:09.192713Z",
+       "data": {
+        "event": "新人研修",
+        "name": "山本"
+       },
+       "id": "c6a9678b-5bbe-4b07-ac90-e07052b0ae5b",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+       "updated_at": "2026-11-07T00:43:09.192713Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_person",
+      "node_id": "per_person",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "errors": [],
+       "items": [
+        {
+         "created_at": "2026-11-07T00:43:09.163634Z",
+         "data": {
+          "event": "新人研修",
+          "name": "田中"
+         },
+         "id": "811da446-41f7-450f-9a65-3603bbca6584",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+         "updated_at": "2026-11-07T00:43:09.163634Z"
+        },
+        {
+         "created_at": "2026-11-07T00:43:09.192713Z",
+         "data": {
+          "event": "新人研修",
+          "name": "山本"
+         },
+         "id": "c6a9678b-5bbe-4b07-ac90-e07052b0ae5b",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+         "updated_at": "2026-11-07T00:43:09.192713Z"
+        },
+        {
+         "created_at": "2026-11-07T00:43:09.221215Z",
+         "data": {
+          "event": "新人研修",
+          "name": "中村"
+         },
+         "id": "859d37ba-8f51-4179-8314-04add029ae15",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+         "updated_at": "2026-11-07T00:43:09.221215Z"
+        }
+       ]
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_person[2].add",
+      "node_id": "add",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-07T00:43:09.221215Z",
+       "data": {
+        "event": "新人研修",
+        "name": "中村"
+       },
+       "id": "859d37ba-8f51-4179-8314-04add029ae15",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
+       "updated_at": "2026-11-07T00:43:09.221215Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:09.123638+00:00"
+   }
+  ],
+  "rows": {
+   "roster": [
+    {
+     "id": "859d37ba-8f51-4179-8314-04add029ae15",
+     "data": {
+      "event": "新人研修",
+      "name": "中村"
+     }
+    },
+    {
+     "id": "c6a9678b-5bbe-4b07-ac90-e07052b0ae5b",
+     "data": {
+      "event": "新人研修",
+      "name": "山本"
+     }
+    },
+    {
+     "id": "811da446-41f7-450f-9a65-3603bbca6584",
+     "data": {
+      "event": "新人研修",
+      "name": "田中"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "roster": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:43:08.951124+00:00"
+ }
+}

@@ -13,11 +13,19 @@ function assertUploadScope(expected: number) {
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
 export type ChildrenResponse = components["schemas"]["ChildrenResponse"];
+/// ゴミ箱の 1 項目（ノード ＋ 完全に削除できるか・フォルダの配下のファイルの数・GAP-108b）。
+export type TrashItem = components["schemas"]["TrashItemResponse"];
+export type TrashResponse = components["schemas"]["TrashResponse"];
+export type EmptyTrashResponse = components["schemas"]["EmptyTrashResponse"];
 export type CrumbResponse = components["schemas"]["CrumbResponse"];
+type ChildByNameResponse = components["schemas"]["ChildByNameResponse"];
 export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"];
 export type DownloadUrlResponse = components["schemas"]["DownloadUrlResponse"];
 export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
+export type TextFileResponse = components["schemas"]["TextFileResponse"];
+export type ReindexResponse = components["schemas"]["ReindexResponse"];
+export type SaveTextFileRequest = components["schemas"]["SaveTextFileRequest"];
 export type DocBlock = components["schemas"]["DocBlock"];
 export type DocBlocksPage = components["schemas"]["DocBlocksPage"];
 export type ShareEntry = components["schemas"]["ShareEntry"];
@@ -124,6 +132,8 @@ export function listChildren(opts: {
   limit?: number;
   /// 名前の部分一致検索。指定時はフォルダ階層を跨いで横断検索する。
   q?: string;
+  /// 読み込みを止める合図（検索の語が変わった・画面を離れた）。
+  signal?: AbortSignal;
 }): Promise<ChildrenResponse> {
   return apiFetch(
     `/nodes${qs({
@@ -134,7 +144,36 @@ export function listChildren(opts: {
       limit: opts.limit,
       q: opts.q,
     })}`,
+    { signal: opts.signal },
   ).then((r) => okJson<ChildrenResponse>(r));
+}
+
+/// 続きを読みにいく回数の上限（[`listChildrenUpTo`]）。
+const CHILDREN_MAX_PAGES = 5;
+
+/// フォルダーの中身（`q` があれば名前の検索）を、`want` 件たまるか続きが無くなるまで読む（往復は最大 5 回）。
+///
+/// 見えないものが多い場所（ドライブのトップ・名前の検索）では、1 ページが `limit` より少ないか 0 件のまま、続きの
+/// 位置だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-187）。往復の上限で止まったら
+/// `next_cursor` を返す（画面は「さらに読み込む」で続きを読む）。
+///
+/// `signal` が止まったら次の往復に進まない（打ち直す前の語の頼みが、残りの往復でサーバーに 1 回あたり最大 1,000 問を
+/// 投げ続けない）。止まった読み込みは AbortError で失敗する（呼び出し側は結果を捨てる）。
+export async function listChildrenUpTo(
+  opts: Parameters<typeof listChildren>[0] & { want?: number },
+): Promise<ChildrenResponse> {
+  const { want: wantOpt, ...rest } = opts;
+  const want = wantOpt ?? rest.limit ?? 50;
+  const items: NodeResponse[] = [];
+  let cursor = rest.cursor;
+  for (let page = 0; page < CHILDREN_MAX_PAGES; page += 1) {
+    rest.signal?.throwIfAborted();
+    const p = await listChildren({ ...rest, cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    items.push(...p.items);
+    cursor = p.next_cursor ?? undefined;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor ?? null };
 }
 
 /// ノードのパンくず（root→自身。読める接頭のみ）。
@@ -142,18 +181,19 @@ export function breadcrumb(nodeId: string): Promise<CrumbResponse[]> {
   return apiFetch(`/nodes/${nodeId}/breadcrumb`).then((r) => okJson<CrumbResponse[]>(r));
 }
 
-/// 同じフォルダにある同名ノードを探す（アップロード前の衝突確認）。名前検索の先頭 1 ページから
-/// 親と名前が完全一致するものだけを拾う（フォルダの子を全件読まない）。名前の一意制約は
+/// 同じフォルダにある同名ノードを探す（アップロード前の衝突確認）。サーバーが名前の完全一致で 1 件を引く
+/// （`GET /nodes/by-name`・フォルダの子を全件読まない・OpenFGA に問うのは高々 1 回）。名前の一意制約は
 /// 大文字小文字を区別するため比較も完全一致。見つからなければ null（読めない同名は見えないので、
 /// その場合は finalize の 409 で気付く）。
+///
+/// 名前の検索（`GET /nodes?q=`）の先頭のページは使わない。見えるものが多い人では 0 件で続きの位置だけが返り、
+/// 同じ名前があっても見つからなかった（BUG-199）。
 export async function findSiblingByName(
   parentId: string | null,
   name: string,
 ): Promise<NodeResponse | null> {
-  const page = await listChildren({ q: name, limit: 100 });
-  return (
-    page.items.find((n) => (n.parent_id ?? null) === parentId && n.name === name) ?? null
-  );
+  const res = await apiFetch(`/nodes/by-name${qs({ parent_id: parentId ?? undefined, name })}`);
+  return (await okJson<ChildByNameResponse>(res)).node ?? null;
 }
 
 // --- フォルダ操作 ---------------------------------------------------------
@@ -211,8 +251,30 @@ export function restoreFile(id: string): Promise<NodeResponse> {
   );
 }
 
+/// ファイルを社内文書の検索に取り込み直す（ファイルを編集できる人・D-126）。積んだときは `queued`、取り込み中・
+/// 取り込み済みのときは積まずにそう答える。断られたときの文言（サーバーが返す `message`）は StorageApiError に入る。
+export function reindexFile(id: string): Promise<ReindexResponse> {
+  return apiFetch(`/files/${id}/reindex`, { method: "POST" }).then((r) => okJson<ReindexResponse>(r));
+}
+
 export function downloadUrl(id: string): Promise<DownloadUrlResponse> {
   return apiFetch(`/files/${id}/download-url`).then((r) => okJson<DownloadUrlResponse>(r));
+}
+
+/// テキストの中身を読む（文字コードはサーバーが決める・BOM は含めない・D-119）。決められないときは `encoding` が
+/// `null`（見るだけ）。テキストでない・大きすぎるときは 400 で、画面に出せる文言が `message` に入る。
+export function getTextFile(id: string): Promise<TextFileResponse> {
+  return apiFetch(`/files/${id}/text`).then((r) => okJson<TextFileResponse>(r));
+}
+
+/// テキストを、元の文字コードと BOM のまま新しい版として保存する（D-119）。開いた後にほかの保存が入っていれば 409、
+/// 元の文字コードに無い文字があれば 400（画面に出せる文言が `message` に入る）。
+export function saveTextFile(id: string, body: SaveTextFileRequest): Promise<NodeResponse> {
+  return apiFetch(`/files/${id}/text`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => okJson<NodeResponse>(r));
 }
 
 /// 1 ファイルのメタ情報（名前・content_type・サイズ等）を取得する。ビューアで使う。
@@ -496,6 +558,37 @@ export function sharedWithMe(opts?: { cursor?: string; limit?: number }): Promis
   );
 }
 
+/// 続きを読みにいく回数の上限（[`sharedWithMeUpTo`]）。
+const SHARED_MAX_PAGES = 5;
+
+/// 自分に共有されたノードを、`want` 件たまるか続きが無くなるまで読む（新しい順・往復は最大 5 回）。
+///
+/// 共有されたものが多い人では、1 ページが `limit` より少ないか 0 件のまま、続きの位置だけが付いて返ることがある
+/// （サーバーが OpenFGA に問う数を抑えるため・BUG-162）。往復の上限で止まったら `next_cursor` を返す。
+///
+/// `keepOnError` を立てると、2 ページ目より後の取得に失敗したとき、それまでに集めた分を返す（`next_cursor` は失敗した
+/// ページの位置）。1 ページ目の失敗は立てても失敗にする。
+export async function sharedWithMeUpTo(
+  opts: { cursor?: string; want?: number; keepOnError?: boolean } = {},
+): Promise<ChildrenResponse> {
+  const want = opts.want ?? 50;
+  const items: NodeResponse[] = [];
+  let cursor = opts.cursor;
+  for (let page = 0; page < SHARED_MAX_PAGES; page += 1) {
+    let p: ChildrenResponse;
+    try {
+      p = await sharedWithMe({ cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    } catch (e) {
+      if (page === 0 || !opts.keepOnError) throw e;
+      break;
+    }
+    items.push(...p.items);
+    cursor = p.next_cursor ?? undefined;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor ?? null };
+}
+
 // --- ディレクトリ（共有相手検索。自テナントのみ） -------------------------
 
 export function searchDirectory(opts: {
@@ -521,10 +614,48 @@ export function searchRoles(opts: {
 
 // --- ゴミ箱 ---------------------------------------------------------------
 
-export function listTrash(opts?: { cursor?: string; limit?: number }): Promise<ChildrenResponse> {
+export function listTrash(opts?: { cursor?: string; limit?: number }): Promise<TrashResponse> {
   return apiFetch(`/trash${qs({ cursor: opts?.cursor, limit: opts?.limit })}`).then((r) =>
-    okJson<ChildrenResponse>(r),
+    okJson<TrashResponse>(r),
   );
+}
+
+/// 完全に削除しなかった理由（409 の `code`・Rust の `PurgeRefusalCode` から生成）。
+export type PurgeRefusal = components["schemas"]["PurgeRefusalCode"];
+type PurgeRefusalBody = components["schemas"]["PurgeRefusalBody"];
+
+/// 完全削除で何も消さなかった（409）。`code` で画面の文言を出し分ける（読めない本文なら `undefined`）。
+export class PurgeRefusedError extends StorageApiError {
+  constructor(
+    public code: PurgeRefusal | undefined,
+    message: string,
+  ) {
+    super(409, message);
+    this.name = "PurgeRefusedError";
+  }
+}
+
+/// ゴミ箱の根（ファイルかフォルダ）を、配下ごと完全に削除する（元に戻せない・GAP-108b）。
+export async function purgeTrashItem(id: string): Promise<void> {
+  const res = await apiFetch(`/trash/${id}`, { method: "DELETE" });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => null)) as Partial<PurgeRefusalBody> | null;
+    // 知らない値は画面の switch の default（サーバーの title）へ回る。
+    throw new PurgeRefusedError(
+      typeof body?.code === "string" ? body.code : undefined,
+      typeof body?.title === "string" ? body.title : statusMessage(409),
+    );
+  }
+  return okEmpty(res);
+}
+
+/// 「ゴミ箱を空にする」を 1 回呼ぶ（続きがあれば `next_cursor` を返す。null になるまで繰り返す）。
+export function emptyTrash(cursor?: string): Promise<EmptyTrashResponse> {
+  return apiFetch("/trash/empty", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cursor: cursor ?? null }),
+  }).then((r) => okJson<EmptyTrashResponse>(r));
 }
 
 /// kind に応じた復元（file/folder で別エンドポイント）。

@@ -9,12 +9,21 @@
 //! それ以降にカタログへ足したモデルは、管理者が有効にするまで使えない。
 //!
 //! 解決（[`resolve_choice`]）は純粋関数にして、API（投入時の検証・400）とテストが同じ規則を使う。
+//!
+//! 許可リストは種類（chat / decision）を問わず全部を持ち、チャットの選択・既定・Auto は chat モデル
+//! だけから選ぶ（[`modality`]・FEAT-1）。
 
 use authz::AuthContext;
 use sqlx::PgPool;
 
 use crate::config::{AutoConfig, ModelCatalog, ModelEntry};
 use crate::model::Effort;
+
+/// ノード（ワークフロー・ミニアプリ）のモデル指定の解決（tenant.rs の行数上限のため分割）。
+mod node_choice;
+pub use node_choice::{node_effort_applies, resolve_node_choice, resolve_workflow_choice};
+/// モデルの種類による絞り込み（同上）。
+mod modality;
 
 /// 「Auto」を表すモデル指定。
 pub const AUTO_MODEL: &str = "auto";
@@ -57,6 +66,24 @@ impl TenantLlmSettings {
         catalog.get(model).is_some_and(|e| self.allows(e))
     }
 
+    /// 組織がモデルの選択を禁じているときの、全員が使うモデルの指定（既定・[`AUTO_MODEL`] かモデル ID）。選べる組織は
+    /// `None`。
+    ///
+    /// 選択の禁止（`allow_user_choice=false`）の規則はここと [`Self::may_choose`] の 1 か所にある。チャットの解決
+    /// （[`resolve_choice`]・[`resolve_at_run`]）、ノード（ワークフローの `llm.invoke`・ミニアプリの AI）の解決
+    /// （[`resolve_node_choice`]）、ワークフローの保存時の照合（api の `Catalog::model_lock`）がどれもこれを使う
+    /// （D-30・D-117）。
+    #[must_use]
+    pub fn model_lock(&self) -> Option<&str> {
+        (!self.allow_user_choice).then_some(self.default_model.as_str())
+    }
+
+    /// 呼び出し側がこのモデルの指定を選べるか（選べる組織か、禁じた組織の既定と同じ指定）。
+    #[must_use]
+    pub fn may_choose(&self, model: &str) -> bool {
+        self.model_lock().is_none_or(|lock| lock == model)
+    }
+
     /// 組織で使えるモデル（カタログ順）。
     pub fn enabled_models<'a>(&self, catalog: &'a ModelCatalog) -> Vec<&'a ModelEntry> {
         catalog.models.iter().filter(|m| self.allows(m)).collect()
@@ -68,16 +95,15 @@ impl TenantLlmSettings {
     /// 既定がカタログに無いモデルを指したままだと、管理者が何を保存しても検証で弾かれ、利用者の
     /// 一覧にも使えないモデルが残っていた。既定は Auto に、Auto の振り先の上書きはデプロイ設定に
     /// 戻す。許可リストに残った ID はカタログで絞られるので害が無く、次の保存で消える。
+    ///
+    /// 判定用のモデル（chat ではない）を指す既定・Auto の振り先も同じく戻す。
     #[must_use]
     pub fn reconciled(mut self, catalog: &ModelCatalog) -> Self {
-        if self.default_model != AUTO_MODEL && catalog.get(&self.default_model).is_none() {
+        let chat = |m: &str| catalog.get(m).is_some_and(ModelEntry::is_chat);
+        if self.default_model != AUTO_MODEL && !chat(&self.default_model) {
             self.default_model = AUTO_MODEL.to_string();
         }
-        if self
-            .auto_model
-            .as_deref()
-            .is_some_and(|m| catalog.get(m).is_none())
-        {
+        if self.auto_model.as_deref().is_some_and(|m| !chat(m)) {
             self.auto_model = None;
         }
         self
@@ -123,8 +149,27 @@ pub enum ChoiceError {
     NoModel,
 }
 
+/// [`ChoiceError::ModelNotAllowed`] の誤りのコード。
+pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
+/// [`ChoiceError::ChoiceDisabled`] の誤りのコード。
+pub const MODEL_CHOICE_DISABLED: &str = "model_choice_disabled";
+/// [`ChoiceError::NoModel`] の誤りのコード。
+pub const NO_MODEL: &str = "no_model";
+
+impl ChoiceError {
+    /// 呼び出し側へ返す誤りのコード（ワークフローの step の誤りとミニアプリの AI の応答で同じ語彙・D-117）。
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            ChoiceError::ModelNotAllowed(_) => MODEL_UNAVAILABLE,
+            ChoiceError::ChoiceDisabled => MODEL_CHOICE_DISABLED,
+            ChoiceError::NoModel => NO_MODEL,
+        }
+    }
+}
+
 /// Auto の振り先を決める。テナントの上書き → デプロイ設定 → 既定モデル → 有効な先頭の順で、
-/// **使えるモデル**に当たったところで止める（Auto が「使えない」状態を作らない）。
+/// **使える chat モデル**に当たったところで止める（Auto が「使えない」状態を作らない）。
 pub fn auto_target(
     catalog: &ModelCatalog,
     auto: &AutoConfig,
@@ -139,12 +184,12 @@ pub fn auto_target(
     if let Some(m) = candidates
         .into_iter()
         .flatten()
-        .find(|m| settings.is_enabled(catalog, m))
+        .find(|m| settings.is_chat_enabled(catalog, m))
     {
         return Ok((m.to_string(), effort));
     }
     settings
-        .enabled_models(catalog)
+        .enabled_chat_models(catalog)
         .first()
         .map(|m| (m.id.clone(), effort))
         .ok_or(ChoiceError::NoModel)
@@ -154,7 +199,7 @@ pub fn auto_target(
 ///
 /// - `model` 省略はテナントの既定（`auto` かモデル ID）。
 /// - `auto` は [`auto_target`]。思考強度はユーザー指定を使わず Auto の設定に従う。
-/// - モデル ID はテナントで有効なものだけ。選択が禁止されていれば既定と同じモデル以外は拒否。
+/// - モデル ID はテナントで有効な chat モデルだけ。選択が禁止されていれば既定と同じモデル以外は拒否。
 /// - 思考強度に対応しないモデルは `effort = None`（gateway も落とすが、run の記録を正直にする）。
 pub fn resolve_choice(
     catalog: &ModelCatalog,
@@ -170,14 +215,14 @@ pub fn resolve_choice(
         .unwrap_or(settings.default_model.as_str());
     // 選択禁止なら既定以外は拒否する。既定が特定モデルの組織で `auto` を明示しても同じ
     // （Auto の振り先へ逃がすと「全員が既定で使う」が API から崩れる）。
-    if !settings.allow_user_choice && requested != settings.default_model {
+    if !settings.may_choose(requested) {
         return Err(ChoiceError::ChoiceDisabled);
     }
     let (model, effort, is_auto) = if requested == AUTO_MODEL {
         let (m, e) = auto_target(catalog, auto, settings)?;
         (m, e, true)
     } else {
-        if !settings.is_enabled(catalog, requested) {
+        if !settings.is_chat_enabled(catalog, requested) {
             return Err(ChoiceError::ModelNotAllowed(requested.to_string()));
         }
         (
@@ -213,10 +258,7 @@ pub fn resolve_at_run(
     snapshot: &ResolvedChoice,
     skill_model: Option<&str>,
 ) -> Result<ResolvedChoice, ChoiceError> {
-    let user_may_use = |m: &str| {
-        settings.is_enabled(catalog, m)
-            && (settings.allow_user_choice || m == settings.default_model)
-    };
+    let user_may_use = |m: &str| settings.is_chat_enabled(catalog, m) && settings.may_choose(m);
     if !snapshot.auto {
         if user_may_use(&snapshot.model) {
             return Ok(snapshot.clone());
@@ -237,7 +279,7 @@ pub fn resolve_at_run(
         });
     }
     // 投入後に「既定を特定モデル＋選択禁止」へ変えられていたら、Auto ではなく既定で動かす。
-    let auto_allowed = settings.allow_user_choice || settings.default_model == AUTO_MODEL;
+    let auto_allowed = settings.may_choose(AUTO_MODEL);
     let choice = ModelChoice {
         model: auto_allowed.then(|| AUTO_MODEL.to_string()),
         effort: None,
@@ -268,6 +310,8 @@ pub enum SettingsError {
     DefaultDisabled(String),
     #[error("少なくとも 1 つのモデルを有効にしてください")]
     NoModelEnabled,
+    #[error("判定用のモデルは既定・Auto の振り先にできません: {0}")]
+    NotChatModel(String),
     #[error("円換算レートは 1〜1000 円の範囲で指定してください")]
     InvalidRate,
 }
@@ -317,9 +361,9 @@ pub fn apply_patch(
         next.jpy_per_usd_centi = r;
     }
 
-    if next.enabled_models(catalog).is_empty() {
-        return Err(SettingsError::NoModelEnabled);
-    }
+    // chat モデルが 1 つは有効で、既定・Auto の振り先が chat モデルであること（判定用のモデルだけでは
+    // チャットが使えない）。
+    modality::check_chat_targets(catalog, &next)?;
     if next.default_model != AUTO_MODEL {
         if catalog.get(&next.default_model).is_none() {
             return Err(SettingsError::UnknownModel(next.default_model));

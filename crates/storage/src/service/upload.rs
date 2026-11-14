@@ -234,7 +234,19 @@ impl StorageService {
     }
 
     /// blob の refcount を upsert で +1 する（新規は 1 で挿入）。tenant_id + org スコープ。
-    #[allow(clippy::too_many_arguments)] // blob 行の identity + メタ一式。
+    ///
+    /// 先に [`lock_blob`] で `(tenant_id, org, sha256)` を Tx の終わりまで押さえる。完全削除の片付け
+    /// （`purge_pending`）は同じロックの中で「blob の行が無い」を確かめてから本体を消すので、行を作ったこの Tx が
+    /// 終わるまで本体は消されない。行を**新しく作った**（[`BlobBump::created`]）ときは、同じロックの中で本体が
+    /// あるかを確かめ直し、無ければ `body` から置く（書き込みの put はロックの外で起きるので、掃除が行の無いのを
+    /// 見てから消すまでの間に置いた本体も消えうる。ロックの中で確かめ直せば、最後には本体が残る・PIT-14）。
+    ///
+    /// ロックの順は **node → blob → 監査のチェーン**。node の行を押さえる書き込みは、この関数より前に押さえる
+    /// （[`lock_parent_for_create`] / [`lock_file_for_content`]）。完全削除も同じ順で取るので、順が逆の書き込みと
+    /// 重なってデッドロックにならない。完全削除は blob を advisory lock ではなく行ロック（sha256 の昇順・
+    /// `FOR UPDATE`）で押さえるので、ここの upsert はその行ロックを待つ。完全削除が行を消して commit していれば、
+    /// upsert は行を作り直し（`created`）、本体を確かめ直す。
+    #[allow(clippy::too_many_arguments)] // blob 行の identity + メタ一式 + 本体の出どころ。
     pub(crate) async fn bump_blob(
         &self,
         conn: &mut PgConnection,
@@ -244,11 +256,15 @@ impl StorageService {
         size: i64,
         content_type: &str,
         object_key: &str,
-    ) -> Result<(), StorageError> {
-        sqlx::query(
+        body: BlobBody<'_>,
+    ) -> Result<BlobBump, StorageError> {
+        lock_blob(&mut *conn, tenant_id, org, sha256).await?;
+        // xmax = 0 は、この文が行を挿入した（ON CONFLICT の更新ではない）ことを表す。
+        let created: bool = sqlx::query_scalar(
             "INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
              VALUES ($1, $2, $3, $4, $5, $6, 1) \
-             ON CONFLICT (tenant_id, org, sha256) DO UPDATE SET refcount = blob.refcount + 1",
+             ON CONFLICT (tenant_id, org, sha256) DO UPDATE SET refcount = blob.refcount + 1 \
+             RETURNING (xmax = 0)",
         )
         .bind(tenant_id)
         .bind(org)
@@ -256,8 +272,41 @@ impl StorageService {
         .bind(size)
         .bind(content_type)
         .bind(object_key)
-        .execute(conn)
+        .fetch_one(&mut *conn)
         .await?;
+        if created {
+            self.ensure_blob_body(object_key, content_type, body)
+                .await?;
+        }
+        Ok(BlobBump { created })
+    }
+
+    /// blob の行を新しく作ったとき、本体があるかを確かめ、無ければ置く（[`Self::bump_blob`] のロックの中で呼ぶ）。
+    async fn ensure_blob_body(
+        &self,
+        object_key: &str,
+        content_type: &str,
+        body: BlobBody<'_>,
+    ) -> Result<(), StorageError> {
+        if let BlobBody::Existing = body {
+            // 既存の版の blob に参照を足すだけの経路（restore・adopt）。版の行があるのに blob の行が無いのは、
+            // 参照数の決まり（refcount = node_version の行数）が崩れている。置き直す元も無いので止める。
+            return Err(StorageError::Db(sqlx::Error::Protocol(format!(
+                "既存の版の blob の行がありません（{object_key}）"
+            ))));
+        }
+        if self.store.exists(object_key).await? {
+            return Ok(());
+        }
+        match body {
+            BlobBody::Bytes(bytes) => {
+                self.store
+                    .put_object(object_key, bytes.to_vec(), content_type)
+                    .await?;
+            }
+            BlobBody::CopyFrom(src) => self.store.copy(src, object_key).await?,
+            BlobBody::Existing => {}
+        }
         Ok(())
     }
 
@@ -351,5 +400,110 @@ impl StorageService {
         .execute(conn)
         .await?;
         Ok(())
+    }
+}
+
+/// [`StorageService::bump_blob`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BlobBump {
+    /// blob の行をこの呼び出しで新しく作った（それまで行が無かった）。
+    pub(crate) created: bool,
+}
+
+/// blob の行を新しく作ったときに本体を置き直す元（[`StorageService::bump_blob`]）。
+#[derive(Clone, Copy)]
+pub(crate) enum BlobBody<'a> {
+    /// 所持しているバイト（内部書込）。
+    Bytes(&'a [u8]),
+    /// 不変な写し（finalize の incoming）。サーバ側で写す。
+    CopyFrom(&'a str),
+    /// 既存の版の blob に参照を足すだけ（行は必ずある）。行を新しく作ったら内部の誤り。
+    Existing,
+}
+
+/// blob `(tenant_id, org, sha256)` を Tx の終わりまで押さえる（advisory xact lock）。
+///
+/// キーは `hashtextextended('blob:' || '<tenant_id>|<org>|<sha256>', 0)`（64bit・`blob:` 接頭辞で
+/// `audit_chain:`・`share_link:` のキーと分ける）。[`StorageService::bump_blob`] と完全削除の片付けが同じキーで
+/// 直列化する。完全削除の本体（多くの blob を 1 つの Tx で押さえる）は、共有ロック表を使い切らないよう、これでは
+/// なく blob の行ロックを使う（`purge::release_blobs`）。1 つの Tx で多くの本体にこれを取らない。
+pub(crate) async fn lock_blob(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    org: &str,
+    sha256: &str,
+) -> Result<(), StorageError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('blob:' || $1, 0))")
+        .bind(format!("{tenant_id}|{org}|{sha256}"))
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// 新規作成の親を Tx の中で確かめ直し、親とその祖先の行を id の昇順に押さえる（`bump_blob` より前に呼ぶ）。
+///
+/// 親の確かめは Tx の外の `ensure_folder` だけだと、その後に親が論理削除されると、削除したフォルダの下に生きた
+/// ノードが残る。ここで `FOR SHARE` を取ると、論理削除（配下を `FOR NO KEY UPDATE` で押さえる）とは互いに待ち、
+/// 削除が先なら確かめ直しで [`StorageError::NotFound`]、作成が先なら削除が作成の commit の後に新しいノードにも
+/// 印を付ける。祖先まで id の昇順で押さえるのは、移動（PIT-16・移動先の祖先を id の昇順で `FOR UPDATE`）と
+/// 順をそろえるため。親だけを押さえると、後の closure の挿入が外部キーで祖先に `FOR KEY SHARE` を取りに行き、
+/// 祖先を押さえて親を待つ移動とデッドロックになる。作成どうしは `FOR SHARE` なので互いに待たない。
+pub(crate) async fn lock_parent_for_create(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    parent_id: Uuid,
+) -> Result<(), StorageError> {
+    let mut ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT ancestor FROM node_closure WHERE tenant_id = $1 AND org = $2 AND descendant = $3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(parent_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if !ids.contains(&parent_id) {
+        ids.push(parent_id);
+    }
+    let live: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, kind FROM node \
+         WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL \
+         ORDER BY id FOR SHARE",
+    )
+    .bind(&ids)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
+    .fetch_all(&mut *conn)
+    .await?;
+    match live.iter().find(|(id, _)| *id == parent_id) {
+        Some((_, kind)) if kind == "folder" => Ok(()),
+        Some(_) => Err(StorageError::Invalid("親がフォルダではありません".into())),
+        None => Err(StorageError::NotFound),
+    }
+}
+
+/// 内容を差し替える対象のファイルの行を、`bump_blob` より前に `FOR UPDATE` で押さえる（ロックの順 node → blob）。
+///
+/// `base_version` があれば押さえた後の版と比べ、違えば [`StorageError::VersionConflict`]（今の版つき）。
+/// ファイルが無い・消えていれば [`StorageError::NotFound`]。
+pub(crate) async fn lock_file_for_content(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    file_id: Uuid,
+    base_version: Option<i64>,
+) -> Result<(), StorageError> {
+    let version: Option<i64> = sqlx::query_scalar(
+        "SELECT version FROM node \
+         WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL \
+         FOR UPDATE",
+    )
+    .bind(file_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let current = version.ok_or(StorageError::NotFound)?;
+    match base_version {
+        Some(base) if base != current => Err(StorageError::VersionConflict { current }),
+        _ => Ok(()),
     }
 }

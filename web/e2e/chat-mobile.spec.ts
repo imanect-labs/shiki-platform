@@ -1,6 +1,11 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// スマホの画面で添付したファイル（ドライブのトップに置かれる）を、テストの後に片付ける（BUG-126）。スマホの
+// コンテキストはテストの中で閉じるので、片付けはログイン済みの `page` から送る。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// スマホのチャット（#733）: 2 段の入力欄（#768）・はみ出し・免責文・実行モードのカード。
 /// 前提: chat.spec と同じ（LLM=stub は「回答: <質問>」を返す）。
@@ -20,7 +25,9 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
     deviceScaleFactor: 3,
     ignoreHTTPSErrors: true,
   });
-  return ctx.newPage();
+  const phone = await ctx.newPage();
+  trackCreatedResources(phone, cleanup, page);
+  return phone;
 }
 
 test.describe("スマホのチャット", () => {

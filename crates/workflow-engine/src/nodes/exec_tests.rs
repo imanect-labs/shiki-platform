@@ -14,6 +14,8 @@ fn ctx(input: Value) -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "s0".into(),
         idempotency_key: "k0".into(),
         attempt: 0,
@@ -25,6 +27,9 @@ fn ctx(input: Value) -> NodeContext {
         each: None,
         trace_id: None,
         scope_ceiling: vec![],
+        cancel: crate::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 

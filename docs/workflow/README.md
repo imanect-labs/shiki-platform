@@ -73,6 +73,7 @@ flowchart LR
 | effect_journal | チョークポイント側の冪等記録テーブル。内部能力の副作用を高々 1 回にする（engine.md §7）。 |
 | fencing token | claim ごとに +1 する単調増加値。ゾンビワーカーの書込を拒否する（engine.md §1）。 |
 | 能力ゲートウェイ | 全ノード・script の能力呼び出しが合流する既存チョークポイント。認可・監査・レダクト・rate limit が効く。 |
+| 結果（reply） | `workflow.reply` が返す、画面に出す整形済みの節。ボタン・会話から起動した本人の画面にだけ出る。正本は reply の step の出力（ir.md §7.10・engine.md §11.6）。 |
 | script-runtime | wasmtime 上の QuickJS で shiki script を有界実行する非特権プロセス（script.md §4）。 |
 
 ## 5. roadmap Task ↔ ドキュメント章 対応表

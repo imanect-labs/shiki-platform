@@ -1,0 +1,72 @@
+{
+ "task": "basic-summary-file",
+ "variant": "null",
+ "case": "normal",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-8fbfe0-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "ca159260-c226-4957-beb0-b6a62480acbb",
+    "status": "succeeded",
+    "input": {
+     "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
+     "title": "会議室の予約方法"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:50.231311+00:00"
+   }
+  ],
+  "rows": {},
+  "rows_before": {},
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:42:48.319650+00:00"
+ }
+}

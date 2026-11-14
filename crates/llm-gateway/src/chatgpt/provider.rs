@@ -14,7 +14,7 @@ use authz::AuthContext;
 use super::ChatGptAccount;
 use crate::config::LlmTimeouts;
 use crate::model::GenerateRequest;
-use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::provider::{DeltaStream, LlmError, LlmProvider, PLAN_NOT_ELIGIBLE};
 use crate::providers::openai_responses::OpenAiResponsesProvider;
 
 /// ChatGPT プランのアダプタ。
@@ -43,7 +43,7 @@ impl ChatGptPlanProvider {
                 "ChatGPT プランの利用上限に達しました。ChatGPT の設定 → Usage で上限を確認してください。"
                     .into(),
             ),
-            LlmError::BadRequest(m) if m.contains("subscription_sharing_user_not_eligible") => {
+            LlmError::BadRequest(m) if m.contains(PLAN_NOT_ELIGIBLE) => {
                 LlmError::BadRequest(
                     "この ChatGPT アカウントはプランでの利用対象外です（Plus / Pro が必要です）。"
                         .into(),
@@ -66,11 +66,12 @@ impl ChatGptPlanProvider {
 const NAME: &str = "chatgpt_plan";
 
 impl ChatGptPlanProvider {
-    /// 呼び出し主体に結び付けたアダプタ（gateway が生成のたびに作る）。
-    pub(crate) fn for_caller<'a>(&'a self, ctx: &'a AuthContext) -> ForCaller<'a> {
+    /// 呼び出し主体に結び付けたアダプタ（gateway が生成のたびに作る）。主体を持ったまま送り直せるように、
+    /// 主体の写しを持つ（gateway の流れ始めた後の送り直し・BUG-224）。
+    pub(crate) fn for_caller(self: &Arc<Self>, ctx: &AuthContext) -> ForCaller {
         ForCaller {
-            provider: self,
-            ctx,
+            provider: Arc::clone(self),
+            ctx: ctx.clone(),
         }
     }
 
@@ -101,19 +102,19 @@ impl LlmProvider for ChatGptPlanProvider {
     }
 }
 
-/// 呼び出し主体に結び付けた ChatGPT プランのアダプタ。
-pub(crate) struct ForCaller<'a> {
-    provider: &'a ChatGptPlanProvider,
-    ctx: &'a AuthContext,
+/// 呼び出し主体に結び付けた ChatGPT プランのアダプタ。送り直しのたびにトークンを取り直し、連携者と照合し直す。
+pub(crate) struct ForCaller {
+    provider: Arc<ChatGptPlanProvider>,
+    ctx: AuthContext,
 }
 
 #[async_trait::async_trait]
-impl LlmProvider for ForCaller<'_> {
+impl LlmProvider for ForCaller {
     fn name(&self) -> &'static str {
         NAME
     }
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-        self.provider.stream_for(self.ctx, req).await
+        self.provider.stream_for(&self.ctx, req).await
     }
 }

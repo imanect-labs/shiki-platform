@@ -1,6 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// ノートの AI 編集の提案モード（#886）: 消す側にも提案の印が付き、棄却すると元の本文に戻り、
 /// 承認すると差し替え・節の削除が反映される（前提: LLM=stub の `notesuggest:<node_id>`）。

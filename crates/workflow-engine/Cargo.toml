@@ -16,6 +16,8 @@ path = "src/bin/export-ts.rs"
 [dependencies]
 shiki-authz.workspace = true
 shiki-artifact.workspace = true
+# 試運転の監査の語彙（`workflow.try_run`）と、許可の行を書く記録器（deny と同じ対象で書く・D-197）。
+shiki-storage.workspace = true
 # V6（inline script のコンパイル検証）で script-runtime のコンパイラを共用する。
 shiki-script-runtime.workspace = true
 # V4（宛先束縛の事前照合）で secrets の host_allowed を共用する。
@@ -25,6 +27,8 @@ shiki-jobq.workspace = true
 # data ノードの params は data の `DataQuery` をそのまま使う（変換層・面ごとのフィルタ表現を作らない・
 # data-platform §11）。実行は NodePorts 越し（チョークポイント呼び出しは server 側）。
 shiki-data.workspace = true
+# csv.query の tables の名前と数の保存時の照合は、tabular（ランナーと共有する決まり）の判定をそのまま呼ぶ（GAP-126）。
+shiki-tabular-protocol.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -47,11 +51,16 @@ sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
-# cron 評価（5 フィールド）＋IANA tz 解決（スケジューラ・engine.md §5）。
-cron = "0.15"
+# cron 評価（5 フィールド・標準の読み方）＋IANA tz 解決（スケジューラ・engine.md §5）。ミニアプリと共有する。
+shiki-cron5.workspace = true
+# 新しく保存する CSV の文字コード（UTF-8〔BOM 付き〕・Shift_JIS）の書き方（CSV の編集の書き戻しと同じ・D-120）。
+shiki-textenc.workspace = true
 chrono = { workspace = true }
+# 実行情報の時刻の時間帯（vocab/run_info.rs）。
 chrono-tz = "0.10"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
+# ブロックの実行中の panic を捕まえる（`FutureExt::catch_unwind`・ワーカーを止めない・BUG-215）。
+futures.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
@@ -61,16 +70,20 @@ async-trait.workspace = true
 sqlx.workspace = true
 proptest.workspace = true
 
-# lib 名 authz/artifact で参照するため machete が誤検出する。
+# lib 名 authz/artifact/storage で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
 ignored = [
     "shiki-authz",
     "shiki-artifact",
+    "shiki-storage",
     "shiki-script-runtime",
     "shiki-durable",
     "shiki-secrets",
     "shiki-jobq",
     "shiki-data",
+    "shiki-tabular-protocol",
+    "shiki-cron5",
+    "shiki-textenc",
 ]
 
 [lints]

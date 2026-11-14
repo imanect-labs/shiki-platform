@@ -83,7 +83,8 @@ pub struct CancelResponse {
     ),
     responses(
         (status = 200, description = "受理（または既に terminal）", body = CancelResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・run が無い・editor でも起動した本人でもない"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -147,8 +148,9 @@ pub struct RetryResponse {
     request_body = RetryRequest,
     responses(
         (status = 202, description = "再実行を受理", body = RetryResponse),
-        (status = 404, description = "存在しない/権限なし"),
-        (status = 409, description = "failed でない run の resume"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・run が無い・editor でも起動した本人でもない"),
+        (status = 409, description = "failed でない run の resume（code=not_failed）・再開しても同じ結果になる失敗（code=same_result）・実行の期限を過ぎた run（code=past_deadline）・委譲が無効（code=delegation_invalid）"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -208,6 +210,14 @@ pub async fn retry_workflow_run(
                     "code": "not_failed",
                     "message": format!("failed でない run（{s}）は再開できません"),
                 }))),
+                // 再開しても同じ結果になる失敗（same_result）・実行の期限を過ぎた run（past_deadline）。code と文は
+                // 実行履歴の詳細の `resume` と同じ単一定義から返す（D-116・BUG-138）。
+                ResumeOutcome::NotResumable(hint) => {
+                    Err(ApiError::ConflictJson(serde_json::json!({
+                        "code": hint.advice.as_str(),
+                        "message": hint.note,
+                    })))
+                }
                 ResumeOutcome::NotFound => Err(ApiError::NotFound),
             }
         }
@@ -221,13 +231,27 @@ pub async fn retry_workflow_run(
                 .await
                 .map_err(|e| ApiError::Internal(format!("run: {e}")))?
                 .ok_or(ApiError::NotFound)?;
-            // 元 version をピンし同一入力で新規 run（実行主体は呼び出し者＝正直な semantics）。
+            // 元 version をピンし同一入力で新規 run（実行主体は呼び出し者＝正直な semantics）。元の run で試した
+            // きっかけの内容も引き継ぐ（無ければ入力と同じ・D-93）。予定の日時（スケジュールの予定の時刻・指定した
+            // 日時・親から引き継いだ日時）も引き継ぎ、同じ予定の分をやり直す（無ければ始めた日時・GAP-88）。元の run を
+            // 行に残し、実行履歴は引き継いだ予定の日時を指定した日時と言い分ける（GAP-89）。
+            let trial = workflow_engine::RunTrial {
+                trigger: detail.trigger_payload.as_ref(),
+                scheduled_at: detail.scheduled_at,
+                rerun_of: Some(run_id),
+            };
             let new_run = launcher
-                .start_interactive_version(&ctx, id, detail.version, &detail.input)
+                .start_interactive_version_trial(&ctx, id, detail.version, &detail.input, trial)
                 .await
                 .map_err(|e| match e {
                     // 元の入力が今の input_schema に合わない（版を固定しても入力は過去のもの）。
-                    workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
+                    workflow_engine::run::LauncherError::Input(issues) => {
+                        super::runs::invalid_input(&issues)
+                    }
+                    // 版の必須の文字の欄が空（その版は何度やっても動かない・D-43）。
+                    workflow_engine::run::LauncherError::NotReady(errors) => {
+                        super::runs::not_ready(&errors)
+                    }
                     other => ApiError::Internal(format!("再実行: {other}")),
                 })?;
             Ok((
@@ -262,7 +286,8 @@ pub struct StreamQuery {
     ),
     responses(
         (status = 200, description = "SSE ストリーム"),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない"),
     ),
     tag = "workflows"
 )]

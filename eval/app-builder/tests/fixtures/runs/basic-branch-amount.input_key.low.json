@@ -1,0 +1,181 @@
+{
+ "task": "basic-branch-amount",
+ "variant": "input_key",
+ "case": "low",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-268ccb-input-key",
+   "display_name": "金額で申請の記録先を分ける",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "item": {
+      "type": "string"
+     },
+     "amount": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "item",
+     "amount"
+    ],
+    "x-order": [
+     "item",
+     "amount"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "is_large",
+     "type": "control.branch",
+     "label": "5 万円以上か",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 50000
+       }
+      }
+     }
+    },
+    {
+     "id": "add_large",
+     "type": "data.record.create",
+     "label": "高額の申請に追加",
+     "params": {
+      "table": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item_x"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    },
+    {
+     "id": "add_small",
+     "type": "data.record.create",
+     "label": "通常の申請に追加",
+     "params": {
+      "table": "4ea54fc1-6c06-4940-bbeb-2de6ae730344",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item_x"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "is_large",
+     "to": "add_large",
+     "from_port": "true"
+    },
+    {
+     "from": "is_large",
+     "to": "add_small",
+     "from_port": "false"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add_large": [
+    "out"
+   ],
+   "add_small": [
+    "out"
+   ],
+   "is_large": [
+    "true",
+    "false"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "caa02c52-7dab-42d9-9a3b-9009334b5dac",
+    "status": "failed",
+    "input": {
+     "amount": 12000,
+     "item": "文房具"
+    },
+    "steps": [
+     {
+      "step_path": "is_large",
+      "node_id": "is_large",
+      "status": "succeeded",
+      "taken_ports": [
+       "false"
+      ],
+      "output": {
+       "amount": 12000,
+       "item": "文房具"
+      },
+      "error": null
+     },
+     {
+      "step_path": "add_large",
+      "node_id": "add_large",
+      "status": "skipped",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "add_small",
+      "node_id": "add_small",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /item_x が解決できません（値が無く default もありません）",
+       "node_id": "add_small",
+       "retryable": false
+      }
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:06.520699+00:00"
+   }
+  ],
+  "rows": {
+   "big": [],
+   "small": []
+  },
+  "rows_before": {
+   "big": [],
+   "small": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:42:57.413326+00:00"
+ }
+}

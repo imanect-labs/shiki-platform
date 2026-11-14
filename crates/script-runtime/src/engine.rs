@@ -20,11 +20,18 @@ use crate::frames::{FrameError, FrameValidator};
 use crate::host::{HostCall, HostResponse};
 use crate::runtime_io::{
     classify_trap, guest_alloc, guest_dealloc, read_mem, read_mem_caller, unpack, write_mem,
-    write_response,
+    write_response, ResultTooLarge,
 };
+use crate::uncaught::{HostError, HOST_RETURNED_EMPTY};
 
 /// 埋め込みゲスト wasm（scripts/build-qjs-guest.sh で再現ビルドし vendor したもの）。
 pub const GUEST_WASM: &[u8] = include_bytes!("../assets/shiki_qjs_guest.wasm");
+
+/// `main` の戻り値の大きさの上限（バイト・step の出力の上限と同じ・script.md §4.3）。
+///
+/// ゲストが返した結果（`{"ok":true,"value":…}` の封筒）がこれを超えたら読まずに捨て、作成者が直す誤り（`invalid`）で
+/// 失敗にする（[`Termination::ResultTooLarge`]・BUG-264）。文言とワークフローの AI 向けの説明はこの値から作る。
+pub const MAX_RESULT_BYTES: u32 = 256 * 1024;
 
 /// 実行リソース上限（ノード設定は縮小のみ・script.md §4.3）。
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +72,8 @@ pub enum Termination {
     Epoch,
     /// フレーム違反（敵対的フレーム・INV-4）。
     FrameViolation(String),
+    /// 戻り値が上限（[`MAX_RESULT_BYTES`]）を超えた（ゲストが返した結果の大きさ・バイト）。作成者が直す誤り。
+    ResultTooLarge(u32),
     /// ホスト側キャンセル。
     Cancelled,
     /// 内部エラー（トラップ等）。
@@ -256,6 +265,7 @@ impl ScriptEngine {
             validator: FrameValidator::new(exec_id, limits.max_host_calls),
             logs: Vec::new(),
             frame_violation: None,
+            host_errors: Vec::new(),
             limiter: MemLimiter {
                 max_bytes: limits.memory_bytes,
             },
@@ -335,13 +345,10 @@ impl ScriptEngine {
         )?;
         let (ptr, len) = unpack(packed);
         // 結果サイズ上限（256KB・step-output cap）。ゲストが報告した len をそのまま read すると
-        // wasm メモリ上限内でも数 MB を host へ確保させられる。上限超過は読まずに trap する。
-        const MAX_RESULT_BYTES: u32 = 256 * 1024;
+        // wasm メモリ上限内でも数 MB を host へ確保させられる。上限超過は読まずに失敗にする（作成者の誤り・BUG-264）。
         if len > MAX_RESULT_BYTES {
             let _ = guest_dealloc(store, instance, ptr, len);
-            return Err(wasmtime::Error::msg(format!(
-                "result too large: {len} bytes > {MAX_RESULT_BYTES}"
-            )));
+            return Err(wasmtime::Error::new(ResultTooLarge(len)));
         }
         let bytes = read_mem(store, &memory, ptr, len)?;
         // 結果領域を解放（ゲスト側 alloc で確保されている）。
@@ -355,6 +362,8 @@ pub(crate) struct HostState {
     validator: FrameValidator,
     pub(crate) logs: Vec<String>,
     pub(crate) frame_violation: Option<String>,
+    /// ホストが返した誤り（起きた順・捕まえずに投げ返された例外を元の code で分類する・D-121）。
+    pub(crate) host_errors: Vec<HostError>,
     limiter: MemLimiter,
     /// 能力呼び出しの委譲先（gRPC 往復 or テスト直呼び）。
     host_fn: HostFn,
@@ -412,11 +421,41 @@ fn hostcall_bridge(caller: &mut Caller<'_, HostState>, req_ptr: u32, req_len: u3
         return 0;
     };
     let Ok(req_bytes) = read_mem_caller(caller, &memory, req_ptr, req_len) else {
+        record_unanswered(caller);
         return 0;
     };
     let response = process_frame(caller, &req_bytes);
+    if let HostResponse::Err {
+        message,
+        code,
+        retryable,
+    } = &response
+    {
+        // 捕まえずに投げ返されたら、元の code で失敗にする（ゲストは封筒に code を載せない・D-121）。
+        caller.data_mut().host_errors.push(HostError {
+            message: message.clone(),
+            code: code.clone(),
+            retryable: *retryable,
+        });
+    }
     let env = response.to_envelope().to_string();
-    write_response(caller, &memory, env.as_bytes())
+    let packed = write_response(caller, &memory, env.as_bytes());
+    if packed == 0 {
+        record_unanswered(caller);
+    }
+    packed
+}
+
+/// 要求を読めなかった（大きすぎる）・応答をゲストへ書けなかった（ゲストのメモリに置けない）呼び出しを記録する。
+///
+/// ゲストは「host returned empty」の誤りを投げる。捕まえずに投げ返されたら、使える量の上限（`resource`）で失敗に
+/// する（作成者の書き誤りでも、分類できない失敗でもない）。
+fn record_unanswered(caller: &mut Caller<'_, HostState>) {
+    caller.data_mut().host_errors.push(HostError {
+        message: HOST_RETURNED_EMPTY.to_string(),
+        code: "resource".to_string(),
+        retryable: false,
+    });
 }
 
 /// リクエストフレームをパース・検証し host_fn で処理する。違反は状態に記録し Err を返す。
@@ -517,6 +556,7 @@ impl HostState {
             validator: FrameValidator::new("test-exec", 1000),
             logs: Vec::new(),
             frame_violation: None,
+            host_errors: Vec::new(),
             limiter: MemLimiter {
                 max_bytes: 128 * 1024 * 1024,
             },

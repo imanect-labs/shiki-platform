@@ -1,0 +1,630 @@
+[
+ {
+  "description": "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。numpy・pandas・openpyxl が使え、添付の .xlsx も pandas.read_excel でそのまま読める。計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。グラフ描画は行わず、結果の数値/表を返すこと。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "code": {
+     "description": "実行する Python コード",
+     "type": "string"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "name": "code_interpreter"
+ },
+ {
+  "description": "公開 web を検索し、タイトル・URL・スニペットを返す。最新情報や社外の情報が必要なときに使う。ページ本文が必要なら結果の URL を web_fetch で取得する。社内文書は doc_search を使うこと。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "query": {
+     "description": "検索クエリ（自然文/キーワード）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "name": "web_search"
+ },
+ {
+  "description": "URL のページを取得し、本文を抽出して Markdown で返す（広告・ナビ・スクリプトは除去済み・リダイレクトは追従しない）。web_search で得た URL の内容を読むときに使う。長いページは query に知りたい論点を書くと関連する節だけ返り、offset で続きを読める。取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "offset": {
+     "description": "続きを読む開始位置（任意・文字単位）。前回の結果が打ち切られたときに、示された値をそのまま渡す。",
+     "minimum": 0,
+     "type": "integer"
+    },
+    "query": {
+     "description": "知りたい論点（任意）。長いページから関連する節だけを抜き出す。ページ全体が要るときは指定しない。",
+     "type": "string"
+    },
+    "url": {
+     "description": "取得する URL（http/https）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "type": "object"
+  },
+  "name": "web_fetch"
+ },
+ {
+  "defer_loading": true,
+  "description": "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir のみ、既存の編集は workflow_id を併せて渡す（編集前に必ず read_workflow で現在の IR を読むこと）。\nIR の骨格: {\"ir_version\":1, \"name\":\"英小文字とハイフンの安定名\", \"display_name\":\"日本語表示名\", \"declared_scopes\":[…], \"triggers\":[{\"kind\":\"interactive\"} | {\"kind\":\"schedule\",\"cron\":\"0 9 * * *\",\"tz\":\"Asia/Tokyo\"} | {\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{\"folder\":\"<uuid>\"}}], \"nodes\":[{\"id\":\"英小文字_数字\",\"type\":\"…\",\"label\":\"日本語\",\"params\":{…}}], \"edges\":[{\"from\":\"nodeA\",\"port\":\"next\",\"to\":\"nodeB\"}]}\n値の参照: params 内では {\"$from\":\"<祖先ノードid>\",\"path\":\"/フィールド\"}（実行入力は \"input\"）、文章の組み立ては {\"$template\":\"…{{変数}}…\",\"vars\":{…}}、それ以外はリテラル。\n検証に失敗した場合はエラー全件が返るので、修正して再実行する。成功するとユーザーにはカードが表示され、エディタで開ける。\n利用可能なノード type:\n- control.branch（条件分岐）: 条件を満たすかどうかで「はい / いいえ」に分ける・出力ポート: true/false\n- control.switch（振り分け）: 値に応じて複数の行き先に振り分ける\n- control.join（合流）: 分かれた流れを待ち合わせて 1 つに戻す\n- control.map（繰り返し）: リストの要素ごとに同じ処理を繰り返す\n- control.wait（待機）: 指定した時間・時刻・できごとまで待つ\n- storage.read（ファイルを読む）: ドライブのファイルの内容を取得する・要 declared_scopes: storage.read\n- storage.write（ファイルを保存）: ドライブに新しいファイルを保存する・要 declared_scopes: storage.write\n- storage.list（フォルダ一覧）: フォルダの中のファイル一覧を取得する・要 declared_scopes: storage.read\n- rag.search（社内検索）: 権限の範囲で社内ドキュメントを検索する・要 declared_scopes: rag.query\n- llm.invoke（AI に聞く）: AI に文章の生成・要約・分類などを頼む\n- agent.invoke（AI エージェント）: AI がツールを使って複数手順の作業をこなす\n- http.request（外部 API 呼び出し）: 社外のサービス（API）にリクエストを送る・要 declared_scopes: http.egress\n- script.run（スクリプト）: TypeScript の小さなプログラムで計算・変換する\n- workflow.start（別のフローを開始）: 別のワークフローを起動する（結果は待たない）・要 declared_scopes: workflow.start\n- csv.query（CSV を集計）: CSV ファイルに読み取り専用の SQL を実行して集計・抽出する・要 declared_scopes: csv.read\n- csv.patch（CSV を編集）: CSV のセル・行・列を書き換えて新しいバージョンを保存する・要 declared_scopes: csv.write\n- csv.write（CSV を保存）: 新しい CSV ファイルをドライブに保存する・要 declared_scopes: csv.write\n- data.query（データを調べる）: 業務データ（テーブル）を検索・集計する・要 declared_scopes: data.read\n- data.record.create（データを追加）: 業務データに新しいレコードを追加する・要 declared_scopes: data.write\n- data.record.update（データを更新）: 業務データのレコードを書き換える・要 declared_scopes: data.write\n- data.transition（状態を進める）: 申請・承認などの状態を次へ進める・要 declared_scopes: data.write\n- data.record.delete（データを削除）: 業務データのレコードを削除する・要 declared_scopes: data.write\n- data.bulk_upsert（データをまとめて登録）: 業務データにレコードをまとめて追加・更新する・要 declared_scopes: data.write\n- skill.invoke（スキルを使う）: インストール済みのスキル（定型作業）を呼び出す\n",
+  "input_schema": {
+   "properties": {
+    "expected_version": {
+     "description": "更新時の楽観ロック。read_workflow が返した version をそのまま渡す（他者の編集と競合したら失敗が返る）",
+     "type": "integer"
+    },
+    "ir": {
+     "description": "ワークフロー IR（JSON DAG）全体",
+     "type": "object"
+    },
+    "workflow_id": {
+     "description": "更新対象の既存ワークフロー ID（UUID）。新規作成なら省略",
+     "type": "string"
+    }
+   },
+   "required": [
+    "ir"
+   ],
+   "type": "object"
+  },
+  "name": "emit_workflow"
+ },
+ {
+  "defer_loading": true,
+  "description": "既存ワークフローの最新 IR（JSON）を読む。emit_workflow で編集する前に必ず呼び、返った IR を基に変更し、返った version を emit_workflow の expected_version に渡すこと。",
+  "input_schema": {
+   "properties": {
+    "workflow_id": {
+     "description": "ワークフロー ID（UUID）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workflow_id"
+   ],
+   "type": "object"
+  },
+  "name": "read_workflow"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成した内容を新しいノートの下書きとして用意する。ユーザーが「〜のドキュメントを作って」「ノートにして」等と依頼したときに使う。呼ぶと下書きノート画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の文書を同時に作る場合は別の name で呼ぶ。",
+  "input_schema": {
+   "properties": {
+    "markdown": {
+     "description": "ノート本文の Markdown",
+     "type": "string"
+    },
+    "name": {
+     "description": "ノート名（.md は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "markdown"
+   ],
+   "type": "object"
+  },
+  "name": "save_note"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成したスライド一式を新しいスライドの下書きとして用意する。ユーザーが「パワポを作って」「スライドにして」等と依頼したときに使う。呼ぶと下書きスライド画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。本文 HTML は 1280×720（16:9）キャンバス前提で、h1/h2/h3/p/ul/li/table/div（インライン style）の基本要素だけで構成する（script 等は自動除去される）。見栄えの指針: 1 スライド 1 メッセージ・大きな見出し（表紙 h1 は 64px 級、本文スライドは h2 40px 級）・箇条書きは 5 点以内・十分な余白（div の padding で確保）・配色はテーマに合わせてインライン style で指定する。利用可能な theme_id（この閉集合以外は指定不可）: plain（白基調: 背景 #ffffff・本文 #1f2937・見出し #111827・アクセント #2563eb） / dark（ダーク: 背景 #0f172a・本文 #e2e8f0・見出し #f8fafc・アクセント #38bdf8） / warm（和紙（暖色）: 背景 #faf6ef・本文 #44403c・見出し #1c1917・アクセント #b45309） / forest（深緑: 背景 #f4f9f4・本文 #1f2937・見出し #14532d・アクセント #15803d）。",
+  "input_schema": {
+   "properties": {
+    "name": {
+     "description": "スライド名（.slide は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    },
+    "slides": {
+     "description": "スライド列（先頭が表紙）",
+     "items": {
+      "properties": {
+       "html": {
+        "description": "スライド本文 HTML（1280×720 前提・基本要素サブセット）",
+        "type": "string"
+       },
+       "notes": {
+        "description": "スピーカーノート（任意）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "html"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "theme_id": {
+     "description": "テーマ（省略可・カタログの閉集合）",
+     "enum": [
+      "plain",
+      "dark",
+      "warm",
+      "forest"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "slides"
+   ],
+   "type": "object"
+  },
+  "name": "save_slide"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成した表データを新しい CSV の下書きとして用意する。ユーザーが「〜の表を作って」「一覧表にして」等と依頼したときに使う。呼ぶと下書き CSV 画面（グリッド）が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の表を同時に作る場合は別の name で呼ぶ。既存 CSV の編集は csv.patch を使うこと。",
+  "input_schema": {
+   "properties": {
+    "csv": {
+     "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）",
+     "type": "string"
+    },
+    "name": {
+     "description": "CSV 名（.csv は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "csv"
+   ],
+   "type": "object"
+  },
+  "name": "save_csv"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）の現在の内容を正規化 Markdown で読み取る。document.edit で編集する前に、見出し構成や既存内容を把握するために使う。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id"
+   ],
+   "type": "object"
+  },
+  "name": "document_read"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）を共同編集参加者として編集する。人が同時に書いている箇所を壊さないよう、**変える所だけを変える一番小さい操作**を選ぶ。語句の訂正・言い換え・見出しの改名・文や項目の削除は replace_text（find の語句を replace に。空にすると段落・項目ごと消える）。段落・リスト・表を書式付きで書き直すなら replace_block（find を含む最上位のブロックを置換。リストの項目の中で同じ種類のリストを渡すとその項目だけを置換＝チェックの付け外しもこれ）。段落・項目の後ろに足すなら insert_after（リストの項目の後ろに同じ種類のリストを渡すと同じリストに続く）。find は本文の文字どおりで、文書全体で一意にする（重なるなら heading で節を絞る）。1 つの段落・項目・表のセルの中の語句に限る（表は行ではなくセルの文字を渡す）。節単位は replace_section（見出しを残して本文を置換）・insert_after_heading・delete_section（見出しごと消す）・move_section（before_heading の前へ。省略で末尾）。append は末尾に追記、replace_all は全文の作り直し（最終手段）、set_meta はタイトル・タグ等。既定は直接適用（あなたの名義で反映）。mode=\"suggest\" で提案として入れ、人間が承認/棄却できる。ops は全部適用されるか何も適用されないかのどちらかで、適用できないときは理由が返るので、直して ops 全体を送り直す。グラフ等の図は markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。",
+  "input_schema": {
+   "properties": {
+    "mode": {
+     "default": "direct",
+     "description": "direct=直接適用（既定）/ suggest=提案マーク付き",
+     "enum": [
+      "direct",
+      "suggest"
+     ],
+     "type": "string"
+    },
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "編集操作列（順に適用）",
+     "items": {
+      "properties": {
+       "before_heading": {
+        "description": "move_section の移動先（この見出しの前へ。省略で末尾）",
+        "type": "string"
+       },
+       "find": {
+        "description": "場所を決める本文の語句（replace_text / replace_block / insert_after）。文書全体で一意に",
+        "type": "string"
+       },
+       "heading": {
+        "description": "対象の見出しの文字（節単位の操作）。find を使う操作では、探す範囲をその節に絞る。同じ見出しが複数あるときは「親の見出し > 見出し」",
+        "type": "string"
+       },
+       "key": {
+        "description": "プロパティ名（set_meta・title/icon/tags/任意）",
+        "type": "string"
+       },
+       "markdown": {
+        "description": "入れる/置換する Markdown（replace_block / insert_after / replace_section / insert_after_heading / append / replace_all）",
+        "type": "string"
+       },
+       "op": {
+        "enum": [
+         "replace_text",
+         "replace_block",
+         "insert_after",
+         "replace_section",
+         "insert_after_heading",
+         "delete_section",
+         "move_section",
+         "append",
+         "replace_all",
+         "set_meta"
+        ],
+        "type": "string"
+       },
+       "replace": {
+        "description": "差し替える文字（replace_text・書式記号は使えない・空で削除）",
+        "type": "string"
+       },
+       "value": {
+        "description": "プロパティ値（set_meta・tags は , 区切り）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "op"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "document_edit"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）の本文末尾にグラフ・表・構成図などの図を入れる。ユーザーが「このグラフをノートに入れて」「図をノートに追加して」等と依頼したときに使う。source は回答の本文に書く ```ui ブロックの中身（Yui の記述・フェンスは不要）。表示だけの種類に限る（app・ask・plan は入れられない）。追記のみで既存内容は消さない。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "source": {
+     "description": "```ui ブロックの中身（例: \"bar 月別の売上\\n4月 | 120\\n5月 | 150\"）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id",
+    "source"
+   ],
+   "type": "object"
+  },
+  "name": "document_embed"
+ },
+ {
+  "defer_loading": true,
+  "description": "スライド（.slide ファイル）の現在の内容を正規化 JSON で読み取る（各スライドのid・本文 HTML・スピーカーノート・メタデータ）。slide.edit で編集する前に、スライド構成と id を把握するために使う。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "スライドのノード ID",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id"
+   ],
+   "type": "object"
+  },
+  "name": "slide_read"
+ },
+ {
+  "defer_loading": true,
+  "description": "スライド（.slide ファイル）を共同編集参加者として編集する。人間が編集中でも安全に同時編集できる（CRDT で収束）。操作: append_slide（末尾に追加）/ insert_slide_after（指定 id の直後に挿入）/ replace_slide（本文 HTML 置換）/ remove_slide / set_notes（スピーカーノート）/ set_background（{\"color\":\"#rrggbb\"}）/ set_meta（title・theme_id 等）。編集前に slide.read で構成と id を確認すること。本文 HTML は 1280×720（16:9）キャンバス前提で、h1/h2/h3/p/ul/li/table/div（インライン style）の基本要素だけで構成する（script 等は自動除去される）。見栄えの指針: 1 スライド 1 メッセージ・大きな見出し（表紙 h1 は 64px 級、本文スライドは h2 40px 級）・箇条書きは 5 点以内・十分な余白（div の padding で確保）・配色はテーマに合わせてインライン style で指定する。利用可能な theme_id（この閉集合以外は指定不可）: plain（白基調: 背景 #ffffff・本文 #1f2937・見出し #111827・アクセント #2563eb） / dark（ダーク: 背景 #0f172a・本文 #e2e8f0・見出し #f8fafc・アクセント #38bdf8） / warm（和紙（暖色）: 背景 #faf6ef・本文 #44403c・見出し #1c1917・アクセント #b45309） / forest（深緑: 背景 #f4f9f4・本文 #1f2937・見出し #14532d・アクセント #15803d）。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "スライドのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "編集操作列（順に適用）",
+     "items": {
+      "properties": {
+       "bg": {
+        "description": "背景指定（set_background・例 {\"color\":\"#ffffff\"}）",
+        "type": "object"
+       },
+       "html": {
+        "description": "スライド本文 HTML（append_slide/insert_slide_after/replace_slide）",
+        "type": "string"
+       },
+       "key": {
+        "description": "プロパティ名（set_meta・title/theme_id/tags/任意）",
+        "type": "string"
+       },
+       "notes": {
+        "description": "スピーカーノート（set_notes・追加系では任意）",
+        "type": "string"
+       },
+       "op": {
+        "enum": [
+         "append_slide",
+         "insert_slide_after",
+         "replace_slide",
+         "remove_slide",
+         "set_notes",
+         "set_background",
+         "set_meta"
+        ],
+        "type": "string"
+       },
+       "slide_id": {
+        "description": "対象スライド id（append_slide/set_meta 以外で必須）",
+        "type": "string"
+       },
+       "value": {
+        "description": "プロパティ値（set_meta）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "op"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "slide_edit"
+ },
+ {
+  "defer_loading": true,
+  "description": "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "CSV のノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "sql": {
+     "description": "読み取り専用 SELECT（テーブル名 data）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id",
+    "sql"
+   ],
+   "type": "object"
+  },
+  "name": "csv_query"
+ },
+ {
+  "defer_loading": true,
+  "description": "CSV をパッチ編集して新しいバージョンを保存する（編集権限が要る）。ops は cell_update /row_insert / row_delete / column_add / column_delete / column_rename。base_rev には編集前の版（csv.query 等で得た version）を渡す（競合検出）。",
+  "input_schema": {
+   "properties": {
+    "base_rev": {
+     "description": "編集前の版（競合検出）",
+     "type": "integer"
+    },
+    "node_id": {
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "パッチ操作列",
+     "items": {
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "base_rev",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "csv_patch"
+ },
+ {
+  "defer_loading": true,
+  "description": "新しい CSV ファイルを保存する（保存先フォルダの作成権限が要る）。csv には CSV 本文（ヘッダ行＋データ行）を渡す。",
+  "input_schema": {
+   "properties": {
+    "csv": {
+     "description": "CSV 本文",
+     "type": "string"
+    },
+    "name": {
+     "description": "ファイル名（.csv は自動付与）",
+     "type": "string"
+    },
+    "parent_id": {
+     "description": "保存先フォルダ（省略で直下）",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "csv"
+   ],
+   "type": "object"
+  },
+  "name": "csv_write"
+ },
+ {
+  "description": "社内の構造化データ（テーブル）を検索・集計する（読み取り専用）。見えない行・列はあなたの権限で自動的に除かれる。列の参照名・型・選択肢が分からなければ先に data_schema で確かめること。query は DataQuery: filter は条件木（{\"cmp\":{\"field\":\"status\",\"op\":\"eq\",\"value\":\"承認待ち\"}}・{\"all\":[...]}・{\"any\":[...]}・{\"not\":{...}}。op は eq / neq / lt / lte / gt / gte / in / contains / starts_with / ends_with / exists / is_null）、sort は [{\"field\":\"amount\",\"descending\":true}]（作成・更新日時・作成者は _created_at / _updated_at / _owner）、select は返す列、limit は件数（既定 50・最大 200）、集計は group_by ＋ aggregate （[{\"metric\":\"sum\",\"field\":\"amount\"}]・metric は count / sum / avg / min / max）、with_count で総数。例: 経費の承認待ちを金額の大きい順 → {\"table\":\"経費\",\"query\":{\"filter\":{\"cmp\":{\"field\":\"status\",\"op\":\"eq\",\"value\":\"承認待ち\"}},\"sort\":[{\"field\":\"amount\",\"descending\":true}]}}\n\n閲覧できるテーブル（名前 / id）:\n- 入出庫の記録 / @table:moves\n- 在庫 / @table:stock\n",
+  "input_schema": {
+   "properties": {
+    "query": {
+     "description": "DataQuery（filter / sort / select / limit / cursor / group_by / aggregate / with_count / search）",
+     "properties": {
+      "aggregate": {
+       "description": "[{metric, field}]",
+       "items": {
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "cursor": {
+       "description": "前ページの続きの位置",
+       "type": "string"
+      },
+      "filter": {
+       "description": "条件木（cmp / all / any / not）",
+       "type": "object"
+      },
+      "group_by": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "limit": {
+       "maximum": 200,
+       "minimum": 1,
+       "type": "integer"
+      },
+      "search": {
+       "description": "検索対象の列への部分一致",
+       "type": "string"
+      },
+      "select": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "sort": {
+       "description": "[{field, descending}]（最大 4 キー）",
+       "items": {
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "with_count": {
+       "type": "boolean"
+      }
+     },
+     "type": "object"
+    },
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "name": "data_query"
+ },
+ {
+  "description": "テーブルの列（参照名・型・表示名・選択肢・状態の列）を調べる（読み取り専用）。data_query の filter / sort / select や data_record_write の値には、ここで得た参照名を使う。table は data_query の一覧の名前か id。",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "name": "data_schema"
+ },
+ {
+  "defer_loading": true,
+  "description": "テーブルのレコードを 1 件作成（op=create）または更新（op=update・変更する列だけ）する。編集権限が要り、実行前にユーザーの承認を求める。data のキーは data_schema の参照名。状態の列（承認フロー）は書き換えられない。table は data_query の一覧の名前か id。",
+  "input_schema": {
+   "properties": {
+    "data": {
+     "description": "列の参照名 → 値（update は変更する列だけ・null で値を消す）",
+     "type": "object"
+    },
+    "expected_rev": {
+     "description": "楽観ロック（data_query の rev）",
+     "type": "integer"
+    },
+    "op": {
+     "enum": [
+      "create",
+      "update"
+     ],
+     "type": "string"
+    },
+    "record_id": {
+     "description": "update の対象",
+     "format": "uuid",
+     "type": "string"
+    },
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "op",
+    "data"
+   ],
+   "type": "object"
+  },
+  "name": "data_record_write"
+ },
+ {
+  "description": "まだ読み込まれていないツールを検索して読み込む。次のツールは定義が読み込まれていないため、このままでは呼び出せない: emit_workflow, read_workflow, save_note, save_slide, save_csv, document.read, document.edit, document.embed, slide.read, slide.edit, csv.query, csv.patch, csv.write, data_record_write。必要になったら、やりたいこと（日本語/英語の自然文）かツール名の一部で検索する。見つかったツールは読み込まれ、以降は通常どおり呼び出せる。名前が分かっていれば `select:csv.query,csv.patch` の形で直接読み込める。",
+  "input_schema": {
+   "properties": {
+    "limit": {
+     "description": "読み込む最大件数（既定 5）",
+     "maximum": 10,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "query": {
+     "description": "探したい操作（例: 「CSV を集計する」「edit a slide」）、ツール名の一部、または `select:<名前>,<名前>`。`+csv 集計` のように `+語` を付けると名前にその語を含むものに絞る。",
+     "type": "string"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "name": "tool_search"
+ }
+]

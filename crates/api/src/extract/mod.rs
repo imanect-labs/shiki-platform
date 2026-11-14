@@ -7,7 +7,8 @@ pub mod trace_id;
 
 pub use auth_context::AuthContextExt;
 pub(crate) use auth_context::{
-    group_layout, resolve_org, resolve_tenant_id, validate_tenant_id, OrgId, TenantId,
+    group_layout, org_of_groups, resolve_org, resolve_tenant_id, validate_tenant_id, OrgId,
+    TenantId, DEFAULT_ORG,
 };
 pub use principal::AuthPrincipal;
 pub use session_token::SessionAccessToken;

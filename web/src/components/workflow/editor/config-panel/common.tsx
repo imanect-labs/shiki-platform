@@ -1,9 +1,10 @@
 "use client";
 
 /// ノード共通の設定セクション（ブロック名・ID・リトライ・タイムアウト・エラー時の動作）と
-/// フォーム部品（フィールド枠・数値入力）。
+/// フォーム部品（フィールド枠・数値入力・見出しを名前にする入力の欄）。
 
 import * as React from "react";
+import { TriangleAlert } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -13,33 +14,133 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { getAgentSettings, type AgentSettings } from "@/lib/workflow-api";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorAction } from "../ir-state";
+
+/// 欄の見出しと注記の id。見出しは入力の兄弟なので、そのままでは入力に名前が付かず、読み上げでも getByLabel でも
+/// 引けない。[`Field`] の中の入力（[`FieldInput`]・[`FieldTextarea`]・[`FieldSelectTrigger`]・[`NumberInput`]・
+/// [`useFieldControl`] を使う欄）は aria-labelledby で見出しを名前に、aria-describedby で注記・誤りを説明にする
+/// （BUG-64）。
+type FieldIds = { labelId: string; descId: string | undefined };
+const FieldContext = React.createContext<FieldIds | undefined>(undefined);
+
+/// `warning` は保存を止めない警告（サーバの保存時の警告のうち、欄に写すもの）。誤りが無ければ注記の代わりに出す。
+/// 必須の欄が空のとき、欄の下に出す文（置いたままの空欄と、保存時の注意 `REQUIRED_TEXT_EMPTY` の欄・index.tsx）。
+/// フォームはこの文かどうかで、空欄の知らせと読み取りの誤りを見分ける。
+export const BLANK_REQUIRED_MESSAGE = "入力してください";
+/// 選ぶ欄（テーブル・次の状態・ファイル・スキルなど）が空のとき、欄の下に出す文（欄の操作に動詞を合わせる・付録 C の
+/// P2・P4）。どの欄が選ぶ欄かは Rust の表から生成した `REQUIRED_PICK_FIELDS` で決める（index.tsx）。
+export const BLANK_PICK_MESSAGE = "選んでください";
 
 export function Field({
   label,
   hint,
   error,
+  warning,
   children,
 }: {
   label: string;
   hint?: string;
   error?: string | null;
+  warning?: string | null;
   children: React.ReactNode;
 }) {
+  const labelId = React.useId();
+  const descId = React.useId();
+  const described = Boolean(error || warning || hint);
+  const ids = React.useMemo(
+    () => ({ labelId, descId: described ? descId : undefined }),
+    [labelId, descId, described],
+  );
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-foreground">{label}</label>
-      {children}
+      <label id={labelId} className="text-xs font-medium text-foreground">
+        {label}
+      </label>
+      <FieldContext.Provider value={ids}>{children}</FieldContext.Provider>
       {error ? (
-        <p className="text-[11px] text-destructive">{error}</p>
+        <p id={descId} className="text-[11px] text-destructive">
+          {error}
+        </p>
+      ) : warning ? (
+        <p id={descId} className="flex items-start gap-1 text-[11px] leading-relaxed text-foreground" data-field-warning>
+          <TriangleAlert className="mt-px size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
+          <span className="min-w-0 [overflow-wrap:anywhere]">{warning}</span>
+        </p>
       ) : hint ? (
-        <p className="text-[11px] text-muted-foreground">{hint}</p>
+        <p id={descId} className="text-[11px] text-muted-foreground">
+          {hint}
+        </p>
       ) : null}
     </div>
   );
+}
+
+/// [`Field`] の中の入力に付ける名前（見出し）と説明（注記・誤り）の属性。`named` は呼び出し側が aria-label /
+/// aria-labelledby で名付けた欄（見出しで上書きしない・aria-labelledby は aria-label より優先されるため）。
+/// [`Field`] の外では何も付けない。
+export function useFieldControl(named = false): { "aria-labelledby"?: string; "aria-describedby"?: string } {
+  const ids = React.useContext(FieldContext);
+  if (!ids) return {};
+  return {
+    ...(named ? {} : { "aria-labelledby": ids.labelId }),
+    ...(ids.descId ? { "aria-describedby": ids.descId } : {}),
+  };
+}
+
+/// 注記の続きの説明を畳む「詳しく」（付録 D の N1.3）。開くと説明の文が出るだけで、欄は出さない。
+export function MoreInfo({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  const [open, setOpen] = React.useState(false);
+  const id = React.useId();
+  return (
+    <div className="text-[11px] leading-relaxed text-muted-foreground" data-testid={testId}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-sm text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        詳しく
+      </button>
+      {open ? (
+        <div id={id} className="mt-1 space-y-1">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+type Named = { "aria-label"?: string; "aria-labelledby"?: string };
+const isNamed = (p: Named) => p["aria-label"] !== undefined || p["aria-labelledby"] !== undefined;
+
+/// [`Field`] の見出しを名前にする 1 行の入力。
+export function FieldInput(props: React.ComponentProps<typeof Input>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <Input {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にする複数行の入力。
+export function FieldTextarea(props: React.ComponentProps<typeof Textarea>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <Textarea {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にするブラウザの選択の欄（`<select>`）。
+export function FieldNativeSelect(props: React.ComponentProps<"select">) {
+  const a11y = useFieldControl(isNamed(props));
+  return <select {...a11y} {...props} />;
+}
+
+/// [`Field`] の見出しを名前にする選択の欄（選んだ値はボタンの中の文字として読める）。
+export function FieldSelectTrigger(props: React.ComponentProps<typeof SelectTrigger>) {
+  const a11y = useFieldControl(isNamed(props));
+  return <SelectTrigger {...a11y} {...props} />;
 }
 
 export function NumberInput({
@@ -57,10 +158,12 @@ export function NumberInput({
   placeholder?: string;
   error?: boolean;
 }) {
+  const a11y = useFieldControl();
   return (
     <Input
       type="number"
       inputMode="numeric"
+      {...a11y}
       value={value ?? ""}
       min={min}
       max={max}
@@ -76,22 +179,115 @@ export function NumberInput({
   );
 }
 
+/// 秒を「N 秒」か「N 分」で言う（1 分未満だけ秒・付録 C の P11）。
+export function period(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m === 0) return `${s} 秒`;
+  return s === 0 ? `${m.toLocaleString("ja-JP")} 分` : `${m.toLocaleString("ja-JP")} 分 ${s} 秒`;
+}
+
+/// 秒の数（4 桁以上はカンマ）と、1 分以上なら分の読み替え（付録 C の P11）。
+function seconds(sec: number): string {
+  return sec >= 60 ? `${sec.toLocaleString("ja-JP")} 秒（${period(sec)}）` : `${sec} 秒`;
+}
+
+/// 時間の上限の注記（数はカタログの timeout_default_sec と timeout_max_sec から・付録 D の N2.6）。
+function timeoutHint(defaultSec: number, maxSec: number): string {
+  return `空欄なら ${seconds(defaultSec)}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。過ぎると、このブロックは失敗します。`;
+}
+
+/// 承認を待つの時間の上限の注記。打ち切るのは承認を頼むまでの処理だけで、判断を待つ時間は「判断の期限」と実行の期限が
+/// 決める（ir.md §7 の表の「停止まで」・付録 C の P7）。
+function approvalTimeoutHint(defaultSec: number, maxSec: number): string {
+  return `${timeoutHint(defaultSec, maxSec)}判断を待つ時間は含みません（「判断の期限」で決めます）。`;
+}
+
+/// AI エージェントの作業時間の上限（秒・エンジンの読み方と同じ: 数なら範囲に収め、空欄は既定、入力や結果から選ぶなら最大）。
+function agentDurationSec(node: IrNode, s: AgentSettings): number {
+  const v = (node.params as { max_duration_sec?: unknown } | undefined)?.max_duration_sec;
+  if (v === undefined || v === null) return s.default_max_duration_sec;
+  if (typeof v === "number") return Math.min(Math.max(Math.round(v), s.min_duration_sec), s.max_duration_sec);
+  return s.max_duration_sec;
+}
+
+/// AI エージェントの時間の上限の注記。エンジンは「AI の作業時間の上限」に猶予を足した時間より先に打ち切らないので、
+/// 空欄のときの値はカタログの既定と、その時間の大きい方（run/step_timeout.rs・数は `GET /workflows/agent-settings`）。
+function agentTimeoutHint(node: IrNode, defaultSec: number, maxSec: number, s: AgentSettings | null): string {
+  const max = maxSec.toLocaleString("ja-JP");
+  if (!s) return `最大 ${max} 秒です。「AI の作業時間の上限」より短くはできません。過ぎると、このブロックは失敗します。`;
+  const effective = Math.max(defaultSec, agentDurationSec(node, s) + s.stop_margin_sec);
+  return `空欄なら ${seconds(effective)}で、最大 ${max} 秒です。「AI の作業時間の上限」より短くはできず、打ち切るのはそれに ${s.stop_margin_sec} 秒を足した時間より後です。過ぎると、このブロックは失敗します。`;
+}
+
+function useAgentSettingsOrNull(): AgentSettings | null {
+  const [settings, setSettings] = React.useState<AgentSettings | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    getAgentSettings()
+      .then((s) => alive && setSettings(s))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return settings;
+}
+
+type TimeoutFieldProps = {
+  node: IrNode;
+  dispatch: React.Dispatch<EditorAction>;
+  maxSec: number;
+  error: string | null;
+};
+
+/// 時間の上限（ノードの timeout_sec）の欄。
+function TimeoutField({ node, dispatch, maxSec, error, hint }: TimeoutFieldProps & { hint: string }) {
+  return (
+    <Field label="時間の上限（秒・省略可）" hint={hint} error={error}>
+      <NumberInput
+        value={node.timeout_sec ?? null}
+        min={1}
+        max={maxSec}
+        error={Boolean(error)}
+        onChange={(n) =>
+          dispatch({
+            type: "update_node",
+            id: node.id,
+            patch: { timeout_sec: n } as Partial<IrNode>,
+          })
+        }
+      />
+    </Field>
+  );
+}
+
+/// AI エージェントの時間の上限の欄（注記の数に、エージェントの設定の作業時間の上限と猶予を使う）。
+function AgentTimeoutField({ defaultSec, ...props }: TimeoutFieldProps & { defaultSec: number }) {
+  const settings = useAgentSettingsOrNull();
+  return <TimeoutField {...props} hint={agentTimeoutHint(props.node, defaultSec, props.maxSec, settings)} />;
+}
+
 /// 共通セクション（全ノード種）。
 export function CommonSection({
   node,
   dispatch,
+  attrErrors,
 }: {
   node: IrNode;
   dispatch: React.Dispatch<EditorAction>;
+  /// step 属性の欄の誤り（`timeout_sec` → 文言・保存時の照合・BUG-96）。
+  attrErrors?: Map<string, string>;
 }) {
   const entry = NODE_CATALOG.find((c) => c.type === node.type);
   const [idDraft, setIdDraft] = React.useState(node.id);
   React.useEffect(() => setIdDraft(node.id), [node.id]);
+  const timeoutError = attrErrors?.get("timeout_sec") ?? null;
 
   return (
     <div className="space-y-3">
       <Field label="ブロック名" hint="キャンバスに表示される名前">
-        <Input
+        <FieldInput
           value={node.label ?? ""}
           placeholder={entry?.label_ja}
           onChange={(e) =>
@@ -108,7 +304,7 @@ export function CommonSection({
         label="ID"
         hint="他のブロックから参照するときの名前（小文字・数字・_）"
       >
-        <Input
+        <FieldInput
           value={idDraft}
           onChange={(e) => setIdDraft(e.target.value)}
           onBlur={() => {
@@ -120,7 +316,8 @@ export function CommonSection({
           className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>
-      <div className="grid grid-cols-2 gap-3">
+      {/* 時間の上限は注記と誤りが長いので、試す回数と縦に並べる（半分の幅では誤りが何行にも折り返す）。 */}
+      <div className="space-y-3">
         <Field label="リトライ回数" hint="失敗時にやり直す回数">
           <NumberInput
             value={node.retry?.max_attempts ?? 1}
@@ -142,27 +339,31 @@ export function CommonSection({
             }
           />
         </Field>
-        <Field
-          label="時間制限（秒）"
-          hint={
-            entry?.timeout_default_sec
-              ? `空欄で標準 ${entry.timeout_default_sec} 秒`
-              : "空欄で標準"
-          }
-        >
-          <NumberInput
-            value={node.timeout_sec ?? null}
-            min={1}
-            max={entry?.timeout_max_sec ?? undefined}
-            onChange={(n) =>
-              dispatch({
-                type: "update_node",
-                id: node.id,
-                patch: { timeout_sec: n } as Partial<IrNode>,
-              })
-            }
-          />
-        </Field>
+        {/* 時間の上限（ノードの timeout_sec）。エンジンが打ち切るようになったので出す（BUG-96・付録 D の N2.6）。
+            打ち切らない種（流れの制御など・カタログに既定が無い）では出さない。 */}
+        {entry?.timeout_default_sec && entry.timeout_max_sec ? (
+          node.type === "agent.invoke" ? (
+            <AgentTimeoutField
+              node={node}
+              dispatch={dispatch}
+              defaultSec={entry.timeout_default_sec}
+              maxSec={entry.timeout_max_sec}
+              error={timeoutError}
+            />
+          ) : (
+            <TimeoutField
+              node={node}
+              dispatch={dispatch}
+              maxSec={entry.timeout_max_sec}
+              error={timeoutError}
+              hint={
+                node.type === "human.approval"
+                  ? approvalTimeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
+                  : timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
+              }
+            />
+          )
+        ) : null}
       </div>
       <Field
         label="失敗したとき"
@@ -182,9 +383,9 @@ export function CommonSection({
             })
           }
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="fail_run">フローを失敗にする</SelectItem>
             <SelectItem value="continue">エラー用の出口に流す</SelectItem>

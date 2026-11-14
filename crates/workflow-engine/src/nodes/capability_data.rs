@@ -2,77 +2,52 @@
 //! `Shiki.data.*` 経路で共用する。
 //!
 //! - クエリは data の [`DataQuery`] をそのまま渡す（変換層なし）。ノードの比較値に書いた `$from` /
-//!   `$template` は [`bind_values`] が実行直前に値へ置き換えるだけで、条件の表現は変えない。
+//!   `$template` は [`resolve_deep_json`] が実行直前に値へ置き換えるだけで、条件の表現は変えない
+//!   （書込の値・一括の行も同じ関数で展開する。値の解決は control::eval の 1 か所）。
 //! - 書込は effect_journal（EngineDedup・cross-TX）で高々 1 回（csv.patch と同じ流儀・PIT-31）。
 //!   一括 upsert はさらにポート側で取込 ID を冪等キーから決め、回収窓の再実行でも二重取込しない。
 //! - 認可はチョークポイント（DataStore）側。scope 天井は [`exec`](super::exec) / script の HostBridge が
 //!   事前に担保する（二重ゲート・個別ノードに認可検査を書かない）。
 
 use data::{BulkUpsertRow, DataQuery};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::capability::{op_digest, CapabilityAudit, EffectJournal, JournalDecision};
-use crate::control::eval::{resolve_value, ValueResolver};
+use crate::capability::{op_digest, CapabilityAudit, EffectJournal};
+use crate::control::eval::{resolve_deep_json, ValueResolver};
 use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
+    DataBulkRow, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
 };
 use crate::run::NodeContext;
 
-use super::capability::parse_params;
+use super::capability::{journaled, parse_params};
+use super::capability_data_keyed::{AddingUpdate, MatchedBulk};
+use super::data_upsert;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError};
-use super::resolver::{as_string, as_uuid, ParamResolver};
-
-/// JSON の中の `$from` / `$template` オブジェクトを値へ置き換える（クエリの比較値・書込の値の差し込み）。
-///
-/// 解決できない参照（default も無い）は `Err`（null として黙って比較しない・fail-closed）。
-pub(crate) fn bind_values(v: &Value, r: &dyn ValueResolver) -> Result<Value, PortError> {
-    match v {
-        Value::Object(map) if map.contains_key("$from") || map.contains_key("$template") => {
-            let expr: ValueExpr = serde_json::from_value(v.clone())
-                .map_err(|e| PortError::invalid(format!("不正な値式: {e}")))?;
-            resolve_value(&expr, r).ok_or_else(|| {
-                PortError::new("expr_resolve_error", "値式（$from）が解決できません", false)
-            })
-        }
-        Value::Object(map) => {
-            let mut out = Map::with_capacity(map.len());
-            for (k, x) in map {
-                out.insert(k.clone(), bind_values(x, r)?);
-            }
-            Ok(Value::Object(out))
-        }
-        Value::Array(items) => items
-            .iter()
-            .map(|x| bind_values(x, r))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Value::Array),
-        other => Ok(other.clone()),
-    }
-}
+use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError, BULK_FAILED_ROWS};
+use super::resolver::{as_string, as_uuid, opt_param, param, typed, ParamResolver};
 
 /// 値式を UUID へ（テーブル・レコードの指定）。
 fn resolve_uuid(e: &ValueExpr, r: &dyn ValueResolver, what: &str) -> Result<Uuid, PortError> {
-    resolve_value(e, r)
-        .and_then(|v| as_uuid(&v))
-        .ok_or_else(|| PortError::invalid(format!("{what} が UUID に解決できません")))
+    typed(&param(e, r, what)?, what, "UUID", as_uuid)
 }
 
-/// 省略可能な rev（整数）。
-fn resolve_rev(e: Option<&ValueExpr>, r: &dyn ValueResolver) -> Result<Option<i64>, PortError> {
-    match e {
-        None => Ok(None),
-        Some(e) => resolve_value(e, r)
-            .and_then(|v| v.as_i64())
-            .map(Some)
-            .ok_or_else(|| PortError::invalid("expected_rev が整数に解決できません")),
-    }
+/// 省略可能な rev（整数）。書いてあれば整数に解決できること（省いたときだけ実行時点の rev）。
+fn resolve_rev(
+    e: Option<&ValueExpr>,
+    r: &dyn ValueResolver,
+    what: &str,
+) -> Result<Option<i64>, PortError> {
+    opt_param(e, r, what)?
+        .map(|v| typed(&v, what, "整数", Value::as_i64))
+        .transpose()
 }
 
-/// 一括 upsert の行（`{ id?, rev?, key?, data }`）を data の型へ。形の誤りは全体を拒否する。
+/// 一括 upsert の行（[`DataBulkRow`]・`{ id?, rev?, key?, data }`）を data の型へ。形の誤りは全体を拒否する。
+///
+/// 行の形は params の [`DataBulkRow`] の 1 か所で決める（AI が読む params の形も同じ型から作る・GAP-131）。
 pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError> {
     let items = v
         .as_array()
@@ -88,31 +63,37 @@ pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError
         .enumerate()
         .map(|(i, row)| {
             let n = i + 1;
-            let obj = row.as_object().ok_or_else(|| {
-                PortError::invalid(format!("data.bulk_upsert: {n} 行目がオブジェクトではありません"))
-            })?;
-            if let Some(k) = obj
-                .keys()
-                .find(|k| !matches!(k.as_str(), "id" | "rev" | "key" | "data"))
-            {
+            let not_object =
+                || PortError::invalid(format!("data.bulk_upsert: {n} 行目がオブジェクトではありません"));
+            if !row.is_object() {
+                return Err(not_object());
+            }
+            let row: DataBulkRow = serde_json::from_value(row.clone()).map_err(|_| not_object())?;
+            if let Some(k) = row.unknown.keys().next() {
+                // data の無い平らな行（csv.query の items・{列: 値} の行をそのまま渡した）は、包み方まで言う（BUG-255）。
+                if row.data.is_none() {
+                    return Err(PortError::invalid(format!(
+                        "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります。行は 1 行ずつ {{\"data\": {{列の参照名: 値}}}} の形に包んで渡してください（行に書けるのは id / rev / key / data だけ）。"
+                    )));
+                }
                 return Err(PortError::invalid(format!(
                     "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります（id / rev / key / data のみ）"
                 )));
             }
-            let record_id = match obj.get("id") {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(as_uuid(v).ok_or_else(|| {
+            let record_id = match row.id {
+                None => None,
+                Some(v) => Some(as_uuid(&v).ok_or_else(|| {
                     PortError::invalid(format!("data.bulk_upsert: {n} 行目の id が UUID ではありません"))
                 })?),
             };
-            let expected_rev = match obj.get("rev") {
-                None | Some(Value::Null) => None,
+            let expected_rev = match row.rev {
+                None => None,
                 Some(v) => Some(v.as_i64().ok_or_else(|| {
                     PortError::invalid(format!("data.bulk_upsert: {n} 行目の rev が整数ではありません"))
                 })?),
             };
-            let key = obj.get("key").and_then(Value::as_str).map(str::to_string);
-            let data = obj.get("data").cloned().ok_or_else(|| {
+            let key = row.key.as_ref().and_then(Value::as_str).map(str::to_string);
+            let data = row.data.ok_or_else(|| {
                 PortError::invalid(format!("data.bulk_upsert: {n} 行目に data がありません"))
             })?;
             Ok(BulkUpsertRow {
@@ -137,64 +118,85 @@ pub(crate) async fn journaled_data_write(
     digest_body: &Value,
     via: &str,
 ) -> Result<Value, PortError> {
-    let api = req.op.api();
-    let table_id = req.table_id;
-    let key = req.idempotency_key.clone();
+    let effect = DataEffect {
+        api: req.op.api(),
+        table_id: req.table_id,
+        key: req.idempotency_key.clone(),
+        via,
+    };
+    // 一括 upsert の断られた行の全部（ポートの中だけの項目）は、step の出力にも効果の記録にも出さない。
+    let apply = async {
+        let mut out = ports.data_write(ec, req).await?;
+        if let Value::Object(m) = &mut out {
+            m.remove(BULK_FAILED_ROWS);
+        }
+        Ok(out)
+    };
+    journaled_data_effect(journal, audit, ec, &effect, digest_body, apply).await
+}
+
+/// 1 つの step の data の書込（監査の操作名・テーブル・冪等キー・経路）。
+pub(crate) struct DataEffect<'a> {
+    pub api: &'a str,
+    pub table_id: Uuid,
+    pub key: String,
+    pub via: &'a str,
+}
+
+/// data の書込（`apply`）を effect_journal で高々 1 回にし、監査を残す。
+///
+/// `apply` は 1 回の書込か、探してから書く組み立て（キーで追加か更新・足す数・同じレコードを探す列・GAP-16）。
+/// 組み立ても、成功する書込は高々 1 回で、ほかの誤りは何も書かずに返る（[`super::data_upsert`]）ので、予約を外す
+/// 決まりは 1 回の書込と同じ。
+pub(crate) async fn journaled_data_effect<F>(
+    journal: &EffectJournal,
+    audit: &dyn CapabilityAudit,
+    ec: &ExecCtx,
+    effect: &DataEffect<'_>,
+    digest_body: &Value,
+    apply: F,
+) -> Result<Value, PortError>
+where
+    F: std::future::Future<Output = Result<Value, PortError>>,
+{
+    let DataEffect {
+        api,
+        table_id,
+        ref key,
+        via,
+    } = *effect;
     let digest = op_digest(api, digest_body);
-    match journal
-        .check(&ec.tenant_id, &key, &digest)
-        .await
-        .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-    {
-        JournalDecision::Proceed => {
-            let out = match ports.data_write(ec, req).await {
-                Ok(v) => v,
-                Err(e) => {
-                    audit.record(
-                        &ec.tenant_id,
-                        api,
-                        false,
-                        &json!({ "table_id": table_id, "code": e.code, "via": via }),
-                    );
-                    // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外して同じ
-                    // ステップの再実行を待たせない。副作用の有無が不明な一時障害（unavailable）は外さない
-                    // （一括 upsert は取込 ID が冪等なので外しても二重にならない）。
-                    if e.code != "unavailable" {
-                        journal
-                            .release(&ec.tenant_id, &key, &digest)
-                            .await
-                            .map_err(|je| {
-                                PortError::unavailable(format!("journal release: {je}"))
-                            })?;
-                    }
-                    return Err(e);
-                }
-            };
-            journal
-                .record(&ec.tenant_id, &key, &digest, &out)
-                .await
-                .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-            // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
+    // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外す決まりは csv・workflow.start と同じ
+    // （[`journaled`]・副作用の有無が不明な一時障害は外さない。一括 upsert は取込 ID が冪等なので外しても二重にならない）。
+    let apply = async {
+        apply.await.inspect_err(|e| {
             audit.record(
                 &ec.tenant_id,
                 api,
-                true,
-                &json!({ "table_id": table_id, "record_id": out.get("id"), "via": via }),
+                false,
+                &json!({ "table_id": table_id, "code": e.code, "via": via }),
             );
-            Ok(out)
-        }
-        JournalDecision::AlreadyDone(v) => Ok(v),
-        JournalDecision::InProgress => Err(PortError::new(
-            "effect_in_progress",
-            "別ワーカーがデータを書込中",
+        })
+    };
+    let (out, wrote) = journaled(
+        journal,
+        &ec.tenant_id,
+        key,
+        &digest,
+        "テーブルへの書き込み",
+        apply,
+    )
+    .await?;
+    if wrote {
+        // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
+        audit.record(
+            &ec.tenant_id,
+            api,
             true,
-        )),
-        JournalDecision::DigestMismatch => Err(PortError::new(
-            "effect_conflict",
-            "同一冪等キーで別のデータ書込要求",
-            false,
-        )),
+            &json!({ "table_id": table_id, "record_id": out.get("id"), "via": via }),
+        );
     }
+    Ok(out)
 }
 
 /// 件数の要約（監査用・値は載せない）。
@@ -216,7 +218,10 @@ impl CapabilityNodeExecutor {
         let table_id = resolve_uuid(&p.table, r, "data.query: table")?;
         let raw = params.get("query").cloned().unwrap_or_else(|| json!({}));
         // 最上位の未知のキー（綴り誤り）は黙って無視せず不正として返す（data の単一の定義で判定）。
-        let query = DataQuery::from_request(bind_values(&raw, r)?).map_err(|e| {
+        let bound = resolve_deep_json(&raw, r).map_err(|e| {
+            PortError::new(e.code, format!("data.query: query: {}", e.message), false)
+        })?;
+        let query = DataQuery::from_request(bound).map_err(|e| {
             PortError::invalid(format!(
                 "data.query: query が不正: {}",
                 e.invalid_message().unwrap_or_else(|| e.to_string())
@@ -232,7 +237,7 @@ impl CapabilityNodeExecutor {
         Ok(out)
     }
 
-    /// data の書込ノード（create / update / delete / transition / bulk_upsert）。
+    /// data の書込ノード（create / update / upsert / delete / transition / bulk_upsert）。
     pub(super) async fn node_data_write(
         &self,
         api: &str,
@@ -245,7 +250,7 @@ impl CapabilityNodeExecutor {
             "data.record.create" => {
                 let p: DataRecordCreateParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.record.create: table")?;
-                let data = bind_values(params.get("data").unwrap_or(&Value::Null), r)?;
+                let data = param(&p.data, r, "data.record.create: data")?;
                 let digest = json!({ "table": table, "data": data });
                 (table, DataWriteOp::Create { data }, digest)
             }
@@ -253,8 +258,32 @@ impl CapabilityNodeExecutor {
                 let p: DataRecordUpdateParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.record.update: table")?;
                 let record_id = resolve_uuid(&p.record, r, "data.record.update: record")?;
-                let patch = bind_values(params.get("patch").unwrap_or(&Value::Null), r)?;
-                let expected_rev = resolve_rev(p.expected_rev.as_ref(), r)?;
+                let expected_rev = resolve_rev(
+                    p.expected_rev.as_ref(),
+                    r,
+                    "data.record.update: expected_rev",
+                )?;
+                let add = data_upsert::parse_add(opt_param(
+                    p.add.as_ref(),
+                    r,
+                    "data.record.update: add",
+                )?)?;
+                if !add.is_empty() {
+                    // 足す数（GAP-16）: 読んだ rev を前提に書き、重なったら読み直して足し直す。
+                    let patch = data_upsert::parse_values(
+                        param(&p.patch, r, "data.record.update: patch")?,
+                        "変更する値",
+                    )?;
+                    let target = AddingUpdate {
+                        table,
+                        record_id,
+                        patch,
+                        add,
+                        expected_rev,
+                    };
+                    return self.node_data_update_adding(api, target, ctx, ec).await;
+                }
+                let patch = param(&p.patch, r, "data.record.update: patch")?;
                 let digest = json!({ "table": table, "record": record_id, "patch": patch,
                                      "rev": expected_rev });
                 let op = DataWriteOp::Update {
@@ -264,11 +293,16 @@ impl CapabilityNodeExecutor {
                 };
                 (table, op, digest)
             }
+            "data.record.upsert" => return self.node_data_upsert(api, params, ctx, ec, r).await,
             "data.record.delete" => {
                 let p: DataRecordDeleteParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.record.delete: table")?;
                 let record_id = resolve_uuid(&p.record, r, "data.record.delete: record")?;
-                let expected_rev = resolve_rev(p.expected_rev.as_ref(), r)?;
+                let expected_rev = resolve_rev(
+                    p.expected_rev.as_ref(),
+                    r,
+                    "data.record.delete: expected_rev",
+                )?;
                 let digest = json!({ "table": table, "record": record_id, "rev": expected_rev });
                 let op = DataWriteOp::Delete {
                     record_id,
@@ -280,12 +314,10 @@ impl CapabilityNodeExecutor {
                 let p: DataTransitionParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.transition: table")?;
                 let record_id = resolve_uuid(&p.record, r, "data.transition: record")?;
-                let to = resolve_value(&p.to, r)
-                    .and_then(|v| as_string(&v))
-                    .ok_or_else(|| {
-                        PortError::invalid("data.transition: to が文字列に解決できません")
-                    })?;
-                let expected_rev = resolve_rev(p.expected_rev.as_ref(), r)?;
+                let what = "data.transition: to";
+                let to = typed(&param(&p.to, r, what)?, what, "文字列", as_string)?;
+                let expected_rev =
+                    resolve_rev(p.expected_rev.as_ref(), r, "data.transition: expected_rev")?;
                 let digest = json!({ "table": table, "record": record_id, "to": to,
                                      "rev": expected_rev });
                 let op = DataWriteOp::Transition {
@@ -298,10 +330,25 @@ impl CapabilityNodeExecutor {
             "data.bulk_upsert" => {
                 let p: DataBulkUpsertParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.bulk_upsert: table")?;
-                let rows_raw = resolve_value(&p.rows, r)
-                    .ok_or_else(|| PortError::invalid("data.bulk_upsert: rows が解決できません"))?;
+                // 行の中の入れ子の $from / $template も展開する（生の値式を data へ渡さない）。
+                let rows_raw = param(&p.rows, r, "data.bulk_upsert: rows")?;
                 let rows = parse_bulk_rows(&rows_raw)?;
                 let abort_on_invalid = p.abort_on_invalid.unwrap_or(false);
+                if let Some(match_on) = p.match_on() {
+                    // 同じレコードを探す列（GAP-16）: id の無い行を、同じ値のレコードに当ててから取り込む。
+                    let digest = json!({ "table": table, "rows": rows_raw,
+                                         "abort_on_invalid": abort_on_invalid,
+                                         "match_on": match_on });
+                    let bulk = MatchedBulk {
+                        table,
+                        match_on,
+                        rows,
+                        abort_on_invalid,
+                    };
+                    return self
+                        .node_data_bulk_matched(api, bulk, &digest, ctx, ec)
+                        .await;
+                }
                 let digest = json!({ "table": table, "rows": rows_raw,
                                      "abort_on_invalid": abort_on_invalid });
                 let op = DataWriteOp::BulkUpsert {
@@ -453,13 +500,13 @@ mod tests {
     }
 
     #[test]
-    fn bind_values_fills_operands_without_changing_the_shape() {
+    fn query_operands_are_filled_without_changing_the_shape() {
         let r = R(json!({ "min": 10, "who": "alice" }));
         let q = json!({ "filter": { "all": [
             { "cmp": { "field": "amount", "op": "gte", "value": { "$from": "input", "path": "/min" } } },
             { "cmp": { "field": "owner", "op": "in", "value": [ { "$from": "input", "path": "/who" }, "bob" ] } }
         ] }, "limit": 5 });
-        let bound = bind_values(&q, &r).unwrap();
+        let bound = resolve_deep_json(&q, &r).unwrap();
         assert_eq!(
             bound,
             json!({ "filter": { "all": [
@@ -470,7 +517,7 @@ mod tests {
         // 解決できない参照は null で比較せず失敗させる（fail-closed）。
         let bad = json!({ "cmp": { "field": "a", "op": "eq", "value": { "$from": "input", "path": "/nope" } } });
         assert_eq!(
-            bind_values(&bad, &r).unwrap_err().code,
+            resolve_deep_json(&bad, &r).unwrap_err().code,
             "expr_resolve_error"
         );
         // バインド後は data の DataQuery としてそのまま読める（変換層なし）。
@@ -489,7 +536,31 @@ mod tests {
         assert_eq!(rows[0].expected_rev, Some(3));
         assert_eq!(rows[1].record_id, None);
         assert_eq!(rows[1].key.as_deref(), Some("k2"));
-        assert!(parse_bulk_rows(&json!([{ "data": {}, "status": "x" }])).is_err());
+        let message = |rows: Value| parse_bulk_rows(&rows).unwrap_err().message;
+        // data のある行の未知のキーは、これまでどおり書けるキーを言う。
+        assert_eq!(
+            message(json!([{ "data": {}, "status": "x" }])),
+            "data.bulk_upsert: 1 行目に未知のキー 'status' があります（id / rev / key / data のみ）"
+        );
+        // data の無い平らな行（csv.query の items をそのまま渡した）は、包み方まで言う（BUG-255）。
+        assert_eq!(
+            message(json!([{ "data": { "sku": "A" } }, { "sku": "B", "stock": 3 }])),
+            "data.bulk_upsert: 2 行目に未知のキー 'sku' があります。行は 1 行ずつ {\"data\": {列の参照名: 値}} の形に包んで渡してください（行に書けるのは id / rev / key / data だけ）。"
+        );
+        assert_eq!(
+            message(json!([{ "id": id.to_string() }])),
+            "data.bulk_upsert: 1 行目に data がありません"
+        );
+        // null の id・rev は書いていないのと同じ。書いてある data は null も値として渡す（data が断る）。
+        let rows = parse_bulk_rows(&json!([{ "id": null, "rev": null, "data": null }])).unwrap();
+        assert_eq!(
+            (rows[0].record_id, rows[0].expected_rev, &rows[0].data),
+            (None, None, &Value::Null)
+        );
+        assert_eq!(
+            message(json!([{ "data": {} }, "x"])),
+            "data.bulk_upsert: 2 行目がオブジェクトではありません"
+        );
         assert!(parse_bulk_rows(&json!([{ "id": "nope", "data": {} }])).is_err());
         assert!(parse_bulk_rows(&json!({ "data": {} })).is_err());
         let too_many: Vec<Value> = (0..=MAX_WORKFLOW_BULK_ROWS)

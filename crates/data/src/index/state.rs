@@ -41,6 +41,7 @@ use crate::{map_db, DataError};
 /// - 派生フィールドは**材料化する列**（`invariant` かつ `indexed`・Task 15.4）だけ、値の型に応じて
 ///   num / text。行は材料化（[`crate::derived::materialize`]）が書く（本体からのバックフィルは対象外）
 /// - 対称列（逆リンク・読取専用）は持たない（逆方向行は参照元の書込が同じ Tx で書く）
+/// - 作成者の列は持たない（owner の擬似列で引く・[`crate::created_by`]）
 pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
     let mut out = BTreeSet::new();
     for sys in [
@@ -55,6 +56,10 @@ pub(crate) fn desired(schema: &TableSchema) -> BTreeSet<(FieldId, IndexTable)> {
             if f.is_materialized() {
                 out.insert((f.id, derived_table(f)));
             }
+            continue;
+        }
+        // 作成者の列は owner の擬似列で引く（値を保存しない・列の索引は持たない・D-122）。
+        if f.is_created_by() {
             continue;
         }
         match f.field_type {

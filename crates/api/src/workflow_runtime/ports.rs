@@ -2,17 +2,16 @@
 //!
 //! [`workflow_engine::CapabilityNodeExecutor`] が能力ゲートウェイを通した後に呼ぶポートを、
 //! StorageService / SearchService / LlmGateway / Sandbox / SecretStore / RunLauncher へ結線する。
+//! agent.invoke のループは `agent_port.rs`、その道具の実装は `agent_tools.rs`（BUG-6）。判定（ai.decide）は
+//! `decide_port.rs`（FEAT-1）。
 //! `ExecCtx` から実行主体の `AuthContext`（interactive=user / schedule・event=workflow）を組み、
 //! 各チョークポイント内の OpenFGA 認可を通す（scope ceiling は executor 側＝二重ゲート）。
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use llm_gateway::{
-    GenerateRequest, GenerationRecord, LlmGateway, Message, Role, StreamDelta, Usage,
-};
-use sandbox_client::{ExecEvent, ExecRequest, Sandbox, SandboxSpec};
+use llm_gateway::LlmGateway;
+use sandbox_client::Sandbox;
 use secrets::SecretStore;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -21,10 +20,12 @@ use storage::model::ChildSort;
 use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
+use workflow_engine::nodes::ports::{block_not_configured, name_taken_error, NAME_TAKEN};
+use workflow_engine::vocab::NodeType;
 use workflow_engine::{
     CsvPatchReq, CsvQueryReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
-    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
-    WorkflowRunLauncher,
+    LlmDecideReq, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
+    StorageListReq, StorageWriteReq, WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -33,7 +34,7 @@ pub struct ProdNodePorts {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<LlmGateway>,
     pub sandbox: Option<Arc<dyn Sandbox>>,
-    /// コード実行系（agent_invoke）の隔離ティア（admin ポリシー・design §4.6）。
+    /// コード実行系（agent.invoke の code.run）の隔離ティア（admin ポリシー・design §4.6）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<SecretStore>>,
     /// CSV 表データ（csv.query/patch/write・隔離 DuckDB 経由の Task 11P.9）。
@@ -41,14 +42,16 @@ pub struct ProdNodePorts {
     /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     pub launcher: WorkflowRunLauncher,
-    /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
-    pub http: reqwest::Client,
+    /// http.request・`Shiki.http.request` の送り口（名前解決の後のアドレスの確認と接続の固定・BUG-181）。
+    pub http: super::HttpEgress,
     /// workflow.start の名前解決に使う（artifact 名 → workflow_id）。委譲台帳（data の委譲元）も引く。
     pub db: PgPool,
     /// 構造化データ（data.* ノード・`Shiki.data.*`・Task 15.7）。未結線なら data ノードは「未構成」で失敗する。
     pub data: Option<Arc<data::DataStore>>,
     /// data.transition の FSM 定義の解決（artifact チョークポイント経由）。
     pub fsms: Option<Arc<data::FsmStore>>,
+    /// 公開 web の検索（agent.invoke の web.search・チャットと同じ `SearchProvider`）。未結線なら提示しない。
+    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
 }
 
 impl ProdNodePorts {
@@ -60,23 +63,59 @@ impl ProdNodePorts {
                 fsms,
                 db: &self.db,
             }),
-            _ => Err(PortError::new(
-                "unsupported",
-                "構造化データ（data）が構成されていません",
-                false,
-            )),
+            _ => Err(workflow_engine::nodes::ports::data_not_configured()),
         }
     }
 }
 
-fn map_storage(e: storage::StorageError) -> PortError {
+pub(super) fn map_storage(e: storage::StorageError) -> PortError {
     use storage::StorageError as S;
     match e {
         S::Forbidden => PortError::forbidden("storage 権限なし"),
         S::NotFound => PortError::new("not_found", "対象が見つかりません", false),
-        S::Conflict => PortError::new("conflict", "冪等衝突/競合", false),
+        // 保存先の同じフォルダに同じ名前のファイルがある（BUG-97）。新しく保存する書込（storage.write・csv.write）は
+        // 扱いに合わせて [`name_taken`] で言う。
+        S::Conflict => PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false),
+        S::IdempotencyConflict => PortError::new(
+            "effect_conflict",
+            "同じ冪等キーで別の書き込みがあります",
+            false,
+        ),
         S::Invalid(m) => PortError::invalid(m),
         other => PortError::unavailable(format!("storage: {other}")),
+    }
+}
+
+/// 「フォルダ一覧」に読めない続きの位置が渡された（別のテナント・別のフォルダー・改竄・古い形・D-131）。
+fn storage_cursor_invalid() -> PortError {
+    PortError::invalid(
+        "続きの位置が読めません。同じフォルダーを一覧にした結果の続きの位置（next_cursor）を、そのまま渡してください。",
+    )
+}
+
+/// ワークフローの「同じ名前があるとき」を、StorageService の扱いに写す（値の名前は同じ・D-112）。
+fn on_name_taken(p: workflow_engine::ir::params::NameTakenPolicy) -> storage::OnNameTaken {
+    use workflow_engine::ir::params::NameTakenPolicy as P;
+    match p {
+        P::Fail => storage::OnNameTaken::Fail,
+        P::AddNumber => storage::OnNameTaken::AddNumber,
+    }
+}
+
+/// 名前の衝突（[`storage::StorageError::Conflict`]）を、頼まれた名前と扱いで言う（BUG-97・D-112・D-124）。
+///
+/// 番号を付ける扱いで上限まで埋まっていたときは、最後に試した名前（「名前 (50).csv」）を言う。番号の規則は
+/// StorageService の 1 か所（`storage::numbered_name`）にあるので、その規則で名前を求める（エンジンは写しを
+/// 持たない）。番号を付けない扱いの文は、呼び出した側（ブロック・script）が言い直す。
+fn name_taken(name: &str, policy: storage::OnNameTaken) -> PortError {
+    match policy {
+        storage::OnNameTaken::Fail => {
+            PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false)
+        }
+        storage::OnNameTaken::AddNumber => name_taken_error(
+            name,
+            Some(&storage::numbered_name(name, storage::MAX_NUMBERED_NAME)),
+        ),
     }
 }
 
@@ -90,6 +129,10 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
         T::NotFound(m) => PortError::new("not_found", format!("csv: {m}"), false),
         T::SqlRejected(m) => PortError::invalid(format!("csv SQL 拒否: {m}")),
         T::InvalidPatch(m) => PortError::invalid(format!("csv パッチ不正: {m}")),
+        // CSV の編集・保存で Excel などを扱おうとした（文言は利用者向け・やり直さない・D-17）。
+        T::Unsupported(m) => PortError::invalid(m),
+        // 文字コードを決められない・文章でない CSV（「ファイルを読む」と同じ分類・やり直さない・GAP-45）。
+        T::NotText(m) => PortError::new(workflow_engine::nodes::ports::NOT_TEXT_FILE, m, false),
         T::InvalidTables(m) => PortError::invalid(format!("csv テーブル指定不正: {m}")),
         T::RevConflict { base, current } => PortError::new(
             "conflict",
@@ -110,6 +153,8 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
 impl NodePorts for ProdNodePorts {
     async fn storage_write(&self, ec: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec)?;
+        // 番号を付けるのはチョークポイントの 1 か所（D-112）。
+        let policy = on_name_taken(req.on_name_taken);
         self.storage
             .write_file_internal_idempotent(
                 &ctx,
@@ -117,50 +162,97 @@ impl NodePorts for ProdNodePorts {
                 &req.name,
                 &req.bytes,
                 &req.content_type,
+                policy,
                 &req.idempotency_key,
                 &req.op_digest,
                 ec.trace_id.as_deref(),
             )
             .await
-            .map_err(map_storage)
+            .map_err(|e| match e {
+                storage::StorageError::Conflict => name_taken(&req.name, policy),
+                other => map_storage(other),
+            })
     }
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
+        use super::text_file::{is_binary, not_text_kind};
         let ctx = auth_ctx(ec)?;
-        let (node, bytes) = self
+        let trace = ec.trace_id.as_deref();
+        // 文章でない種類（PDF・Office・画像など）は中身を読む前に断る（大きな文書を読み込んでから捨てない）。
+        let meta = self
             .storage
-            .read_file_internal(&ctx, file_id, ec.trace_id.as_deref())
+            .get_metadata(&ctx, file_id, trace)
             .await
             .map_err(map_storage)?;
-        Ok(json!({
-            "id": node.id.to_string(),
-            "name": node.name,
-            "content_type": node.content_type,
-            "size": node.size_bytes,
-            "text": String::from_utf8_lossy(&bytes),
-        }))
+        if is_binary(&meta.name, meta.content_type.as_deref()) {
+            return Err(not_text_kind());
+        }
+        super::document_read::read_text_file(
+            &self.storage,
+            &ctx,
+            file_id,
+            trace,
+            map_storage,
+            not_text_kind,
+        )
+        .await
     }
 
-    async fn storage_list(
+    async fn storage_read_document(
         &self,
         ec: &ExecCtx,
-        parent_id: Option<Uuid>,
+        file_id: Uuid,
+        max_chars: u32,
     ) -> Result<Value, PortError> {
+        super::document_read::storage_read_document(self, ec, file_id, max_chars).await
+    }
+
+    async fn storage_list(&self, ec: &ExecCtx, req: StorageListReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec)?;
+        let sort = ChildSort::default();
+        // 続きの位置は見えない子の名前を含みうるので、テナントと一覧（フォルダー・並び）に束縛して封をする（D-131）。
+        let kind = data::ListCursorKind::WorkflowFolder;
+        let scope = sort.cursor_scope(
+            &req.parent_id
+                .map_or_else(|| "root".into(), |p| p.to_string()),
+        );
+        let cursor = match req.cursor.as_deref() {
+            None => None,
+            Some(token) => {
+                let data = self.data.as_ref().ok_or_else(|| {
+                    workflow_engine::nodes::ports::not_configured("フォルダ一覧の続きの位置")
+                })?;
+                Some(
+                    data.open_list_cursor(kind, ctx.tenant_id(), &scope, token)
+                        .map_err(|_| storage_cursor_invalid())?,
+                )
+            }
+        };
+        // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は後ろに見えるものがあるときだけ続きの位置を
+        // 返すので（上限 + 1 件目まで探す）、1 回の読み込み（権限の確認 1 回・監査 1 行）で truncated が決まる。
         let page = self
             .storage
             .list_children(
                 &ctx,
-                parent_id,
-                ChildSort::default(),
-                None,
-                100,
+                req.parent_id,
+                sort,
+                cursor.as_deref(),
+                workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
                 // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
                 false,
                 ec.trace_id.as_deref(),
             )
             .await
             .map_err(map_storage)?;
+        let truncated = page.next_cursor.is_some();
+        // 封をできない構成（data が無い）では続きの位置を出さず、truncated だけで言う。
+        let next_cursor = match (page.next_cursor.as_deref(), self.data.as_ref()) {
+            (Some(raw), Some(data)) => Some(
+                data.seal_list_cursor(kind, ctx.tenant_id(), &scope, raw)
+                    .map_err(|e| PortError::unavailable(format!("続きの位置: {e}")))?,
+            ),
+            _ => None,
+        };
         let items: Vec<Value> = page
             .items
             .iter()
@@ -173,7 +265,7 @@ impl NodePorts for ProdNodePorts {
                 })
             })
             .collect();
-        Ok(json!({ "items": items }))
+        Ok(json!({ "items": items, "truncated": truncated, "next_cursor": next_cursor }))
     }
 
     async fn rag_search(
@@ -186,7 +278,8 @@ impl NodePorts for ProdNodePorts {
         let search = self
             .search
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("rag が未構成です"))?;
+            // 社内文書の検索の無い構成（権限の誤りではない・管理者に連絡する・BUG-175・付録 D の N3.2.5）。
+            .ok_or_else(|| workflow_engine::nodes::ports::not_configured("社内文書の検索"))?;
         let out = search
             .search(
                 &ctx,
@@ -198,175 +291,69 @@ impl NodePorts for ProdNodePorts {
             )
             .await
             .map_err(|e| PortError::unavailable(format!("rag: {e}")))?;
-        let results: Vec<Value> = out
-            .results
-            .iter()
-            .map(|r| {
-                json!({
-                    "file_id": r.file_id.to_string(),
-                    "file_name": r.file_name,
-                    "content": r.content,
-                    "score": r.score,
-                })
-            })
-            .collect();
+        let results: Vec<Value> = out.results.iter().map(rag_result).collect();
         Ok(json!({ "results": results }))
     }
 
     async fn llm_invoke(&self, ec: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec)?;
-        let mut greq = GenerateRequest::new(vec![Message::text(Role::User, req.prompt.clone())]);
-        greq.model = req.model.clone();
-        greq.system = req.system.clone();
-        greq.max_tokens = req.max_tokens;
-        // Langfuse の所要時間に使う（未指定だと 0 秒と表示される）。
-        let started_at = chrono::Utc::now();
-        let mut stream = self
-            .gateway
-            .stream(&ctx, greq)
-            .await
-            .map_err(|e| llm_port_error(&e))?;
-        let mut text = String::new();
-        let mut usage = Usage::default();
-        while let Some(item) = stream.next().await {
-            match item.map_err(|e| PortError::unavailable(format!("llm stream: {e}")))? {
-                StreamDelta::TextDelta { text: t } => text.push_str(&t),
-                StreamDelta::Done { usage: u, .. } => usage = u,
-                _ => {}
-            }
-        }
-        let model = req
-            .model
-            .clone()
-            .unwrap_or_else(|| self.gateway.default_model().to_string());
-        // 生成記録（trace_id で監査 ↔ Langfuse ↔ OTel を束ねる・本文プレビューは短く）。
-        self.gateway
-            .record_generation(
-                &ctx,
-                &GenerationRecord {
-                    idempotency_key: req.idempotency_key,
-                    model: model.clone(),
-                    usage,
-                    trace_id: ec.trace_id.clone(),
-                    input_preview: preview(&req.prompt),
-                    output_preview: preview(&text),
-                    app_id: None,
-                    source: llm_gateway::UsageSource::Workflow,
-                    // **false 固定。** 1 つの run に llm.invoke ノードが複数あると、
-                    // 全ノードが run レベルの同じ trace_id を共有する。true にすると
-                    // 後続ノードのプロンプトが trace input を上書きして、
-                    // 最初のノードの入力が消える。ここからは「run 全体の入力」を
-                    // 知る術が無いので、trace input は送らない（generation 側には残る）。
-                    first_in_trace: false,
-                    started_at: Some(started_at),
-                },
-            )
-            .await;
-        Ok(json!({ "text": text, "model": model }))
+        super::llm_port::invoke(self, ec, req).await
+    }
+
+    async fn llm_decide(&self, ec: &ExecCtx, req: LlmDecideReq) -> Result<Value, PortError> {
+        super::decide_port::decide(self, ec, req).await
     }
 
     async fn agent_invoke(
         &self,
         ec: &ExecCtx,
         req: workflow_engine::AgentInvokeReq,
+        tools: Arc<dyn workflow_engine::AgentToolGateway>,
     ) -> Result<Value, PortError> {
-        let sandbox = self
-            .sandbox
-            .as_ref()
-            .ok_or_else(|| PortError::forbidden("sandbox が未構成です"))?;
-        // capability 縮小のみ: egress 全遮断の code_interpreter spec（ノード設定で egress/権限は拡大不能）。
-        // 隔離ティアだけは admin ポリシーに従う（wasm→gVisor は縮小方向＝より強い隔離なので不変条件を破らない）。
-        let spec = SandboxSpec::code_interpreter(
-            self.sandbox_backend,
-            ec.tenant_id.clone(),
-            ec.org.clone(),
-            ec.principal.clone(),
-        );
-        let handle = sandbox
-            .create(spec)
-            .await
-            .map_err(|e| PortError::unavailable(format!("sandbox create: {e}")))?;
-        let exec = sandbox
-            .exec(
-                &handle,
-                ExecRequest::Python {
-                    code: req.code,
-                    timeout_ms: req.timeout_ms,
-                },
-            )
-            .await;
-        // exec の失敗は空成功にせず伝播する（destroy してから返す）。
-        let mut stream = match exec {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = sandbox.destroy(&handle).await;
-                return Err(PortError::unavailable(format!("sandbox exec: {e}")));
-            }
-        };
-        let mut stdout = String::new();
-        let mut exit_code = None;
-        while let Some(ev) = stream.next().await {
-            match ev {
-                Ok(ExecEvent::Stdout(b)) => stdout.push_str(&String::from_utf8_lossy(&b)),
-                Ok(ExecEvent::Exited { code }) => exit_code = Some(code),
-                Ok(ExecEvent::LimitExceeded { kind, .. }) => {
-                    let _ = sandbox.destroy(&handle).await;
-                    return Err(PortError::new(
-                        "sandbox_limit",
-                        format!("サンドボックス上限超過: {kind:?}"),
-                        false,
-                    ));
-                }
-                Err(e) => {
-                    let _ = sandbox.destroy(&handle).await;
-                    return Err(PortError::unavailable(format!("sandbox stream: {e}")));
-                }
-                _ => {}
-            }
-        }
-        let _ = sandbox.destroy(&handle).await;
-        Ok(json!({ "stdout": stdout, "exit_code": exit_code }))
+        self.invoke_agent(ec, req, tools).await
+    }
+
+    async fn web_search(&self, ec: &ExecCtx, query: &str) -> Result<Value, PortError> {
+        super::agent_tools::web_search(self, ec, query).await
+    }
+
+    async fn web_fetch(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::WebFetchReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::web_fetch(ec, req, self.http.proxy()).await
+    }
+
+    async fn code_run(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::CodeRunReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::code_run(self, ec, req).await
+    }
+
+    async fn doc_read(
+        &self,
+        ec: &ExecCtx,
+        req: workflow_engine::DocReadReq,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::doc_read(self, ec, req).await
+    }
+
+    async fn storage_read_window(
+        &self,
+        ec: &ExecCtx,
+        file_id: Uuid,
+        offset: u64,
+        max_chars: u32,
+    ) -> Result<Value, PortError> {
+        super::agent_tools::storage_read_window(self, ec, file_id, offset, max_chars).await
     }
 
     async fn http_send(&self, _ec: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
-        // Stage A は常に非追従（executor が redirect を拒否する）。SSRF/内部 rebind を防ぐため
-        // auto-follow は使わない（`follow_redirects` が来ても Policy::none）。
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| PortError::unavailable(format!("http client: {e}")))?;
-        let method = reqwest::Method::from_bytes(req.method.as_bytes())
-            .map_err(|_| PortError::invalid("不正な HTTP メソッド"))?;
-        let mut builder = client.request(method, &req.url);
-        for (k, v) in &req.headers {
-            builder = builder.header(k, v);
-        }
-        if let Some(body) = req.body {
-            builder = builder.body(body);
-        }
-        if let Some(ms) = req.timeout_ms {
-            builder = builder.timeout(std::time::Duration::from_millis(ms));
-        }
-        let mut resp = builder
-            .send()
-            .await
-            .map_err(|e| PortError::unavailable(format!("http 送信: {e}")))?;
-        let status = resp.status().as_u16();
-        // 本文は上限まで**ストリーミング読み**する（巨大レスポンスの全量バッファで OOM しない）。
-        const MAX_BODY: usize = 8 * 1024 * 1024;
-        let mut body = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| PortError::unavailable(format!("http 本文: {e}")))?
-        {
-            if body.len() + chunk.len() > MAX_BODY {
-                body.extend_from_slice(&chunk[..MAX_BODY - body.len()]);
-                break;
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(HttpSendResp { status, body })
+        // 名前解決の後のアドレスを確かめ、そのアドレスに接続を固定して送る（3xx は追わない・環境のプロキシを使わない・
+        // BUG-181・PIT-36 の ③・PIT-48）。`follow_redirects` が来ても追わない。
+        self.http.send(req).await
     }
 
     async fn resolve_secret(
@@ -378,7 +365,7 @@ impl NodePorts for ProdNodePorts {
         let secrets = self
             .secrets
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("secrets が未構成です"))?;
+            .ok_or_else(|| workflow_engine::nodes::ports::not_configured("シークレット"))?;
         // 宛先束縛の host 照合は executor が allowed_hosts で行うため、ここでは None（can_use 認可＋監査は実施）。
         let resolved = secrets
             .resolve(&ctx, name, None, ec.trace_id.as_deref())
@@ -428,21 +415,31 @@ impl NodePorts for ProdNodePorts {
         .fetch_optional(&self.db)
         .await
         .map_err(|e| PortError::unavailable(format!("workflow 名前解決: {e}")))?;
+        // 無い名前と見えない相手は同じ誤りにする（存在を明かさない・何度やっても通らないのでやり直さない・BUG-107）。
         let Some(workflow_id) = id else {
-            return Err(PortError::invalid(format!(
-                "workflow が存在しません: {name}"
-            )));
+            return Err(workflow_not_visible());
         };
-        // 実行主体の権限で子 run を起動（fire-and-forget）。
+        // 実行主体の権限で子 run を起動（fire-and-forget）。子は親の run の因果の鎖を引き継ぐ（子の書込が
+        // 親のデータ変更トリガを起こす循環を抑止する・D-26）。
         let run_id = self
             .launcher
-            .start_interactive(&ctx, workflow_id, input)
+            .start_child(&ctx, workflow_id, input, ec.run_id)
             .await
             .map_err(|e| match e {
                 // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。
-                workflow_engine::run::LauncherError::Input(m) => {
-                    PortError::invalid(format!("workflow.start の入力: {m}"))
+                workflow_engine::run::LauncherError::Input(issues) => PortError::invalid(format!(
+                    "workflow.start の入力: {}",
+                    workflow_engine::run::LauncherError::input_message(&issues)
+                )),
+                // 子ワークフローの必須の文字の欄が空（直すまで通らない・D-43）。
+                workflow_engine::run::LauncherError::NotReady(errors) => {
+                    PortError::invalid(format!(
+                        "workflow.start の起動先: {}",
+                        workflow_engine::run::LauncherError::messages(&errors)
+                    ))
                 }
+                // 見えない相手（権限の誤り）は、やり直せる失敗として繰り返さない（BUG-107）。
+                workflow_engine::run::LauncherError::NotVisible => workflow_not_visible(),
                 other => PortError::unavailable(format!("workflow.start: {other}")),
             })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
@@ -453,7 +450,7 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvQuery))?;
         let tables: Vec<tabular::TableRef> = req
             .tables
             .into_iter()
@@ -462,8 +459,9 @@ impl NodePorts for ProdNodePorts {
                 file_id: t.file_id,
             })
             .collect();
-        let resp = tabular
-            .query_tables(&ctx, req.file_id, &tables, &req.sql, ec.trace_id.as_deref())
+        // 読んだ主ファイルの版も受け取る（後ろの「CSV を編集」の前提にできる・D-96）。
+        let (resp, version) = tabular
+            .query_tables_with_version(&ctx, req.file_id, &tables, &req.sql, ec.trace_id.as_deref())
             .await
             .map_err(map_tabular)?;
         let rows: Vec<Value> = resp
@@ -471,12 +469,17 @@ impl NodePorts for ProdNodePorts {
             .iter()
             .map(|row| Value::Array(row.iter().map(|c| cell_to_json(c.as_deref())).collect()))
             .collect();
+        let items = csv_items(&resp.columns, &resp.values);
         Ok(json!({
             "columns": resp.columns,
             "column_types": resp.column_types,
             "rows": rows,
+            // 1 行ずつ列の名前で引ける形（数・真偽・空は値の種類のまま・GAP-40）。rows は以前からの文字の形のまま。
+            "items": items,
             "total_rows": resp.total_rows,
             "truncated": resp.truncated,
+            // 集計した中身のバージョン（後ろの「CSV を編集」の前提にできる・D-96）。
+            "version": version,
         }))
     }
 
@@ -485,7 +488,7 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvPatch))?;
         // ops（JSON 配列）を tabular の PatchOp へ型変換する（不正は permanent の invalid）。
         let ops: Vec<tabular::PatchOp> = serde_json::from_value(req.ops)
             .map_err(|e| PortError::invalid(format!("csv.patch: ops が不正: {e}")))?;
@@ -512,17 +515,25 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvWrite))?;
+        // 番号は StorageService が書込の 1 つの TX の中で付ける（ファイルを保存・ドライブの新規作成と同じ規則・D-124）。
+        let policy = on_name_taken(req.on_name_taken);
         let saved = tabular
             .save_new(
                 &ctx,
                 req.parent_id,
                 &req.name,
                 &req.csv_bytes,
+                policy,
                 ec.trace_id.as_deref(),
             )
             .await
-            .map_err(map_tabular)?;
+            .map_err(|e| match e {
+                tabular::TabularError::Storage(storage::StorageError::Conflict) => {
+                    name_taken(&req.name, policy)
+                }
+                other => map_tabular(other),
+            })?;
         Ok(json!({
             "node_id": saved.node_id.to_string(),
             "version": saved.version,
@@ -555,6 +566,44 @@ impl NodePorts for ProdNodePorts {
     async fn data_write(&self, ec: &ExecCtx, req: DataWriteReq) -> Result<Value, PortError> {
         self.data_port()?.write(ec, req).await
     }
+
+    async fn data_approval_target(
+        &self,
+        ec: &ExecCtx,
+        table_id: Uuid,
+        record_id: Uuid,
+    ) -> Result<workflow_engine::ApprovalTarget, PortError> {
+        self.data_port()?
+            .approval_target(ec, table_id, record_id)
+            .await
+    }
+}
+
+/// workflow.start の相手が無いか見えないときの誤り（permanent・無いと見えないを言い分けない・BUG-107）。
+fn workflow_not_visible() -> PortError {
+    PortError::new(
+        "not_found",
+        format!(
+            "{}自動実行では、オンにするときに使えるようにしたワークフローだけを実行できます。",
+            workflow_engine::nodes::ports::hidden_not_found("実行するワークフロー")
+        ),
+        false,
+    )
+}
+
+/// 社内文書の検索の結果 1 件（ワークフローの rag.search の出力・カタログの output_fields と同じ形）。
+///
+/// relevance は reranker の生の値を設定のしきい値で段階に落とした関連の強さ（high・medium・low・チャットの
+/// 引用と同じ）。score は順位から決めた値（1/(順位+1)）で関連の強さではない。生の値はモデルで尺度が変わる
+/// ので出さない（しきい値を数で書かせない・D-96）。
+fn rag_result(r: &rag::SearchResult) -> Value {
+    json!({
+        "file_id": r.file_id.to_string(),
+        "file_name": r.file_name,
+        "content": r.content,
+        "relevance": r.relevance,
+        "score": r.score,
+    })
 }
 
 /// CSV セル（NULL は None）を JSON 値へ（NULL → null・値 → 文字列）。
@@ -562,27 +611,19 @@ fn cell_to_json(cell: Option<&str>) -> Value {
     cell.map_or(Value::Null, |s| Value::String(s.to_string()))
 }
 
-/// 監査/記録用の短いプレビュー（先頭 200 文字・改行畳み）。
-fn preview(s: &str) -> String {
-    let flat: String = s.chars().take(200).collect();
-    flat.replace('\n', " ")
-}
-
-/// gateway の失敗をワークフローの再試行分類へ写す。
+/// 「CSV を集計」の結果の行を、列の名前で引ける項目のまとまりにする（値は隔離ランナーが決めた種類のまま）。
 ///
-/// 設定・入力の誤り（未知のモデル・組織が許可していないモデル・プロバイダの 4xx）は、設定を
-/// 変えない限り何度やっても通らないので再試行しない。到達障害やレート制限だけを再試行する。
-fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
-    match e {
-        llm_gateway::LlmError::Config(_) | llm_gateway::LlmError::BadRequest(_) => {
-            PortError::invalid(format!("llm: {e}"))
-        }
-        _ => PortError::unavailable(format!("llm: {e}")),
-    }
+/// 列の名前は DuckDB が重ならないように付け直したもの（`a`・`a_1`）なので、行の値は抜けない。
+fn csv_items(columns: &[String], values: &[Vec<Value>]) -> Vec<Value> {
+    values
+        .iter()
+        .map(|row| Value::Object(columns.iter().cloned().zip(row.iter().cloned()).collect()))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     /// tabular の入力起因のエラー（テーブル指定・SQL・パッチ・クエリ実行）は再試行しない。
@@ -599,15 +640,89 @@ mod tests {
         }
     }
 
+    /// 集計の結果の行を、列の名前で引ける項目のまとまりにし、値の種類を保つ（GAP-40）。
     #[test]
-    fn llm_config_errors_are_not_retried() {
-        use llm_gateway::LlmError;
-        // 組織が許可していないモデルは設定を変えるまで通らない → 再試行しない。
-        let e = llm_port_error(&LlmError::Config("model is not enabled".into()));
-        assert!(!e.retryable);
-        assert!(!llm_port_error(&LlmError::BadRequest("bad".into())).retryable);
-        // 到達障害・レート制限は再試行する。
-        assert!(llm_port_error(&LlmError::Unavailable("down".into())).retryable);
-        assert!(llm_port_error(&LlmError::RateLimited("429".into())).retryable);
+    fn csv_items_keep_value_kinds_by_column_name() {
+        let columns = vec!["品目".to_string(), "合計".to_string(), "済".to_string()];
+        let values = vec![
+            vec![json!("交通費"), json!(2000), json!(true)],
+            vec![json!("会議費"), json!(0.5), Value::Null],
+        ];
+        assert_eq!(
+            csv_items(&columns, &values),
+            vec![
+                json!({ "品目": "交通費", "合計": 2000, "済": true }),
+                json!({ "品目": "会議費", "合計": 0.5, "済": null }),
+            ]
+        );
+        assert!(csv_items(&columns, &[]).is_empty());
+    }
+
+    /// 検索の結果に関連の強さ（段階）を載せ、生の reranker の値は載せない（D-96）。
+    #[test]
+    fn rag_results_carry_the_relevance_band_but_not_the_raw_score() {
+        let r = rag::SearchResult {
+            chunk_id: Uuid::nil(),
+            file_id: Uuid::nil(),
+            file_name: "規程.md".into(),
+            folder_id: None,
+            page: None,
+            heading_path: vec![],
+            content: "締め日は 25 日".into(),
+            parent_content: None,
+            score: 0.5,
+            rerank_score: 0.91,
+            relevance: rag::Relevance::High,
+            version: 3,
+            anchor: None,
+            quote: None,
+            boxes: vec![],
+        };
+        let v = rag_result(&r);
+        assert_eq!(v["relevance"], "high");
+        assert_eq!(v["score"], 0.5);
+        assert!(v.get("rerank_score").is_none(), "{v}");
+        let fields: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        // カタログの output_fields（rag.search の results の要素）と同じ項目。
+        let entry = workflow_engine::vocab::node_catalog()
+            .into_iter()
+            .find(|e| e.node_type == workflow_engine::vocab::NodeType::RagSearch)
+            .unwrap();
+        for f in fields {
+            assert!(entry.output_fields[0].ty.contains(&format!("{f}:")), "{f}");
+        }
+    }
+
+    /// 「同じ名前があるとき」の値の名前（`fail`・`add_number`）は、StorageService の扱いと同じ（D-112）。
+    #[test]
+    fn name_taken_policies_keep_their_value_names() {
+        use workflow_engine::ir::params::NameTakenPolicy;
+        for p in [NameTakenPolicy::Fail, NameTakenPolicy::AddNumber] {
+            assert_eq!(
+                serde_json::to_value(p).unwrap(),
+                serde_json::to_value(on_name_taken(p)).unwrap()
+            );
+        }
+    }
+
+    /// 名前の衝突は name_taken（やり直さない）。番号を付ける扱いで上限まで埋まっていたら、StorageService の規則で
+    /// 求めた最後の名前（「集計 (50).csv」）を言う（エンジンは番号を付けた名前を作らない・D-124）。
+    #[test]
+    fn name_taken_names_the_last_numbered_name_by_the_storage_rule() {
+        let plain = name_taken("集計.csv", storage::OnNameTaken::Fail);
+        assert_eq!(plain.code, NAME_TAKEN);
+        assert!(!plain.retryable);
+        let full = name_taken("集計.csv", storage::OnNameTaken::AddNumber);
+        assert_eq!(full.code, NAME_TAKEN);
+        assert!(!full.retryable);
+        assert_eq!(
+            full.message,
+            "保存先に「集計.csv」と、番号を付けた「集計 (50).csv」までのファイルがすでにあります。\
+             ファイル名に日付などを差し込んでください。"
+        );
+        assert!(full.message.contains(&storage::numbered_name(
+            "集計.csv",
+            storage::MAX_NUMBERED_NAME
+        )));
     }
 }

@@ -22,6 +22,7 @@ import {
   SaveDraftDialog,
   saveFailedMessage,
   draftChrome,
+  type DraftNameTaken,
   type SaveTarget,
 } from "@/components/notes/save-draft-dialog";
 import { AssistantLayout } from "@/components/shell/assistant-sheet";
@@ -31,7 +32,7 @@ import { toast } from "@/components/ui/use-toast";
 import { getThreadMessages } from "@/lib/chat-api";
 import { csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { parseCsv, toCsv } from "@/lib/csv/parse";
-import { saveNewCsv } from "@/lib/tabular-api";
+import { CsvNameTaken, saveNewCsv } from "@/lib/tabular-api";
 import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
@@ -58,6 +59,8 @@ function DraftCsvPageInner() {
   const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
   const defaultFolder = useDefaultSaveFolder(threadId, aiParentId, saveOpen);
   const [saving, setSaving] = React.useState(false);
+  // 保存先に同じ名前があった（ダイアログの名前の欄の下で言い、番号を付けて保存する道を出す・BUG-150）。
+  const [nameTaken, setNameTaken] = React.useState<DraftNameTaken | null>(null);
   const [recovered, setRecovered] = React.useState(false);
   // グリッドのローカルデータ（[0]=ヘッダ行）。編集のたびに CSV へ直して下書きストアへ書き戻す。
   const [cells, setCells] = React.useState<string[][] | null>(null);
@@ -166,15 +169,32 @@ function DraftCsvPageInner() {
     (target: SaveTarget) => {
       if (!activeName || !cells || saving) return;
       setSaving(true);
-      saveNewCsv({ parentId: target.parentId, name: target.name, csv: toCsv(cells) })
+      setNameTaken(null);
+      saveNewCsv({
+        parentId: target.parentId,
+        name: target.name,
+        csv: toCsv(cells),
+        onNameTaken: target.addNumber ? "add_number" : undefined,
+      })
         .then((saved) => {
           csvDraftStore.remove(threadId, activeName);
           toast({ description: `「${saved.name.replace(/\.csv$/i, "")}」を保存しました。` });
           router.replace(`/csv/${saved.node_id}`);
         })
         .catch((e: unknown) => {
-          toast({ description: saveFailedMessage(e, target.parentId) });
           setSaving(false);
+          // 保存先に同じ名前があれば、トーストを出さずにダイアログの名前の欄の下で言う（BUG-150）。
+          if (e instanceof CsvNameTaken) {
+            setNameTaken({ name: target.name, parentId: target.parentId, message: e.message, numbered: e.numbered });
+            return;
+          }
+          // saveNewCsv は理由を添えた文言で投げる（保存先の権限・入力の誤りなど）。理由を出して、
+          // 直し方が分かるようにする。文言の無い失敗だけ、共通の文言（保存先の権限を言い分ける）にする。
+          toast({
+            variant: "destructive",
+            title: "保存できませんでした",
+            description: e instanceof Error && e.message ? e.message : saveFailedMessage(e, target.parentId),
+          });
         });
     },
     [activeName, cells, saving, threadId, router],
@@ -238,10 +258,14 @@ function DraftCsvPageInner() {
 
       <SaveDraftDialog
         open={saveOpen}
-        onOpenChange={setSaveOpen}
+        onOpenChange={(o) => {
+          setSaveOpen(o);
+          if (!o) setNameTaken(null);
+        }}
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        nameTaken={nameTaken}
         defaultFolder={defaultFolder}
         entityLabel="CSV"
         description="下書きを CSV として保存します。保存後はグリッド編集・SQL 分析・共有ができます。"

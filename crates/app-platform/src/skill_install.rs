@@ -221,9 +221,7 @@ impl SkillInstallService {
         }
         .ok_or(AppPlatformError::NotFound)?;
         if entry.yanked {
-            return Err(AppPlatformError::Conflict(
-                "このバージョンは yank されています".into(),
-            ));
+            return Err(AppPlatformError::Conflict(crate::YANKED_VERSION.into()));
         }
 
         // ② 信頼ティア検証（first-party=署名必須／in-house=viewer 必須／その他=拒否）。
@@ -396,6 +394,36 @@ impl SkillInstallService {
             out.entry(name).or_default().insert(version);
         }
         Ok(out)
+    }
+
+    /// V4 skill 照合用: 保存ユーザーのインストール済み skill のうち、shiki script を持つもの（`name@version`・D-185）。
+    ///
+    /// skill.invoke は shiki script があれば script-runtime で動き（LLM を呼ばない）、無ければ組織の既定のモデルで
+    /// 動く（workflow-engine の `nodes/skill.rs`）。インストールした版の本文の `scripts` に `kind = "shiki"` があるかで
+    /// 分ける（実行時はレジストリの同じ版を引く・版は不変）。
+    pub async fn installed_script_skills(
+        &self,
+        ctx: &AuthContext,
+    ) -> Result<std::collections::BTreeSet<String>, AppPlatformError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT i.name, i.registry_version FROM skill_installation i \
+             JOIN artifact a \
+               ON a.tenant_id = i.tenant_id AND a.id = i.skill_id AND a.deleted_at IS NULL \
+             JOIN artifact_version v \
+               ON v.tenant_id = i.tenant_id AND v.artifact_id = i.skill_id \
+              AND v.version = i.skill_version \
+             WHERE i.tenant_id = $1 AND i.user_id = $2 \
+               AND jsonb_path_exists(v.body, '$.scripts[*] ? (@.kind == \"shiki\")')",
+        )
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .map(|(name, version)| format!("{name}@{version}"))
+            .collect())
     }
 
     pub(crate) async fn record(

@@ -5,6 +5,8 @@
 /// テーブル名は `data`。「CSV を追加」でドライブの別 CSV を名前付きテーブルとして足すと JOIN できる
 /// （#1037・追加した CSV にも閲覧権限が要る）。結果は簡易テーブルで表示し、「新規 CSV として保存」を
 /// 明示操作で提供。実行は tabular サービス（11P.7・隔離 DuckDB）経由の RO SQL。
+/// 新規 CSV は元の CSV と同じフォルダーに保存する。そのフォルダーを見られない・書き込めないときはドライブのトップに
+/// 保存する（GAP-66）。
 
 import { Play, Plus, Save, X } from "lucide-react";
 import * as React from "react";
@@ -14,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -26,8 +29,11 @@ import {
   MAX_EXTRA_TABLES,
   PRIMARY_TABLE,
 } from "@/lib/csv/table-name";
-import type { NodeResponse } from "@/lib/storage";
+import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import {
+  CsvFolderUnavailable,
+  CsvNameTaken,
+  csvFileName,
   getReservedWords,
   runQuery,
   saveNewCsv,
@@ -42,13 +48,75 @@ type ExtraTable = { key: string; name: string; fileId: string; fileName: string 
 const isCsvNode = (n: NodeResponse) =>
   n.name.toLowerCase().endsWith(".csv") || (n.content_type ?? "").startsWith("text/csv");
 
+/// 新規 CSV の保存先（GAP-66）。
+///
+/// - `folder`: 元の CSV と同じフォルダー。
+/// - `top`: ドライブのトップ。`fallback` は、元の CSV がフォルダーにあるのに、そこへ保存できないとき（フォルダーを
+///   見られない・書き込めない）。
+type SaveDestination =
+  | { kind: "loading" }
+  | { kind: "folder"; id: string; name: string }
+  | { kind: "top"; fallback: boolean };
+
+/// 元の CSV のある場所から保存先を決める。
+///
+/// - フォルダーを見られない人（CSV だけを共有された人）はトップにする（パンくずに親が入らない）。
+/// - フォルダーの編集者は中のファイルの編集者でもあるので、CSV を閲覧だけで開いている人もトップにする。
+/// - CSV を編集できても、フォルダーに書き込めないことはある（フォルダーは閲覧だけで共有された人）。そのときは保存の
+///   応答で分かるので、トップに保存し直す（[`CsvFolderUnavailable`]）。
+/// - 場所を読めなければトップにする。
+function useSaveDestination(nodeId: string, canEditFile: boolean): [SaveDestination, (d: SaveDestination) => void] {
+  const [dest, setDest] = React.useState<SaveDestination>({ kind: "loading" });
+  React.useEffect(() => {
+    let active = true;
+    setDest({ kind: "loading" });
+    Promise.all([getNode(nodeId), breadcrumb(nodeId).catch(() => [])])
+      .then(([node, crumbs]) => {
+        if (!active) return;
+        if (!node.parent_id) {
+          setDest({ kind: "top", fallback: false });
+          return;
+        }
+        // パンくずは読めるところまで（読めない親は入らない）。最後が CSV 自身、その前が親のフォルダー。
+        const parent = crumbs.length >= 2 ? crumbs[crumbs.length - 2] : null;
+        setDest(
+          canEditFile && parent && parent.id === node.parent_id
+            ? { kind: "folder", id: parent.id, name: parent.name }
+            : { kind: "top", fallback: true },
+        );
+      })
+      .catch(() => {
+        if (active) setDest({ kind: "top", fallback: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, [nodeId, canEditFile]);
+  return [dest, setDest];
+}
+
+/// 保存のダイアログの説明（保存先を言う）。
+function destinationText(dest: SaveDestination): string {
+  switch (dest.kind) {
+    case "loading":
+      return "保存先を確かめています…";
+    case "folder":
+      return `結果を新しい CSV として、この CSV と同じ「${dest.name}」フォルダーに保存します。`;
+    case "top":
+      return dest.fallback
+        ? "この CSV のフォルダーには保存できないため、結果を新しい CSV として、ドライブのトップに保存します。"
+        : "結果を新しい CSV として、ドライブのトップに保存します。";
+  }
+}
+
 export function SqlConsole({
   nodeId,
-  parentId,
+  canEditFile,
   onSaved,
 }: {
   nodeId: string;
-  parentId?: string | null;
+  /// 開いている CSV を編集できるか（閲覧だけなら、そのフォルダーにも書き込めない）。
+  canEditFile: boolean;
   onSaved?: (savedNodeId: string) => void;
 }) {
   const [sql, setSql] = React.useState("SELECT * FROM data LIMIT 100");
@@ -59,6 +127,11 @@ export function SqlConsole({
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [saveName, setSaveName] = React.useState("query-result");
   const [savingCsv, setSavingCsv] = React.useState(false);
+  // 保存先に同じ名前のファイルがあった（名前を変えるか、番号を付けて保存する・BUG-150）。知らせはその名前のときだけ出す
+  // （名前を変えれば消え、戻せばまた出る）。
+  const [takenError, setTakenError] = React.useState<CsvNameTaken | null>(null);
+  const nameTaken = takenError && takenError.fileName === csvFileName(saveName.trim()) ? takenError : null;
+  const [dest, setDest] = useSaveDestination(nodeId, canEditFile);
   const [tables, setTables] = React.useState<ExtraTable[]>([]);
   const [pickerOpen, setPickerOpen] = React.useState(false);
   // SQL の予約語（取れるまでは空＝補完・事前検証で避けないだけ。最終判定は backend）。
@@ -154,19 +227,48 @@ export function SqlConsole({
     }
   };
 
-  const saveResult = async () => {
-    // savingCsv 中は二重発火を防ぐ（Enter と 保存ボタンの多重呼び出し対策）。
-    if (!result || !saveName.trim() || savingCsv) return;
+  /// `addNumber` は同じ名前があったときに「名前 (2).csv」のように番号を付けて保存する（サーバーが空いている名前を探す）。
+  const saveResult = async (addNumber = false) => {
+    // savingCsv 中は二重発火を防ぐ（Enter と 保存ボタンの多重呼び出し対策）。保存先が決まるまでは保存しない。
+    if (!result || !saveName.trim() || savingCsv || dest.kind === "loading") return;
     setSavingCsv(true);
+    const save = (parentId: string | null) =>
+      saveNewCsv({
+        parentId,
+        name: saveName.trim(),
+        csv: tableToCsv(result),
+        onNameTaken: addNumber ? "add_number" : undefined,
+      });
+    const folder = dest.kind === "folder" ? dest : null;
     try {
-      const saved = await saveNewCsv({ parentId, name: saveName.trim(), csv: tableToCsv(result) });
-      toast({ title: "保存しました", description: `${saved.name} を作成しました。` });
+      let saved: Awaited<ReturnType<typeof saveNewCsv>>;
+      let note: string;
+      try {
+        saved = await save(folder?.id ?? null);
+        note = folder
+          ? `「${saved.name}」を「${folder.name}」フォルダーに作成しました。`
+          : `「${saved.name}」を作成しました。`;
+      } catch (e) {
+        // 元の CSV のフォルダーに書き込めない（フォルダーは閲覧だけの人）・その間に消された: トップに保存し直す。
+        // トップに同じ名前があれば、下の catch で名前の欄の下に言う（説明もトップに変わる）。
+        if (!folder || !(e instanceof CsvFolderUnavailable)) throw e;
+        setDest({ kind: "top", fallback: true });
+        saved = await save(null);
+        note = `「${folder.name}」フォルダーには保存できないため、ドライブのトップに「${saved.name}」を作成しました。`;
+      }
+      toast({ title: "保存しました", description: note });
       setSaveOpen(false);
+      setTakenError(null);
       onSaved?.(saved.node_id);
     } catch (e) {
+      // 同じ名前は欄の下で言い、番号を付けて保存するボタンを出す（ほかの人の編集と取り違えない）。
+      if (e instanceof CsvNameTaken) {
+        setTakenError(e);
+        return;
+      }
       toast({
         variant: "destructive",
-        title: "保存に失敗しました",
+        title: "保存できませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -367,10 +469,19 @@ export function SqlConsole({
       />
 
       {/* 新規 CSV として保存（window.prompt の代わりにアプリの Dialog を使う） */}
-      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+      <Dialog
+        open={saveOpen}
+        onOpenChange={(o) => {
+          setSaveOpen(o);
+          setTakenError(null);
+        }}
+      >
         <DialogContent data-testid="sql-save-dialog">
           <DialogHeader>
             <DialogTitle>新規 CSV として保存</DialogTitle>
+            <DialogDescription className="[overflow-wrap:anywhere]" data-testid="sql-save-destination">
+              {destinationText(dest)}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
             <label htmlFor="sql-save-name" className="text-sm font-medium">
@@ -383,9 +494,12 @@ export function SqlConsole({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  void saveResult();
+                  // 同じ名前の知らせが出ている間は、Enter で番号を付けた保存をしない（ボタンで選ぶ）。
+                  if (!nameTaken) void saveResult();
                 }
               }}
+              aria-invalid={nameTaken ? true : undefined}
+              aria-describedby={nameTaken ? "sql-save-name-taken" : undefined}
               autoFocus
               autoCapitalize="none"
               autoCorrect="off"
@@ -393,14 +507,40 @@ export function SqlConsole({
               enterKeyHint="done"
               placeholder="query-result"
             />
+            {nameTaken ? (
+              <p
+                id="sql-save-name-taken"
+                role="alert"
+                className="text-sm text-destructive"
+                data-testid="sql-save-name-taken"
+              >
+                {nameTaken.message}
+              </p>
+            ) : null}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setSaveOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSaveOpen(false);
+                setTakenError(null);
+              }}
+            >
               キャンセル
             </Button>
-            <Button loading={savingCsv} disabled={!saveName.trim()} onClick={() => void saveResult()}>
-              保存
-            </Button>
+            {nameTaken && !nameTaken.numbered ? (
+              <Button loading={savingCsv} onClick={() => void saveResult(true)} data-testid="sql-save-numbered">
+                番号を付けて保存
+              </Button>
+            ) : (
+              <Button
+                loading={savingCsv}
+                disabled={!saveName.trim() || nameTaken !== null || dest.kind === "loading"}
+                onClick={() => void saveResult()}
+              >
+                保存
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

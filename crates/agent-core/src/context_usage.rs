@@ -218,6 +218,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::FsRead
         | ToolName::Grep
         | ToolName::ReadWorkflow
+        | ToolName::ListWorkflows
         | ToolName::SearchWorkflows
         | ToolName::DocumentRead
         | ToolName::SlideRead
@@ -242,6 +243,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::UiReference
         | ToolName::EmitUi
         | ToolName::EmitWorkflow
+        // 試運転の結果（run の出力）で、回答の根拠になる資料ではない。
+        | ToolName::TryWorkflow
         | ToolName::DocumentEdit
         | ToolName::DocumentEmbed
         | ToolName::SaveNote

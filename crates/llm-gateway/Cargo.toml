@@ -33,6 +33,10 @@ rand.workspace = true
 shiki-testenv.workspace = true
 tokio = { workspace = true }
 axum.workspace = true
+# 判定の評価（tests/decision_eval.rs）が dev と同じ TOML を読む（サーバと同じ読み方）。
+figment.workspace = true
+# 判定の自己申告を引き上げたときのログを試験で受ける（BUG-124）。
+tracing-subscriber.workspace = true
 
 # lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

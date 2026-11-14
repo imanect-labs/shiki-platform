@@ -5,7 +5,6 @@
 //! 遷移実行は [`DataStore::transition_record`] へ委譲する（本ストアは定義の解決のみ）。
 
 use std::sync::Arc;
-use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -18,8 +17,8 @@ use crate::DataError;
 /// FSM 定義の保存/解決（`crates/data` の一部・遷移実行と同じチョークポイント側）。
 #[derive(Clone)]
 pub struct FsmStore {
-    artifacts: Arc<ArtifactStore>,
-    data: DataStore,
+    pub(crate) artifacts: Arc<ArtifactStore>,
+    pub(crate) data: DataStore,
 }
 
 impl FsmStore {
@@ -50,7 +49,7 @@ impl FsmStore {
         record_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<crate::fsm_rules::AllowedTransitions, DataError> {
-        let table = self
+        let (table, access) = self
             .data
             .table_for_transition(ctx, table_id, trace_id)
             .await?;
@@ -66,7 +65,36 @@ impl FsmStore {
                 )
             })?;
         self.data
-            .allowed_transitions_with(ctx, &table, record_id, &fsm, &status_field)
+            .allowed_transitions_with(ctx, &table, &access, record_id, &fsm, &status_field)
+            .await
+    }
+
+    /// ワークフローの承認（human.approval）が停止時に読む行の状態（テーブルの viewer・GAP-08）。
+    ///
+    /// いまの状態・rev・FSM でその状態から進める状態（遷移の定義だけ）・読めるユーザー／ロールの列の値を返す。
+    /// FSM の本文はテーブルにピンされた版をテーブル側の参照として読むが、返すのは「いまの状態からの行き先」
+    /// だけ（actor 述語などの定義は返さない）。
+    pub async fn approval_target(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<crate::fsm_rules::ApprovalTargetView, DataError> {
+        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        let (fsm, status_field) = self
+            .data
+            .pinned_fsm(ctx, &table, trace_id)
+            .await?
+            .ok_or_else(|| {
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "このテーブルは状態遷移（FSM）で管理されていません",
+                )
+            })?;
+        self.data
+            .approval_target_with(ctx, &table, record_id, &fsm, &status_field)
             .await
     }
 
@@ -165,7 +193,14 @@ impl FsmStore {
         expected_rev: i64,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataRecord, DataError> {
-        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        // 先にテーブルの editor（か、作成者として進め方を許した追加だけの人・D-127）を確かめる（FSM の本文を
+        // 閲覧者に使わせない）。見えるがそうでない人（閲覧者・作成者に何も許していない追加だけの人）は、書き換え・
+        // 削除・取込と同じ 403。テーブルが見えない人は 404（存在を明かさない）。レコードを引く前に断るので、403 から
+        // レコードの有無は分からない（BUG-155）。遷移そのものの判定は transition_record が改めて行う。
+        let (table, _) = self
+            .data
+            .table_for_transition(ctx, table_id, trace_id)
+            .await?;
         let not_managed = || {
             DataError::input_detail(
                 crate::InvalidCode::FsmInvalid,
@@ -175,16 +210,6 @@ impl FsmStore {
         };
         let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(not_managed)?;
         let status_field = table.schema.status_field.clone().ok_or_else(not_managed)?;
-        // FSM の本文を読む前にテーブルの editor を確かめる（閲覧者に定義を読ませない）。
-        self.data
-            .authorize_table(
-                ctx,
-                table_id,
-                authz::Relation::Editor,
-                AuditAction::DataRecordTransition,
-                trace_id,
-            )
-            .await?;
         let v = self
             .artifacts
             .get_version_pinned(
@@ -248,10 +273,11 @@ impl FsmStore {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_artifact(e: ArtifactError) -> DataError {
     match e {
-        ArtifactError::NotFound => DataError::NotFound,
+        // 公開していない版（ミニアプリの下書き・D-16）は、テーブルの面からは見つからないのと同じ。
+        ArtifactError::NotFound | ArtifactError::NotPublished { .. } => DataError::NotFound,
         ArtifactError::Forbidden => DataError::Forbidden,
         ArtifactError::Invalid(m) => DataError::Invalid(m),
-        ArtifactError::Conflict(m) => DataError::Conflict(m),
+        ArtifactError::Conflict(r) => DataError::Conflict(r.to_string()),
         ArtifactError::Internal(m) => DataError::Internal(format!("artifact: {m}")),
     }
 }

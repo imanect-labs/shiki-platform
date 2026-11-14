@@ -296,10 +296,16 @@ pub struct AuthContext {
     pub principal: Principal,   // 誰（OIDC sub 由来 or workflow プリンシパル）
     pub org: String,            // 所属組織（テナント内の最上位スコープ）
     pub tenant_id: String,      // SaaS 隔離境界。new() の必須引数（型レベルで欠落不能）
+    pub origin_run: Option<Uuid>, // ワークフローの run の中の操作ならその run（認可には使わない）
 }
 ```
 
 `tenant_id` は `new()` の**必須引数**なので、「tenant_id 無しの AuthContext」はコンパイルできない（`context.rs:52-62`）。
+
+`origin_run` は**認可の判断に使わない**由来の印で、ワークフローの実行時（ノードの実行・委譲元の文脈）だけが
+`in_run` で付ける。書込は outbox の consumer 非公開部に載せ、ワークフローの relay が因果の鎖（自分の書込で自分を
+起こさない）と `by_workflow` をここから引く。リクエストから組む文脈（下の図）は常に `None` で、要求が運ぶ値
+（trace_id など）からは決まらないので、利用者が run を名乗れない（[engine.md](../workflow/engine.md) §5.4・BUG-44）。
 
 ### リクエストから AuthContext まで（BFF 方式）
 
@@ -392,7 +398,7 @@ pub enum PrincipalKind { User, Workflow }   // context.rs:18
 | `read_tuples(object, relation?) -> Vec<ReadTupleKey>` | オブジェクトの**直接タプル**列挙 | ✗（直接のみ） | 共有相手一覧（誰に共有したか） |
 | `list_objects(subject, relation, object_type) -> Vec<String>` | subject が relation を持つ**実効集合** | ○ | 共有された一覧・RAG pre-filter |
 | `read_subject_objects(subject, object_type) -> Vec<String>` | subject が**直接タプル**を持つ object 一覧 | ✗（直接のみ） | ロール同期の差分算出・テナント撤去 |
-| `delete_object_tuples(object) -> u32` | オブジェクトの全直接タプル一括剥奪 | — | テナント撤去（SAAS.2） |
+| `delete_object_tuples(object) -> u32` | オブジェクトの全直接タプル一括剥奪 | — | テナント撤去（SAAS.2）・完全削除・テーブル等の削除（§9.5） |
 
 `read_tuples` と `list_objects` の違いは頻出の混乱ポイント:
 
@@ -579,8 +585,21 @@ let revoked = self.authz
 - `ShareTarget`（`model.rs:156`）: `User{id}` → `user:acme|<id>`、`Role{id}` → `role:acme|<id>#member`（部署共有）。
 - `ShareRole`（`model.rs:189`）: `Viewer` / `Editor` のみ（owner/parent/member は共有語彙から除外）。
 - 共有相手一覧 `list_shares`（`sharing.rs:94`）は `read_tuples`（直接タプルのみ）で「誰に共有したか」を返す。
-- 自分に共有された一覧 `list_shared_with_me`（`sharing.rs:123`）は `list_objects`（継承込み実効集合）で引き、
+- 自分に共有された一覧 `list_shared_with_me`（`shared_list.rs`）は `list_objects`（継承込み実効集合）で引き、
   自テナント分のみ `strip_object_id` で抽出、作成者本人分を除いてページング。
+  file か folder の `list_objects` の応答が上限（1,000 件・`authz::visible`）に届いたら実効集合を正にせず、組織・テナントの
+  生きている、自分が作っていないノードを新しい順に 200 件ずつ引いて BatchCheck で絞る（`list_objects` が返した分は問い直さない・
+  1 回の頼みで問うのは 1,000 問まで）。届いたら見つけた分と続きの位置を返す（**ページが空でも `next_cursor` があれば続きがある**）。
+  続きの位置は見えないノードを指しうるので、API がテナントに束縛して暗号化する（読めない位置は `cursor_invalid`・BUG-162）。
+- アーティファクトの一覧（`GET /artifacts`）とワークフローの一覧（`GET /workflows`）の共有分も同じ形で絞る
+  （`crates/artifact/src/shared.rs`）。どちらも同じ入口（`crates/api/src/routes/artifact_list.rs`）で、先頭のページは所有分と
+  共有分を合わせて返し、続きの位置はそれぞれ別に返す。共有分に続きがあれば `shared_next_cursor` を返し、`shared_cursor` に
+  渡すと共有分の続きだけを返す（所有分の `before_*` とは同時に使えない・BUG-162・BUG-185）。共有分の位置は、テナントに加えて
+  一覧の種類（`kind`。`GET /workflows` は `workflow`・絞らない `GET /artifacts` は無し）にも束縛し、別の種類の一覧に渡すと
+  `cursor_invalid`（その位置より新しい共有分を黙って読み飛ばさない）。所有分に続きがあれば `owned_next`
+  （`before_updated_at`・`before_id`）を返し、`before_*` に渡すと所有分の続きだけを返す。所有分の位置は自分のものを指すだけ
+  なので封をしない。合わせたページの最後の 1 件を所有分の位置に使うと、最後が共有分だったときに、それより新しい所有分を
+  読み飛ばす（BUG-185・BUG-186）。
 
 ```mermaid
 flowchart LR
@@ -621,9 +640,24 @@ sequenceDiagram
 
 - **ゴミ箱（soft-delete）は authz タプルに触らない**。`soft_delete_*`（`service/trash.rs`）は DB の `deleted_at` を立てるだけ。
   復元可能な間はタプルを残す（復元と対称）。
-- **`delete_object_tuples` を呼ぶのはテナント撤去 `purge_tenant`（`admin.rs:57`）だけ**。node/role/org/artifact/secret を
-  DB から列挙し、各オブジェクトの全直接タプルを一括剥奪する。OpenFGA 側は Read → `delete_tuples_batch`（100 件チャンク）を
-  空になるまでループ（`client.rs:260`）。冪等。
+- **完全削除（1 件ずつ `purge_node`・ゴミ箱を空にする `empty_trash`・保持期間の自動削除）は、消したノードの直接のタプルを外す**
+  （`service/purge.rs`）。ノード・版・blob などの行を 1 つの Tx で消し、**同じ Tx で**消したノードごとの「タプルを外す仕事」
+  を片付け待ち `storage_purge_pending`（migration 0158）に積む（`enqueue_tuples`）。commit の後に、根の行から先に
+  その場で `delete_object_tuples` で外す（`drain_cleanup` → `cleanup_one`。根から継いでいた閲覧を先に閉じる）。
+  その場で外しきれなかった分・失敗した分は、中断アップロードの回収タイマの周の掃除 `sweep_purge_pending`
+  （`service/purge_pending.rs`・`upload_gc_timer.rs`）がやり直す。`upload_gc.enabled=false` だと掃除は回らない
+  （DB の行はもう無いので、残ったタプルから見えるものは増えない）。子は `from parent` で継ぐだけでなく、自分の直接の
+  タプル（共有など）も持ちうるので、根だけでなく消したノードすべてを積む。
+- **`delete_object_tuples` を呼ぶ所**（どれも冪等。OpenFGA 側は Read → `delete_tuples_batch`（100 件チャンク）を空になる
+  までループ・`client.rs:330`）:
+  - テナント撤去 `purge_tenant`（`storage/src/service/admin.rs:77`）: node/role/org/artifact/secret/thread を DB から列挙し、
+    各オブジェクトの全直接タプルを一括剥奪する。テーブルは `data` の `purge_tenant`（`data/src/store.rs`）。
+  - ストレージの完全削除（上の項）。
+  - 構造化データのテーブルの削除（`data/src/table_purge.rs`・BUG-149）: 削除の commit の後に外し、外せなかったものは
+    `DeletedTableTupleSweeper` がやり直す。アプリのアンインストールとインストールの補償（`app-platform/src/install_ops.rs`
+    の `uninstall`・`compensate_tables`）も、アプリが持つテーブルのタプルを外す。
+  - シークレットの削除（`secrets/src/store/mod.rs` の `delete`）。
+  - 会話の分岐に失敗したときの後始末（`chat/src/store/branches.rs` の `discard_forked`）。
 
 ### 9.6 補償ロールバック — bool で実変更時だけ巻き戻す
 
@@ -822,8 +856,94 @@ flowchart TB
 - **current**（`read_subject_objects`, `callback.rs:180`）: **直接タプルのみ**（継承展開しない）を自テナント名前空間で抽出。
   剥奪対象は「直接付与されたもの」が正なので `list_objects` ではなく `read_subject_objects` を使う。
 - **剥奪 → 付与**の順。付与時は台帳 `directory_role` を FGA タプルより先に upsert（purge 漏れ防止・#91）。
-- **fail-safe**: READ 失敗時は剥奪をスキップして付与のみ（誤って全ロールを剥がさない）。claims が空＝ロール無しは
-  正当に解釈して stale タプルを剥奪する（fail-open を避ける）。
+- 台帳の行の org はロールを持つ組織（`role_member::role_owner_org`）。所属グループから来た部署（`acme/eng`）はその
+  部署の組織（`acme`）、属性 `roles` のロールは `/` を含んでも利用者の組織。付けた人の組織で書くと、2 つの組織の
+  部署にいる人がログインするたびに、ほかの組織の部署がその組織の相手検索とロールの照合（`role_exists`）に出る。
+- タプルが既にあるロール（desired ∩ current）も、台帳の行が欠けていれば足す（あれば表示名・作成日時を変えない）。
+  DB だけを戻したときなどに、タプルだけが残って共有の相手検索・ロールの列の照合・テナント撤去の列挙から漏れるのを、
+  次のログインかセッションの更新で直す（`role_member::sync_roles`・BUG-270）。部署の行の org が部署の組織と違えば
+  直す（付けた人の組織で書いていた前の行）。
+- **fail-safe**: READ 失敗時は 1 回読み直し、それでも読めなければ剥奪も付与もしない（次の同期に回す）。剥奪しないのは
+  誤って全ロールを剥がさないため。付与しないのは、もとの集合が分からないまま書くと、書き込みが誤りで返ったときに
+  もとからあったロールと付けたロールを見分けられず、付け外しの監査（下の GAP-78）が合わなくなるため。claims が空＝
+  ロール無しは正当に解釈して stale タプルを剥奪する（fail-open を避ける）。
+
+### 組織の member（D-130）
+
+`organization:<tenant>|<org>#member` も同じ契機（ログインとセッションの更新）で claims にそろえる
+（`routes/auth/org_member.rs`）。
+
+- **desired**: `groups` claim から [`resolve_org`](../../crates/authz/src/org_group.rs)（内部 API の `AuthContext` と同じ規則）で
+  決まる 1 つの組織。決まらない人（既定の組織 `default` に落ちる人）と、FGA の識別子にできない名前には書かない。
+- **current**: `read_subject_objects(user, organization)`（relation を問わず直接タプルのある組織）。desired でない組織の
+  `member` だけを外す（`admin`・`audit_viewer` は管理の側の付与なので触らない・PIT-65）。READ 失敗時は外さない。
+  組織が決まらない人は、既定の組織（`default`）の `member` を残す（手で書いた既定の組織の member を使う構成・BUG-200）。
+- 付ける前に `check`（HigherConsistency）で確かめ、無いときだけ書く。ログインはリダイレクトの前に待つ（3 秒まで）。
+  戻った直後の `/me` と、アプリのゲートウェイがこのタプルで組織のメンバーかを判定するため。
+- アプリのゲートウェイは利用者の組織をトークンではなくインストールから決め、このタプルで確かめる（member でなければ
+  403）。アプリのトークン（B1）は Keycloak から直接取れる（認可コードは利用者のブラウザーに届く）ので、shiki の web を
+  使わずにアプリだけを使い続ける人もいる。その人の member は、次の定期の照合で外れる。
+
+### 定期の照合（D-136）
+
+組織の `member` と部署の `role#member` の直接タプルを、Keycloak の管理 API で読んだ所属グループと定期に照合して
+**外す**（`membership_reconcile.rs`）。付けるのはログインとセッションの更新だけ。
+
+```mermaid
+flowchart LR
+  dir["directory_user<br/>(tenant_id, user_id) の順に 500 人"] --> fga["read_subject_objects<br/>(organization・role)"]
+  fga --> kc["Keycloak 管理 API<br/>GET /users/{id}/groups<br/>（所属グループで決まらない候補があれば属性 roles）"]
+  kc --> keep{"残す集合"}
+  keep -->|"current − 残す"| revoke["delete_tuple(user, member, …)"]
+```
+
+- **組織**: 残すのは所属グループから決まりうる組織のすべて（`org_group::org_candidates`。ログインの同期が選ぶ組織は必ず
+  この中にある）と、既定の組織（`default`）。既定の組織の `member` は自動で付けない（手で書いたものだけ）ので、照合は
+  所属グループと照らさずにいつも残す。照合は Keycloak の管理 API の所属グループで決め、ログインの同期はトークンの `groups`
+  で決めるので、shiki-web のクライアントに所属グループのマッパーが無い構成では 2 つが食い違う（照合が外すと次のログインでも
+  戻らない）。既定の組織を外すのはログインの同期だけ（BUG-200）。複数の組織のグループに入っている人を 1 つにそろえるのも
+  ログインの同期（GAP-75）。
+- **ロールと部署**: 候補は、ログインの同期が記録したロール（`directory_user_role`・所属グループ由来も属性 `roles` 由来も）
+  のうち直接タプルがあるもの。member であるべきロールはログインの同期と同じ決め方（`role_member::desired_roles`・所属
+  グループの部署と属性 `roles`・D-140）で決め、それに無いものを外し、写しからも消す。記録の無いロール（手で書いた
+  タプル）には触れない。
+- **読む順**: OpenFGA の今のタプル → Keycloak。ログインの同期が付けたばかりのタプルを、それより前に読んだ所属で外さない。
+- **外さない（fail-safe）**: Keycloak を読めない（接続できない・権限が無い・5xx）人、Keycloak にいない（404）人、
+  OpenFGA を読めないとき。Keycloak の失敗が 3 人続いたらトークンを取り直して届くかを確かめ、届かなければその回を止めて
+  位置を進めない。Keycloak が 403 を返したら（provisioner に利用者を読む権限が無い）、1 行の warn でその回を止める
+  （位置を進めない。権限の誤りはどの人でも同じなので、人ごとの warn を出し続けない）。
+- **回し方**: `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（`membership_reconcile_cursor`
+  の `cursor_tenant_id`・`cursor_user_id`・migration 0152）から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに
+  ceil(N / batch_size) 回。1 人につき OpenFGA の読み 1〜2 回と Keycloak の読み 1〜2 回（直接タプルの無い人は Keycloak を
+  読まない）。サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める: advisory lock を取れた 1 台が、最後に照合を
+  始めた時刻（`last_run_at`・DB の時刻）から間隔の 9 割が経っていなければ何もしない（各サーバーのタイマーのずれで
+  1 回ずつ飛ばさないための余裕）。そのため Keycloak と OpenFGA への読みは台数で増えない（全体で最大 1 分に 1.1 回）。
+  最後まで読んだら行を消さずに位置だけを外す。位置の列は `tenant_id` という名前にしない（テナントの撤去と移行が
+  テナントの持ち物として集めない・位置を指すだけで副産物は無い）。provisioner が無い構成では動かない。
+- 外れる遅れ: グループから外してから、最長で 1 周＋1 回の間隔（既定で 1,000 人なら 3 分ほど、10,000 人なら 21 分ほど）。
+  アプリのゲートウェイは強い整合で確かめるので、外れた次の要求から 403。
+- **識別子に使えない id の人は飛ばす**（D-205）: ログインとセッションの更新の入口と同じ `authz::validate_user_id` で
+  確かめ、FGA の区切りの文字（`:`・`#`・`|`）を含む人は照合しない（入口で断っているので、ログインもアプリの
+  ゲートウェイも使えない）。飛ばした人は数え、回ごとに 1 行「id が識別子に使えない人を飛ばしました」を warn に出す
+  （人ごとには出さない）。この決まりより前に付いたタプルは自動では外れないので、運用者が手で外す
+  （`deploy/keycloak/README.md`）。
+
+### 付け外しの監査（GAP-78）
+
+組織の `member` と部署・ロールの `role#member` の付け外しは、ログインの同期・セッションの更新・定期の照合のどれでも
+監査（`audit_log`）に残す（`routes/auth/membership_audit.rs`）。どれも IdP の所属から決まった変更で本人の操作では
+ないので、主体は仕事の名前にする（本人を主体にすると、監査を「この人の操作」で絞ったときに本人の操作でない行が混ざる）。
+
+- **主体**: ログインとセッションの更新は `system:membership-sync`、定期の照合は `system:membership-reconcile`。
+- **語彙**: `org.member.grant`・`org.member.revoke`・`role.member.grant`・`role.member.revoke`。
+- **行の形**: `object_type = "user"`・`object_id = <sub>`（人ごとに引ける）。metadata は、組織が `{source, org}`、
+  ロールが `{source, roles: […]}` で、`source` は `login`・`session_refresh`・`reconcile`。所属グループの一覧は入れない。
+  組織は 1 つにつき 1 行、ロールは 1 回の同期の付与・剥奪をまとめて書く（行の org の列の決め方は
+  `membership_audit.rs` のモジュールの文書）。変えたときだけ記録する。
+- **ハッシュチェーンにつなぐ**（権限そのものの変更なので、共有・監査閲覧者の付与と同じ・`AuditRecorder::record_chained`）。
+- **記録できなかったとき**（どちらの側でも権限が減る向き）: 付けた側は、付けたタプルを外す（記録の無い付与を残さない。
+  付け損ねは次の同期で付け直して記録する）。外した側は、外したものを戻さない（戻すと外した権限がよみがえる）。error の
+  ログに残して数える（照合は `ReconcileReport::audit_failed`）。
 
 ---
 

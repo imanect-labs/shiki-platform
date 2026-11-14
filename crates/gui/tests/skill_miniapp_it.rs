@@ -14,6 +14,8 @@
     clippy::print_stderr
 )]
 
+mod common;
+
 use std::sync::Arc;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactRole, ArtifactStore, NewArtifact};
@@ -291,11 +293,12 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&c, "expense-app", &body, None)
+        .create(&c, "expense-app", &body, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let resolved = s
         .mini_apps
         .resolve(&c, app_id, None, None)
@@ -303,7 +306,8 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         .expect("resolve");
     assert_eq!(resolved.version, 1);
     assert!(resolved.body.screen.contains("申請する"));
-    assert!(resolved.skill.is_some());
+    assert!(resolved.skill.ready().is_some());
+    assert!(resolved.unavailable().is_empty());
 
     // 存在しないピン・kind 不一致ピンは保存時に拒否される。
     let bad = json!({
@@ -313,23 +317,86 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "bad-app", &bad, None)
+        .create(&c, "bad-app", &bad, gui::SaveMode::Draft, None)
         .await
         .expect_err("unresolved pin");
     let GuiError::Validation(errors) = err else {
         panic!("validation error expected");
     };
     assert!(errors.iter().any(|e| e.code == "miniapp.pin_unresolved"));
+    // 誤りの文言は部品を別名と版で指し、部品の id を出さない（利用者の画面にそのまま出る・BUG-80）。
+    let missing = bad["workflows"][0]["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let unresolved = errors
+        .iter()
+        .find(|e| e.code == "miniapp.pin_unresolved")
+        .unwrap();
+    assert_eq!(
+        unresolved.message,
+        "ワークフロー「expense」（v1）が見つからないか、あなたには読めません"
+    );
+    assert_eq!(unresolved.path.as_deref(), Some("workflows[0]"));
+    assert!(!unresolved.message.contains(&missing));
     let wrong_kind = json!({
         "description": "x",
         "screen": expense_screen("x"),
         "workflows": [ { "alias": "expense", "artifact_id": skill_id, "version": 1 } ]
     });
-    assert!(s
+    let err = s
         .mini_apps
-        .create(&c, "kind-app", &wrong_kind, None)
+        .create(&c, "kind-app", &wrong_kind, gui::SaveMode::Draft, None)
         .await
-        .is_err());
+        .expect_err("kind 不一致のピン");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    // kind が違う部品も、無い部品と同じ文言（存在を区別させない）で、id も kind も出さない。
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.message.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "miniapp.pin_unresolved",
+            "ワークフロー「expense」（v1）が見つからないか、あなたには読めません"
+        )]
+    );
+    // 束ねたスキルも同じ（スキルには別名が無いので版で指す）。
+    let missing_skill = Uuid::new_v4();
+    let bad_skill = json!({
+        "description": "x",
+        "screen": expense_screen("x"),
+        "skill": { "artifact_id": missing_skill, "version": 3 },
+        "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
+    });
+    let err = s
+        .mini_apps
+        .create(
+            &c,
+            "skill-missing-app",
+            &bad_skill,
+            gui::SaveMode::Draft,
+            None,
+        )
+        .await
+        .expect_err("無いスキルのピン");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.message.as_str(), e.path.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![(
+            "miniapp.pin_unresolved",
+            "スキル（v3）が見つからないか、あなたには読めません",
+            Some("skill")
+        )]
+    );
+    assert!(!errors[0].message.contains(&missing_skill.to_string()));
 
     // 画面のボタンの実行先が束ねたワークフローに無ければ拒否される（実行先 ⊆ ピン集合）。
     let unbundled = json!({
@@ -339,7 +406,7 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "unbundled-app", &unbundled, None)
+        .create(&c, "unbundled-app", &unbundled, gui::SaveMode::Draft, None)
         .await
         .expect_err("binding not bundled");
     let GuiError::Validation(errors) = err else {
@@ -395,11 +462,12 @@ async fn miniapp_buttons_run_once_and_record() {
         "screen": expense_screen("経費"),
         "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&alice, "buttons-app", &body, None)
+        .create(&alice, "buttons-app", &body, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let screen = expense_screen("経費");
     let block = yui::extract_action_blocks(&screen).remove(0).hash;
     let starter = Arc::new(CountingStarter::default());
@@ -540,11 +608,12 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": []
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&alice, "share-app", &body_v1, None)
+        .create(&alice, "share-app", &body_v1, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let body_v2 = json!({
         "description": "v2 アプリ",
         "screen": "# 感想\n",
@@ -552,7 +621,14 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         "workflows": []
     });
     s.mini_apps
-        .update(&alice, app_id, &body_v2, Some(1), None)
+        .update(
+            &alice,
+            app_id,
+            &body_v2,
+            Some(1),
+            gui::SaveMode::Draft,
+            None,
+        )
         .await
         .expect("app v2");
 
@@ -579,43 +655,60 @@ async fn live_fga_bundle_authority_and_version_pinning() {
     // 共有された分が一覧（実効 viewer 集合）に出る＝UI から見つけて実行できる（6.11）。
     let shared = s
         .artifacts
-        .list_shared_with_me(&bob, Some(ArtifactKind::MiniApp), 50)
+        .list_shared_page(&bob, Some(ArtifactKind::MiniApp), None, 50)
         .await
-        .expect("shared list");
+        .expect("shared list")
+        .items;
     assert!(
         shared.iter().any(|a| a.id == app_id),
         "共有されたミニアプリが bob の一覧に出る"
     );
     assert!(
         s.artifacts
-            .list_shared_with_me(&alice, Some(ArtifactKind::MiniApp), 50)
+            .list_shared_page(&alice, Some(ArtifactKind::MiniApp), None, 50)
             .await
             .expect("owner shared list")
+            .items
             .iter()
             .all(|a| a.id != app_id),
         "owner 自身の共有一覧には出ない（所有一覧と重複しない）"
     );
 
-    // 共有相手が resolve できる（6.10 受け入れ条件②・部品はバンドル権限で読む）。
+    // 共有相手が resolve できる（6.10 受け入れ条件②・部品はバンドル権限で読む）。使う人に出すのは公開した版
+    // （D-16）なので、alice が v2 を公開してから。
+    s.mini_apps
+        .publish(&alice, app_id, 2, None)
+        .await
+        .expect("publish v2");
     let resolved = s
         .mini_apps
         .resolve(&bob, app_id, None, None)
         .await
         .expect("bob resolve");
     assert_eq!(resolved.version, 2);
-    assert_eq!(resolved.body.screen, "# 感想\n", "current は v2 の画面");
-    assert!(resolved.skill.is_some(), "skill もバンドル権限で読める");
+    assert_eq!(resolved.body.screen, "# 感想\n", "公開した v2 の画面");
+    assert!(
+        resolved.skill.ready().is_some(),
+        "skill もバンドル権限で読める"
+    );
 
-    // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。
+    // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。旧版を開けるのは editor だけで、使う人は
+    // 公開した版のほかを開けない（D-16）。
     let resolved_v1 = s
         .mini_apps
-        .resolve(&bob, app_id, Some(1), None)
+        .resolve(&alice, app_id, Some(1), None)
         .await
-        .expect("bob resolve v1");
+        .expect("alice resolve v1");
     assert_eq!(
         resolved_v1.body.screen, "# 項目\n",
         "旧版ピンは旧画面のまま"
     );
+    assert!(matches!(
+        s.mini_apps.resolve(&bob, app_id, Some(1), None).await,
+        Err(GuiError::Artifact(ArtifactError::NotPublished {
+            published: Some(2)
+        }))
+    ));
 
     // 部品への**直接**アクセスは依然 403（バンドル越しのみ・アンビエント権限なし）。
     assert!(matches!(
@@ -642,4 +735,196 @@ async fn live_fga_bundle_authority_and_version_pinning() {
     .await
     .unwrap();
     assert!(resolves >= 1, "miniapp.resolve が監査に残る");
+}
+
+/// 任意の skill のピンが壊れても（skill が削除された・本文が壊れている）アプリは開け、skill だけが使えないと
+/// 理由つきで返る。画面のボタンもそのまま使える（BUG-17）。ピンの無いアプリは「無い」のまま。
+#[tokio::test]
+async fn broken_optional_skill_pin_keeps_the_app_open() {
+    let Some(pool) = setup().await else { return };
+    let s = stores(pool.clone(), Arc::new(AllowAll));
+    let tenant = unique_tenant();
+    let alice = ctx(&tenant, "alice");
+
+    let (skill_id, _) = s
+        .skills
+        .create(&alice, "deleted-skill", &skill_body("v1"), None)
+        .await
+        .expect("skill");
+    let wf = workflow(&s, &alice, "expense-wf").await;
+    let screen = expense_screen("経費");
+    let body = |skill: Uuid| {
+        json!({
+            "description": "経費",
+            "screen": screen,
+            "skill": { "artifact_id": skill, "version": 1 },
+            "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
+        })
+    };
+    let app_id = s
+        .mini_apps
+        .create(
+            &alice,
+            "skill-app",
+            &body(skill_id),
+            gui::SaveMode::Draft,
+            None,
+        )
+        .await
+        .expect("create")
+        .id;
+    assert!(s
+        .mini_apps
+        .resolve(&alice, app_id, None, None)
+        .await
+        .expect("削除前")
+        .skill
+        .ready()
+        .is_some());
+
+    // skill を消しても、アプリは開けて skill だけが使えない（理由は部品の位置つき）。
+    s.artifacts
+        .delete(&alice, skill_id, None)
+        .await
+        .expect("skill を消す");
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, app_id, None, None)
+        .await
+        .expect("skill が消えてもアプリは開ける");
+    assert!(resolved.body.screen.contains("申請する"));
+    assert_eq!(
+        resolved.body.skill.map(|p| p.artifact_id),
+        Some(skill_id),
+        "ピンは本文に残る（消えたことを隠さない）"
+    );
+    assert!(resolved.skill.ready().is_none());
+    let reasons = resolved.unavailable();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(reasons[0].code, "miniapp.pin_unresolved");
+    assert_eq!(reasons[0].path.as_deref(), Some("skill"));
+    assert!(reasons[0].message.contains("見つかりません"), "{reasons:?}");
+
+    // 使えなかった部品は miniapp.resolve の監査にも残る。
+    let audited: serde_json::Value = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'miniapp.resolve' ORDER BY id DESC LIMIT 1",
+    )
+    .bind(&tenant)
+    .fetch_one(&pool)
+    .await
+    .expect("audit");
+    assert_eq!(
+        audited["unavailable"],
+        json!([{ "path": "skill", "code": "miniapp.pin_unresolved" }])
+    );
+
+    // 画面のボタンは skill に依らずそのまま使える。
+    let starter = Arc::new(CountingStarter::default());
+    let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
+    dispatcher.set_workflow_starter(starter.clone());
+    let block = yui::extract_action_blocks(&screen).remove(0).hash;
+    s.mini_apps
+        .invoke_yui_action(
+            &alice,
+            &dispatcher,
+            app_id,
+            MiniAppActionRequest {
+                version: 1,
+                action_id: format!("{block}:a1"),
+                params: json!({ "amount": 500, "category": "交通費" })
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+                idempotency_key: Some("broken-skill-0001".into()),
+            },
+            None,
+        )
+        .await
+        .expect("skill が消えてもボタンは使える");
+    assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // 本文が今の検証を通らない skill（古い形式）も、skill だけを使えないとする。
+    let broken = s
+        .artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::Skill,
+                name: "old-format-skill".into(),
+                body: json!({ "description": "古い形式" }),
+            },
+            None,
+        )
+        .await
+        .expect("壊れた skill");
+    // 保存のときは本文も確かめるので、今は束ねられない（BUG-79）。
+    let err = s
+        .mini_apps
+        .create(
+            &alice,
+            "broken-skill-app",
+            &body(broken.id),
+            gui::SaveMode::Draft,
+            None,
+        )
+        .await
+        .expect_err("本文が壊れたスキルは束ねられない");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.path.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("miniapp.skill_broken", Some("skill"))]
+    );
+    // それより前に保存したアプリ（保存のときに本文を見ていなかった）は、保存の口を通さずに作って確かめる。
+    let broken_app = s
+        .artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::MiniApp,
+                name: "broken-skill-app".into(),
+                body: body(broken.id),
+            },
+            None,
+        )
+        .await
+        .expect("前からの保存済みのアプリ")
+        .id;
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, broken_app, None, None)
+        .await
+        .expect("本文が壊れた skill でもアプリは開ける");
+    let reasons = resolved.unavailable();
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert_eq!(reasons[0].code, "miniapp.skill_broken");
+    assert_eq!(reasons[0].path.as_deref(), Some("skill"));
+
+    // ピンの無いアプリは「無い」で、使えない部品も無い。
+    let plain = s
+        .mini_apps
+        .create(
+            &alice,
+            "plain-app",
+            &json!({ "description": "x", "screen": "# 説明だけ\n", "workflows": [] }),
+            gui::SaveMode::Draft,
+            None,
+        )
+        .await
+        .expect("plain")
+        .id;
+    let resolved = s
+        .mini_apps
+        .resolve(&alice, plain, None, None)
+        .await
+        .expect("plain");
+    assert!(matches!(resolved.skill, gui::ResolvedSkill::None));
+    assert!(resolved.unavailable().is_empty());
+
+    common::purge_tenant_rows(&pool, &tenant).await;
 }

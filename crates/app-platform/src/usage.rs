@@ -18,7 +18,7 @@ use crate::AppPlatformError;
 #[derive(Debug, Serialize)]
 pub struct AppUsage {
     pub app_id: Uuid,
-    /// 能力呼び出し（user×capability×day）。
+    /// 能力呼び出し（user×capability×day。自動実行のアプリの分は principal が app の行・BUG-204）。
     pub capabilities: Vec<CapabilityUsageRow>,
     /// AI 利用（user×model・calls/tokens/cost）。
     pub llm: Vec<LlmUsageRow>,
@@ -26,7 +26,10 @@ pub struct AppUsage {
 
 #[derive(Debug, Serialize)]
 pub struct CapabilityUsageRow {
+    /// 呼んだ利用者（`principal` が `app` の行は空）。
     pub user_sub: String,
+    /// 呼んだ主体の種類（`user` は利用者・`app` は B2 の自動実行のアプリ・BUG-204）。
+    pub principal: String,
     pub capability: String,
     pub day: String,
     pub calls: i64,
@@ -87,17 +90,19 @@ impl AppUsageStore {
         if !ok {
             return Err(AppPlatformError::Forbidden);
         }
-        let capabilities = app_gateway::fetch_usage(&self.db, ctx.tenant_id(), app_id, 1000)
-            .await
-            .map_err(|e| AppPlatformError::Internal(format!("capability usage: {e}")))?
-            .into_iter()
-            .map(|u| CapabilityUsageRow {
-                user_sub: u.user_sub,
-                capability: u.capability,
-                day: u.day.to_string(),
-                calls: u.calls,
-            })
-            .collect();
+        let capabilities =
+            app_gateway::fetch_usage(&self.db, ctx.tenant_id(), ctx.org(), app_id, 1000)
+                .await
+                .map_err(|e| AppPlatformError::Internal(format!("capability usage: {e}")))?
+                .into_iter()
+                .map(|u| CapabilityUsageRow {
+                    user_sub: u.user_sub,
+                    principal: u.principal,
+                    capability: u.capability,
+                    day: u.day.to_string(),
+                    calls: u.calls,
+                })
+                .collect();
         let llm = self
             .llm
             .app_llm_usage(ctx, app_id)

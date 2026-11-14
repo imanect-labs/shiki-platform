@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
     AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
@@ -58,8 +57,16 @@ impl NodePorts for FakePorts {
     async fn storage_read(&self, _c: &ExecCtx, _f: Uuid) -> Result<Value, PortError> {
         self.gate(json!({ "text": "x" }))
     }
-    async fn storage_list(&self, _c: &ExecCtx, parent: Option<Uuid>) -> Result<Value, PortError> {
-        self.gate(json!({ "parent": parent.map(|p| p.to_string()), "items": [] }))
+    async fn storage_list(
+        &self,
+        _c: &ExecCtx,
+        req: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
+        self.gate(json!({
+            "parent": req.parent_id.map(|p| p.to_string()),
+            "cursor": req.cursor,
+            "items": []
+        }))
     }
     async fn rag_search(
         &self,
@@ -72,7 +79,12 @@ impl NodePorts for FakePorts {
     async fn llm_invoke(&self, _c: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
         self.gate(json!({ "text": format!("echo:{}", req.prompt) }))
     }
-    async fn agent_invoke(&self, _c: &ExecCtx, _r: AgentInvokeReq) -> Result<Value, PortError> {
+    async fn agent_invoke(
+        &self,
+        _c: &ExecCtx,
+        _r: AgentInvokeReq,
+        _tools: std::sync::Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
         self.gate(json!({ "stdout": "done" }))
     }
     async fn http_send(&self, _c: &ExecCtx, _r: HttpSendReq) -> Result<HttpSendResp, PortError> {
@@ -124,12 +136,9 @@ impl NodePorts for FakePorts {
     }
 }
 
+/// 記録しない journal（DB を使わない・llm.invoke も journal を通る・GAP-28）。
 fn lazy_journal() -> EffectJournal {
-    EffectJournal::new(
-        PgPoolOptions::new()
-            .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
-            .unwrap(),
-    )
+    EffectJournal::unrecorded()
 }
 
 fn exec(ports: Arc<FakePorts>) -> CapabilityNodeExecutor {
@@ -141,6 +150,8 @@ fn ctx() -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "n1".into(),
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
@@ -159,6 +170,9 @@ fn ctx() -> NodeContext {
             "agent.invoke".into(),
             "workflow.start".into(),
         ],
+        cancel: workflow_engine::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 
@@ -188,6 +202,31 @@ async fn rag_llm_agent_storage_list_workflow_start_dispatch() {
 
     let list = exec.execute("storage.list", &json!({}), &c).await;
     assert!(list.ok, "{:?}", list.error);
+    assert_eq!(list.output["cursor"], Value::Null, "省くと先頭から");
+    // 続きの位置（cursor・D-131）はそのままポートへ渡す。null・空の文字は先頭から、文字でない値は invalid。
+    let folder = Uuid::new_v4().to_string();
+    let list = exec
+        .execute(
+            "storage.list",
+            &json!({ "folder": folder, "cursor": "c-1" }),
+            &c,
+        )
+        .await;
+    assert!(list.ok, "{:?}", list.error);
+    assert_eq!(list.output["cursor"], "c-1");
+    assert_eq!(list.output["parent"], folder.as_str());
+    for empty in [json!(null), json!("")] {
+        let list = exec
+            .execute("storage.list", &json!({ "cursor": empty }), &c)
+            .await;
+        assert!(list.ok, "{:?}", list.error);
+        assert_eq!(list.output["cursor"], Value::Null, "{empty}");
+    }
+    let bad = exec
+        .execute("storage.list", &json!({ "cursor": 5 }), &c)
+        .await;
+    assert!(!bad.ok);
+    assert_eq!(bad.error.unwrap().code, "invalid");
     // workflow.start は cross-TX journal（実 DB 必須）なので e2e で検証する。
 }
 

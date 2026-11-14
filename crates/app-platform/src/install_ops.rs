@@ -20,19 +20,29 @@ pub(crate) fn b2_secret_name(app_id: Uuid) -> String {
     format!("miniapp-b2-{app_id}")
 }
 
-/// cron 式（5 フィールド）から次回実行時刻を求める（`cron` crate は 6/7 フィールドの
-/// ため秒 `0` を先頭に補う）。不正式は Invalid。
+/// cron 式（5 つの欄: 分 時 日 月 曜日）から、`after` より後の次の実行の時刻を求める（UTC で読む）。
+///
+/// 曜日は標準の読み方（0 と 7 が日曜、1 が月曜〜6 が土曜。名前 SUN〜SAT も書ける）で、ワークフローの
+/// スケジュールと同じ写像（`shiki-cron5`）を通る。cron クレートへそのまま渡すと 1 を日曜と読み、`1-5`（平日）が
+/// 日曜〜木曜に動いていた（BUG-129・BUG-95 と同じずれ）。マニフェストの式は時間帯を持たないので UTC で読む。
+/// 読めない式は Invalid（文言は利用者向け。下位の原文は埋め込まない）。
 pub fn next_cron_run_after(
     expr: &str,
     after: chrono::DateTime<chrono::Utc>,
 ) -> Result<chrono::DateTime<chrono::Utc>, AppPlatformError> {
-    use std::str::FromStr;
-    let normalized = format!("0 {expr}");
-    let schedule = cron::Schedule::from_str(&normalized)
-        .map_err(|e| AppPlatformError::Invalid(format!("cron 式が不正です（{expr}）: {e}")))?;
-    schedule.after(&after).next().ok_or_else(|| {
-        AppPlatformError::Invalid(format!("cron 式に次回実行がありません（{expr}）"))
-    })
+    match cron5::next_after(expr, "UTC", after) {
+        Ok(Some(next)) => Ok(next),
+        Ok(None) => Err(AppPlatformError::Invalid(format!(
+            "cron の式（{expr}）には次の実行がありません。"
+        ))),
+        Err(e) => {
+            tracing::debug!(error = %e, expr, "cron の式を読めない");
+            Err(AppPlatformError::Invalid(format!(
+                "cron の式（{expr}）を読めません。{}",
+                e.user_message()
+            )))
+        }
+    }
 }
 
 impl InstallService {
@@ -154,9 +164,13 @@ impl InstallService {
         Ok(())
     }
 
-    /// 購読/スケジュールを撤去する（アンインストール・再インストール前の掃除）。
+    /// 購読/スケジュールと、自動実行の直近の失敗（GAP-60）を撤去する（アンインストール・再インストール前の掃除）。
     pub(crate) async fn remove_triggers(&self, ctx: &AuthContext, app_id: Uuid) {
-        for table in ["app_event_subscription", "app_function_schedule"] {
+        for table in [
+            "app_event_subscription",
+            "app_function_schedule",
+            "app_function_failure",
+        ] {
             if let Err(e) = sqlx::query(&format!(
                 "DELETE FROM {table} WHERE tenant_id = $1 AND app_id = $2"
             ))
@@ -211,6 +225,9 @@ impl InstallService {
             )
             .await;
         }
+        // 購読・スケジュールと自動実行の直近の失敗を消す（migration 0046 の決まり。これまでは残り、自動実行が
+        // 失効したインストールを引いて空振りしていた・GAP-60）。
+        self.remove_triggers(ctx, app_id).await;
         self.record_audit(
             ctx,
             app_id,
@@ -228,6 +245,87 @@ impl InstallService {
         )
         .await;
         Ok(())
+    }
+
+    /// アプリの実体（mini_app_code のアーティファクト）を消した後の片付け（削除の API が commit の後に呼ぶ・GAP-69a）。
+    ///
+    /// もう入れられないアプリの Keycloak のクライアント（`app-<app_id>-b1`・`-b2`・[`Self::delete_app_clients`]）と、
+    /// B2 の secret の保管（[`b2_secret_name`]）を消す。アンインストールはクライアントを無効にするだけ（入れ直すと同じ
+    /// id を使う）なので、アプリを消さないとたまり続けていた。
+    ///
+    /// - アーティファクトがまだ消えていない・有効なインストールが残っている（入れたアプリは動き続ける）ときは何もしない。
+    ///   そのインストールをアンインストールした後は、起動時の照合（[`Self::repair_oauth_clients`]）がクライアントを消す。
+    /// - secret は owner（インストールした人）の ctx で消す。インストールはアーティファクトの owner に限るので、削除の
+    ///   API を呼んだ owner の ctx で消せる。呼ぶ人の secret に無ければ何もしない（ほかの人の secret は消せない）。
+    /// - どの失敗も削除を戻さない（best-effort・warn）。消せなかったクライアントは起動時の照合がやり直す。
+    pub async fn after_app_deleted(&self, ctx: &AuthContext, app_id: Uuid, trace_id: Option<&str>) {
+        match self.no_longer_installable(ctx, app_id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, %app_id, "消したアプリの片付けの前の確かめに失敗（起動時の照合がクライアントを消す）");
+                return;
+            }
+        }
+        if let Some(oauth) = &self.oauth {
+            let (b1, b2) = (format!("app-{app_id}-b1"), format!("app-{app_id}-b2"));
+            if let Err(e) = self
+                .delete_app_clients(oauth, ctx.tenant_id(), app_id, Some(&b1), Some(&b2))
+                .await
+            {
+                tracing::warn!(error = %e, %app_id, "消したアプリのクライアントを Keycloak から消せません（起動時の照合がやり直す）");
+            }
+        }
+        self.delete_b2_secret(ctx, app_id, trace_id).await;
+    }
+
+    /// アーティファクトを消し（mini_app_code の行が残り、消した印がある）、有効なインストールも無いか。
+    async fn no_longer_installable(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<bool, AppPlatformError> {
+        let deleted: Option<bool> = sqlx::query_scalar(
+            "SELECT deleted_at IS NOT NULL FROM artifact \
+             WHERE tenant_id = $1 AND id = $2 AND kind = 'mini_app_code'",
+        )
+        .bind(ctx.tenant_id())
+        .bind(app_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(crate::map_db)?;
+        if deleted != Some(true) {
+            return Ok(false);
+        }
+        let active = self
+            .installations
+            .resolve_active_by_app(ctx.tenant_id(), app_id)
+            .await
+            .map_err(map_gateway)?;
+        if active.is_some() {
+            tracing::info!(%app_id, "消したアプリに有効なインストールが残るので、クライアントと secret を残します");
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// B2 の secret の保管を、呼ぶ人（secret の owner）の ctx で消す（無ければ何もしない・失敗は warn）。
+    async fn delete_b2_secret(&self, ctx: &AuthContext, app_id: Uuid, trace_id: Option<&str>) {
+        let Some(store) = &self.secrets else { return };
+        let name = b2_secret_name(app_id);
+        let metas = match store.list_mine(ctx).await {
+            Ok(metas) => metas,
+            Err(e) => {
+                tracing::warn!(error = %e, %app_id, "消したアプリの B2 の secret を探せません");
+                return;
+            }
+        };
+        let Some(meta) = metas.into_iter().find(|m| m.name == name) else {
+            return;
+        };
+        if let Err(e) = store.delete(ctx, meta.id, trace_id).await {
+            tracing::warn!(error = %e, %app_id, "消したアプリの B2 の secret を消せません");
+        }
     }
 
     /// オフライン（エアギャップ）import: 署名検証 → artifact 作成 → 不変 publish。
@@ -439,6 +537,41 @@ mod tests {
         assert_eq!(next2.to_rfc3339(), "2026-07-10T09:00:00+00:00");
     }
 
+    /// 曜日は標準の読み方（1 が月曜・0 と 7 が日曜）。cron クレートの番号（1 が日曜）で読まない（BUG-129）。
+    #[test]
+    fn next_cron_run_after_reads_weekdays_like_workflows() {
+        use chrono::Datelike;
+        // 2026-10-25 は日曜。そこから 1 週間に実行する曜日（0＝日曜〜6＝土曜）。
+        let weekdays = |expr: &str| {
+            let mut at = chrono::DateTime::parse_from_rfc3339("2026-10-24T23:59:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            let end = at + chrono::Duration::days(7);
+            let mut days = Vec::new();
+            loop {
+                at = next_cron_run_after(expr, at).expect("valid cron");
+                if at > end {
+                    break days;
+                }
+                days.push(at.weekday().num_days_from_sunday());
+            }
+        };
+        assert_eq!(weekdays("0 9 * * 1-5"), [1, 2, 3, 4, 5], "平日");
+        assert_eq!(weekdays("0 9 * * MON-FRI"), [1, 2, 3, 4, 5]);
+        assert_eq!(weekdays("0 9 * * 1"), [1], "月曜");
+        assert_eq!(weekdays("0 9 * * 0"), [0], "日曜（0）も書ける");
+        assert_eq!(weekdays("0 9 * * 7"), [0], "7 も日曜");
+        assert_eq!(weekdays("0 9 * * SAT,SUN"), [0, 6]);
+        // ワークフローのスケジュールと同じ時刻を返す（UTC で読む）。
+        let after = chrono::DateTime::parse_from_rfc3339("2026-10-25T03:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            Some(next_cron_run_after("30 8 * * 1-5", after).unwrap()),
+            cron5::next_after("30 8 * * 1-5", "UTC", after).unwrap()
+        );
+    }
+
     #[test]
     fn next_cron_run_after_rejects_malformed_expr() {
         let after = chrono::Utc::now();
@@ -451,5 +584,13 @@ mod tests {
             next_cron_run_after("0 9", after),
             Err(AppPlatformError::Invalid(_))
         ));
+        // 標準の読み方で写せない曜日（範囲の逆転）も不正。文言に下位の原文を入れない。
+        match next_cron_run_after("0 9 * * 5-1", after) {
+            Err(AppPlatformError::Invalid(m)) => {
+                assert!(m.contains("SUN〜SAT"), "{m}");
+                assert!(!m.contains("BadDayOfWeek"), "{m}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

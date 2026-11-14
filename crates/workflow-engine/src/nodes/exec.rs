@@ -18,8 +18,9 @@ use script_runtime::engine::{EngineHandle, Limits};
 use serde_json::{json, Value};
 
 use crate::capability::{check_scope_ceiling, CapabilityAudit, EffectJournal, ScopeCeiling};
-use crate::control::eval::resolve_value;
-use crate::control::{branch_port, switch_port};
+use crate::control::eval::{resolve_deep, EvalError};
+use crate::control::{bind_wait_filter, branch_port, switch_port};
+use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
     self, BranchParams, MapItemError, MapParams, SwitchParams, WaitKind, WaitParams, WaitTimeout,
 };
@@ -27,8 +28,9 @@ use crate::ratelimit::{BucketConfig, TokenBucket};
 use crate::run::{
     MapFanout, NodeContext, NodeExecutor, NodeResult, OnItemError, OnTimeout, Suspend,
 };
-use crate::vocab::NodeType;
+use crate::vocab::{EventSource, NodeType};
 
+use super::capability_agent::AgentLimits;
 use super::ports::{ExecCtx, NodePorts};
 use super::resolver::ParamResolver;
 
@@ -46,6 +48,10 @@ pub struct CapabilityNodeExecutor {
     /// http.request の egress allowlist（secret 宛先束縛と AND・空なら secret 必須）。
     pub(super) http_allowlist: Vec<String>,
     pub(super) http_timeout_ms: u64,
+    /// agent.invoke の上限と天井（デプロイ設定・BUG-6）。
+    pub(super) agent_limits: AgentLimits,
+    /// agent.invoke の同時実行の枠（プロセス内・`agent_limits.max_concurrent`）。
+    pub(super) agent_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl CapabilityNodeExecutor {
@@ -69,7 +75,19 @@ impl CapabilityNodeExecutor {
             script_limits: Limits::default(),
             http_allowlist: Vec::new(),
             http_timeout_ms: 30_000,
+            agent_slots: Arc::new(tokio::sync::Semaphore::new(
+                AgentLimits::default().max_concurrent,
+            )),
+            agent_limits: AgentLimits::default(),
         }
+    }
+
+    /// agent.invoke の上限・web の天井・同時実行の枠を設定する（BUG-6・D-29）。
+    #[must_use]
+    pub fn with_agent_limits(mut self, limits: AgentLimits) -> Self {
+        self.agent_slots = Arc::new(tokio::sync::Semaphore::new(limits.max_concurrent.max(1)));
+        self.agent_limits = limits;
+        self
     }
 
     /// 外部 API のレート制御を有効化する。
@@ -116,7 +134,7 @@ impl CapabilityNodeExecutor {
         check_scope_ceiling(api, &effective)
     }
 
-    /// control.branch: 条件を評価して `true`/`false` ポートを確定する。
+    /// control.branch: 条件を評価して `true`/`false` ポートを確定する（型不一致などは step の失敗）。
     fn eval_branch(params: &Value, ctx: &NodeContext) -> NodeResult {
         let p: BranchParams = match params::parse(params) {
             Ok(p) => p,
@@ -125,7 +143,10 @@ impl CapabilityNodeExecutor {
             }
         };
         let r = ParamResolver::new(ctx);
-        NodeResult::ok_port(ctx.input.clone(), branch_port(&p.condition, &r))
+        match branch_port(&p.condition, &r) {
+            Ok(port) => NodeResult::ok_port(ctx.input.clone(), port),
+            Err(e) => eval_failed("branch の条件", &e),
+        }
     }
 
     /// control.switch: value を各 case とリテラル一致で照合し、一致 port（無ければ default）を確定する。
@@ -138,8 +159,10 @@ impl CapabilityNodeExecutor {
         };
         let cases: Vec<(String, Value)> = p.cases.into_iter().map(|c| (c.port, c.equals)).collect();
         let r = ParamResolver::new(ctx);
-        let port = switch_port(&p.value, &cases, &r);
-        NodeResult::ok_port(ctx.input.clone(), &port)
+        match switch_port(&p.value, &cases, &r) {
+            Ok(port) => NodeResult::ok_port(ctx.input.clone(), &port),
+            Err(e) => eval_failed("switch の value", &e),
+        }
     }
 
     /// control.wait: params から中断指示（timer/event）を組む（durable 化は checkpoint 側・engine.md §9）。
@@ -152,17 +175,18 @@ impl CapabilityNodeExecutor {
         };
         let r = ParamResolver::new(ctx);
         let now = Utc::now();
+        // 書いてある値式が解決できなければ「無い」扱い（無期限待ちなど）にせず失敗させる。
+        let resolve = |e: Option<&ValueExpr>| e.map(|e| resolve_deep(e, &r)).transpose();
         match p.kind {
             WaitKind::Duration => {
-                let Some(secs) = p
-                    .duration_sec
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_i64())
-                else {
+                let secs = match resolve(p.duration_sec.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の duration_sec", &e),
+                };
+                let Some(secs) = secs.as_ref().and_then(Value::as_i64) else {
                     return NodeResult::fail(
                         "bad_params",
-                        "wait(duration) に duration_sec がありません",
+                        "wait(duration) には整数の duration_sec が必要です",
                         false,
                     );
                 };
@@ -177,15 +201,14 @@ impl CapabilityNodeExecutor {
                 NodeResult::wait(Suspend::Timer { wake_at })
             }
             WaitKind::Until => {
-                let Some(ts) = p
-                    .until
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_str().map(String::from))
-                else {
+                let until = match resolve(p.until.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の until", &e),
+                };
+                let Some(ts) = until.as_ref().and_then(Value::as_str).map(String::from) else {
                     return NodeResult::fail(
                         "bad_params",
-                        "wait(until) に until がありません",
+                        "wait(until) には日時の文字列（RFC3339）の until が必要です",
                         false,
                     );
                 };
@@ -214,12 +237,22 @@ impl CapabilityNodeExecutor {
                 };
                 // timeout_sec 未指定は無期限待ち（timeout_at=None）。負値・過大値は不正として拒否する
                 // （checked 演算で panic させず bad_params の permanent 失敗として checkpoint する）。
-                let timeout_at = match p
-                    .timeout_sec
-                    .as_ref()
-                    .and_then(|e| resolve_value(e, &r))
-                    .and_then(|v| v.as_i64())
-                {
+                let timeout = match resolve(p.timeout_sec.as_ref()) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の timeout_sec", &e),
+                };
+                let timeout_sec = match timeout.as_ref().map(Value::as_i64) {
+                    None => None,
+                    Some(Some(s)) => Some(s),
+                    Some(None) => {
+                        return NodeResult::fail(
+                            "bad_params",
+                            "wait(event) の timeout_sec は整数で指定してください",
+                            false,
+                        )
+                    }
+                };
+                let timeout_at = match timeout_sec {
                     Some(s) if s < 0 => {
                         return NodeResult::fail("bad_params", "timeout_sec は非負", false)
                     }
@@ -237,14 +270,105 @@ impl CapabilityNodeExecutor {
                     }
                     None => None,
                 };
+                // イベント以外の参照（input・nodes.*・run・each）は停止時にリテラルへ束縛する（起床の判定は
+                // 届いたイベントしか解決しない・GAP-07 の T3）。
+                let filter = match p
+                    .filter
+                    .as_ref()
+                    .map(|c| bind_wait_filter(c, &r))
+                    .transpose()
+                {
+                    Ok(f) => f.and_then(|c| serde_json::to_value(c).ok()),
+                    Err(e) => return eval_failed("wait の filter", &e),
+                };
                 NodeResult::wait(Suspend::Event {
                     source,
                     scope: p.scope.unwrap_or_else(|| json!({})),
-                    filter: p.filter.and_then(|c| serde_json::to_value(c).ok()),
+                    filter,
                     timeout_at,
                     on_timeout,
+                    suspend_rev: None,
                 })
             }
+        }
+    }
+
+    /// control.wait の本体: [`Self::eval_wait`] の中断指示に、データ変更の wait の束縛を足す（GAP-07 の T3）。
+    ///
+    /// データ変更の wait は `scope.record`（値式）を停止時に解決し、実行主体の権限でその行を読んで rev を
+    /// `suspend_rev` に残す（これ以下の rev の変更＝停止より前の自分の書込では起きない）。行を読むのは
+    /// data.get の能力として scope 天井を通す（要求スコープ data.read）。
+    async fn node_wait(&self, params: &Value, ctx: &NodeContext) -> NodeResult {
+        let mut out = Self::eval_wait(params, ctx);
+        let Some(Suspend::Event {
+            source,
+            scope,
+            suspend_rev,
+            ..
+        }) = out.suspend.as_mut()
+        else {
+            return out;
+        };
+        if !EventSource::parse(source).is_some_and(EventSource::is_data) {
+            return out;
+        }
+        let table = scope
+            .get("table")
+            .and_then(Value::as_str)
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let Some(table) = table else {
+            return NodeResult::fail(
+                "bad_params",
+                "wait(event) の scope.table にテーブルの ID がありません",
+                false,
+            );
+        };
+        let record = match scope.get("record").cloned() {
+            None | Some(Value::Null) => None,
+            Some(raw) => {
+                let expr: ValueExpr =
+                    serde_json::from_value(raw).unwrap_or(ValueExpr::Literal(Value::Null));
+                let r = ParamResolver::new(ctx);
+                let id = match resolve_deep(&expr, &r) {
+                    Ok(v) => v,
+                    Err(e) => return eval_failed("wait の scope.record", &e),
+                };
+                match id.as_str().and_then(|s| uuid::Uuid::parse_str(s).ok()) {
+                    Some(id) => Some(id),
+                    None => {
+                        return NodeResult::fail(
+                            "bad_params",
+                            "wait(event) の scope.record が行の ID になりません",
+                            false,
+                        )
+                    }
+                }
+            }
+        };
+        let Some(record) = record else {
+            // テーブル単位の待ち: 停止より前のイベントは checkpoint の Tx で outbox の位置を残して無視する。
+            *scope = json!({ "table": table.to_string() });
+            return out;
+        };
+        if let ScopeCeiling::Denied(_) = Self::check_ceiling("data.get", ctx) {
+            self.audit.record_out_of_scope(
+                &Self::exec_ctx(ctx),
+                "data.get",
+                &json!({ "reason": "out_of_scope", "step": ctx.step_path }),
+            );
+            return NodeResult::fail("out_of_scope", "scope_ceiling 外の操作: data.get", false);
+        }
+        match self
+            .ports
+            .data_get(&Self::exec_ctx(ctx), table, record)
+            .await
+        {
+            Ok(rec) => {
+                *suspend_rev = rec.get("rev").and_then(Value::as_i64);
+                *scope = json!({ "table": table.to_string(), "record": record.to_string() });
+                out
+            }
+            Err(e) => NodeResult::fail(&e.code, e.message, e.retryable),
         }
     }
 
@@ -257,16 +381,22 @@ impl CapabilityNodeExecutor {
             }
         };
         let r = ParamResolver::new(ctx);
-        let Some(items_val) = resolve_value(&p.items, &r) else {
-            return NodeResult::fail("expr_resolve_error", "map の items が解決できません", false);
+        // 配列リテラルの要素に置いた $from / $template も展開する（ir.md §3.1「任意の位置」）。
+        let items_val = match resolve_deep(&p.items, &r) {
+            Ok(v) => v,
+            Err(e) => return eval_failed("map の items", &e),
         };
         let Some(items) = items_val.as_array() else {
             return NodeResult::fail("bad_params", "map の items が配列ではありません", false);
         };
-        if items.len() > 1000 {
+        if items.len() > params::MAX_MAP_ITEMS {
             return NodeResult::fail(
                 "fanout_limit_exceeded",
-                format!("map の要素数 {} が上限 1000 を超過", items.len()),
+                format!(
+                    "map の要素数 {} が上限 {} を超過",
+                    items.len(),
+                    params::MAX_MAP_ITEMS
+                ),
                 false,
             );
         }
@@ -280,6 +410,11 @@ impl CapabilityNodeExecutor {
             on_item_error,
         })
     }
+}
+
+/// 制御ノードの値式・条件の評価エラーを permanent な step の失敗にする（同じ入力では直らない）。
+fn eval_failed(what: &str, e: &EvalError) -> NodeResult {
+    NodeResult::fail(e.code, format!("{what}: {}", e.message), false)
 }
 
 #[async_trait]
@@ -299,7 +434,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::ControlSwitch => return Self::eval_switch(params, ctx),
             NodeType::ControlJoin => return NodeResult::ok(ctx.input.clone()),
             // wait/map は terminal 化せず durable に中断する（checkpoint 側で waiting_*/fan-out へ）。
-            NodeType::ControlWait => return Self::eval_wait(params, ctx),
+            NodeType::ControlWait => return self.node_wait(params, ctx).await,
             NodeType::ControlMap => return Self::eval_map(params, ctx),
             _ => {}
         }
@@ -328,6 +463,23 @@ impl NodeExecutor for CapabilityNodeExecutor {
             );
         }
 
+        // 承認は terminal 化せず durable に中断する（判断は承認者本人の FSM 遷移・GAP-08）。
+        if nt == NodeType::HumanApproval {
+            return self.node_human_approval(params, ctx).await;
+        }
+        // 結果を画面に返す（値を整形するだけの pure ノード・GAP-09）。
+        if nt == NodeType::WorkflowReply {
+            return super::reply::execute(params, ctx);
+        }
+        // 日付を計算する（能力を呼ばない pure ノード・GAP-15）。
+        if nt == NodeType::TransformDate {
+            return super::date::execute(params, ctx);
+        }
+        // 判定は答えで出口を選ぶ（NodeResult を直接返す・FEAT-1）。
+        if nt == NodeType::AiDecide {
+            return self.node_ai_decide(params, ctx).await;
+        }
+
         let ec = Self::exec_ctx(ctx);
         let r = ParamResolver::new(ctx);
 
@@ -348,6 +500,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::DataQuery => self.node_data_query(params, &ec, &r).await,
             NodeType::DataRecordCreate
             | NodeType::DataRecordUpdate
+            | NodeType::DataRecordUpsert
             | NodeType::DataRecordDelete
             | NodeType::DataTransition
             | NodeType::DataBulkUpsert => {

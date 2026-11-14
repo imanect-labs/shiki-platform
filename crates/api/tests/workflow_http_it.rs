@@ -112,16 +112,17 @@ impl AuthzClient for AllowAll {
     }
 }
 
-/// ノード id `boom` だけ permanent 失敗する pass-through executor。
+/// ノード id `boom` だけ permanent 失敗し、`bad_ref` は参照の解決の誤り（再開しても同じ結果になる失敗）で失敗する
+/// pass-through executor。
 struct PassExecutor;
 
 #[async_trait]
 impl NodeExecutor for PassExecutor {
     async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
-        if ctx.step_path == "boom" {
-            NodeResult::fail("boom", "意図的失敗", false)
-        } else {
-            NodeResult::ok(json!({ "from": ctx.step_path }))
+        match ctx.step_path.as_str() {
+            "boom" => NodeResult::fail("boom", "意図的失敗", false),
+            "bad_ref" => NodeResult::fail("expr_resolve_error", "参照を解決できません", false),
+            _ => NodeResult::ok(json!({ "from": ctx.step_path })),
         }
     }
 }
@@ -215,6 +216,8 @@ fn config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 
@@ -402,6 +405,7 @@ async fn setup() -> Option<Env> {
         )),
         workflow_summaries: Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone())),
         workflow_layout: Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone())),
+        workflow_approvals: Arc::new(workflow_engine::ApprovalStore::new(pool.clone())),
         audit: Arc::new(storage::audit::AuditRecorder::new(pool.clone())),
         workflow_runs: Some(Arc::new(runs)),
         directory: Arc::new(storage::DirectoryStore::new(pool.clone())),
@@ -411,6 +415,7 @@ async fn setup() -> Option<Env> {
         llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
+        egress_proxy: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",
@@ -517,6 +522,8 @@ async fn req(env: &Env, method: &str, uri: &str, body: Option<Value>) -> (Status
     (status, json)
 }
 
+/// 2 つの storage.read のワークフロー。読むファイルは実行の入力で決める（このテストの環境のドライブにはファイルが無く、
+/// 保存は名指しした id のファイルの実在を確かめる・GAP-91。executor は params を読まない）。
 fn simple_ir(name: &str, second_node: &str) -> Value {
     json!({
         "ir_version": 1,
@@ -526,7 +533,7 @@ fn simple_ir(name: &str, second_node: &str) -> Value {
         "triggers": [{ "kind": "interactive" }],
         "nodes": [
             { "id": "a", "type": "storage.read",
-              "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+              "params": { "file": { "$from": "input", "path": "/file" } } },
             { "id": second_node, "type": "storage.read",
               "params": { "file": { "$from": "nodes.a.output", "path": "/from" } } }
         ],
@@ -791,6 +798,111 @@ async fn workflow_http_end_to_end() {
     assert_eq!(body["outcome"], json!("already_terminal"));
 }
 
+/// 再開しても同じ結果になる失敗と、実行の期限を過ぎた run は、再開の API も 409 で断り、理由の code と文（実行履歴の
+/// 詳細の `resume` と同じ単一定義）を返す。断った run は失敗のまま残り、同じ入力でもう一度実行はできる（D-116・BUG-138）。
+#[tokio::test]
+async fn resume_refuses_failures_that_would_repeat() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(PassExecutor),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let (wf_same, run_same) = failed_run(&env, &worker, &suffix, "bad_ref").await;
+    let (wf_late, run_late) = failed_run(&env, &worker, &suffix, "boom").await;
+    let flows = [wf_same.clone(), wf_late.clone()];
+
+    let detail_url = format!("/workflows/{wf_same}/runs/{run_same}");
+    let (_, detail) = req(&env, "GET", &detail_url, None).await;
+    let refused = retry(&env, &wf_same, &run_same, "resume").await;
+    let (_, after) = req(&env, "GET", &detail_url, None).await;
+    let rerun = retry(&env, &wf_same, &run_same, "new").await;
+
+    // 実行の期限で止めた run（step の code は再開できる失敗でも、再開は期限を延ばさない）。
+    sqlx::query("UPDATE workflow_run SET fail_reason = 'run_timeout' WHERE run_id = $1::uuid")
+        .bind(&run_late)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (_, late_detail) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{wf_late}/runs/{run_late}"),
+        None,
+    )
+    .await;
+    let late = retry(&env, &wf_late, &run_late, "resume").await;
+
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for id in &flows {
+        delete_flow_and_runs(&env, id).await;
+    }
+
+    assert_eq!(detail["status"], json!("failed"), "{detail}");
+    assert_eq!(detail["resume"]["advice"], json!("same_result"), "{detail}");
+    assert_eq!(detail["resume"]["offer"], json!(false));
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["code"], json!("same_result"));
+    assert_eq!(refused.1["message"], detail["resume"]["note"]);
+    assert_eq!(
+        after["status"],
+        json!("failed"),
+        "断った run は失敗のまま: {after}"
+    );
+    assert_eq!(
+        after["steps"], detail["steps"],
+        "step も戻さない（失敗した step を ready にしない）"
+    );
+    assert_eq!(rerun.0, StatusCode::ACCEPTED, "{}", rerun.1);
+    assert_eq!(late_detail["resume"]["advice"], json!("past_deadline"));
+    assert_eq!(late.0, StatusCode::CONFLICT, "{}", late.1);
+    assert_eq!(late.1["code"], json!("past_deadline"));
+    assert_eq!(late.1["message"], late_detail["resume"]["note"]);
+}
+
+/// `second` を 2 つ目のノードにしたワークフローを保存して実行し、終わるまで進める（ワークフローと run の id）。
+async fn failed_run(
+    env: &Env,
+    worker: &WorkflowWorker,
+    suffix: &str,
+    second: &str,
+) -> (String, String) {
+    let name = format!("http-{}-{}", second.replace('_', "-"), &suffix[..12]);
+    let (st, body) = req(
+        env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&name, second) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let wf = body["id"].as_str().unwrap().to_string();
+    let (st, body) = req(
+        env,
+        "POST",
+        &format!("/workflows/{wf}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    (wf, run)
+}
+
+/// run を再実行する（`mode` は resume / new）。
+async fn retry(env: &Env, wf: &str, run: &str, mode: &str) -> (StatusCode, Value) {
+    req(
+        env,
+        "POST",
+        &format!("/workflows/{wf}/runs/{run}/retry"),
+        Some(json!({ "mode": mode })),
+    )
+    .await
+}
+
 /// data ノード・ストレージノードを置いたワークフローは、`declared_scopes` を書かなくても保存できる
 /// （ノードが要するスコープを保存の入口で補完する・検証 C-P1-2）。保存・検証の応答に補完後のスコープが載り、
 /// 保存した IR にも残る。実効スコープは「宣言 ∩ 委譲」のまま（有効化の委譲の検査は変わらない）。
@@ -805,9 +917,9 @@ async fn saving_completes_declared_scopes_from_nodes() {
         "triggers": [{ "kind": "interactive" }],
         "nodes": [
             { "id": "a", "type": "storage.read",
-              "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+              "params": { "file": { "$from": "input", "path": "/file" } } },
             { "id": "q", "type": "data.query",
-              "params": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a2" } }
+              "params": { "table": { "$from": "input", "path": "/table" } } }
         ],
         "edges": [{ "from": "a", "to": "q" }]
     });
@@ -837,4 +949,1145 @@ async fn saving_completes_declared_scopes_from_nodes() {
         body["ir"]["declared_scopes"],
         json!(["data.read", "storage.read"])
     );
+}
+
+/// D-40・D-43: 必須の文字の欄が空の IR と、schedule で保存先フォルダを省略した IR は保存できる（警告つき）が、
+/// 同意計画が理由を返し、有効化は 409 `not_ready`、対話の起動は 400 で止まる。直せば有効化できる。
+#[tokio::test]
+async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let name = format!("http-ready-{}", &suffix[..12]);
+    let mut ir = json!({
+        "ir_version": 1,
+        "name": name,
+        "triggers": [
+            { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" },
+            { "kind": "interactive" }
+        ],
+        "nodes": [
+            { "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } },
+            { "id": "save", "type": "storage.write", "params": {
+                "name": "memo.txt", "content": { "$from": "nodes.ask.output", "path": "/text" } } }
+        ],
+        "edges": [{ "from": "ask", "to": "save" }]
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["code"] == "ir.required_text_empty"
+                && w["node_id"] == "ask"
+                && w["path"] == "/params/prompt"),
+        "{body}"
+    );
+    // 保存先の省略は保存時の警告にしない（対話の実行は本人のルートに書ける）。有効化の理由にだけ出す。
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w["code"] != "ir.write_folder_required"),
+        "{body}"
+    );
+
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/1/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let codes: Vec<(&str, &str)> = body["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["code"].as_str().unwrap(), b["node_id"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            ("ir.required_text_empty", "ask"),
+            ("ir.write_folder_required", "save")
+        ],
+        "{body}"
+    );
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "grants": [] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(body["errors"].as_array().unwrap().len(), 2, "{body}");
+    assert_eq!(body["errors"][1]["path"], "/params/folder", "{body}");
+    // 有効化は記録されない。
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "none", "{reg}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(body["errors"][0]["path"], "/params/prompt", "{body}");
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("AI への指示"),
+        "{body}"
+    );
+
+    // 直した版（指示を書き、保存先を決める）は理由が消え、有効化できる。保存先は保存する人に見えるフォルダー
+    // （見えない・無いフォルダーは保存で止まる・GAP-35）。
+    let (st, folder) = req(
+        &env,
+        "POST",
+        "/folders",
+        Some(json!({ "name": format!("http-ready-{}", &suffix[..12]) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{folder}");
+    let folder_id = folder["id"].as_str().unwrap().to_string();
+    ir["nodes"][0]["params"]["prompt"] = json!("今日の予定をまとめてください");
+    ir["nodes"][1]["params"]["folder"] = json!(folder_id);
+    let (st, body) = req(
+        &env,
+        "PUT",
+        &format!("/workflows/{id}"),
+        Some(json!({ "ir": ir, "expected_version": 1 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/2/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["blockers"], json!([]), "{body}");
+    let (st, body) = req(&env, "DELETE", &format!("/folders/{folder_id}"), None).await;
+    assert!(st.is_success(), "{st} {body}");
+}
+
+/// BUG-168: 結果を画面に返すの返す値が空なら（どの形でも）、保存は通し（欄の警告つき）、実行の前に欄の名前を
+/// 言って止める（空の結果を返さない）。形を「表」にした直後の空の値も保存を止めない。空のリスト（表）は止めず、
+/// 保存の注意（`ir.empty_values`）だけにする。
+#[tokio::test]
+async fn a_blank_reply_value_saves_but_blocks_the_run() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let reply = |id: &str, format: &str, value: Value| json!({ "id": id, "type": "workflow.reply", "params": { "format": format, "value": value } });
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("http-reply-{}", &suffix[..12]),
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [
+            reply("text", "text", json!("")),
+            reply("table", "table", json!("")),
+            reply("rows", "table", json!([])),
+            reply("ok", "text", json!("受け付けました"))
+        ],
+        "edges": [
+            { "from": "text", "to": "table" }, { "from": "table", "to": "rows" }, { "from": "rows", "to": "ok" }
+        ]
+    });
+    let located = |list: &Value| -> Vec<(String, String, String)> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w["code"].as_str().unwrap_or_default().to_string(),
+                    w["node_id"].as_str().unwrap_or_default().to_string(),
+                    w["path"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": ir })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    let blank = |node: &str| {
+        (
+            "ir.required_text_empty".to_string(),
+            node.to_string(),
+            "/params/value".to_string(),
+        )
+    };
+    let warnings = located(&body["warnings"]);
+    assert!(warnings.contains(&blank("text")), "{body}");
+    assert!(warnings.contains(&blank("table")), "{body}");
+    assert!(
+        warnings.contains(&(
+            "ir.empty_values".to_string(),
+            "rows".to_string(),
+            "/params/value".to_string()
+        )),
+        "{body}"
+    );
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(
+        located(&body["errors"]),
+        [blank("text"), blank("table")],
+        "{body}"
+    );
+    assert_eq!(
+        body["errors"][0]["message"],
+        "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
+    );
+    assert_eq!(
+        body["errors"][1]["message"],
+        "「表にするリスト」が空です。入れるまで、ボタンや会話からは実行できません。"
+    );
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE workflow_id = $1")
+        .bind(Uuid::parse_str(&id).unwrap())
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+    // 自動実行のオンは止めない（自動実行の結果はどの画面にも出ない・BUG-51 との重なり）。
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/1/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["blockers"], json!([]), "{body}");
+
+    // 片付け（ワークフローは artifact として消す）。
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// 検証 API は各ノードの出口（`node_ports`）を、保存時検証 V2 と同じ関数で返す（エディタは導出を書き写さない・
+/// H15）。期待値は workflow-engine の V2 の試験と同じ fixture（port_cases.json）。保存できない IR でも返し、
+/// 出口を導けないノード（params の誤り）は載せない。値で振り分ける判定から out へ張ったエッジは
+/// ir.unknown_port になる（FEAT-1）。
+#[tokio::test]
+async fn validate_returns_node_ports_from_the_shared_fixture() {
+    let Some(env) = setup().await else { return };
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../workflow-engine/tests/fixtures/port_cases.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    let nodes: Vec<Value> = cases.iter().map(|c| c["node"].clone()).collect();
+    let ir = json!({
+        "ir_version": 1, "name": "http-node-ports", "triggers": [{ "kind": "interactive" }],
+        "nodes": nodes, "edges": [{ "from": "decide_value", "from_port": "out", "to": "read" }]
+    });
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": ir })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ports = body["node_ports"].as_object().unwrap();
+    for c in cases {
+        let id = c["node"]["id"].as_str().unwrap();
+        let want = &c["ports"];
+        if want.is_null() {
+            assert!(!ports.contains_key(id), "{}: {body}", c["name"]);
+        } else {
+            assert_eq!(&ports[id], want, "{}", c["name"]);
+        }
+    }
+    assert_eq!(
+        ports.len(),
+        cases.iter().filter(|c| !c["ports"].is_null()).count()
+    );
+    // 保存できない IR（承認のテーブルが無い・段階で振り分ける判定・発火しない出口）でも出口は返る。
+    let errors = body["errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|e| e["code"] == "ir.unknown_port"
+            && e["node_id"] == "decide_value"
+            && e["path"] == "/edges/0/from_port"),
+        "{body}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["node_id"] == "decide_bad" && e["path"] == "/params/route/question"),
+        "{body}"
+    );
+    // 読めない IR では空。
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": { "nodes": "x" } })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["node_ports"], json!({}));
+}
+
+/// BUG-107: 別のワークフローを実行の相手が無い名前なら、保存と検証で欄の下の誤り（`ir.unknown_workflow`・
+/// `/params/name`）にする。在る名前は通り、空の名前は保存だけ通して実行の前に止める（D-83）。
+#[tokio::test]
+async fn workflow_start_target_is_checked_when_saving() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let child = format!("http-child-{}", &suffix[..12]);
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&child, "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let child_id = body["id"].as_str().unwrap().to_string();
+    let parent = |target: &str| {
+        json!({
+            "ir_version": 1,
+            "name": format!("http-parent-{}", &suffix[..12]),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "start", "type": "workflow.start", "params": { "name": target } }],
+            "edges": []
+        })
+    };
+    let missing = format!("http-missing-{}", &suffix[..12]);
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent(&missing) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let errors = body["errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|e| e["code"] == "ir.unknown_workflow"
+            && e["node_id"] == "start"
+            && e["path"] == "/params/name"
+            && e["message"]
+                == "実行するワークフローが見つかりません。削除されたか、見る権限がありません。"),
+        "{body}"
+    );
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": parent(&missing) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent(&child) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent("") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "ir.required_text_empty" && w["path"] == "/params/name"),
+        "{body}"
+    );
+
+    // 片付け（ワークフローは artifact として消す）。
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{child_id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// BUG-102・D-90: 同意の画面（`consent: true`）は grants が空でも同意し直し、使ってよい操作が増えた版へ
+/// 切り替える。無効化の本文 `revoke_delegations: true` は委譲もすべて取り消し、監査に残す。本文の無い無効化は
+/// 今までどおり委譲を残す。一覧の委譲には対象の種類と id が付く（画面が名前を引く）。
+#[tokio::test]
+async fn consent_and_revoke_on_disable() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+
+    // --- 対象の無いワークフロー: 増えた操作を consent で受ける。
+    let mut ir = json!({
+        "ir_version": 1,
+        "name": format!("consent-{}", &suffix[..12]),
+        "declared_scopes": [],
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }],
+        "nodes": [{ "id": "calc", "type": "script.run",
+                    "params": { "source": { "inline": "function main(i){ return {}; }" } } }],
+        "edges": []
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let bare = body["id"].as_str().unwrap().to_string();
+    let enable = |version: i64, consent: Option<bool>| {
+        let mut b = json!({ "version": version, "grants": [] });
+        if let Some(c) = consent {
+            b["consent"] = json!(c);
+        }
+        b
+    };
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(1, Some(true))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    ir["declared_scopes"] = json!(["http.egress"]);
+    let (st, body) = req(
+        &env,
+        "PUT",
+        &format!("/workflows/{bare}"),
+        Some(json!({ "ir": ir, "expected_version": 1 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    // consent を付けない（API を直接呼ぶ）なら今までどおり 409。
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(2, None)),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "scope_expansion", "{body}");
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(2, Some(true))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{bare}/registration"),
+        None,
+    )
+    .await;
+    assert_eq!(reg["enabled_version"], 2, "{reg}");
+    assert_eq!(reg["consented_scopes"], json!(["http.egress"]), "{reg}");
+
+    // --- 対象のあるワークフロー: 本文の無い無効化は委譲を残し、取り消しを付けると消える。
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("revoke-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "consent": true, "grants": [
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "viewer" }
+        ] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["delegations"][0]["object_kind"], "file", "{reg}");
+    assert_eq!(reg["delegations"][0]["object_id"], file, "{reg}");
+    assert_eq!(
+        reg["delegations"][0]["delegator"], "00000000-0000-0000-0000-000000000001",
+        "{reg}"
+    );
+
+    let (st, body) = req(&env, "POST", &format!("/workflows/{id}/disable"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked_delegations"], 0, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "disabled", "{reg}");
+    assert_eq!(reg["delegations"].as_array().unwrap().len(), 1, "{reg}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/disable"),
+        Some(json!({ "revoke_delegations": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked_delegations"], 1, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["delegations"], json!([]), "{reg}");
+    assert_eq!(reg["consented_scopes"], json!([]), "{reg}");
+    let audit: Vec<Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'workflow.delegation.revoke' AND object_id = $1",
+    )
+    .bind(&id)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["revoked"], 1, "{audit:?}");
+    assert_eq!(
+        audit[0]["delegations"][0]["object_ref"],
+        format!("file:default|{file}"),
+        "{audit:?}"
+    );
+
+    // 片付け。
+    for wf in [&bare, &id] {
+        sqlx::query("DELETE FROM workflow_delegation WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+            .bind(wf)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workflow_registration WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+            .bind(wf)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        let (st, _) = req(&env, "DELETE", &format!("/artifacts/{wf}"), None).await;
+        assert!(st.is_success(), "{st}");
+    }
+}
+
+/// 全面の再同意で同意から外した委譲も、「権限も取り消す」と同じ `workflow.delegation.revoke` に残す（理由
+/// `reconsent`・委譲元・scope・対象・relation）。再同意は (scope, 対象, relation) の組で外すので、ほかの委譲元の行も
+/// 外れうる（BUG-130）。誰の、どの委譲が、誰の操作で外れたかを後から追えるようにする。
+#[tokio::test]
+async fn reconsent_records_the_delegations_it_revokes() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("reconsent-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let enable = |grants: Value| json!({ "version": 1, "consent": true, "grants": grants });
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(enable(json!([
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "editor" }
+        ]))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    // 同じ対象の relation を狭めて同意し直す（editor → viewer）。
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(enable(json!([
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "viewer" }
+        ]))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let audit = |pool: sqlx::PgPool, id: String| async move {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT metadata FROM audit_log WHERE action = 'workflow.delegation.revoke' AND object_id = $1 \
+             ORDER BY created_at",
+        )
+        .bind(id)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let rows = audit(env.pool.clone(), id.clone()).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["reason"], "reconsent", "{rows:?}");
+    assert_eq!(rows[0]["revoked"], 1, "{rows:?}");
+    assert_eq!(
+        rows[0]["delegations"][0],
+        json!({
+            "delegator": "00000000-0000-0000-0000-000000000001",
+            "scope": "storage.read",
+            "object_ref": format!("file:default|{file}"),
+            "relation": "editor",
+        }),
+        "{rows:?}"
+    );
+    // 対象を外して同意し直すと、残っていた委譲も残す。外すものが無い同意し直しは行を足さない。
+    for _ in 0..2 {
+        let (st, body) = req(
+            &env,
+            "POST",
+            &format!("/workflows/{id}/enable"),
+            Some(enable(json!([]))),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+    }
+    let rows = audit(env.pool.clone(), id.clone()).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1]["delegations"][0]["relation"], "viewer", "{rows:?}");
+
+    // 片付け（監査の行は残す: 書き込みの監査はハッシュの鎖でつながっていて、消すと鎖が切れる）。
+    for table in ["workflow_delegation", "workflow_registration"] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE tenant_id = 'default' AND workflow_id = $1::uuid"
+        ))
+        .bind(&id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    }
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// 同じ操作と対象に relation の違う委譲を送る有効化は、構造化した 400（`invalid_input`）で断り、何も委譲しない。
+#[tokio::test]
+async fn enable_refuses_two_relations_for_one_target() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("two-rel-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let grant = |relation: &str| json!({ "scope": "storage.read", "object_type": "file", "object_id": file, "relation": relation });
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "consent": true,
+                     "grants": [grant("viewer"), grant("editor")] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "none", "{reg}");
+    assert_eq!(reg["delegations"], json!([]), "{reg}");
+
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// 金額（1 以上の整数・必須）を受ける手動のワークフローを作る（実行の入力の試験・BUG-109・D-93）。
+async fn create_amount_flow(env: &Env, prefix: &str) -> String {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("{prefix}-{}", &suffix[..12]),
+        "declared_scopes": [],
+        "input_schema": { "type": "object", "required": ["amount"], "properties": {
+            "amount": { "type": "integer", "minimum": 1, "title": "金額" } } },
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "echo", "type": "script.run",
+                    "params": { "source": { "inline": "function main(i){ return {}; }" } } }],
+        "edges": []
+    });
+    let (st, body) = req(env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    body["id"].as_str().unwrap().to_string()
+}
+
+/// 試験で作った run とワークフローを消す。
+async fn delete_flow_and_runs(env: &Env, id: &str) {
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+        .bind(id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (st, _) = req(env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// BUG-109: 実行の入力の誤りは本文を捨てず、項目のキーと理由を返す（code invalid_input）。run は作らない。
+#[tokio::test]
+async fn manual_run_reports_input_errors_by_field() {
+    let Some(env) = setup().await else { return };
+    let id = create_amount_flow(&env, "input-errors").await;
+    let start = |body: Value| {
+        let env = &env;
+        let id = id.clone();
+        async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+    };
+    let (st, body) = start(json!({ "input": { "amount": 0 } })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    assert_eq!(
+        body["errors"],
+        json!([{ "key": "amount", "message": "1 以上にしてください" }]),
+        "{body}"
+    );
+    assert!(body["message"].as_str().unwrap().contains("誤り"), "{body}");
+    let (st, body) = start(json!({ "input": { "amount": "3" } })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["errors"],
+        json!([{ "key": "amount", "message": "整数を入れてください" }]),
+        "{body}"
+    );
+    let runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(runs, 0, "入力の誤りでは run を作らない");
+    delete_flow_and_runs(&env, &id).await;
+}
+
+/// きっかけの内容と入力と予定の日時を、ブロックの結果としてそのまま返す（`$from trigger` と `$from run` の
+/// `scheduled_at` の源を確かめる・D-93・GAP-88）。同じテナントで並んで走る試験のワーカーが互いの step を取っても
+/// 同じ結果になるよう、試す値の試験はこの 1 つを使う。
+struct ContextEcho;
+
+#[async_trait]
+impl NodeExecutor for ContextEcho {
+    async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
+        NodeResult::ok(json!({
+            "input": ctx.input,
+            "trigger": ctx.trigger,
+            "scheduled_at": ctx.run_scheduled_at.map(|t| t.to_rfc3339()),
+        }))
+    }
+}
+
+/// 終わった step の結果。試す値の試験は同じテナントで並んで走り、ほかの試験のワーカーが自分の step を取ることがある
+/// ので、自分のワーカーの手が空いた後も、step が終わるまで待ってから読む（取ったワーカーが書き終える前に読まない）。
+async fn settled_output(env: &Env, id: &str, run: &str, path: &str) -> Value {
+    for _ in 0..200 {
+        let (st, body) = req(
+            env,
+            "GET",
+            &format!("/workflows/{id}/runs/{run}/steps?path={path}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        if body["status"] == "succeeded" || body["status"] == "failed" {
+            return body["output"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("step {path} of run {run} did not finish");
+}
+
+/// D-93: 実行のダイアログは、手動の実行にきっかけの内容を入力と別に渡せる（`$from trigger` の源）。渡さなければ
+/// 今までどおり、きっかけの内容は入力と同じ。項目のまとまりでないきっかけの内容は 400（field = trigger）。
+/// 実行履歴の「新しく実行し直す」は、入力と一緒に試したきっかけの内容も引き継ぐ。
+#[tokio::test]
+async fn manual_run_takes_trial_trigger() {
+    let Some(env) = setup().await else { return };
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(ContextEcho),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let id = create_amount_flow(&env, "trial-trigger").await;
+    let start = |body: Value| {
+        let env = &env;
+        let id = id.clone();
+        async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+    };
+
+    // --- きっかけの内容は項目のまとまりだけ。
+    let (st, body) = start(json!({ "input": { "amount": 3 }, "trigger": [1] })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    assert_eq!(body["field"], "trigger", "{body}");
+
+    // --- 試すきっかけの内容は `$from trigger` の源になり、入力はそのまま。
+    let trial = json!({ "record_id": "r-1", "to": "approved" });
+    let (st, body) = start(json!({ "input": { "amount": 3 }, "trigger": trial })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let with_trial = body["run_id"].as_str().unwrap().to_string();
+    // --- 渡さなければ、きっかけの内容は入力と同じ（今までどおり）。
+    let (st, body) = start(json!({ "input": { "amount": 4 } })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let without = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w-trial").await.unwrap() {}
+    let output = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move { settled_output(env, &id, &run, "echo").await.clone() }
+    };
+    assert_eq!(
+        output(with_trial.clone()).await,
+        json!({ "input": { "amount": 3 }, "trigger": trial, "scheduled_at": null })
+    );
+    assert_eq!(
+        output(without.clone()).await,
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 }, "scheduled_at": null })
+    );
+
+    // --- 「新しく実行し直す」は、元の run で試したきっかけの内容も引き継ぐ（入力だけを引き継ぐと、新しい run の
+    //     きっかけの内容が入力の値になっていた）。試していない run は、いままでどおり入力と同じ。
+    let retry_new = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move {
+            let (st, body) = req(
+                env,
+                "POST",
+                &format!("/workflows/{id}/runs/{run}/retry"),
+                Some(json!({ "mode": "new" })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+            body["run_id"].as_str().unwrap().to_string()
+        }
+    };
+    let again_trial = retry_new(with_trial.clone()).await;
+    let again_without = retry_new(without).await;
+    assert_ne!(again_trial, with_trial, "新しい run を作る");
+    while worker.claim_and_run_once("w-trial").await.unwrap() {}
+    assert_eq!(
+        output(again_trial.clone()).await,
+        json!({ "input": { "amount": 3 }, "trigger": trial, "scheduled_at": null })
+    );
+    assert_eq!(
+        output(again_without.clone()).await,
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 }, "scheduled_at": null })
+    );
+
+    // --- GAP-96: 実行の詳細は、試したきっかけの内容を返す（引き継いだ run も）。試していない run は null。
+    let trigger_payload = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move {
+            let (st, detail) = req(env, "GET", &format!("/workflows/{id}/runs/{run}"), None).await;
+            assert_eq!(st, StatusCode::OK, "{detail}");
+            detail["trigger_payload"].clone()
+        }
+    };
+    assert_eq!(trigger_payload(with_trial).await, trial);
+    assert_eq!(trigger_payload(again_trial).await, trial);
+    assert_eq!(trigger_payload(again_without).await, Value::Null);
+    delete_flow_and_runs(&env, &id).await;
+}
+
+/// GAP-88・GAP-89: 実行のダイアログは、手動の実行に試す予定の日時を渡せる（時差つきか、時差の無い日時を日本時間で
+/// 読む）。読めない値は 400（field = scheduled_at）で run を作らない。実行履歴の一覧と詳細は予定の日時と由来
+/// （specified）を返し、渡さない run は null。「新しく実行し直す」は試した予定の日時も引き継ぐ。
+#[tokio::test]
+async fn manual_run_takes_trial_scheduled_at() {
+    let Some(env) = setup().await else { return };
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(ContextEcho),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let id = create_amount_flow(&env, "trial-scheduled").await;
+    // 途中の確かめが落ちても、作ったワークフローと run を片付ける。
+    let body = async {
+        let start = |body: Value| {
+            let env = &env;
+            let id = id.clone();
+            async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+        };
+
+        // --- 日時として読めない値は、欄を名指しして断る（黙って始めた日時で動かさない）。
+        for bad in [json!("来週の月曜"), json!("2026-11-09")] {
+            let (st, body) = start(json!({ "input": { "amount": 3 }, "scheduled_at": bad })).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(body["code"], "invalid_input", "{body}");
+            assert_eq!(body["field"], "scheduled_at", "{body}");
+            assert_eq!(
+                body["message"],
+                workflow_engine::run::planned::TRIAL_SCHEDULED_AT_INVALID
+            );
+        }
+        let (st, body) = start(json!({ "input": { "amount": 3 }, "scheduled_at": 20261109 })).await;
+        assert!(st.is_client_error(), "数は日時の文字でない: {st} {body}");
+        let made: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid",
+        )
+        .bind(&id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(made, 0, "読めない予定の日時では run を作らない");
+
+        // --- 時差の無い日時は日本時間で読む。渡さなければ予定の日時は無い（始めた日時と同じ）。
+        let (st, body) =
+            start(json!({ "input": { "amount": 3 }, "scheduled_at": "2026-11-09T09:00" })).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+        let with_trial = body["run_id"].as_str().unwrap().to_string();
+        let (st, body) = start(json!({ "input": { "amount": 4 } })).await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+        let without = body["run_id"].as_str().unwrap().to_string();
+        while worker.claim_and_run_once("w-trial-at").await.unwrap() {}
+        let output = |run: String| {
+            let env = &env;
+            let id = id.clone();
+            async move { settled_output(env, &id, &run, "echo").await["scheduled_at"].clone() }
+        };
+        assert_eq!(
+            output(with_trial.clone()).await,
+            json!("2026-11-09T00:00:00+00:00")
+        );
+        assert_eq!(output(without.clone()).await, Value::Null);
+
+        // --- 実行履歴の一覧と詳細は、予定の日時と由来（手動の実行で指定した日時）を返す。
+        let (st, list) = req(&env, "GET", &format!("/workflows/{id}/runs"), None).await;
+        assert_eq!(st, StatusCode::OK, "{list}");
+        let item = |run: &str| {
+            list["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["run_id"] == run)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(
+            item(&with_trial)["scheduled_at"],
+            "2026-11-09T00:00:00+00:00"
+        );
+        assert_eq!(item(&with_trial)["scheduled_at_source"], "specified");
+        assert_eq!(item(&without)["scheduled_at"], Value::Null);
+        assert_eq!(item(&without)["scheduled_at_source"], Value::Null);
+        let (st, detail) = req(
+            &env,
+            "GET",
+            &format!("/workflows/{id}/runs/{with_trial}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{detail}");
+        assert_eq!(detail["scheduled_at"], "2026-11-09T00:00:00+00:00");
+        assert_eq!(detail["scheduled_at_source"], "specified");
+
+        // --- 「新しく実行し直す」は、試した予定の日時も引き継ぐ（同じ予定の分をやり直す）。
+        let (st, body) = req(
+            &env,
+            "POST",
+            &format!("/workflows/{id}/runs/{with_trial}/retry"),
+            Some(json!({ "mode": "new" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+        let again = body["run_id"].as_str().unwrap().to_string();
+        let (st, body) = req(
+            &env,
+            "POST",
+            &format!("/workflows/{id}/runs/{without}/retry"),
+            Some(json!({ "mode": "new" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+        let again_without = body["run_id"].as_str().unwrap().to_string();
+        while worker.claim_and_run_once("w-trial-at").await.unwrap() {}
+        assert_eq!(
+            output(again.clone()).await,
+            json!("2026-11-09T00:00:00+00:00")
+        );
+        assert_eq!(output(again_without.clone()).await, Value::Null);
+
+        // --- 引き継いだ予定の日時は、指定した日時と言い分ける（由来は rerun・元の run を行に残す・GAP-89）。
+        let (st, detail) = req(&env, "GET", &format!("/workflows/{id}/runs/{again}"), None).await;
+        assert_eq!(st, StatusCode::OK, "{detail}");
+        assert_eq!(detail["scheduled_at"], "2026-11-09T00:00:00+00:00");
+        assert_eq!(detail["scheduled_at_source"], "rerun");
+        let (st, list) = req(&env, "GET", &format!("/workflows/{id}/runs"), None).await;
+        assert_eq!(st, StatusCode::OK, "{list}");
+        let source = |run: &str| {
+            list["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["run_id"] == run)
+                .map(|i| i["scheduled_at_source"].clone())
+                .unwrap()
+        };
+        assert_eq!(source(&again), "rerun");
+        assert_eq!(source(&with_trial), "specified", "試した run はそのまま");
+        assert_eq!(
+            source(&again_without),
+            Value::Null,
+            "予定の日時が無ければ由来も無い"
+        );
+        let rerun_of: Option<Uuid> = sqlx::query_scalar(
+            "SELECT rerun_of FROM workflow_run WHERE tenant_id = 'default' AND run_id = $1::uuid",
+        )
+        .bind(&again)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(rerun_of, Some(Uuid::parse_str(&with_trial).unwrap()));
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    delete_flow_and_runs(&env, &id).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
+
+/// BUG-230: 「いま実行する」の自分の確かめ（GET /workflows/{id}/access）は、確かめた人がワークフローの持ち主かを添える
+/// （画面は答えと一緒に頼む先を言い分け、持ち主かを別の問い合わせで待たない）。
+#[tokio::test]
+async fn my_workflow_access_tells_the_owner() {
+    let Some(env) = setup().await else { return };
+    let id = create_amount_flow(&env, "my-access-owner").await;
+    let (st, body) = req(&env, "GET", &format!("/workflows/{id}/access"), None).await;
+    delete_flow_and_runs(&env, &id).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["owner"], true, "{body}");
+    assert_eq!(body["items"], json!([]), "{body}");
+}
+
+/// GAP-67: 自動実行の起動を見送り続けているワークフローの登録の口（GET registration）は、理由・直し方・見送った版・
+/// 回数・時刻を返す。オフにすると返さない（null）。理由の文は作成者向けで、内部の理由の文を出さない。
+#[tokio::test]
+async fn registration_reports_skipped_automatic_runs() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("http-skip-{}", &suffix[..12]),
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }],
+        "nodes": [{ "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } }],
+        "edges": []
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let wf = Uuid::parse_str(&id).unwrap();
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["launch_skip"], Value::Null, "{reg}");
+
+    // 空の欄のある v1 を、有効化の前の確認を通さずにオンにした状態（前の版でオンにした定義・BUG-51）で、スケジュールが
+    // 2 回起動を見送る。
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll::default());
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        env.pool.clone(),
+        Arc::clone(&authz),
+    ));
+    let delegation = workflow_engine::DelegationStore::new(env.pool.clone(), Arc::clone(&authz));
+    let launcher = workflow_engine::WorkflowRunLauncher::new(
+        delegation.clone(),
+        workflow_engine::WorkflowStore::new(artifacts),
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+    );
+    let alice = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
+    delegation.enable(&alice, wf, 1, &[], &[]).await.unwrap();
+    for _ in 0..2 {
+        let out = <workflow_engine::WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
+            &launcher,
+            "default",
+            wf,
+            "schedule",
+            &format!("{wf}:0"),
+            &Value::Null,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(out, workflow_engine::LaunchOutcome::Skipped(_)),
+            "{out:?}"
+        );
+    }
+    let (st, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(st, StatusCode::OK, "{reg}");
+    let skip = &reg["launch_skip"];
+    assert_eq!(skip["code"], "not_ready", "{reg}");
+    assert_eq!(skip["version"], 1, "{reg}");
+    assert_eq!(skip["count"], 2, "{reg}");
+    assert_eq!(
+        skip["message"], "オンにしている v1 に、空の欄など実行できない設定があります。",
+        "{reg}"
+    );
+    assert_eq!(
+        skip["fix"],
+        "エディターで設定を直して保存してから、「自動実行の設定」でもう一度オンにしてください。",
+        "{reg}"
+    );
+    for at in ["first_at", "last_at"] {
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(skip[at].as_str().unwrap()).is_ok(),
+            "{reg}"
+        );
+    }
+    // 内部の理由の文（ログ用）は返さない。
+    assert!(
+        !reg.to_string().contains("実行の前に止める設定があります"),
+        "{reg}"
+    );
+
+    // オフにすると見送りは消える。
+    let (st, body) = req(&env, "POST", &format!("/workflows/{id}/disable"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["launch_skip"], Value::Null, "{reg}");
+    sqlx::query(
+        "DELETE FROM workflow_registration WHERE tenant_id = 'default' AND workflow_id = $1",
+    )
+    .bind(wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    delete_flow_and_runs(&env, &id).await;
 }

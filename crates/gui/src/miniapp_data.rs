@@ -9,6 +9,11 @@
 //! ときだけ [`ActionBinding::DataView`] を作って [`ActionDispatcher`] に渡す。ビューの定義は
 //! バンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価する**（保存者の権限を引き継がない）。
 //! 起動の記録（`miniapp_action_run`）は作らない（読取で、何度でも描き直す）。
+//!
+//! 描画・ページ送りのたびにミニアプリの解決（[`MiniAppStore::resolve`]）はやり直さない（BUG-24）。開いたときの
+//! 解決が `miniapp.resolve` を 1 回残し、表は skill を使わないので、毎回読むのは本体の viewer と保存済みの版の
+//! 画面・ピンだけ（[`MiniAppStore::load_saved`]）。1 ページごとの操作は `ui_action.invoke`、ビューの定義の
+//! バンドル読みは `artifact.read_via_bundle` が残す。
 
 use authz::AuthContext;
 use serde_json::Value;
@@ -20,7 +25,7 @@ use crate::miniapp_actions::{map_gui_err, MiniAppActionRequest};
 use crate::miniapp_store::MiniAppStore;
 
 impl MiniAppStore {
-    /// 画面の表を描く（本体 viewer・画面とピンから束縛を作り直す・閲覧者本人の権限で実行）。
+    /// 画面の表を描く（本体 viewer・保存済みの画面とピンから束縛を作る・閲覧者本人の権限で実行）。
     pub(crate) async fn invoke_data_grid(
         &self,
         ctx: &AuthContext,
@@ -30,21 +35,21 @@ impl MiniAppStore {
         alias: &str,
         trace_id: Option<&str>,
     ) -> Result<Value, ActionError> {
-        // 1. 本体の viewer（解決が認可する・保存済みの版を検証し直す）。
-        let resolved = self
-            .resolve(ctx, app_id, Some(req.version), trace_id)
+        // 1. 本体の viewer と保存済みの版（毎回確かめ直す）。skill は読まず、解決の監査も重ねない（BUG-24）。
+        let (_, version, body) = self
+            .load_saved(ctx, app_id, Some(req.version), trace_id)
             .await
             .map_err(map_gui_err)?;
         let source = ActionSource::MiniApp {
-            artifact_id: resolved.id,
-            version: resolved.version,
+            artifact_id: app_id,
+            version,
         };
         let key = req.action_id.as_str();
         // 2. 保存済みの版の画面に、その別名の表がある（画面の表の宣言は信用しない）。
-        let declared = crate::data_grid::data_grid_blocks(&resolved.body.screen)
+        let declared = crate::data_grid::data_grid_blocks(&body.screen)
             .iter()
             .any(|g| g.alias.as_deref() == Some(alias));
-        let pin = resolved.body.data_views.iter().find(|v| v.alias == alias);
+        let pin = body.data_views.iter().find(|v| v.alias == alias);
         let Some(pin) = pin.filter(|_| declared) else {
             dispatcher
                 .deny(ctx, &source, key, "undeclared_data_grid", trace_id)

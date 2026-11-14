@@ -1,0 +1,279 @@
+{
+ "task": "app11-checkout",
+ "variant": "input_key",
+ "case": "available",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-874d30-input-key",
+   "display_name": "備品を貸し出す",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "borrower": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "code",
+     "borrower"
+    ],
+    "x-order": [
+     "code",
+     "borrower"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "find",
+     "type": "data.query",
+     "label": "備品を探す",
+     "params": {
+      "table": "f4fa9d67-897c-49db-a43f-b370ef5a49fa",
+      "query": {
+       "filter": {
+        "cmp": {
+         "field": "code",
+         "op": "eq",
+         "value": {
+          "$from": "input",
+          "path": "/code_x"
+         }
+        }
+       },
+       "limit": 1
+      }
+     }
+    },
+    {
+     "id": "is_free",
+     "type": "control.branch",
+     "label": "在庫か",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/data/status"
+        },
+        "op": "eq",
+        "right": "在庫"
+       }
+      }
+     }
+    },
+    {
+     "id": "lend",
+     "type": "data.transition",
+     "label": "貸出中にする",
+     "params": {
+      "table": "f4fa9d67-897c-49db-a43f-b370ef5a49fa",
+      "record": {
+       "$from": "nodes.find.output",
+       "path": "/items/0/id"
+      },
+      "to": "貸出中"
+     }
+    },
+    {
+     "id": "set_borrower",
+     "type": "data.record.update",
+     "label": "借りている人を書く",
+     "params": {
+      "table": "f4fa9d67-897c-49db-a43f-b370ef5a49fa",
+      "record": {
+       "$from": "nodes.find.output",
+       "path": "/items/0/id"
+      },
+      "patch": {
+       "borrower": {
+        "$from": "input",
+        "path": "/borrower"
+       }
+      }
+     }
+    },
+    {
+     "id": "log",
+     "type": "data.record.create",
+     "label": "貸出記録を残す",
+     "params": {
+      "table": "1526bdf3-d5eb-4e0f-838a-b9456db2986f",
+      "data": {
+       "code": {
+        "$from": "input",
+        "path": "/code_x"
+       },
+       "borrower": {
+        "$from": "input",
+        "path": "/borrower"
+       },
+       "loaned_on": {
+        "$from": "run",
+        "path": "/date"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "find",
+     "to": "is_free"
+    },
+    {
+     "from": "is_free",
+     "to": "lend",
+     "from_port": "true"
+    },
+    {
+     "from": "lend",
+     "to": "set_borrower"
+    },
+    {
+     "from": "set_borrower",
+     "to": "log"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "find": [
+    "out"
+   ],
+   "is_free": [
+    "true",
+    "false"
+   ],
+   "lend": [
+    "out"
+   ],
+   "log": [
+    "out"
+   ],
+   "set_borrower": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "86957bad-9c47-4198-b0b8-db84d4aedb5a",
+    "status": "failed",
+    "input": {
+     "borrower": "松本",
+     "code": "E-01"
+    },
+    "steps": [
+     {
+      "step_path": "find",
+      "node_id": "find",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.query: query: $from input /code_x が解決できません（値が無く default もありません）",
+       "node_id": "find",
+       "retryable": false
+      }
+     },
+     {
+      "step_path": "is_free",
+      "node_id": "is_free",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "lend",
+      "node_id": "lend",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "set_borrower",
+      "node_id": "set_borrower",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "log",
+      "node_id": "log",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T01:16:04.554383+00:00"
+   }
+  ],
+  "rows": {
+   "equipment": [
+    {
+     "id": "45cf7dd0-ddd9-4c86-aac7-f2b61560be36",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "088f3192-a8c2-4865-ba36-31e50fe47c77",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "rows_before": {
+   "equipment": [
+    {
+     "id": "45cf7dd0-ddd9-4c86-aac7-f2b61560be36",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "088f3192-a8c2-4865-ba36-31e50fe47c77",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T01:15:59.027879+00:00"
+ }
+}

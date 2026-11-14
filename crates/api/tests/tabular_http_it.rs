@@ -3,6 +3,9 @@
 //! `STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`＋隔離ランナーバイナリが揃う時のみ
 //! 実行する（未設定はスキップ）。HTTP ルータ経由で schema/rows/query/patch/save を通し、
 //! 楽観ロック 409・SQL 拒否 400 を検証する（routes/tabular.rs のカバレッジ）。
+//!
+//! CSV の編集と同じく元の文字コードで書き戻す、ドライブのテキストの表示と編集（`/files/{id}/text`・
+//! routes/file_text.rs・D-119）も、同じ組み立て（実 Postgres＋RustFS）でここで確かめる。
 
 #![allow(
     clippy::unwrap_used,
@@ -271,6 +274,8 @@ fn config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 
@@ -279,8 +284,82 @@ struct Env {
     /// 隔離ランナーのパス（クォータを変えた TabularService を別に組む用）。
     runner: PathBuf,
     storage: Arc<storage::StorageService>,
+    /// StorageService を別に組む用（取得の回数を数える store を挟む）。
+    pool: sqlx::PgPool,
+    object_store: Arc<dyn storage::ObjectStore>,
     ctx: authz::AuthContext,
     authz: Arc<AllowAll>,
+}
+
+/// 本体の取得（`get_object`）の回数を数える ObjectStore（ほかはそのまま渡す）。取得の前に断ることを確かめる。
+struct CountingStore {
+    inner: Arc<dyn storage::ObjectStore>,
+    gets: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl storage::object_store::ObjectStore for CountingStore {
+    async fn ensure_bucket(&self) -> Result<(), storage::ObjectStoreError> {
+        self.inner.ensure_bucket().await
+    }
+    async fn presign_get_internal(
+        &self,
+        k: &str,
+        t: Duration,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_get_internal(k, t).await
+    }
+    async fn presign_put(
+        &self,
+        k: &str,
+        t: Duration,
+        l: i64,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_put(k, t, l).await
+    }
+    async fn presign_get(
+        &self,
+        k: &str,
+        t: Duration,
+        f: Option<&str>,
+        c: Option<&str>,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_get(k, t, f, c).await
+    }
+    async fn read_and_hash(&self, k: &str) -> Result<(String, u64), storage::ObjectStoreError> {
+        self.inner.read_and_hash(k).await
+    }
+    async fn put_object(
+        &self,
+        k: &str,
+        b: Vec<u8>,
+        c: &str,
+    ) -> Result<(), storage::ObjectStoreError> {
+        self.inner.put_object(k, b, c).await
+    }
+    async fn get_object(&self, k: &str) -> Result<Vec<u8>, storage::ObjectStoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get_object(k).await
+    }
+    async fn exists(&self, k: &str) -> Result<bool, storage::ObjectStoreError> {
+        self.inner.exists(k).await
+    }
+    async fn copy(&self, s: &str, d: &str) -> Result<(), storage::ObjectStoreError> {
+        self.inner.copy(s, d).await
+    }
+    async fn delete(&self, k: &str) -> Result<(), storage::ObjectStoreError> {
+        self.inner.delete(k).await
+    }
+    async fn list_prefix(
+        &self,
+        p: &str,
+        c: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        self.inner.list_prefix(p, c).await
+    }
+    async fn delete_batch(&self, k: &[String]) -> Result<(), storage::ObjectStoreError> {
+        self.inner.delete_batch(k).await
+    }
 }
 
 async fn setup() -> Option<Env> {
@@ -326,7 +405,7 @@ async fn setup() -> Option<Env> {
     object_store.ensure_bucket().await.expect("bucket");
     let storage = Arc::new(storage::StorageService::new(
         pool.clone(),
-        object_store,
+        Arc::clone(&object_store),
         Arc::clone(&authz),
         Duration::from_secs(120),
         Duration::from_secs(900),
@@ -373,6 +452,8 @@ async fn setup() -> Option<Env> {
         app,
         runner: runner.clone(),
         storage,
+        pool,
+        object_store,
         ctx: authz::AuthContext::new(
             principal(),
             "acme".into(),
@@ -495,6 +576,7 @@ fn build_app(
         )),
         workflow_summaries: Arc::new(workflow_engine::WorkflowSummaryStore::new(pool.clone())),
         workflow_layout: Arc::new(workflow_engine::EditorLayoutStore::new(pool.clone())),
+        workflow_approvals: Arc::new(workflow_engine::ApprovalStore::new(pool.clone())),
         audit: Arc::new(storage::audit::AuditRecorder::new(pool.clone())),
         directory,
         tenants: Arc::new(storage::TenantStore::new(pool.clone())),
@@ -503,6 +585,7 @@ fn build_app(
         llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
+        egress_proxy: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",
@@ -532,6 +615,17 @@ fn post(path: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn put(path: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(path)
+        .header(COOKIE, "shiki_session=sid-tab.default; shiki_csrf=csrf-tab")
+        .header("content-type", "application/json")
+        .header("x-csrf-token", "csrf-tab")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn json_body(resp: axum::response::Response) -> (StatusCode, Value) {
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -542,18 +636,13 @@ async fn json_body(resp: axum::response::Response) -> (StatusCode, Value) {
 #[tokio::test]
 async fn tabular_schema_rows_query_patch_flow() {
     let Some(env) = setup().await else { return };
-    // CSV を作成（storage 経由）。
+    // CSV を作成（storage 経由）。中身は実行ごとに変える。blob は中身のハッシュで共有され、テストはバケットを実行ごとに
+    // 作り直すので、同じ中身だと前の実行の blob の行（前のバケットの本体）を指して読めない（BUG-143）。
     let name = format!("data-{}.csv", Uuid::new_v4());
+    let csv = format!("id,score\n1-{},10\n2,30\n3,20\n", Uuid::new_v4().simple());
     let node = env
         .storage
-        .write_file_internal(
-            &env.ctx,
-            None,
-            &name,
-            b"id,score\n1,10\n2,30\n3,20\n",
-            "text/csv",
-            None,
-        )
+        .write_file_internal(&env.ctx, None, &name, csv.as_bytes(), "text/csv", None)
         .await
         .expect("create csv");
     let id = node.id;
@@ -662,6 +751,751 @@ async fn tabular_schema_rows_query_patch_flow() {
     assert!(body["node_id"].is_string());
 }
 
+/// CSV の画面（schema・rows・patch）も、Excel が保存する文字コードの CSV を読む（GAP-45）。Shift_JIS の CSV を
+/// 日本語の列名で読み、編集は Shift_JIS のまま保存する。読めない CSV と、Shift_JIS に無い文字の編集は、画面が
+/// そのまま出せる文言つきの構造化 400（`invalid_input`）で断る。
+#[tokio::test]
+async fn tabular_reads_shift_jis_and_explains_what_it_cannot_read_or_write() {
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let csv = format!("経費,金額,番号\n交通費,1200,{tag}\n");
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(&csv);
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("経費-{}.csv", Uuid::new_v4()),
+            &sjis,
+            "application/vnd.ms-excel",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let latin = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("latin-{}.csv", Uuid::new_v4()),
+            &[b"name\ncaf\xe9 ".as_slice(), tag.as_bytes(), b"\n"].concat(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let id = node.id;
+    let schema = call(get(&env.app, &format!("/files/{id}/tabular/schema"))).await;
+    let rows = call(get(&env.app, &format!("/files/{id}/tabular/rows?offset=0"))).await;
+    let patched = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 1, "value": "1500"}
+        ]}),
+    ))
+    .await;
+    let unmappable = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version + 1, "ops": [
+            {"op": "cell_update", "row": 0, "col": 0, "value": "😀"}
+        ]}),
+    ))
+    .await;
+    let (_, saved) = env
+        .storage
+        .read_file_internal(&env.ctx, id, None)
+        .await
+        .unwrap();
+    let unreadable = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/schema", latin.id),
+    ))
+    .await;
+    // 片付け（作った CSV）。
+    for file in [id, latin.id] {
+        env.storage
+            .soft_delete_file(&env.ctx, file, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(schema.0, StatusCode::OK, "{:?}", schema.1);
+    assert_eq!(schema.1["columns"], json!(["経費", "金額", "番号"]));
+    assert_eq!(rows.0, StatusCode::OK, "{:?}", rows.1);
+    assert_eq!(rows.1["rows"], json!([["交通費", "1200", tag]]));
+    assert_eq!(patched.0, StatusCode::OK, "{:?}", patched.1);
+    let edited = textenc::decode_text(&saved).unwrap();
+    assert_eq!(
+        (edited.encoding.name(), edited.text.as_str()),
+        (
+            "Shift_JIS",
+            format!("経費,金額,番号\n交通費,1500,{tag}\n").as_str()
+        ),
+        "Shift_JIS のまま保存する"
+    );
+    assert_eq!(unmappable.0, StatusCode::BAD_REQUEST, "{:?}", unmappable.1);
+    assert_eq!(unmappable.1["code"], "invalid_input");
+    assert!(
+        unmappable.1["message"]
+            .as_str()
+            .unwrap()
+            .contains("「😀」は、この CSV の文字コード（Shift_JIS）では書けません"),
+        "{:?}",
+        unmappable.1
+    );
+    assert_eq!(unreadable.0, StatusCode::BAD_REQUEST, "{:?}", unreadable.1);
+    assert_eq!(unreadable.1["code"], "invalid_input");
+    assert_eq!(
+        unreadable.1["message"],
+        "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。"
+    );
+}
+
+/// Excel（D-17）: 集計の画面は読めない Excel・古い形式の Excel の理由を言う（400 invalid_input）。編集は CSV だけで、
+/// Excel などのファイルは書き換えない。新しい CSV は Excel の名前で作らない。
+#[tokio::test]
+async fn tabular_explains_what_it_cannot_do_with_excel_files() {
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let mut created = Vec::new();
+    for (name, head) in [
+        ("壊れた.xlsx", b"PK\x03\x04".as_slice()),
+        (
+            "古い.xls",
+            [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1].as_slice(),
+        ),
+    ] {
+        let node = env
+            .storage
+            .write_file_internal(
+                &env.ctx,
+                None,
+                &format!("{tag}-{name}"),
+                &[head, tag.as_bytes()].concat(),
+                "application/octet-stream",
+                None,
+            )
+            .await
+            .expect("create file");
+        created.push(node);
+    }
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let (broken, old) = (&created[0], &created[1]);
+    let broken_schema = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/schema", broken.id),
+    ))
+    .await;
+    let old_query = call(post(
+        &format!("/files/{}/tabular/query", old.id),
+        json!({ "sql": "SELECT * FROM data" }),
+    ))
+    .await;
+    let patched = call(post(
+        &format!("/files/{}/tabular/patch", broken.id),
+        json!({"base_rev": broken.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 0, "value": "x"}
+        ]}),
+    ))
+    .await;
+    let saved = call(post(
+        "/tabular/save",
+        json!({ "name": format!("{tag}.xlsx"), "csv": "a,b\n1,2\n" }),
+    ))
+    .await;
+    let (after, _) = env
+        .storage
+        .read_file_internal(&env.ctx, broken.id, None)
+        .await
+        .unwrap();
+    // 片付け（作ったファイル）。
+    for node in &created {
+        env.storage
+            .soft_delete_file(&env.ctx, node.id, None)
+            .await
+            .unwrap();
+    }
+
+    for (resp, needle) in [
+        (
+            &broken_schema,
+            "Excel のファイル（.xlsx）として読めませんでした",
+        ),
+        (&old_query, "古い形式の Excel（.xls）"),
+        (&patched, tabular::input::NOT_EDITABLE),
+        (&saved, "保存できるのは CSV のファイルだけ"),
+    ] {
+        assert_eq!(resp.0, StatusCode::BAD_REQUEST, "{needle}: {:?}", resp.1);
+        assert_eq!(resp.1["code"], "invalid_input", "{:?}", resp.1);
+        assert!(
+            resp.1["message"].as_str().unwrap().contains(needle),
+            "{needle}: {:?}",
+            resp.1
+        );
+    }
+    assert_eq!(after.version, broken.version, "書き換えない");
+}
+
+/// zip の終わりの印（EOCD）に注釈を付ける（中身を実行ごとに変える。中身の同じ blob は前の実行のバケットを指す）。
+fn with_zip_comment(bytes: &[u8], comment: &str) -> Vec<u8> {
+    let eocd = bytes
+        .windows(4)
+        .rposition(|w| w == b"PK\x05\x06")
+        .expect("zip の終わりの印");
+    let mut out = bytes[..eocd + 20].to_vec();
+    out.extend((comment.len() as u16).to_le_bytes());
+    out.extend(comment.as_bytes());
+    out
+}
+
+/// Excel の列の案内（GAP-83・GAP-84）: 表の上の表題の行を飛ばして見出しの行を返し、シートの一覧（data のシート・
+/// 隠したシート・名前で読めないシート）を返す。ほかのシートは SQL に名前を書いて読める。CSV はシートの一覧が空。
+#[tokio::test]
+async fn tabular_lists_excel_sheets_and_the_header_row() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let xlsx = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("売上-{tag}.xlsx"),
+            &with_zip_comment(
+                include_bytes!("../../tabular/tests/fixtures/sales.xlsx"),
+                &tag,
+            ),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            None,
+        )
+        .await
+        .expect("create xlsx");
+    let csv = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("売上-{tag}.csv"),
+            format!("品目,番号\n交通費,{tag}\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let schema = call(get(&env.app, &format!("/files/{}/tabular/schema", xlsx.id))).await;
+    let budget = call(post(
+        &format!("/files/{}/tabular/query", xlsx.id),
+        json!({ "sql": "SELECT 区分, 予算 FROM \"予算\" ORDER BY 予算" }),
+    ))
+    .await;
+    let csv_schema = call(get(&env.app, &format!("/files/{}/tabular/schema", csv.id))).await;
+    // 片付け（作ったファイル）。
+    for id in [xlsx.id, csv.id] {
+        env.storage
+            .soft_delete_file(&env.ctx, id, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(schema.0, StatusCode::OK, "{:?}", schema.1);
+    assert_eq!(schema.1["columns"], json!(["日付", "品目", "金額"]));
+    assert_eq!(schema.1["header_row"], json!(4));
+    assert_eq!(
+        schema.1["sheets"],
+        json!([
+            { "name": "売上", "hidden": false, "data": true, "usable": true },
+            { "name": "マスタ", "hidden": true, "data": false, "usable": true },
+            { "name": "Data", "hidden": false, "data": false, "usable": false },
+            { "name": "予算", "hidden": false, "data": false, "usable": true },
+        ])
+    );
+    assert_eq!(budget.0, StatusCode::OK, "{:?}", budget.1);
+    assert_eq!(
+        budget.1["rows"],
+        json!([["経費", "5000"], ["出張", "10000"]])
+    );
+    assert_eq!(csv_schema.0, StatusCode::OK, "{:?}", csv_schema.1);
+    assert_eq!(csv_schema.1["sheets"], json!([]));
+    assert_eq!(csv_schema.1["header_row"], json!(null));
+}
+
+/// 集計の結果の大きさの上限（GAP-92・既定 8 MB）: 行の数の上限（10,000 行）より先に大きさの上限に当たる結果は、
+/// 上限を超える行の手前で打ち切り、truncated を立てる（total_rows は null）。グリッドのページは打ち切らない。
+#[tokio::test]
+async fn tabular_query_stops_before_the_result_size_limit() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    // 1 行が約 1 KB（rows と items で 2 倍）の 10,000 行。合わせて 10 MB ほどで、8 MB の上限に先に当たる。
+    let filler = "あ".repeat(160);
+    let body: String = (0..10_000)
+        .map(|i| format!("{tag}-{i:05}-{filler}\n"))
+        .collect();
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("大きい-{tag}.csv"),
+            format!("メモ\n{body}").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let query = call(post(
+        &format!("/files/{}/tabular/query", node.id),
+        json!({ "sql": "SELECT * FROM data ORDER BY 1" }),
+    ))
+    .await;
+    let page = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/rows?offset=0", node.id),
+    ))
+    .await;
+    env.storage
+        .soft_delete_file(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(query.0, StatusCode::OK, "{:?}", query.1);
+    assert_eq!(query.1["truncated"], json!(true));
+    assert_eq!(query.1["total_rows"], json!(null));
+    let rows = query.1["rows"].as_array().unwrap();
+    let columns = vec!["メモ".to_string()];
+    let size: u64 = rows
+        .iter()
+        .map(|r| {
+            let text: Vec<Option<String>> = vec![r[0].as_str().map(str::to_string)];
+            tabular::protocol::result_row_bytes(&columns, &text, &[r[0].clone()])
+        })
+        .sum();
+    let one = size / rows.len() as u64;
+    assert!(
+        rows.len() < 10_000 && size <= tabular::protocol::DEFAULT_MAX_RESULT_BYTES,
+        "{} 行・{size} バイト",
+        rows.len()
+    );
+    assert!(
+        size + one > tabular::protocol::DEFAULT_MAX_RESULT_BYTES,
+        "上限の手前まで返す: {size}"
+    );
+    assert_eq!(page.0, StatusCode::OK, "{:?}", page.1);
+    assert_eq!(
+        page.1["rows"].as_array().unwrap().len(),
+        1000,
+        "グリッドのページは打ち切らない"
+    );
+}
+
+/// Excel の「Unicode テキスト」（UTF-16LE・BOM 付き・タブ区切り・CRLF）の編集（BUG-144）。集計はタブで列を分けて
+/// 読む。編集も集計と同じ判定（隔離ランナーの区切りの推定）で区切りを決め、タブ区切り・CRLF・UTF-16LE と BOM の
+/// まま書き戻す。以前は区切りが「,」で決まっていたので、1 行が 1 列になり、2 列目の編集は範囲外で断られていた。
+#[tokio::test]
+async fn tabular_patch_keeps_the_tab_delimiter_of_excel_unicode_text() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let text = format!("品目\t金額\t番号\r\n交通費\t1200\t{tag}\r\n宿泊費\t9800\t2\r\n");
+    let utf16 = textenc::encode_like(&text, textenc::encoding_rs::UTF_16LE, true).unwrap();
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("一覧-{}.csv", Uuid::new_v4()),
+            &utf16,
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let id = node.id;
+    let query = call(post(
+        &format!("/files/{id}/tabular/query"),
+        json!({"sql": "SELECT \"品目\", \"金額\" FROM data ORDER BY \"金額\""}),
+    ))
+    .await;
+    let patched = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 1, "value": "1500"},
+            {"op": "row_insert", "at": 2, "values": ["日当", "3000", "3"]}
+        ]}),
+    ))
+    .await;
+    let (_, saved) = env
+        .storage
+        .read_file_internal(&env.ctx, id, None)
+        .await
+        .unwrap();
+    // 片付け（作った CSV）。
+    env.storage
+        .soft_delete_file(&env.ctx, id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(query.0, StatusCode::OK, "{:?}", query.1);
+    assert_eq!(query.1["columns"], json!(["品目", "金額"]));
+    assert_eq!(patched.0, StatusCode::OK, "{:?}", patched.1);
+    let edited = textenc::decode_text(&saved).unwrap();
+    assert_eq!(
+        (edited.encoding.name(), edited.bom, edited.text.as_str()),
+        (
+            "UTF-16LE",
+            true,
+            format!(
+                "品目\t金額\t番号\r\n交通費\t1500\t{tag}\r\n宿泊費\t9800\t2\r\n日当\t3000\t3\r\n"
+            )
+            .as_str()
+        ),
+        "タブ区切り・CRLF・UTF-16LE と BOM のまま保存する"
+    );
+}
+
+/// 新規 CSV の保存で同じ名前があるとき: 省略は今のまま 409（code は name_taken・BUG-150）で、`add_number` はノートと
+/// 同じ規則（`名前 (2).csv`）で空いている名前に保存する（ドライブの新規作成・D-112）。(50) まで埋まれば 409 の
+/// name_taken。
+#[tokio::test]
+async fn tabular_save_numbers_taken_names_when_asked() {
+    let Some(env) = setup().await else { return };
+    let folder = env
+        .storage
+        .create_folder(
+            &env.ctx,
+            None,
+            &format!("csv-name-{}", Uuid::new_v4().simple()),
+            None,
+        )
+        .await
+        .unwrap();
+    let save = |extra: Value| {
+        let mut body = json!({
+            "parent_id": folder.id,
+            "name": "無題のスプレッドシート",
+            "csv": "列1,列2\n,\n",
+        });
+        if let (Value::Object(b), Value::Object(e)) = (&mut body, extra) {
+            b.extend(e);
+        }
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(post("/tabular/save", body)).await.unwrap()).await }
+    };
+
+    let mut names = vec![];
+    for _ in 0..2 {
+        let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+        assert_eq!(st, StatusCode::OK, "{body:?}");
+        names.push(body["name"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        names,
+        [
+            "無題のスプレッドシート.csv",
+            storage::numbered_name("無題のスプレッドシート.csv", 2).as_str()
+        ]
+    );
+    assert_eq!(names[1], "無題のスプレッドシート (2).csv");
+    // 省略と fail は今のまま 409。名前の衝突は code の name_taken で言い、編集の重なり（rev の衝突）と分ける
+    // （画面が「CSV が他の編集で更新されました」と取り違えない・BUG-150）。
+    for extra in [json!({}), json!({ "on_name_taken": "fail" })] {
+        let (st, body) = save(extra).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+        assert_eq!(body["code"], "name_taken", "{body:?}");
+        assert!(body.get("current_rev").is_none(), "{body:?}");
+    }
+    // 番号を付けて保存は (50) まで埋まると、名前の衝突として断る（黙って上書きしない）。
+    for n in 3..=storage::MAX_NUMBERED_NAME {
+        let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+        assert_eq!(st, StatusCode::OK, "{n}: {body:?}");
+        assert_eq!(
+            body["name"],
+            storage::numbered_name("無題のスプレッドシート.csv", n)
+        );
+    }
+    let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["code"], "name_taken", "{body:?}");
+
+    env.storage
+        .soft_delete_folder(&env.ctx, folder.id, None)
+        .await
+        .unwrap();
+}
+
+/// ドライブのテキストの表示と編集（BUG-141・D-119）。文字コードはサーバーが決め、保存は元の文字コードと BOM の
+/// まま書き戻す（以前の画面は Shift_JIS のファイルを BOM の無い UTF-8 で保存していた）。改行コードは送られた
+/// とおり。元の文字コードに無い文字・文字コードを決められないファイルの保存・開いた後のほかの保存は、中身を変えずに
+/// 断る。
+#[tokio::test]
+async fn drive_text_edit_writes_back_in_the_original_encoding() {
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let memo = format!("交通費の精算\r\n期限は月末\r\n{tag}\r\n");
+    let (sjis, _, _) = SHIFT_JIS.encode(&memo);
+    let bom_csv = format!("品目,金額\n交通費,1200\n{tag},1\n");
+    let mut files = Vec::new();
+    for (name, bytes, ct) in [
+        ("メモ.txt", sjis.to_vec(), "text/plain"),
+        (
+            "表.csv",
+            textenc::encode_like(&bom_csv, UTF_8, true).unwrap(),
+            "text/csv",
+        ),
+        (
+            "unicode.txt",
+            textenc::encode_like(&memo, UTF_16LE, true).unwrap(),
+            "text/plain",
+        ),
+        (
+            "画像.txt",
+            [b"\x89PNG\r\n\x1a\n\x00".as_slice(), tag.as_bytes()].concat(),
+            "text/plain",
+        ),
+        (
+            "latin.txt",
+            [b"caf\xe9 ".as_slice(), tag.as_bytes()].concat(),
+            "text/plain",
+        ),
+        (
+            "大きい.txt",
+            [tag.as_bytes(), &vec![b'a'; 2 * 1024 * 1024 + 1]].concat(),
+            "text/plain",
+        ),
+    ] {
+        let node = env
+            .storage
+            .write_file_internal(&env.ctx, None, &format!("{tag}-{name}"), &bytes, ct, None)
+            .await
+            .expect("create file");
+        files.push(node);
+    }
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let text = |i: usize| call(get(&env.app, &format!("/files/{}/text", files[i].id)));
+    let save = |i: usize, text: &str, base: i64| {
+        call(put(
+            &format!("/files/{}/text", files[i].id),
+            json!({ "text": text, "base_version": base }),
+        ))
+    };
+    let raw = |i: usize| {
+        let storage = Arc::clone(&env.storage);
+        let ctx = env.ctx.clone();
+        let id = files[i].id;
+        async move { storage.read_file_internal(&ctx, id, None).await.unwrap() }
+    };
+
+    let opened = text(0).await;
+    let edited = format!("交通費の精算（4\u{301C}6月）\r\n期限は月末\r\n{tag}\r\n");
+    let saved = save(0, &edited, files[0].version).await;
+    let (after_save, sjis_saved) = raw(0).await;
+    let stale = save(0, "古い版の上に保存", files[0].version).await;
+    let unmappable = save(0, "絵文字😀", after_save.version).await;
+    let (after_refusal, sjis_after_refusal) = raw(0).await;
+    let csv_opened = text(1).await;
+    let csv_saved = save(
+        1,
+        &format!("品目,金額\n交通費,1500\n{tag},1\n"),
+        files[1].version,
+    )
+    .await;
+    let (_, csv_bytes) = raw(1).await;
+    let utf16_opened = text(2).await;
+    let utf16_text = format!("ユニコードの本文\r\n{tag}\r\n");
+    let utf16_saved = save(2, &utf16_text, files[2].version).await;
+    let (_, utf16_bytes) = raw(2).await;
+    let binary = text(3).await;
+    let latin = text(4).await;
+    let latin_saved = save(4, "café", files[4].version).await;
+    let too_large = text(5).await;
+    // 片付け（作ったファイル）。
+    for node in &files {
+        env.storage
+            .soft_delete_file(&env.ctx, node.id, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(opened.0, StatusCode::OK, "{:?}", opened.1);
+    assert_eq!(
+        (
+            &opened.1["text"],
+            &opened.1["encoding"],
+            &opened.1["bom"],
+            &opened.1["version"]
+        ),
+        (
+            &json!(memo),
+            &json!("Shift_JIS"),
+            &json!(false),
+            &json!(files[0].version)
+        ),
+        "Shift_JIS のファイルを文字化けせずに読む（改行コードはそのまま）"
+    );
+    assert_eq!(saved.0, StatusCode::OK, "{:?}", saved.1);
+    assert_eq!(saved.1["version"], files[0].version + 1);
+    let decoded = textenc::decode_text(&sjis_saved).unwrap();
+    assert_eq!(
+        (decoded.encoding.name(), decoded.bom, decoded.text.as_str()),
+        (
+            "Shift_JIS",
+            false,
+            format!("交通費の精算（4\u{FF5E}6月）\r\n期限は月末\r\n{tag}\r\n").as_str()
+        ),
+        "Shift_JIS のまま保存する（〜 は ～ にする）"
+    );
+    assert_eq!(stale.0, StatusCode::CONFLICT, "{:?}", stale.1);
+    assert_eq!(stale.1["code"], "version_conflict");
+    assert_eq!(stale.1["current_version"], after_save.version);
+    assert_eq!(unmappable.0, StatusCode::BAD_REQUEST, "{:?}", unmappable.1);
+    assert_eq!(unmappable.1["code"], "invalid_input");
+    assert_eq!(
+        unmappable.1["message"],
+        "「😀」は、このファイルの文字コード（Shift_JIS）では保存できません。別の文字に置き換えてください。"
+    );
+    assert_eq!(
+        after_refusal.version, after_save.version,
+        "断ったときは書かない"
+    );
+    assert_eq!(sjis_after_refusal, sjis_saved);
+
+    assert_eq!(csv_opened.0, StatusCode::OK, "{:?}", csv_opened.1);
+    assert_eq!(
+        (
+            &csv_opened.1["text"],
+            &csv_opened.1["encoding"],
+            &csv_opened.1["bom"]
+        ),
+        (&json!(bom_csv), &json!("UTF-8"), &json!(true)),
+        "BOM は中身に含めず、あったことを返す"
+    );
+    assert_eq!(csv_saved.0, StatusCode::OK, "{:?}", csv_saved.1);
+    assert_eq!(
+        csv_bytes,
+        textenc::encode_like(&format!("品目,金額\n交通費,1500\n{tag},1\n"), UTF_8, true).unwrap(),
+        "BOM を付けたまま保存する"
+    );
+    assert_eq!(
+        utf16_opened.1["encoding"], "UTF-16LE",
+        "{:?}",
+        utf16_opened.1
+    );
+    assert_eq!(utf16_saved.0, StatusCode::OK, "{:?}", utf16_saved.1);
+    assert_eq!(
+        utf16_bytes,
+        textenc::encode_like(&utf16_text, UTF_16LE, true).unwrap()
+    );
+    assert_eq!(binary.0, StatusCode::BAD_REQUEST, "{:?}", binary.1);
+    assert_eq!(
+        binary.1["message"],
+        "テキストではないため表示できません。ダウンロードして、お使いのアプリで開いてください。"
+    );
+    // 文字コードを決められないファイルは見るだけ（置き換え文字で読む）。保存は断る。
+    assert_eq!(latin.0, StatusCode::OK, "{:?}", latin.1);
+    assert_eq!(latin.1["encoding"], Value::Null);
+    assert!(latin.1["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("caf\u{FFFD} "));
+    assert_eq!(
+        latin_saved.0,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        latin_saved.1
+    );
+    assert!(latin_saved.1["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("このファイルの文字コードを決められないため、保存できません。"));
+    assert_eq!(too_large.0, StatusCode::BAD_REQUEST, "{:?}", too_large.1);
+    assert!(too_large.1["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("2 MB を超えるテキストは表示できません。"));
+}
+
+/// MS-DOS の頃の帳票（末尾に EOF の印の 0x1A・ログの色の指定の ESC）を含む Shift_JIS のテキストも、ドライブで表示・
+/// 保存できる（以前の画面でも見られた。UTF-8 と同じく NUL だけで「テキストではない」とする）。保存は Shift_JIS の
+/// まま、0x1A も残して書き戻す。
+#[tokio::test]
+async fn drive_text_reads_shift_jis_with_a_dos_eof_mark() {
+    use textenc::encoding_rs::SHIFT_JIS;
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let report = format!("売上日報\r\n\u{1B}[31m在庫少\u{1B}[0m\r\n{tag}\r\n\u{1A}");
+    let (sjis, _, _) = SHIFT_JIS.encode(&report);
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("{tag}-日報.txt"),
+            &sjis,
+            "text/plain",
+            None,
+        )
+        .await
+        .expect("create file");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let opened = call(get(&env.app, &format!("/files/{}/text", node.id))).await;
+    let edited = format!("売上日報（修正）\r\n\u{1B}[31m在庫少\u{1B}[0m\r\n{tag}\r\n\u{1A}");
+    let saved = call(put(
+        &format!("/files/{}/text", node.id),
+        json!({ "text": edited, "base_version": node.version }),
+    ))
+    .await;
+    let (_, bytes) = env
+        .storage
+        .read_file_internal(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+    // 片付け（作ったファイル）。
+    env.storage
+        .soft_delete_file(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(opened.0, StatusCode::OK, "{:?}", opened.1);
+    assert_eq!(
+        (&opened.1["text"], &opened.1["encoding"]),
+        (&json!(report), &json!("Shift_JIS"))
+    );
+    assert_eq!(saved.0, StatusCode::OK, "{:?}", saved.1);
+    let (want, _, _) = SHIFT_JIS.encode(&edited);
+    assert_eq!(
+        bytes,
+        want.to_vec(),
+        "Shift_JIS のまま、0x1A も残して保存する"
+    );
+    assert_eq!(bytes.last(), Some(&0x1A));
+}
+
 async fn create_csv(env: &Env, body: &[u8]) -> Uuid {
     let name = format!("join-{}.csv", Uuid::new_v4());
     env.storage
@@ -688,13 +1522,25 @@ async fn query(env: &Env, id: Uuid, body: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn tabular_query_joins_multiple_csv() {
     let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    // tag の列は JOIN にも結果にも使わない。
+    let tag = Uuid::new_v4().simple().to_string();
     let orders = create_csv(
         &env,
-        b"order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n",
+        format!("order_id,customer_id,amount,tag\n1,10,100,{tag}\n2,20,50,{tag}\n3,10,30,{tag}\n")
+            .as_bytes(),
     )
     .await;
-    let customers = create_csv(&env, b"customer_id,name\n10,alice\n20,bob\n").await;
-    let regions = create_csv(&env, b"name,region\nalice,tokyo\nbob,osaka\n").await;
+    let customers = create_csv(
+        &env,
+        format!("customer_id,name,tag\n10,alice,{tag}\n20,bob,{tag}\n").as_bytes(),
+    )
+    .await;
+    let regions = create_csv(
+        &env,
+        format!("name,region,tag\nalice,tokyo,{tag}\nbob,osaka,{tag}\n").as_bytes(),
+    )
+    .await;
     let sql = "SELECT c.name, r.region, sum(o.amount) AS total FROM data o \
                JOIN customers c ON o.customer_id = c.customer_id \
                JOIN regions r ON r.name = c.name \
@@ -771,8 +1617,16 @@ async fn tabular_query_joins_multiple_csv() {
 #[tokio::test]
 async fn tabular_query_rejects_inputs_over_budget() {
     let Some(env) = setup().await else { return };
-    let a = create_csv(&env, b"k,v\n1,aaaaaaaaaa\n").await;
-    let b = create_csv(&env, b"k,w\n1,bbbbbbbbbb\n").await;
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let a_body = format!("k,v\n1,a{tag}\n");
+    let b_body = format!("k,w\n1,b{tag}\n");
+    let a = create_csv(&env, a_body.as_bytes()).await;
+    let b = create_csv(&env, b_body.as_bytes()).await;
+    // 予算は合計より 1 バイト少なくする（どちらのファイルも単独では予算内で、合計だけが超える）。tag の長さで判定は
+    // 変わらない。
+    let budget = (a_body.len() + b_body.len() - 1) as u64;
+    assert!(a_body.len() as u64 <= budget && b_body.len() as u64 <= budget);
     let small = tabular::TabularService::new(
         Arc::clone(&env.storage),
         tabular::RunnerConfig::new(
@@ -780,7 +1634,7 @@ async fn tabular_query_rejects_inputs_over_budget() {
             Duration::from_secs(20),
         ),
         tabular::Quotas {
-            max_query_input_bytes: 20,
+            max_query_input_bytes: budget,
             ..tabular::Quotas::default()
         },
     );
@@ -822,12 +1676,195 @@ async fn tabular_query_rejects_inputs_over_budget() {
     assert_eq!(ok.rows.len(), 1);
 }
 
+/// 入力の予算は、文字コードを UTF-8 に直した後の大きさでも確かめる（GAP-45 と #1037 の重なり）。Shift_JIS の
+/// 全角は UTF-8 にすると 2 バイトが 3 バイトになるので、元の合計が予算内でも、ランナーに渡す一時ファイルの合計が
+/// 予算を超えれば拒否する。
+#[tokio::test]
+async fn tabular_query_budget_counts_inputs_after_conversion() {
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。tag は ASCII なので、Shift_JIS と UTF-8 で
+    // 同じ大きさになり、直した後に増える分（全角の 40 文字ぶん）は変わらない。
+    let tag = Uuid::new_v4().simple().to_string();
+    let text = format!("k,v\n1,{}{tag}\n", "経費精算".repeat(10));
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(&text);
+    let other = format!("k,w\n1,b{tag}\n");
+    let other = other.as_bytes();
+    let a = create_csv(&env, &sjis).await;
+    let b = create_csv(&env, other).await;
+    let original = (sjis.len() + other.len()) as u64;
+    let converted = (text.len() + other.len()) as u64;
+    assert!(original < converted, "{original} < {converted}");
+    let service = |budget: u64| {
+        tabular::TabularService::new(
+            Arc::clone(&env.storage),
+            tabular::RunnerConfig::new(
+                env.runner.to_string_lossy().to_string(),
+                Duration::from_secs(20),
+            ),
+            tabular::Quotas {
+                max_query_input_bytes: budget,
+                ..tabular::Quotas::default()
+            },
+        )
+    };
+    let tables = [tabular::TableRef {
+        name: "other".into(),
+        file_id: b,
+    }];
+    let sql = "SELECT * FROM data JOIN other USING (k)";
+    let res = service(original)
+        .query_tables(&env.ctx, a, &tables, sql, None)
+        .await;
+    assert!(
+        matches!(res, Err(tabular::TabularError::QuotaExceeded(_))),
+        "UTF-8 に直した合計が予算超過なら拒否: {res:?}"
+    );
+    let ok = service(converted)
+        .query_tables(&env.ctx, a, &tables, sql, None)
+        .await
+        .expect("直した後の合計が予算内");
+    assert_eq!(ok.rows.len(), 1);
+}
+
+/// Excel の主ファイルに表を足す要求と、Excel を表として足す要求は、名前と Content-Type の両方が Excel のブックを指すなら
+/// 本体を取得する前に断る（M5）。片方だけが Excel を指すものと、名前と Content-Type が CSV のままで中身が Excel のものは、
+/// 取得した後に中身で確かめて同じく断る。名前だけ .xlsx の CSV（ワークフローの保存で作れる）は、中身で CSV と決めて
+/// 表を足しても読む（表の有無で同じファイルの扱いを変えない）。
+#[tokio::test]
+async fn tabular_query_refuses_excel_tables_before_fetching() {
+    let Some(env) = setup().await else { return };
+    let counting = Arc::new(CountingStore {
+        inner: Arc::clone(&env.object_store),
+        gets: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let storage = Arc::new(storage::StorageService::new(
+        env.pool.clone(),
+        Arc::clone(&counting) as Arc<dyn storage::ObjectStore>,
+        Arc::clone(&env.authz) as Arc<dyn AuthzClient>,
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        64 * 1024 * 1024,
+    ));
+    let service = tabular::TabularService::new(
+        Arc::clone(&storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas::default(),
+    );
+    let gets = || counting.gets.load(std::sync::atomic::Ordering::SeqCst);
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let zip = [b"PK\x03\x04".as_slice(), tag.as_bytes()].concat();
+    let write = |name: String, bytes: Vec<u8>, content_type: &'static str| {
+        let storage = Arc::clone(&storage);
+        let ctx = env.ctx.clone();
+        async move {
+            storage
+                .write_file_internal(&ctx, None, &name, &bytes, content_type, None)
+                .await
+                .expect("create file")
+                .id
+        }
+    };
+    let book = write(
+        format!("売上-{tag}.xlsx"),
+        zip.clone(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    .await;
+    let csv = write(
+        format!("経費-{tag}.csv"),
+        format!("k\n{tag}\n").into_bytes(),
+        "text/csv",
+    )
+    .await;
+    let table = |name: &str, file_id: Uuid| tabular::TableRef {
+        name: name.into(),
+        file_id,
+    };
+    let sql = "SELECT * FROM data";
+
+    let res = service
+        .query_tables(&env.ctx, book, &[table("other", csv)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには、ほかの CSV を表として足せません")),
+        "主ファイルが Excel: {res:?}"
+    );
+    let res = service
+        .query_tables(&env.ctx, csv, &[table("book", book)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+        "表が Excel: {res:?}"
+    );
+    assert_eq!(gets(), 0, "本体を取得する前に断る");
+
+    // Content-Type だけが Excel のもの（名前に拡張子が無い）と、名前と Content-Type は CSV のまま中身が Excel のもの:
+    // 取得した後に中身で確かめて断る（同じ文言）。
+    let typed = write(
+        format!("売上-{tag}"),
+        [zip.as_slice(), b"-typed"].concat(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    .await;
+    let disguised = write(
+        format!("偽-{tag}.csv"),
+        [zip.as_slice(), b"-disguised"].concat(),
+        "text/csv",
+    )
+    .await;
+    for file_id in [typed, disguised] {
+        let res = service
+            .query_tables(&env.ctx, csv, &[table("book", file_id)], sql, None)
+            .await;
+        assert!(
+            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+            "中身が Excel: {res:?}"
+        );
+        let res = service
+            .query_tables(&env.ctx, file_id, &[table("other", csv)], sql, None)
+            .await;
+        assert!(
+            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには")),
+            "中身が Excel の主ファイル: {res:?}"
+        );
+    }
+    assert!(gets() > 0, "中身で決める確かめは取得の後");
+
+    // 名前だけ .xlsx で中身が CSV のもの（Content-Type は種類の分からないファイル）: 取得して中身で CSV と決めるので、
+    // 表として足しても、表を足す主ファイルにしても読める。
+    let named = write(
+        format!("単価-{tag}.xlsx"),
+        format!("k\n{tag}\n").into_bytes(),
+        "application/octet-stream",
+    )
+    .await;
+    let join = "SELECT d.k FROM data d JOIN master m ON d.k = m.k";
+    for (primary, joined) in [(csv, named), (named, csv)] {
+        let res = service
+            .query_tables(&env.ctx, primary, &[table("master", joined)], join, None)
+            .await
+            .expect("中身が CSV なら表を足せる");
+        assert_eq!(res.rows.len(), 1, "{res:?}");
+    }
+
+    // 表を足さなければ、Excel の主ファイルは今までどおり取得して読む（前倒しの確かめは表を足すときだけ）。
+    let before = gets();
+    let _ = service.query_tables(&env.ctx, book, &[], sql, None).await;
+    assert!(gets() > before, "表を足さない集計は Excel も取得する");
+}
+
 /// #1037: 確認したサイズを上限にした取得は、確認後に大きい版へ差し替わったらダウンロード前に拒否する
 /// （複数 CSV クエリの入力予算を、メタデータ確認と取得の間の差し替えでも破らせない）。
 #[tokio::test]
 async fn bounded_read_rejects_file_grown_after_check() {
     let Some(env) = setup().await else { return };
-    let id = create_csv(&env, b"k\n1\n").await;
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let id = create_csv(&env, format!("k\n{tag}\n").as_bytes()).await;
     let checked = env
         .storage
         .get_metadata(&env.ctx, id, None)
@@ -843,7 +1880,7 @@ async fn bounded_read_rejects_file_grown_after_check() {
         .expect("bounded read");
     assert_eq!(bytes.len() as i64, checked);
     // 確認後に大きい版へ差し替わる → 同じ上限では拒否される。
-    let grown = format!("k\n{}\n", "9".repeat(4096));
+    let grown = format!("k\n{tag}\n{}\n", "9".repeat(4096));
     env.storage
         .update_file_content_internal(&env.ctx, id, grown.as_bytes(), "text/csv", None)
         .await

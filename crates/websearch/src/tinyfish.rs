@@ -218,13 +218,13 @@ mod tests {
     async fn sends_key_and_japanese_locale_and_parses_hits() {
         let (url, req) = one_shot(
             "200 OK",
-            r#"{"results":[{"title":"警察庁","snippet":"交通安全","url":"https://www.npa.go.jp/"}]}"#,
+            r#"{"results":[{"title":"架空市の交通案内","snippet":"交通の案内","url":"https://traffic.example.jp/"}]}"#,
         )
         .await;
         let p = TinyfishSearchProvider::new(reqwest::Client::new(), "k-123".into(), Some(url));
         let hits = p.search(&ctx(), "交通事故 対策", 8).await.unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].url, "https://www.npa.go.jp/");
+        assert_eq!(hits[0].url, "https://traffic.example.jp/");
         let req = req.await.unwrap().to_ascii_lowercase();
         assert!(req.contains("x-api-key: k-123"), "{req}");
         assert!(

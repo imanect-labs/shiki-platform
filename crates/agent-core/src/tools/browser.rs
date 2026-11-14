@@ -2,7 +2,7 @@
 //!
 //! JS を実行しないテキストエンジン（`crates/browser`）でページを開き、リンクをたどり、フォームを操作する。
 //! web_fetch と同じく全モードで事前許可にする（`READ_ONLY`）ため、**持ち出しになり得る操作はこのツールが自分で拒否する**
-//! （承認ゲートと事前許可はツール名だけで決まり、入力を見ない・§6.1・PIT-79）。
+//! （承認ゲートと事前許可はツール名だけで決まり、入力を見ない・§6.1・PIT-87）。
 //!
 //! # 通す操作と拒む操作
 //!
@@ -134,14 +134,19 @@ impl BrowserTool {
     /// 本番の構成（JS 非実行のテキストエンジン・解決後 IP は公開アドレスのみ）。
     ///
     /// エンジンには窓の数倍まで本文を持たせ、続きは `offset` で読ませる（browser.md §4）。
+    /// `proxy` は運用者の外への通信の中継（`egress.proxy_url`・GAP-72）。web_fetch と同じものを渡す。
     #[must_use]
-    pub fn text(user_urls: Vec<Url>) -> Self {
+    pub fn text(
+        user_urls: Vec<Url>,
+        proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
+    ) -> Self {
         let limits = browser::TextLimits {
             max_chars: DEFAULT_WINDOW_CHARS * ENGINE_WINDOWS,
             ..browser::TextLimits::default()
         };
         let engine =
-            browser::TextEngine::new(Arc::new(sandbox_client::net_guard::SystemResolver), limits);
+            browser::TextEngine::new(Arc::new(sandbox_client::net_guard::SystemResolver), limits)
+                .with_proxy(proxy);
         Self::new(Arc::new(engine), user_urls)
     }
 
@@ -184,7 +189,7 @@ impl BrowserTool {
         let state = &mut *guard;
         let session = match &mut state.session {
             Some(s) => {
-                // run 単位のツールなので主体は変わらないはず。変わったら jar を使い回さない（PIT-80）。
+                // run 単位のツールなので主体は変わらないはず。変わったら jar を使い回さない（PIT-88）。
                 let owner = s.auth_context();
                 if owner.tenant_id() != ctx.tenant_id()
                     || owner.principal().id != ctx.principal().id

@@ -6,7 +6,10 @@
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
 mod bundle;
-mod egress_guard;
+mod client_repair;
+mod function_failure;
+mod function_http;
+mod function_status;
 mod functions;
 mod install;
 mod install_ops;
@@ -17,11 +20,16 @@ mod skill_catalog_queries;
 mod skill_import;
 mod skill_install;
 mod store;
+mod table_roles;
 mod trusted_key;
 mod usage;
 mod validate;
+mod yank;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
+pub use client_repair::ClientRepairProgress;
+pub use function_failure::FunctionFailure;
+pub use function_status::{AppFunctionFailure, FunctionFailureStore, FunctionTrigger};
 pub use functions::{
     egress_allowed, FunctionActor, FunctionInvocation, FunctionOutcome, FunctionRunner,
 };
@@ -34,9 +42,19 @@ pub use registry::{NewRegistryEntry, Registry, RegistryEntry};
 pub use sign::{sign_digest, sign_manifest, verify_digest_signature, verify_manifest_signature};
 pub use skill_install::{InstalledSkillSummary, SkillInstallService, SkillInstallation};
 pub use store::{manifest_digest, registry_signing_digest, value_digest, MiniAppCodeStore};
+pub use table_roles::{
+    AppTable, AppTableAccess, AppTableRoles, AppTableRolesChange, MAX_TABLE_ROLE_CHANGES,
+};
 pub use trusted_key::{TrustedKey, TrustedKeyStore};
 pub use usage::{AppUsage, AppUsageStore};
 pub use validate::validate_manifest;
+
+/// 公開を取り下げた版をインストールしようとしたときの文言（利用者に見せる・GAP-69b）。
+///
+/// [`InstallService::install`] と [`SkillInstallService::install`] は、取り下げた版にこの文言の
+/// [`AppPlatformError::Conflict`] を返す。api はこの文言の 409 だけを、`yanked` の code と文言つきで返す（ほかの 409 の
+/// 文言は内部の詳細を含みうるので返さない）。文言はここだけに書く。
+pub const YANKED_VERSION: &str = "この版は公開が取り下げられたため、インストールできません。";
 
 /// ミニアプリ基盤のエラー。
 #[derive(Debug, thiserror::Error)]
@@ -91,10 +109,11 @@ impl From<data::DataError> for AppPlatformError {
 pub(crate) fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
     use artifact::ArtifactError as AE;
     match e {
-        AE::NotFound => AppPlatformError::NotFound,
+        // 公開していない版（ミニアプリの下書き・D-16）は、コードのアプリの面からは見つからないのと同じ。
+        AE::NotFound | AE::NotPublished { .. } => AppPlatformError::NotFound,
         AE::Forbidden => AppPlatformError::Forbidden,
         AE::Invalid(m) => AppPlatformError::Invalid(m),
-        AE::Conflict(m) => AppPlatformError::Conflict(m),
+        AE::Conflict(r) => AppPlatformError::Conflict(r.to_string()),
         AE::Internal(m) => AppPlatformError::Internal(format!("artifact: {m}")),
     }
 }
@@ -119,7 +138,9 @@ mod tests {
             AppPlatformError::Invalid(_)
         ));
         assert!(matches!(
-            map_artifact(AE::Conflict("x".into())),
+            map_artifact(AE::Conflict(artifact::ConflictReason::NameTaken {
+                kind: artifact::ArtifactKind::MiniAppCode
+            })),
             AppPlatformError::Conflict(_)
         ));
         // Internal は原文脈を残してラップする。

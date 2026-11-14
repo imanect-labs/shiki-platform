@@ -39,7 +39,7 @@ shiki script は次の 3 つの用途（顔）を持つが、**同一言語・�
 
 ### 1.3 script は durable にならない
 
-1 実行は**有界**（wall-clock 上限 360s＝初期値・設定可・§4）。「3 日待つ」「リトライ」「補償」はすべて**ノード境界＝engine の仕事**であり（[miniapp-platform.md](../miniapp-platform.md) §2.1・durability はノード境界にのみ存在する）、script 内に long await を書く構文は**存在しない**。そもそも非同期 API 自体がない（§2・§5 の同期橋渡し）。長時間・多パッケージ・任意プロセスが要る処理は script の守備範囲外であり、`agent.invoke` ノード（サンドボックス）へ昇格させる（すみ分け: script＝ms 級起動のグルーコード／サンドボックス＝何でもできる重量級・[miniapp-platform.md](../miniapp-platform.md) §2.4）。
+1 実行は**有界**（wall-clock 上限 360s＝初期値・設定可・§4）。「3 日待つ」「リトライ」「補償」はすべて**ノード境界＝engine の仕事**であり（[miniapp-platform.md](../miniapp-platform.md) §2.1・durability はノード境界にのみ存在する）、script 内に long await を書く構文は**存在しない**。そもそも非同期 API 自体がない（§2・§5 の同期橋渡し）。長時間・多パッケージ・任意プロセスが要る処理は script の守備範囲外であり、`sandbox.exec` ノード（予約）か AI エージェント（`agent.invoke`）の道具 `code.run` へ昇格させる（すみ分け: script＝ms 級起動のグルーコード／サンドボックス＝何でもできる重量級・[miniapp-platform.md](../miniapp-platform.md) §2.4）。
 
 ---
 
@@ -48,7 +48,7 @@ shiki script は次の 3 つの用途（顔）を持つが、**同一言語・�
 - **構文**: TypeScript 構文を **swc（Rust）でパース**する。型注釈は**チェックせず剥がすだけ**（型検査は v1 でやらない。エディタ側の TS language service 支援は将来課題）。emit ターゲットは **ES2020**。
 - **エントリ**: トップレベルに `function main(input) { ... return <JSON 値>; }` を必須とする。ヘルパー関数・トップレベル `const` は可。
 - **禁止構文（保存時に [ir.md](./ir.md) §8 V6 で拒否）**: `import` / `export` / `async` / `await` / トップレベル `return` / `with`。`eval` / `new Function` は**ランタイムで無効化**する（QuickJS 設定）。
-- **決定論は要求しない**: `Date.now()` / `Math.random()` は使用可。決定論リプレイ型 durability（Temporal 型）を採らなかったためであり、契約は **at-least-once ＋冪等キー**（[engine.md](./engine.md) §7）。この判断の背景は [README.md](./README.md) の FAQ に往復リンクする。
+- **決定論は要求しない**: `Date.now()` / `Math.random()` は使用可。決定論リプレイ型 durability（Temporal 型）を採らなかったためであり、契約は **at-least-once ＋冪等キー**（[engine.md](./engine.md) §7）。この判断の背景は [README.md](./README.md) の FAQ に往復リンクする。ただし、副作用（内部能力の書込・送り先の状態を変えうる `Shiki.http.request`）の順序と内容は、その値で変えない（動かし直したときに前の記録と内容が合わず `effect_conflict` で失敗する・§7）。
 - **標準ライブラリ**: QuickJS 組込（`JSON` / `Math` / `Date` / `String` / `RegExp` / `Array` 等）。`fetch` / `XMLHttpRequest` / タイマー（`setTimeout` 等）/ `console` は**存在しない**。`console` の代替は `Shiki.log`（§6）。**npm import は v1 不可**（標準ライブラリ＋ `Shiki.*` のみ）。
 
 ### 2.1 正しい `main` の例
@@ -280,7 +280,7 @@ Shiki.data.query(tableId: string, q: DataQuery): QueryResult;   // { items, next
 Shiki.data.get(tableId: string, recordId: string): DataRecord;   // { id, rev, data, ... }
 
 // 実行主体が viewer のテーブル一覧
-Shiki.data.listTables(): { items: { id: string; name: string }[] };
+Shiki.data.listTables(): { items: { id: string; name: string }[]; truncated: boolean };  // truncated: 載らなかったテーブルがあるかもしれない
 ```
 
 - 認可: 行レベル述語・フィールドマスクは能力ゲートウェイ側で適用（ゲストは post-mask 済みの行しか受け取らない）。
@@ -314,13 +314,26 @@ Shiki.data.transition(tableId: string, recordId: string, to: string, expectedRev
 
 ```typescript
 Shiki.storage.read(fileRef: string): { bytes: Uint8Array; contentType: string }; // ≤4MB（初期値・ブリッジ応答上限 §4.3 と一致）
-Shiki.storage.list(folderRef: string): { entries: { id: string; name: string; kind: "file" | "folder" }[] };
-Shiki.storage.write(folderRef: string, name: string, bytes: Uint8Array, contentType?: string): { fileRef: string; version: number };
+Shiki.storage.list(folderRef?: string | null, cursor?: string | null): {
+  items: { id: string; name: string; kind: "file" | "folder"; size: number | null }[]; // 名前の順・最大 100 件
+  truncated: boolean;          // 続きがあるとき true
+  next_cursor: string | null;  // 続きの位置（cursor に渡すと続きを読む・続きが無ければ null）
+};
+Shiki.storage.write(folderRef: string | null | undefined, name: string, bytes: Uint8Array, contentType?: string): { fileRef: string; version: number };
 ```
 
-- `write` は新バージョンを作る（engine-dedup）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
-- `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `agent.invoke`（サンドボックスの仮想 FS）へ昇格させる。
+- `write` の `folderRef` を省くか null ならドライブのトップに置き、UUID でない値（フォルダーの名前・パス・数・オブジェクト・空の文字）は
+  `invalid` で断る（ドライブのトップへ黙って書かない。トップのファイルは親フォルダーの共有を受け継がないので、渡すつもりの
+  フォルダーの人に届かないまま成功に見えた・BUG-198。`list` と同じ）。
+- `write` は新しいファイルを作る（engine-dedup）。既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前のファイルがあると `name_taken` で失敗する（ワークフローの `storage.write` の `on_name_taken` に当たる引数は無い・BUG-97・D-112）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
+- `list` はワークフローの `storage.list` と同じ結果を返す（ir.md §7）。`folderRef` を省くか null ならドライブのトップを一覧にし、
+  UUID でない値は `invalid` で断る（ドライブのトップへ黙って落とさない）。`cursor` に前の結果の `next_cursor` を渡すと続きを読み、
+  省略・null・空の文字は先頭から。続きの位置はテナントと一覧（フォルダー）に束縛した不透明な文字列で、別のフォルダーの位置・
+  読めない位置は `invalid`。2 つ目の引数はゲスト wasm を再ビルドせず前置き JS（`script_runtime::prelude`）で足す（D-131）。
+- `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `sandbox.exec` ノード（予約・サンドボックスの仮想 FS）へ昇格させる。
 - エラー: サイズ超過は `payload_too_large`、権限不足は `permission_denied`。
+- `read` は文章のファイルだけを読む。PDF・Office・画像などは `not_text_file` で断り、文言は script の作者向けに、前に「ファイルを
+  読む」ブロック（社内文書の検索に取り込まれた本文を読む）を置いてその結果を script の入力に渡す組み方を言う（BUG-158）。
 
 ### 6.5 `Shiki.rag.search`（`rag.query`）
 
@@ -346,23 +359,31 @@ Shiki.notify.send(to: { user?: string; role?: string }, msg: { title: string; bo
 Shiki.http.request(req: {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;                                 // ホスト部の allowlist・宛先束縛はエンジン側で強制
-  headers?: Record<string, string>;
+  headers?: Record<string, string>;            // 書いたとおりに送る（決まりは下・BUG-179）
   body?: string | Record<string, unknown>;     // object は JSON 化
   secret?: {                                    // ← 参照名のみ。平文はゲストに存在しない
     name: string;                               // 例: "slack-bot-token"
     attach: { kind: "bearer" } | { kind: "header"; header: string };
   };
-  redirect?: "deny" | "follow_stripped";        // 既定 deny
+  redirect?: "deny";                            // 既定 deny（follow_stripped は未実装・ほかの値は invalid）
 }): {
   status: number;
-  headers: Record<string, string>;              // 許可リストのみ
+  headers: Record<string, string>;              // 許可リストのみ（未実装・いまは返さない）
+  host: string;                                 // 送り先のホスト（照合したもの）
   body: unknown;                                // JSON なら parse・そうでなければ text・≤1MB（初期値）
 };
 ```
 
+- **`headers` は作成者が書いたとおりに送る**（以前は黙って捨てていた・BUG-179）。次のものは送らずに `invalid` で断る（黙って捨てない）。
+  - Shiki が決めるヘッダー: `Host`・`Content-Length`・`Transfer-Encoding`・`Connection`・`Keep-Alive`・`Proxy-Connection`・`Proxy-Authorization`・`TE`・`Trailer`・`Upgrade`・`Expect`・`Accept-Encoding`（大文字と小文字は区別しない）。`Host` を変えると宛先の照合（URL のホスト部）と違う相手に届きうる。応答は圧縮を解かずに読むので `Accept-Encoding` も書けない。断った呼び出しは監査に残す（reason `header_not_allowed`）。
+  - シークレットを付けるヘッダー（`bearer` なら `Authorization`、`header` ならその名前）と同じ名前。シークレットを使わないなら `Authorization` も書ける。`secret.attach.header` も同じ決まりで確かめ、Shiki が決めるヘッダーには付けられない。
+  - 名前が HTTP の token でない・64 字を超える。値が文字でない・制御文字（タブを除く）を含む（改行でヘッダーを差し込ませない）・4 KB を超える。同じ名前が 2 つ（大文字と小文字は区別しない）。20 個を超える。名前と値を合わせて 8 KB を超える。
+- `Idempotency-Key` と `Content-Type` を書いたら、Shiki が付ける値（呼び出しごとの冪等キー・本文があるときの `application/json`）の代わりにそれを送る。書かなければ、これまでどおり Shiki が付ける。
+
+- 送れる先と、名前解決の後のアドレスの確認（内部のネットワークへは送らない。管理者がデプロイ設定 `workflow.http_internal_hosts` にそのホストを書いたときだけ送れ、リンクローカル・メタデータは送らない）と、外へ出るのに中継が要る環境での中継（`egress.proxy_url`・GAP-72）の扱いは、http.request ノードと同じ（[ir.md](./ir.md) §7.2・[engine.md](./engine.md) §7.4・BUG-181・D-135）。API キーなどの鍵は script に書かず、`secret` で付ける（書いた値は IR と版の履歴に残り、ワークフローを見られる人に見える・GAP-19）。
 - **`Shiki.http.request({ secret: { name } })` は参照名のみを渡す。** シークレットの解決・宛先束縛検証（PIT-36）・注入は**エンジン側で行い、http.request ノードと同一実装を通る**（二重実装しない）。平文がゲストメモリに乗る経路はレスポンス経由を含め存在しない（レスポンスに反射するのは外部サービスの責任範囲外であり、レダクトは run 履歴側で実施する）。
-- リダイレクトは既定 deny。`follow_stripped` 時はシークレットを剥がし再検証する（PIT-36）。
-- exactly-once は**約束しない**（外部副作用・best-effort）。冪等性は `Idempotency-Key` ヘッダ注入支援のみ（[engine.md](./engine.md) §7）。
+- リダイレクトは追わない（3xx は `redirect_denied` で失敗）。`redirect` に書けるのは `"deny"` だけで、省略・null も同じ。`follow_stripped`（追従時にシークレットを剥がし再検証する・PIT-36）は未実装で、ほかの値は送らずに `invalid` で断る（以前は redirect を読まず、何を書いても黙って deny として扱っていた・GAP-27）。
+- exactly-once は**約束しない**（外部副作用・best-effort）。冪等性は `Idempotency-Key` ヘッダ注入支援（[engine.md](./engine.md) §7）。ただし、送り先の状態を変えうる呼び出し（GET・HEAD・OPTIONS 以外）で相手が誤り（400 以上）を返さなかったものは、試す回数と呼び出し連番のキーで結果を効果の記録に残し、リースが切れて同じ試行を拾い直したときは送り直さずに記録した応答を返す（GAP-28）。やり直しと再開は新しい試行なので送り直す（2xx の応答の中身を見て失敗にした script が、原因を直した再開で新しい応答を受け取れる。`Idempotency-Key` は試行によらず同じ）。拾い直した script が同じ連番で別の内容（方法・URL・本文・シークレットの名前）を送ろうとすると、送らずに `effect_conflict` で失敗する（再開は今の内容で送る）。前の実行が送っている途中で落ちた呼び出しは、送り直さずに `http_delivery_unknown` の誤りを返す。前の実行がまだ送っている途中（`effect_in_progress`）の誤りは、script が捕まえても step をその code で失敗にして待つ（後の `Shiki.*` も断る）。
 
 ### 6.8 `Shiki.workflow.start`（`workflow.start`）
 
@@ -386,7 +407,20 @@ Shiki.context: { runId: string; workflowId: string; nodeId: string; attempt: num
 Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 ```
 
-- **エラー表現**: 能力エラーは JS 例外 `ShikiError { code, retryable }` として throw される。`retryable` は engine のリトライ分類（`retryable` / `permanent` / `rate_limited`）に接続する。`Shiki.fail(msg, { permanent: true })` は残 attempt があっても即 failed にする。
+- **エラー表現**: 能力エラーは JS 例外 `ShikiError { code, retryable }` として throw される。捕まえずに `main` から投げ返された能力エラーは、
+  ホストが返した `code`・`retryable`・文のまま step の失敗になり、engine のリトライ分類（`retryable` / `permanent` / `rate_limited` / `wait`）と
+  失敗の分類（engine.md §11.4）に接続する（D-121・BUG-136）。
+  - ゲストの結果エンベロープは例外の文しか運ばない（`code` は常に `internal`・[script-runtime-guest.md](../script-runtime-guest.md)）ので、
+    ゲストは変えずにホスト側で写す: ホストは 1 実行の中で返した誤りを記録し、投げ返された例外の文（`Error: <文>` に続くスタックの行）が
+    そのどれかの文と一致すれば、その誤りとみなす（いちばん後のもの）。エンベロープの `code`・`retryable` は使わない（ゲストの中の値は
+    作成者が書き換えられるので、ホストが実際に返した誤りだけを信じる）。
+  - 捕まえて同じ例外を投げ直したもの（`catch (e) { throw e; }`）はホストの誤りのまま。文を変えて投げ直したもの・作成者が投げたもの
+    （`throw`・`Shiki.fail`・`TypeError` などの書き誤り）は `script_error`（設定の誤り・やり直さない・再開しても同じ結果）になる
+    （BUG-137）。`Shiki.fail` の `permanent` を省いても、やり直しはしない（いまの挙動のまま）。
+  - 要求が大きすぎる・応答をゲストのメモリに置けない呼び出し（ゲストには `host returned empty`）は `resource`。
+  - やり直せる `code`（`unavailable` など）を投げ返すと、step の `retry` の範囲で script ごと動かし直す。内部能力の副作用は
+    §7 の host 側 dedupe で高々 1 回だが、外部 http（`Shiki.http.request`）は前に成功した送信も**もう一度送られる**
+    （`Idempotency-Key` を守る相手だけが 1 回にできる）。
 - `Shiki.context.idempotencyKey` は冪等にしたい副作用の相関に使う（内部能力は host 側 dedupe が既定で効く・http は明示ヘッダ）。
 
 ---
@@ -397,10 +431,15 @@ Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 
 - **入力**: `params.input` を解決した JSON（`$from` 解決済み・[ir.md](./ir.md) §3）が `main(input)` に渡る。
 - **出力**: `main` の戻り値（JSON 化可能・≤256KB＝初期値）が step output になる。JSON 化不能・上限超過は step 失敗。
+  上限超過は作成者が直す誤り（code `invalid`・やり直さない）で、文言は戻り値の大きさと上限（`MAX_RESULT_BYTES` から作る）と
+  直し方（返す項目を絞る・行を分けて返す）を言う。ワークフローの `script.run` では、テーブルに書く行を包んで返す書き方で当たるので、
+  戻り値の大きさから決めた数 N（それぞれの戻り値が上限に収まる数・2 つ以上）に行を分けて包む `script.run` を N 個置き
+  （k 個目は `Math.ceil(i.items.length / N)` から自分の範囲を計算する）、それぞれの結果を別の `data.bulk_upsert` に渡す
+  書き方と、1 つの `data.bulk_upsert` に渡せる行の数の上限も言う（BUG-264。以前は `internal`・英語の「result too large」）。
 - **タイムアウト・リトライ**: ノードの `retry` / `timeout_sec` 設定に従う（[ir.md](./ir.md) §4・A7 で `script.run` は timeout 既定 30s／最大 360s＝初期値）。
 - **at-least-once**: script は**再実行され得る**（リース失効・クラッシュ再実行）。冪等にしたい副作用は次の 2 系統で守る:
   - 内部能力（data / storage / notify / workflow.start）は **host 側 dedupe が既定で効く**（effect_journal・[engine.md](./engine.md) §7）。1 実行内で複数の内部副作用を呼ぶ場合、dedupe キーは「step 冪等キー＋実行内の効果的呼び出し連番」で呼び出しごとに独立し、リトライ間で同じ連番に**別の操作**が来た場合（操作 digest 不一致）は黙って記録済み結果を返さず permanent エラーになる。**副作用を呼ぶ順序・内容は `input` にのみ依存させること**（`Date.now()` / `Math.random()` で副作用の分岐を変えない）。
-  - 外部 http は **exactly-once を約束しない**。`Shiki.context.idempotencyKey` を `Idempotency-Key` ヘッダに注入して外部側の冪等性に委ねる。
+  - 外部 http は **exactly-once を約束しない**。`Shiki.context.idempotencyKey` を `Idempotency-Key` ヘッダに注入して外部側の冪等性に委ねる。送り先の状態を変えうる呼び出しは、試す回数と連番のキーで結果を記録し、リースが切れて同じ試行を拾い直したときだけ送り直さない（やり直しと再開は送り直す・§6.7・GAP-28）。本文に `Date.now()` を入れるなど、送る内容を動かすたびに変えると、拾い直したときに `effect_conflict` で失敗する（再開すれば今の内容で送る）。内部能力の書込は試行によらないキーなので、内容を変えると、やり直しと再開でも `effect_conflict` で失敗し、再開では抜けられない（「同じ入力でもう一度実行」で新しい実行にする）。
 - **冪等性区分**: `script.run` ノードは best-effort（script 次第・engine が冪等キーを供給・[ir.md](./ir.md) §7）。
 
 ### 7.1 スプレッドシート関数の実行契約（差分）
