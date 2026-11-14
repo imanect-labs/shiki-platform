@@ -406,6 +406,10 @@ impl Walker<'_> {
                 self.cur.push_str(first);
             }
             for part in parts {
+                // 行を積むたびに本文の上限を確かめる（短い行を大量に並べた pre で溜め込まない）。
+                if self.full() {
+                    return;
+                }
                 let line = std::mem::take(&mut self.cur);
                 let line = line.trim_end().to_string();
                 self.out_bytes += line.len() + 1;

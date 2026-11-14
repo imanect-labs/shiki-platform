@@ -523,6 +523,11 @@ fn long_base_href_and_huge_text_do_not_blow_up_memory() {
     let out = r(&html);
     assert!(out.elements.is_empty());
     assert!(out.text.len() < 200_000, "{}", out.text.len());
+    // pre の短い行の大量でも、行を積むたびに上限を確かめる。
+    let pre = format!("<body><pre>{}</pre></body>", "x\n".repeat(900_000));
+    let out = render(&pre, &base(), 1, 1_000, &HashMap::new());
+    assert!(out.truncated);
+    assert!(out.text.len() < 10_000, "{}", out.text.len());
     // 本文は描きながら上限で止める（全部描いてから切らない）。
     let big = format!("<body>{}</body>", "<p>あいうえお</p>".repeat(200_000));
     let out = render(&big, &base(), 1, 1_000, &HashMap::new());
