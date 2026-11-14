@@ -89,7 +89,7 @@ const FOREIGN_BREAKOUT: &[&str] = &[
 pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
     let b = html.as_bytes();
     let mut i = 0;
-    let mut open: Vec<String> = Vec::new();
+    let mut open: Vec<Open> = Vec::new();
     while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
         i += off;
         let rest = &b[i..];
@@ -113,25 +113,35 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         let Some(end) = tag_end(b, i + 1) else {
             return (html, false);
         };
-        let mut foreign = open.iter().any(|n| n == "svg" || n == "math");
-        if foreign && FOREIGN_BREAKOUT.contains(&lower.as_str()) {
-            // HTML の要素が来ると解析器は外部コンテンツを抜ける。
-            if let Some(p) = open.iter().rposition(|n| n == "svg" || n == "math") {
-                open.truncate(p);
+        if in_foreign(&open) && FOREIGN_BREAKOUT.contains(&lower.as_str()) {
+            // HTML の要素が来ると解析器は外部コンテンツを抜ける（HTML の要素か統合点まで閉じる）。
+            while in_foreign(&open) {
+                open.pop();
             }
-            foreign = false;
         }
+        let ns = namespace(&open, &lower);
         let self_closing = end >= 2 && b[end - 2] == b'/';
-        let closes_itself =
-            VOID.contains(&lower.as_str()) || is_optional_end(&lower) || (foreign && self_closing);
+        let closes_itself = match ns {
+            Ns::Html => VOID.contains(&lower.as_str()) || is_optional_end(&lower),
+            // 自己終了が効くのは外部コンテンツの要素だけ。
+            Ns::Svg | Ns::Math => self_closing,
+        };
         if !closes_itself {
-            open.push(lower.clone());
+            let content_foreign = match ns {
+                Ns::Html => false,
+                Ns::Svg => !SVG_INTEGRATION.contains(&lower.as_str()),
+                Ns::Math => !MATH_INTEGRATION.contains(&lower.as_str()),
+            };
+            open.push(Open {
+                name: lower.clone(),
+                content_foreign,
+            });
             if open.len() > max_depth {
                 return (&html[..i], true);
             }
         }
         i = end;
-        if !foreign && RAW_TEXT.contains(&lower.as_str()) {
+        if ns == Ns::Html && RAW_TEXT.contains(&lower.as_str()) {
             // 生テキストの中の `<` はタグではない。対応する終了タグまで飛ばす。
             let close_tag = format!("</{lower}");
             i = find_ci(b, i, close_tag.as_bytes()).unwrap_or(b.len());
@@ -140,14 +150,57 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
     (html, false)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    Html,
+    Svg,
+    Math,
+}
+
+/// 開いている要素。`content_foreign` は中身が外部コンテンツとして解析されるか
+/// （SVG・MathML の要素で、HTML の統合点＝`foreignObject` 等でないもの）。
+struct Open {
+    name: String,
+    content_foreign: bool,
+}
+
+/// SVG の HTML 統合点（中の開始タグは HTML として解析される）。
+const SVG_INTEGRATION: &[&str] = &["foreignobject", "desc", "title"];
+/// MathML の統合点（`annotation-xml` は encoding によるが、多く数える側＝HTML とみなす）。
+const MATH_INTEGRATION: &[&str] = &["mi", "mo", "mn", "ms", "mtext", "annotation-xml"];
+
+fn in_foreign(open: &[Open]) -> bool {
+    open.last().is_some_and(|o| o.content_foreign)
+}
+
+/// 次に開く要素の名前空間。外部コンテンツの中では親の名前空間を継ぐ（`svg` の中の `math` は MathML）。
+fn namespace(open: &[Open], name: &str) -> Ns {
+    match name {
+        "svg" => Ns::Svg,
+        "math" => Ns::Math,
+        _ if in_foreign(open) => {
+            // 直近の svg / math の根で決まる。
+            match open
+                .iter()
+                .rev()
+                .find(|o| o.name == "svg" || o.name == "math")
+            {
+                Some(o) if o.name == "math" => Ns::Math,
+                _ => Ns::Svg,
+            }
+        }
+        _ => Ns::Html,
+    }
+}
+
 /// 終了タグで閉じる（同じ名前が開いていて、間に境界が無いときだけ）。
-fn close(open: &mut Vec<String>, name: &str) {
+fn close(open: &mut Vec<Open>, name: &str) {
     for p in (0..open.len()).rev() {
-        if open[p] == name {
+        if open[p].name == name {
             open.truncate(p);
             return;
         }
-        if SCOPE_BOUNDARY.contains(&open[p].as_str()) {
+        if SCOPE_BOUNDARY.contains(&open[p].name.as_str()) {
             return;
         }
     }
@@ -282,6 +335,12 @@ mod tests {
         let quoted = format!("<div x = \"a>b\" y='c>d'>{}", "<div>".repeat(100_000));
         assert!(clip_depth(&quoted, MAX_PARSE_DEPTH).1);
         assert_eq!(tag_end(b"div x = \"a>b\">rest", 0), Some(14));
+        // SVG の HTML 統合点（foreignObject 等）の中では自己終了は効かない。
+        let integration = format!("<svg><foreignObject>{}", "<x-node/>".repeat(100_000));
+        assert!(clip_depth(&integration, MAX_PARSE_DEPTH).1);
+        // 外部コンテンツの中では、終了タグを省略できる HTML の要素名でも入れ子になる。
+        let foreign_option = format!("<svg>{}", "<option>".repeat(100_000));
+        assert!(clip_depth(&foreign_option, MAX_PARSE_DEPTH).1);
         // SVG の中でも HTML の要素は抜け出して入れ子になる。
         let breakout = "<svg><div/>".repeat(100_000);
         assert!(clip_depth(&breakout, MAX_PARSE_DEPTH).1);
