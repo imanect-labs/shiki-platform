@@ -3,6 +3,8 @@
 
 mod artifacts;
 mod attachments;
+/// エージェントブラウザの読む操作（docs/agent/browser.md §6・AB.3）。
+pub mod browser;
 pub mod code_interpreter;
 pub mod doc_search;
 mod help_search;
@@ -28,6 +30,7 @@ pub mod web_fetch;
 pub mod web_search;
 pub mod web_translate;
 
+pub use browser::BrowserTool;
 pub use code_interpreter::CodeInterpreterTool;
 pub use doc_search::{run_doc_search, DocSearchResult, DocSearchTool};
 pub use fs::{FsListTool, FsReadTool, GrepTool};

@@ -58,7 +58,7 @@ crates/browser（新規）
   （`sandbox-orchestrator` の `backend/egress`・PIT-25）を唯一の出口にし、プロキシ側で net_guard を適用する（PIT-81）。
 - PDF / Office へのリンクは browser では開かず、`web_fetch` を案内する（Docling 経路はそちらにある）。
 
-## 3. `BrowserEngine` トレイト（案）
+## 3. `BrowserEngine` トレイト
 
 ```rust
 /// cloud/onprem・エンジン差をここで吸収する（他のトレイト境界と同じ扱い）。
@@ -69,19 +69,30 @@ pub trait BrowserEngine: Send + Sync {
         -> Result<Box<dyn EnginePage>, BrowserError>;
 }
 
+/// SessionOpts { first_generation: u32, redirect_check: Option<RedirectCheck> }
+/// RedirectCheck = Arc<dyn Fn(&Url) -> bool + Send + Sync>  … リダイレクトの転送先の照合（§6.2）
+
 #[async_trait]
 pub trait EnginePage: Send {
     /// 取得済みの主文書を渡すと再取得しない（§5.3）。
-    async fn load(&mut self, req: LoadRequest, jar: &mut CookieJar) -> Result<PageState, BrowserError>;
-    async fn act(&mut self, action: Action, jar: &mut CookieJar) -> Result<PageState, BrowserError>;
+    async fn load(&mut self, req: LoadRequest, jar: &mut CookieJar) -> Result<Snapshot, BrowserError>;
+    async fn act(&mut self, action: Action, jar: &mut CookieJar) -> Result<Snapshot, BrowserError>;
     async fn snapshot(&mut self) -> Result<Snapshot, BrowserError>;
-    async fn close(self: Box<Self>);
+    /// 操作が送ることになる要求（メソッド・送り先・伏せる項目）を、送らずに返す（§6.1）。
+    fn plan(&self, action: &Action) -> Result<Option<PlannedRequest>, BrowserError>;
+    /// 次に使う ref の世代（エンジン切替でセッションが引き継ぐ・§4）。
+    fn next_generation(&self) -> u32;
 }
 ```
 
-- cookie jar は**エンジンではなく `BrowserSession` が持つ**（§5）。エンジンは呼び出しのたびに jar を受け取り、
-  終わったら差分を書き戻す。エンジンを切り替えても jar は 1 つ。
+- cookie jar は**エンジンではなく `BrowserSession` が持つ**（§5）。エンジンは呼び出しのたびに jar を借りて読み書きする。
+  エンジンを切り替えても jar は 1 つ。
 - `Snapshot` はエンジンによらず**共通形式**（§4）。Chromium のアクセシビリティツリーもこの形式へ変換して返す。
+- **`plan`**: `browser` ツールは操作の前にこれで送り先とメソッドを確かめ、範囲外（出所の無い URL・別オリジン宛て・POST）なら
+  送る前に拒否する（§6.1）。`browser_act` の承認ダイアログに出す宛先・伏せる項目もここから作る。
+- **`redirect_check`**: リダイレクトの転送先を 1 回ごとに照合する口（§6.2）。関門（public_fetch）の検証とは別に、出所の規則を当てる。
+- **`next_generation`**: エンジンを切り替えても ref の世代を巻き戻さない（古い ref で別の要素を押す事故を防ぐ）。
+- 後始末は drop に任せる（`close` は置かない。run の終了でセッションごと捨てる）。
 - 将来 Kitesurf・Lightpanda などを第 3 の実装として足せる（§1.1）。
 
 ## 4. スナップショット形式

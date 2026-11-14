@@ -5187,6 +5187,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shiki-authz",
+ "shiki-browser",
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-sandbox-client",

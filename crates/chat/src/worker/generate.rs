@@ -33,6 +33,8 @@ pub(super) struct ThreadHistory {
     pub attachments: Vec<agent_core::AttachmentRef>,
     /// この会話で使われている（使う前提の）ツール名（tool search で常時ロードに回す）。
     pub tools_in_use: Vec<String>,
+    /// ユーザーがこの会話で書いた URL（`browser` が事前許可で開ける出所の初期値・browser.md §6.2）。
+    pub user_urls: Vec<url::Url>,
 }
 
 /// 出力上限で切れたまま run が終わったときに本文の末尾へ足す注記。本文の切れは agent-core が
@@ -85,6 +87,7 @@ impl ChatWorker {
         .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
+        let user_urls = super::history::user_urls(&msgs, assistant_message_id);
         // 直近の assistant ターンだけ、ツールの作業記録を次の user 発話の前に添える
         // （前のターンで見つけた id・値を次のターンで使えるように・history_work_log.rs）。
         let logged_from = msgs
@@ -162,6 +165,7 @@ impl ChatWorker {
             messages: out,
             attachments,
             tools_in_use,
+            user_urls,
         })
     }
 
@@ -245,6 +249,7 @@ impl ChatWorker {
             messages: history,
             attachments,
             tools_in_use,
+            user_urls,
         } = thread_history;
         // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
         let skills = crate::skill::AppliedSkill::load_pins(
@@ -255,15 +260,9 @@ impl ChatWorker {
         )
         .await?;
 
-        let mut tools = self.core_tools(&skills, &attachments, run).await?;
-        // skill ツール（カタログ引き・#344 Task 10.11）。
-        self.push_skill_tool(&mut tools, ctx, run, &skills).await;
-        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
-        // Office 編集/CSV ツール（worker/toolset.rs に集約）。
-        self.push_collab_tools(&mut tools);
-        self.push_office_and_csv_tools(&mut tools);
-        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
-        self.push_data_tools(&mut tools, ctx).await;
+        let mut tools = self
+            .agent_tools(ctx, run, &skills, &attachments, user_urls)
+            .await?;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
