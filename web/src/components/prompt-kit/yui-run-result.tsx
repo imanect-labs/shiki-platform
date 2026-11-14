@@ -24,7 +24,7 @@ import { DataGridHostContext } from "@/components/data/data-grid-host";
 import type { components } from "@/generated/api";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./markdown";
-import { YuiActionContext, type YuiRun } from "./yui-actions";
+import { YuiActionContext, runFollowKey, type YuiRun } from "./yui-actions";
 
 type ReplySection = components["schemas"]["ReplySection"];
 type ReplyTone = components["schemas"]["ReplyTone"];
@@ -138,14 +138,23 @@ function useLoadedRun(run: YuiRun, active: boolean): LoadedRun {
 }
 
 /// 図のボタンで起動したワークフローの記録（図の下・新しいものが下）。新しい 1 件は結果を開いた状態で出す。
-export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
+///
+/// `follow` は、最後に押して起動できたときに、すでにあった記録の鍵（[`runFollowKey`]）。その後に増えた新しい 1 件は、
+/// 記録が多くて画面の外に出ても、行が出たときと結果が届いたときに画面の中に入れる（BUG-298）。
+export function YuiRunList({ runs, follow = null }: { runs: readonly YuiRun[]; follow?: ReadonlySet<string> | null }) {
   if (runs.length === 0) return null;
   const latest = runs[runs.length - 1];
+  const followed = follow != null && !follow.has(runFollowKey(latest));
   return (
     <>
       <ul className="mt-2 min-w-0 space-y-1 text-[12px]" aria-label="起動したワークフロー" data-testid="yui-runs">
         {runs.map((r, i) => (
-          <YuiRunRow key={`${r.action_id}-${r.invoked_at}-${r.run_id ?? ""}`} run={r} latest={i === runs.length - 1} />
+          <YuiRunRow
+            key={`${r.action_id}-${r.invoked_at}-${r.run_id ?? ""}`}
+            run={r}
+            latest={i === runs.length - 1}
+            follow={followed && i === runs.length - 1}
+          />
         ))}
       </ul>
       {/* 最新の起動の状態の変化を読み上げる（結果の中身は読み上げない）。 */}
@@ -156,7 +165,30 @@ export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
   );
 }
 
-function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
+/// 押した後に増えた 1 件を画面の中に入れる（BUG-298）。行が出たときは、画面より上に過ぎていなければ入れる
+/// （記録が多いと画面の下に出る）。その後、結果が届いて行が伸びたときは、行の上端が画面の中にあるときだけ入れる
+/// （ほかの所へ移って読んでいる人を引き戻さない）。
+function useRevealRow(row: React.RefObject<HTMLElement | null>, follow: boolean) {
+  React.useEffect(() => {
+    const el = row.current;
+    if (!follow || !el || typeof el.scrollIntoView !== "function") return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    let first = true;
+    const reveal = () => {
+      const top = el.getBoundingClientRect().top;
+      const ok = first ? top >= 0 : top >= 0 && top < window.innerHeight;
+      first = false;
+      if (ok) el.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
+    };
+    reveal();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => reveal());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [row, follow]);
+}
+
+function YuiRunRow({ run: r, latest, follow }: { run: YuiRun; latest: boolean; follow: boolean }) {
   const s = statusView(r);
   const Icon = s.icon;
   const values = (r.values ?? []).map((v) => `${v.label}: ${v.value}`).join("・");
@@ -171,9 +203,14 @@ function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
     if (wasLatest.current && !latest) setOpen(false);
     wasLatest.current = latest;
   }, [latest]);
+  const rowRef = React.useRef<HTMLLIElement>(null);
+  useRevealRow(rowRef, follow);
+  // ボタンの文言とワークフローの名前が同じなら 1 つだけ出す（BUG-299）。
+  const title = r.label.trim() === r.workflow_name.trim() ? r.label : `${r.label} → ${r.workflow_name}`;
   return (
     <li
-      className="min-w-0 rounded-lg border border-border bg-secondary/30 px-2.5 py-1.5"
+      ref={rowRef}
+      className="min-w-0 scroll-my-4 rounded-lg border border-border bg-secondary/30 px-2.5 py-1.5"
       data-status={r.status}
       data-run-id={r.run_id ?? undefined}
     >
@@ -181,9 +218,7 @@ function YuiRunRow({ run: r, latest }: { run: YuiRun; latest: boolean }) {
         <Icon className={cn("mt-0.5 size-3.5 shrink-0", s.tone, s.spin && "animate-spin")} aria-hidden />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="font-medium text-foreground">
-              {r.label} → {r.workflow_name}
-            </span>
+            <span className="font-medium text-foreground">{title}</span>
             <span className={s.tone}>{s.label}</span>
             <span className="text-muted-foreground">{time(r.invoked_at)}</span>
           </div>

@@ -94,7 +94,20 @@ export type YuiActionProps = {
   blockedNotes?: { label: string; reason: string }[];
   /// 止めたボタンの理由の後に添える一言（押されたら確かめ直せる置き場所だけ・BUG-217）。
   blockedHint?: string;
+  /// 図の描き直しの鍵。ワークフローを起動できたら変わり、入力を空にする（同じ申請を二度出させない・GAP-151）。
+  formKey?: number;
+  /// 描き直して消えた図の中の「起動しました」の文（図の下に出す・次に図のボタンを押すまで）。
+  sentNote?: string | null;
+  /// 図のボタンが押された（`sentNote` を消す）。
+  onFigureButton?: () => void;
+  /// 最後に起動できたときに、すでにあった記録の鍵（[`runFollowKey`]）。その後に増えた 1 件を画面の中に入れる（BUG-298）。
+  follow?: ReadonlySet<string> | null;
 };
+
+/// 記録 1 件の鍵（押した時刻とボタン。run_id は起動の途中で付くので含めない）。
+export function runFollowKey(r: Pick<YuiRun, "action_id" | "invoked_at">): string {
+  return `${r.action_id}\u0000${r.invoked_at}`;
+}
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
 export function useYuiActions(
@@ -110,6 +123,13 @@ export function useYuiActions(
   // 結果の分からない送信（通信が途中で切れた）の冪等キー。同じボタン・同じ値で押し直したときは
   // 同じキーで送り、サーバーが受け付けていた場合に二つ目の run を起動しない。
   const pendingKeys = React.useRef(new Map<string, string>());
+  // 起動できた後の描き直しと、図の下の文（GAP-151）・押した後に増えた記録を追うための、押した時点の記録（BUG-298）。
+  const [formKey, setFormKey] = React.useState(0);
+  const [sentNote, setSentNote] = React.useState<string | null>(null);
+  const [follow, setFollow] = React.useState<ReadonlySet<string> | null>(null);
+  const runsNow = React.useRef<readonly YuiRun[]>([]);
+  runsNow.current = host?.uiRuns ?? [];
+  const onFigureButton = React.useCallback(() => setSentNote(null), []);
   const [hash, setHash] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!usable) return;
@@ -128,6 +148,8 @@ export function useYuiActions(
       if (!host || host.unsaved || !hash) return { ok: false, message: "いまは実行できません" };
       const key = `${hash}:${e.actionId}`;
       const target = e.action.target;
+      // 押す前の記録（この後に増えた 1 件が押した結果・BUG-298）。送っている間の読み直しで先に増えても取り違えない。
+      const before = new Set(runsNow.current.map(runFollowKey));
       // 使う人に足りない権限があるボタンは送らない（理由はボタンの近くにも出している・GAP-37）。押されたら確かめ直し、
       // 共有してもらっていれば、そのまま送る（BUG-217）。
       let blocked = target.kind === "workflow" ? (host.blockedReason?.(target.name) ?? null) : null;
@@ -144,11 +166,18 @@ export function useYuiActions(
       try {
         await host.invoke(key, e.values as Record<string, unknown>, idempotencyKey);
         pendingKeys.current.delete(sent);
+        const message = target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました";
+        if (target.kind === "workflow") {
+          setFollow(before);
+          // app の図は描き直して入力を空にする（成功の後も値とボタンが残ると、同じ申請を二度出しやすい・GAP-151）。
+          // 図の中の文は描き直すと消えるので、同じ文を図の下に出す。失敗したときは描き直さず、入力を残す。
+          if (e.section) {
+            setSentNote(message);
+            setFormKey((k) => k + 1);
+          }
+        }
         host.onChanged();
-        return {
-          ok: true,
-          message: target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました",
-        };
+        return { ok: true, message };
       } catch (err) {
         // 受け付けたか分からない・サーバーの誤り・いま使えない（5xx と通信の切れ）。押し直しは同じキーで送る
         // （受け付けていた場合に二つ目の run を起動しない）。文言は起きたことごとに分ける（GAP-41）。
@@ -205,6 +234,10 @@ export function useYuiActions(
     ...(blocked.some((b) => b.fixable) && host.recheckBlocked ? { blockedHint: BLOCKED_HINT } : {}),
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
+    formKey,
+    sentNote,
+    onFigureButton,
+    follow,
     // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。
     ...(save && figure?.kind === "app" && figureActions(figure).every((a) => a.target.kind === "workflow")
       ? { saveAsApp: () => save(hash, figure.title) }

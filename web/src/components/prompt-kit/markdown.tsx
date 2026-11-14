@@ -411,6 +411,12 @@ function BlockedImage({
   );
 }
 
+/// 表のセルの寄せだけを取り出す（Markdown の表の区切り行の `:` から来る。ほかの style は受け取らない）。
+function cellAlign(style: React.CSSProperties | undefined): React.CSSProperties | undefined {
+  const align = style?.textAlign;
+  return align === "left" || align === "center" || align === "right" ? { textAlign: align } : undefined;
+}
+
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
 /// ノートの ```ui の図（NodeView）も同じ描き方にする。
 export function renderFigureTable(markdown: string) {
@@ -634,16 +640,23 @@ const components: Components = {
   thead({ children }) {
     return <thead className="bg-muted/50">{children}</thead>;
   },
-  th({ children }) {
+  // 列の寄せ（`---:` の右寄せ・`:---:` の中央）は react-markdown が style の textAlign で渡す。落とさずに使う（BUG-299）。
+  th({ children, style }) {
     return (
-      <th className="whitespace-nowrap border-b border-border px-3 py-2 text-left font-semibold">
+      <th
+        className="whitespace-nowrap border-b border-border px-3 py-2 text-left font-semibold"
+        style={cellAlign(style)}
+      >
         {children}
       </th>
     );
   },
-  td({ children }) {
+  td({ children, style }) {
     return (
-      <td className="min-w-[7rem] border-b border-border/60 px-3 py-2 [overflow-wrap:break-word]">
+      <td
+        className="min-w-[7rem] border-b border-border/60 px-3 py-2 [overflow-wrap:break-word]"
+        style={cellAlign(style)}
+      >
         {children}
       </td>
     );

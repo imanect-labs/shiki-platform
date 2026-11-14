@@ -186,7 +186,8 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
     <figure ref={frameRef} className="my-4 overflow-hidden rounded-xl border bg-card" data-testid={`miniapp-data-grid-${alias}`}>
       <figcaption className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
         <Table2 className="size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">{table?.name ?? alias}</span>
+        {/* 見出しはアプリで束ねたビューの呼び名（同じテーブルの 2 つの表を見分ける・BUG-295）。 */}
+        <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">{alias}</span>
         {overflows ? (
           <span className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
             <MoveHorizontal className="size-3.5" aria-hidden />
