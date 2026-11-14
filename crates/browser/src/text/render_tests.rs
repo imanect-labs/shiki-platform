@@ -629,3 +629,22 @@ fn each_row_form_in_a_table_owns_its_own_controls() {
     assert_eq!(owners, [("a", Some(0)), ("b", Some(1)), ("", Some(1))]);
     assert_eq!(out.forms[1].action.as_ref().unwrap().path(), "/two");
 }
+
+#[test]
+fn checked_radios_in_separate_table_row_forms_are_separate_groups() {
+    let out = r(
+        r#"<table><tr><form action="/one"><td><input type="radio" name="r" value="a" checked aria-label="A"></td></form></tr>
+        <tr><form action="/two"><td><input type="radio" name="r" value="b" checked aria-label="B"></td></form></tr></table>"#,
+    );
+    let checked: Vec<_> = out
+        .fields
+        .iter()
+        .map(|f| {
+            (
+                f.form,
+                matches!(f.kind, FieldKind::Check { checked: true, .. }),
+            )
+        })
+        .collect();
+    assert_eq!(checked, [(Some(0), true), (Some(1), true)]);
+}

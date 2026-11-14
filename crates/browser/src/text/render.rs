@@ -180,6 +180,23 @@ fn superseded_radios(doc: &Document) -> HashSet<NodeId> {
         .rev()
         .filter_map(|f| f.attr("id").map(|i| (i.to_string(), f.id)))
         .collect();
+    // 表の中（table・行グループ・行の直下）で開いたフォームを、属する表ごとに文書順で。
+    let mut table_forms: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for f in doc.select("form").nodes() {
+        let in_table_part = f.parent().is_some_and(|p| {
+            p.node_name()
+                .is_some_and(|n| matches!(&*n, "table" | "tbody" | "thead" | "tfoot" | "tr"))
+        });
+        if !in_table_part {
+            continue;
+        }
+        if let Some(t) = f
+            .ancestors_it(None)
+            .find(|a| a.node_name().is_some_and(|n| &*n == "table"))
+        {
+            table_forms.entry(t.id).or_default().push(f.id);
+        }
+    }
     let mut last: HashMap<(Option<NodeId>, String), NodeId> = HashMap::new();
     let mut superseded = HashSet::new();
     for r in doc.select("input[checked]").nodes() {
@@ -197,7 +214,17 @@ fn superseded_radios(doc: &Document) -> HashSet<NodeId> {
             None => r
                 .ancestors_it(None)
                 .find(|a| a.node_name().is_some_and(|n| &*n == "form"))
-                .map(|f| f.id),
+                .map(|f| f.id)
+                // 祖先のフォームが無ければ、表の中で直前に開いたフォーム（描画時の所有者の決め方と同じ）。
+                .or_else(|| {
+                    r.ancestors_it(None)
+                        .filter(|a| a.node_name().is_some_and(|n| &*n == "table"))
+                        .find_map(|t| {
+                            table_forms
+                                .get(&t.id)
+                                .and_then(|fs| fs.iter().rev().find(|f| **f < r.id).copied())
+                        })
+                }),
         };
         if let Some(prev) = last.insert((owner, name.to_string()), r.id) {
             superseded.insert(prev);
