@@ -213,7 +213,10 @@ impl ChatWorker {
         if self.web_search.is_none() {
             return;
         }
-        tools.push(Arc::new(agent_core::BrowserTool::text(user_urls)));
+        tools.push(Arc::new(agent_core::BrowserTool::text(
+            user_urls,
+            self.config.egress_proxy.clone(),
+        )));
     }
 
     /// ページ翻訳（`web_translate`・docs/agent/web-translate.md）を提示ツールに加える。

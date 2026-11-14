@@ -11,10 +11,11 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, SET_COOKIE};
 use reqwest::StatusCode;
+use sandbox_client::egress_proxy::EgressProxy;
 use sandbox_client::net_guard::HostResolver;
 use time::OffsetDateTime;
 use url::Url;
-use web_access::public_fetch::{self, AddrGuard, PinError};
+use web_access::public_fetch::{self, AddrGuard, ConnectError, PinError};
 
 use crate::cookie_jar::{same_site, CookieJar, RequestContext};
 use crate::engine::{BrowserError, LoadRequest, Method, RedirectCheck};
@@ -28,6 +29,8 @@ pub(crate) struct Fetcher {
     pub max_bytes: usize,
     pub max_redirects: usize,
     pub user_agent: String,
+    /// 運用者の外への通信の中継（`egress.proxy_url`・GAP-72）。あれば web_fetch と同じく検証済みの IP へのトンネルを通す。
+    pub proxy: Option<EgressProxy>,
 }
 
 /// 取得結果（最終ホップ）。
@@ -71,15 +74,20 @@ impl Fetcher {
         for hop in 0..=self.max_redirects {
             let target =
                 public_fetch::validate_url(url.as_str()).map_err(BrowserError::Rejected)?;
-            let client = public_fetch::pinned_client(
-                self.resolver.as_ref(),
+            let addrs = public_fetch::resolve_verified(self.resolver.as_ref(), &target, self.guard)
+                .await
+                .map_err(pin_error)?;
+            // 中継があればトンネルを通す（web_fetch と同じ関門）。トンネルはこのホップの応答を読み終えるまで持つ
+            // （最初の 1 本の接続だけを受けるので、リダイレクトの宛先ごとに作り直す）。
+            let (client, _tunnel) = public_fetch::connect(
                 &target,
-                self.guard,
+                &addrs,
+                self.proxy.as_ref(),
                 self.timeout,
                 &self.user_agent,
             )
             .await
-            .map_err(pin_error)?;
+            .map_err(connect_error)?;
             let mut builder = match method {
                 Method::Get => client.get(target.url.clone()),
                 Method::Post => client
@@ -201,7 +209,13 @@ fn pin_error(e: PinError) -> BrowserError {
         }
         PinError::Resolve(m) => BrowserError::Fetch(format!("名前解決に失敗しました（{m}）")),
         PinError::Rejected(m) => BrowserError::Rejected(m.to_string()),
-        PinError::Client(m) => BrowserError::Fetch(m),
+    }
+}
+
+fn connect_error(e: ConnectError) -> BrowserError {
+    match e {
+        ConnectError::Proxy(p) => BrowserError::Fetch(p.message().into()),
+        ConnectError::Client(m) => BrowserError::Fetch(m),
     }
 }
 

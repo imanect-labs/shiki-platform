@@ -134,14 +134,19 @@ impl BrowserTool {
     /// 本番の構成（JS 非実行のテキストエンジン・解決後 IP は公開アドレスのみ）。
     ///
     /// エンジンには窓の数倍まで本文を持たせ、続きは `offset` で読ませる（browser.md §4）。
+    /// `proxy` は運用者の外への通信の中継（`egress.proxy_url`・GAP-72）。web_fetch と同じものを渡す。
     #[must_use]
-    pub fn text(user_urls: Vec<Url>) -> Self {
+    pub fn text(
+        user_urls: Vec<Url>,
+        proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
+    ) -> Self {
         let limits = browser::TextLimits {
             max_chars: DEFAULT_WINDOW_CHARS * ENGINE_WINDOWS,
             ..browser::TextLimits::default()
         };
         let engine =
-            browser::TextEngine::new(Arc::new(sandbox_client::net_guard::SystemResolver), limits);
+            browser::TextEngine::new(Arc::new(sandbox_client::net_guard::SystemResolver), limits)
+                .with_proxy(proxy);
         Self::new(Arc::new(engine), user_urls)
     }
 
