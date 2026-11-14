@@ -19,10 +19,12 @@ import {
   type DataRecord,
   type ViewSpec,
 } from "@/lib/data-api";
-import { cellValue, displayCell, formatValue, roleRefIds, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cellValue, displayCell, fileRefIds, formatValue, roleRefIds, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cachedNodeName } from "@/lib/node-name-cache";
 import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
+import { useFileNames } from "./use-file-names";
 
 type Loaded = { items: DataRecord[]; cursor: string | null; loading: boolean; error: string | null };
 
@@ -154,7 +156,7 @@ function Card({ r, title, fields }: { r: DataRecord; title: ColumnModel | undefi
       {fields.length ? (
         <dl className="mt-2 space-y-1">
           {fields.map((c) => {
-            const { text: v, muted } = displayCell(r, c, cachedUserName, cachedRoleName);
+            const { text: v, muted } = displayCell(r, c, cachedUserName, cachedRoleName, cachedNodeName);
             return (
               <div key={c.key} className="flex gap-2 text-xs">
                 <dt className="w-20 shrink-0 truncate text-muted-foreground">{c.label}</dt>
@@ -185,6 +187,7 @@ export function KanbanBoard({
 }) {
   const { items, cursor, loading, more } = useRecords(tableId, query, onError);
   useUserNames(items, columns);
+  useFileNames(fileRefIds(items, columns));
   const byKey = new Map(columns.map((c) => [c.key, c]));
   const group = byKey.get(spec.group_field);
   const cards = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));
@@ -239,6 +242,7 @@ export function GalleryGrid({
 }) {
   const { items, cursor, loading, more } = useRecords(tableId, query, onError);
   useUserNames(items, columns);
+  useFileNames(fileRefIds(items, columns));
   const byKey = new Map(columns.map((c) => [c.key, c]));
   const title = spec.title_field ? byKey.get(spec.title_field) : columns.find((c) => !c.system);
   const fields = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));

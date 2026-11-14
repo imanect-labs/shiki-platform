@@ -298,11 +298,15 @@ export const SUPPRESSED_LABEL = "件数が少ないため非表示";
 /// - リンク列（逆向きの列を含む）: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に
 ///   載せる）。タイトルの無い参照先は {@link UNTITLED}
 /// - スモールセル抑制に掛かった派生列（`suppressed_fields`）: {@link SUPPRESSED_LABEL}
+/// - ファイルの列（`file_ref`）: `fileName` を渡したときは、ドライブのファイル名（閲覧者が開けるファイルだけ）。
+///   引いている間は {@link FILE_LOADING}、開けない（削除済み・権限なし）ファイルは {@link FILE_UNOPENABLE}。
+///   渡さなければ id のまま
 export function displayCell(
   r: DataRecord,
   c: Pick<ColumnModel, "key" | "field">,
   userName: (id: string) => string | null | undefined,
   roleName: (id: string) => string | null | undefined = () => null,
+  fileName?: (id: string) => string | null | undefined,
 ): { text: string; muted: boolean } {
   const v = cellValue(r, c.key);
   if ((v === null || v === undefined) && (r.suppressed_fields ?? []).includes(c.key)) {
@@ -317,6 +321,13 @@ export function displayCell(
   if (type === "role_ref") {
     return { text: ids(v).map((id) => roleName(id) || id).join(", "), muted: false };
   }
+  if (type === "file_ref" && fileName) {
+    const names = ids(v).map((id) => fileName(id));
+    return {
+      text: names.map((n) => n || (n === null ? FILE_UNOPENABLE : FILE_LOADING)).join(", "),
+      muted: names.some((n) => !n),
+    };
+  }
   if (type === "record_ref") {
     // 見出しはサーバが順方向の列にも逆向きの列（参照元）にも `link_labels` で返す。タイトルの無い参照先
     // （タイトル列が空・タイトル列が無い）は id ではなく「（タイトルなし）」と出す（UUID の先頭が並んで読めなかった・A P3）。
@@ -328,6 +339,26 @@ export function displayCell(
 
 /// タイトルの無い参照先の表示。
 export const UNTITLED = "（タイトルなし）";
+
+/// ファイルの列で、ファイル名を引いている間の表示。
+export const FILE_LOADING = "…";
+
+/// ファイルの列で、閲覧者が開けない（削除済み・権限なし）ファイルの表示。
+export const FILE_UNOPENABLE = "（開けないファイル）";
+
+/// 名前を引く対象のファイル id（`file_ref` 列の値）。
+export function fileRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
+  const keys = cols.filter((c) => c.field?.type === "file_ref").map((c) => c.key);
+  const out = new Set<string>();
+  if (keys.length === 0) return [];
+  for (const r of rows) {
+    for (const k of keys) {
+      const v = cellValue(r, k);
+      for (const id of Array.isArray(v) ? v : [v]) if (typeof id === "string" && id) out.add(id);
+    }
+  }
+  return [...out];
+}
 
 /// 表示名を引く対象の部署 id（`role_ref` 列の値）。
 export function roleRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {

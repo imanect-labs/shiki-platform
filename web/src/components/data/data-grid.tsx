@@ -77,6 +77,7 @@ import {
 import {
   cellValue,
   displayCell,
+  fileRefIds,
   FORMAT_COLORS,
   formatFor,
   formatValue,
@@ -87,8 +88,10 @@ import {
   withFieldLabels,
   type ColumnModel,
 } from "@/lib/data-view";
+import { cachedNodeName } from "@/lib/node-name-cache";
 import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
+import { useFileNames } from "./use-file-names";
 
 /// 先頭ページは小さく（初回描画を速く）、以降は上限いっぱいで取る。
 const FIRST_PAGE = 100;
@@ -239,7 +242,7 @@ const RECONNECT_MS = (attempt: number) => Math.min(10_000, 2_000 * 2 ** attempt)
 
 function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
   const s = col
-    ? displayCell(r, col, cachedUserName, cachedRoleName).text
+    ? displayCell(r, col, cachedUserName, cachedRoleName, cachedNodeName).text
     : formatValue(cellValue(r, key), null, key);
   return s === "" ? "（空）" : s;
 }
@@ -747,6 +750,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, columns, showingStale]);
+  // ファイルの列（file_ref）のファイル名を引く（閲覧者が開けるファイルだけ・引けたら描き直す）。
+  const fileNamesVersion = useFileNames(fileRefIds(source, columns));
 
   const display: DisplayRow[] = React.useMemo(() => {
     if (groupKeys.length === 0) return source.map((_, index) => ({ kind: "row", index }));
@@ -792,7 +797,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion]);
+  }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion, fileNamesVersion]);
 
   // 見えている範囲が表示行の末尾に届いていれば続きを読む。グループを畳むと読み込んだ行が表示行に現れない
   // ので、行数ではなく表示行で見る（7,500 行の群を畳むと 1 ページで止まっていた・A P3）。ページを読むたび
@@ -883,7 +888,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const c = columns[col];
       if (!r || !c) return { kind: GridCellKind.Loading, allowOverlay: false };
       const v = cellValue(r, c.key);
-      const shown = displayCell(r, c, cachedUserName, cachedRoleName);
+      const shown = displayCell(r, c, cachedUserName, cachedRoleName, cachedNodeName);
       const text = shown.text;
       const isFsm = Boolean(fsm && c.key === fsm.field && c.field);
       // 追加だけの人は、自分が追加した行で、作成者として許された状態のときだけ（D-127）。
@@ -928,7 +933,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       return cell;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, ownEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fsm],
+    [display, columns, canEdit, ownEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fileNamesVersion, fsm],
   );
 
   /// 行の保存を順に送る（同じ行の保存の完了を待ってから・保存中は薄く色を付ける）。
