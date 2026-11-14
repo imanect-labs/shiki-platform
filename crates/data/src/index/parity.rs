@@ -93,6 +93,26 @@ impl Source {
     }
 }
 
+/// 突合の Tx の設定（`SET LOCAL`・この Tx の間だけ）。
+///
+/// - 突合は本体と索引の全行どうしの反結合。統計が取れる前（大量の取込・バックフィルの直後）は件数を過小に見積もって
+///   CTE どうしの入れ子ループ（行数の 2 乗）を選び得るので、入れ子ループを止めてハッシュ反結合に固定する（10 万行で
+///   数百秒 → 1 秒未満・Task 15.11 の計測）。
+/// - JIT も止める。入れ子ループを止めても、multi_select の要素を展開する LATERAL の関数走査は入れ子ループでしか
+///   組めないので、その見積もりに止めた分の大きな値（disable_cost）が乗り、どの大きさの表でも JIT のしきい値
+///   （`jit_above_cost` ほか）を超える。500 行の表の 1 文が実行 2ms に対して JIT のコンパイル（インライン化と
+///   最適化）に約 0.5 秒かかり、取込のたびに索引の列の数だけ繰り返していた（一括取込のたびに DB の CPU を秒単位で
+///   使う・campaign の APP-10）。
+pub(crate) async fn parity_session(conn: &mut PgConnection) -> Result<(), DataError> {
+    for setting in ["SET LOCAL enable_nestloop = off", "SET LOCAL jit = off"] {
+        sqlx::query(setting)
+            .execute(&mut *conn)
+            .await
+            .map_err(map_db)?;
+    }
+    Ok(())
+}
+
 impl DataStore {
     /// テーブルの新索引と本体（＝旧索引の内容）の一致を検証し、結果を進捗表へ記録する。
     pub async fn verify_index_parity(
@@ -106,13 +126,7 @@ impl DataStore {
             .begin()
             .await
             .map_err(map_db)?;
-        // 突合は本体と索引の全行どうしの反結合。統計が取れる前（大量の取込・バックフィルの直後）は
-        // 件数を過小に見積もって CTE どうしの入れ子ループ（行数の 2 乗）を選び得るので、この Tx に限って
-        // 入れ子ループを止めてハッシュ反結合に固定する（10 万行で数百秒 → 1 秒未満・Task 15.11 の計測）。
-        sqlx::query("SET LOCAL enable_nestloop = off")
-            .execute(&mut *conn)
-            .await
-            .map_err(map_db)?;
+        parity_session(&mut conn).await?;
         let meta: Option<(sqlx::types::Json<TableSchema>, i32, i64)> = sqlx::query_as(
             "SELECT schema, tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
         )
@@ -421,4 +435,65 @@ async fn counts(
         .fetch_one(&mut *conn)
         .await
         .map_err(map_db)
+}
+
+#[cfg(test)]
+mod tests {
+    //! 突合の Tx の設定を実 Postgres で確かめる（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
+
+    use sqlx::postgres::PgPoolOptions;
+    use sqlx::Connection;
+
+    use super::*;
+
+    /// 突合の Tx では入れ子ループと JIT を止め、Tx が終われば元に戻る。multi_select の展開（LATERAL の関数走査）を
+    /// 含む本体側の問い合わせも JIT でコンパイルしない（入れ子ループを止めた分の見積もりで、行の無い表でも JIT の
+    /// しきい値を超えていた）。
+    #[tokio::test]
+    async fn parity_session_turns_off_nestloop_and_jit_for_the_tx_only() {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect");
+        sqlx::migrate!("../../migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+        let mut conn = pool.acquire().await.unwrap();
+        let before: String = sqlx::query_scalar("SELECT current_setting('jit')")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        let mut tx = conn.begin().await.unwrap();
+        parity_session(&mut tx).await.unwrap();
+        let (nestloop, jit): (String, String) =
+            sqlx::query_as("SELECT current_setting('enable_nestloop'), current_setting('jit')")
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!((nestloop.as_str(), jit.as_str()), ("off", "off"));
+        let plan: sqlx::types::Json<serde_json::Value> = sqlx::query_scalar(&format!(
+            "EXPLAIN (ANALYZE, FORMAT JSON) {}",
+            Source::Json.rows_sql()
+        ))
+        .bind(-1_i32)
+        .bind(-1_i64)
+        .bind("f16")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert!(plan.0[0].get("JIT").is_none(), "{}", plan.0);
+        tx.commit().await.unwrap();
+        let after: String = sqlx::query_scalar("SELECT current_setting('jit')")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert_eq!(after, before, "SET LOCAL は Tx の外に残さない");
+    }
 }
