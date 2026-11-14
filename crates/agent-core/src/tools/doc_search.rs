@@ -262,14 +262,6 @@ impl DocSearchTool {
         self
     }
 
-    /// ファイルを名前で探す `drive.find` と CSV を集計する `csv.query` を同じ束で提示するときに呼ぶ
-    /// （無いツールを勧めない）。
-    #[must_use]
-    pub fn with_data_files(mut self) -> Self {
-        self.description.push_str(DATA_FILES_HINT);
-        self
-    }
-
     /// `doc_read` を同じ束で提示するときに呼ぶ（無いツールを勧めない）。
     #[must_use]
     pub fn with_doc_read(mut self) -> Self {
@@ -290,15 +282,6 @@ const DESCRIPTION: &str =
      - top_k: 返す件数（既定 8）。一覧を作る・網羅的に集めるときだけ増やす。\n\
      各結果には関連度（高 / 中 / 低）が付く。関連度が低い結果しか無いときは、言い換える → \
      keyword にする → 絞り込みを外す、の順で探し直す。低い結果だけを根拠に断定しない。";
-/// `drive.find` と `csv.query` があるときだけ説明の末尾に足す案内。
-///
-/// **検索の抜粋から件数・内訳は出せない。** 「2024 年と 2025 年の事故データから時間帯・曜日・場所を
-/// 分析して」と頼まれたエージェントが doc_search だけを言い換えて 10 回以上繰り返し、元の CSV に
-/// たどり着かないまま「署の内訳は見つからない」と答えた（2026-11-14・プレビュー）。drive.find は
-/// 遅延ツールで名前しか見えず、保存先探し用の説明だったので選ばれなかった。
-const DATA_FILES_HINT: &str =
-    "\n表データ（CSV など）の件数・内訳・集計を求められたら、検索結果の抜粋（一部の行だけ）から\
-     数えない。元のファイルを drive.find で名前から探し、csv.query で集計する。";
 /// `doc_read` があるときだけ説明の末尾に足す案内。
 const DOC_READ_HINT: &str =
     "\n断片だけでは判断できないとき（条文の全体・表の続き・前後の条件）は、\
@@ -687,14 +670,6 @@ mod tests {
             end <= 400,
             "文書名が {end} バイト目まで押し出されている: {text}"
         );
-    }
-
-    #[test]
-    fn data_files_hint_names_the_tools_only_when_wired() {
-        assert!(!DESCRIPTION.contains("drive.find"));
-        assert!(!DESCRIPTION.contains("csv.query"));
-        assert!(DATA_FILES_HINT.contains("drive.find"));
-        assert!(DATA_FILES_HINT.contains("csv.query"));
     }
 
     #[test]
