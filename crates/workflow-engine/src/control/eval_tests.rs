@@ -284,6 +284,26 @@ fn from_unresolved_fails_and_default_covers_missing_and_null() {
     }
 }
 
+/// 書いた `"default": null` は既定値として効く（無い値を null で埋める・任意の入力を行に書く）。差し込みの null は
+/// 従来どおり失敗する（空文字で埋めない）。
+#[test]
+fn null_default_fills_a_missing_value_with_null() {
+    let r = resolver(&[
+        ("input", json!({ "x": null })),
+        ("nodes.skipped.output", Value::Null),
+    ]);
+    let missing = expr(json!({ "$from": "input", "path": "/due", "default": null }));
+    assert_eq!(resolve_deep(&missing, &r), Ok(Value::Null));
+    let skipped =
+        expr(json!({ "$from": "nodes.skipped.output", "path": "/error/code", "default": null }));
+    assert_eq!(resolve_deep(&skipped, &r), Ok(Value::Null));
+    let row = expr(json!({ "due": { "$from": "input", "path": "/due", "default": null }, "n": 1 }));
+    assert_eq!(resolve_deep(&row, &r), Ok(json!({ "due": null, "n": 1 })));
+    let t = expr(json!({ "$template": "[{d}]",
+        "vars": { "d": { "$from": "input", "path": "/due", "default": null } } }));
+    assert_eq!(resolve_deep(&t, &r).unwrap_err().code, EXPR_RESOLVE_ERROR);
+}
+
 #[test]
 fn integer_comparison_beyond_f64_precision() {
     // 2^53 超の整数を f64 に落とさず正しく比較する。

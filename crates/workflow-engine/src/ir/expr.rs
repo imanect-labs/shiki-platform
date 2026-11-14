@@ -25,9 +25,22 @@ pub struct FromRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// 解決失敗時の既定値（無ければ解決失敗で step 失敗）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // 書いた `"default": null` は null の既定値として残す（`Option` の既定の読み方では null が「書いていない」になり、
+    // 無い値を null で埋められなかった・保存し直すと消えた）。項目が無いときだけ `None`。
+    #[serde(
+        default,
+        deserialize_with = "written_default",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[ts(type = "unknown")]
     pub default: Option<serde_json::Value>,
+}
+
+/// `default` の項目を書いてあれば、null も値として受ける。
+fn written_default<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
 }
 
 /// `$template` 文字列組み立て（`{name}` は vars のキーのみ・ir.md §3.2）。
@@ -227,6 +240,31 @@ mod tests {
         assert!(ok.is_ok());
         let bad: Result<FromRef, _> = serde_json::from_value(json!({"$from": "input", "typo": 1}));
         assert!(bad.is_err(), "未知フィールドは拒否");
+    }
+
+    /// 書いた `"default": null` は null の既定値として読み、保存し直しても残る。書いていなければ既定値なし。
+    #[test]
+    fn from_ref_keeps_a_null_default() {
+        let f: FromRef =
+            serde_json::from_value(json!({"$from": "input", "path": "/due", "default": null}))
+                .unwrap();
+        assert_eq!(f.default, Some(serde_json::Value::Null));
+        assert_eq!(
+            serde_json::to_value(&f).unwrap(),
+            json!({"$from": "input", "path": "/due", "default": null})
+        );
+        let f: FromRef = serde_json::from_value(json!({"$from": "input", "path": "/due"})).unwrap();
+        assert_eq!(f.default, None);
+        assert_eq!(
+            serde_json::to_value(&f).unwrap(),
+            json!({"$from": "input", "path": "/due"})
+        );
+        let v: ValueExpr =
+            serde_json::from_value(json!({"$from": "input", "default": null})).unwrap();
+        assert_eq!(
+            v.as_from().and_then(|f| f.default.clone()),
+            Some(serde_json::Value::Null)
+        );
     }
 
     #[test]

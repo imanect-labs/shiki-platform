@@ -528,6 +528,9 @@ mod tests {
             assert_eq!(bad_refs(wf(out(ng))), vec!["write".to_string()], "{ng}");
             let with_default = json!({ "$from": format!("nodes.{ng}.output"), "default": [] });
             assert!(bad_refs(wf(with_default)).is_empty(), "{ng}");
+            // null の既定値も既定値（書いた `"default": null` を書いていないものとして扱わない）。
+            let null_default = json!({ "$from": format!("nodes.{ng}.output"), "default": null });
+            assert!(bad_refs(wf(null_default)).is_empty(), "{ng} null");
         }
     }
 
