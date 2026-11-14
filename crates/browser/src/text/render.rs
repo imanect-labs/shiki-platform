@@ -669,6 +669,12 @@ impl Walker<'_> {
             "a" => match node.attr("href").and_then(|h| self.resolve(&h)) {
                 Some(href) => {
                     self.link(node, &href);
+                    // リンクの中の送信項目（hidden の CSRF トークン等）も集める。表示と ref は付けない。
+                    self.invisible += 1;
+                    for c in node.children_it(false) {
+                        self.walk(&c, form, wrap);
+                    }
+                    self.invisible -= 1;
                     true
                 }
                 None => false,
@@ -743,7 +749,7 @@ fn button_token(id: RefId, label: &str, submits: bool, disabled: bool) -> String
 }
 
 #[path = "controls.rs"]
-mod controls;
+pub(super) mod controls;
 
 #[cfg(test)]
 #[path = "render_tests.rs"]

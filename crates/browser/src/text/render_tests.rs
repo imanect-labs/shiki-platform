@@ -543,3 +543,41 @@ fn buttons_with_empty_or_invalid_type_submit() {
         .collect();
     assert_eq!(submits, [true, true, false, false]);
 }
+
+#[test]
+fn fields_inside_links_are_collected_and_numbers_are_sanitized() {
+    let out = r(
+        r#"<form method="post"><a href="/help"><input type="hidden" name="csrf" value="T1">説明</a>
+        <input type="number" name="n" value="abc" aria-label="数"><input type="number" name="m" value="-1.5e3" aria-label="数2">
+        <button>保存</button></form>"#,
+    );
+    let names: Vec<_> = out.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["csrf", "n", "m", ""]);
+    assert_eq!(
+        out.fields[1].kind,
+        FieldKind::Text {
+            value: String::new(),
+            secret: false
+        }
+    );
+    assert_eq!(
+        out.fields[2].kind,
+        FieldKind::Text {
+            value: "-1.5e3".into(),
+            secret: false
+        }
+    );
+    for (s, ok) in [
+        ("1", true),
+        ("-0.5", true),
+        (".5", true),
+        ("1e-3", true),
+        ("1.", false),
+        ("+1", false),
+        ("1 ", false),
+        ("", false),
+        ("e3", false),
+    ] {
+        assert_eq!(super::controls::is_valid_float(s), ok, "{s:?}");
+    }
+}

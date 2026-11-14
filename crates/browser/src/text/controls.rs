@@ -254,7 +254,11 @@ impl Walker<'_> {
                     },
                     &label,
                 );
-                let value = self.value(value);
+                let mut value = self.value(value);
+                // number は妥当な浮動小数点数の文字列でなければ空にする（HTML 標準の値の正規化）。
+                if ty == "number" && !is_valid_float(&value) {
+                    value.clear();
+                }
                 self.push_field(
                     node,
                     form,
@@ -419,4 +423,37 @@ impl Walker<'_> {
             ));
         }
     }
+}
+
+/// HTML 標準の「妥当な浮動小数点数」: `-`? に続けて 数字 か `.`数字 か 数字`.`数字、
+/// その後に任意で (`e`|`E`) (`+`|`-`)? 数字。`1.` や `+1`・空白入りは不正。
+pub(crate) fn is_valid_float(s: &str) -> bool {
+    let b = s.as_bytes();
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while b.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i > start
+    };
+    let mut i = usize::from(b.first() == Some(&b'-'));
+    let int = digits(&mut i);
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        if !digits(&mut i) {
+            return false;
+        }
+    } else if !int {
+        return false;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if !digits(&mut i) {
+            return false;
+        }
+    }
+    i == b.len()
 }

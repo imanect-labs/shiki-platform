@@ -483,8 +483,15 @@ impl EnginePage for TextPage {
             }
             Action::Fill(id, value) => {
                 let (index, kind, _) = self.element(id)?;
-                if !matches!(kind, ElementKind::TextBox { .. }) {
+                let ElementKind::TextBox { input_type } = kind else {
                     return Err(BrowserError::NotInteractive("入力"));
+                };
+                // 数値欄に数値でない値は入らない（ブラウザでも値にならない）。空は消去として受け付ける。
+                if input_type == "number"
+                    && !value.is_empty()
+                    && !render::controls::is_valid_float(&value)
+                {
+                    return Err(BrowserError::NotInteractive("入力（数値欄に数値でない値）"));
                 }
                 let field = self.enabled_field(index)?;
                 if self.current()?.fields[field].readonly {

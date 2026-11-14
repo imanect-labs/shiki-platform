@@ -130,6 +130,18 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             }
             continue;
         }
+        // 不正なマークアップ宣言（`<!x`・DOCTYPE）、処理命令風の `<?`、名前で始まらない終了タグ（`</ x>`）は
+        // bogus comment: 最初の `>` までがコメント（中の `<` はタグではない）。
+        if rest.starts_with(b"<!")
+            || rest.starts_with(b"<?")
+            || (rest.len() > 2 && rest[1] == b'/' && !rest[2].is_ascii_alphabetic())
+        {
+            match find(b, i + 2, b">") {
+                Some(p) => i = p + 1,
+                None => return (html, false),
+            }
+            continue;
+        }
         if rest.len() > 1 && rest[1] == b'/' {
             close(&mut open, &name_at(b, i + 2).to_ascii_lowercase());
             i = tag_end(b, i + 2).unwrap_or(b.len());
@@ -607,6 +619,11 @@ mod tests {
         // `-->` で通常に戻れば、次の `</script>` で閉じる（普通のインラインスクリプト）。
         let normal = "<script><!-- if (a<b) {} --></script><p>a".repeat(1_000);
         assert!(!clip_depth(&normal, 16).1);
+        // bogus comment の中の偽のタグで状態をずらさせない。
+        for open in ["<!", "<?", "</ "] {
+            let s = format!("{open}<script>{}", "<div>".repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
+        }
         // 生テキストの終了タグは名前全体で照合する（`</stylex>` で style を抜けない）。
         let rawtext = format!(
             "<style></stylex><script></style>{}",
