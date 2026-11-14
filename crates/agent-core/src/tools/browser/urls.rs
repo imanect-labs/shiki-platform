@@ -1,17 +1,26 @@
 //! ユーザーの発話から URL を抜き出す（`browser` の出所の初期値・docs/agent/browser.md §6.2）。
 //!
 //! 出所は「ユーザーが書いた URL ならそのまま開いてよい」という判定に使う。広く拾いすぎると
-//! 書いていない URL まで事前許可になるので、`http://` / `https://` で始まる連続した ASCII だけを拾い、
-//! 文末の句読点・閉じ括弧は落とす（「〜を見て（https://a.example/x）。」の形）。
+//! 書いていない URL まで事前許可になるので、`http://` / `https://` から空白・全角の句読点や括弧までを 1 つの候補にし、
+//! 文末の句読点・閉じ括弧は落とす（「〜を見て（https://a.example/x）。」の形）。途中で切って別の URL に
+//! しない（読めない候補は捨てる）。
 
 use url::Url;
 
 /// 1 会話から拾う URL の上限（出所の集合を有界にする）。
 const MAX_URLS: usize = 64;
 
-/// URL の途中に現れない文字（ここで切る）。
+/// URL を区切る文字（ここで切る）。
+///
+/// 非 ASCII 一般では切らない。`https://shop.example.日本/` を ASCII の途中で切ると、ユーザーが書いていない
+/// 別オリジン（`https://shop.example/`）を出所に入れてしまう。候補は丸ごと `Url::parse` に渡し、国際化ドメインと
+/// パスの非 ASCII はそちらで正規化する（`https://a.example/です` のように文が続いても、出所に入るのはその
+/// 正規化された URL だけで、別のオリジンは増えない）。切るのは空白・括弧・句読点などの区切りだけ。
 fn ends_url(c: char) -> bool {
-    !c.is_ascii() || c.is_ascii_whitespace() || c.is_ascii_control() || "<>\"'`{}|\\^".contains(c)
+    c.is_whitespace()
+        || c.is_control()
+        || "<>\"'`{}|\\^".contains(c)
+        || "、。，．「」『』（）【】〈〉《》［］｛｝！？：；…・＂＇".contains(c)
 }
 
 /// 文末に付きがちな記号を落とす（対応する開き括弧が URL の中に無い閉じ括弧も落とす）。
@@ -94,9 +103,23 @@ mod tests {
                 "https://b.example/y",
                 "http://c.example/",
                 "https://d.example/(1)",
-                "https://e.example/",
+                "https://e.example/%E3%81%A7%E3%81%99",
             ]
         );
+    }
+
+    /// 非 ASCII の途中で切って、書いていない別オリジンを出所に入れない（Codex 指摘）。
+    #[test]
+    fn unicode_hosts_are_not_cut_into_another_origin() {
+        let urls = user_urls(["https://shop.example.日本/ と https://例え.テスト/パス。"]);
+        assert_eq!(
+            strs(&urls),
+            [
+                "https://shop.example.xn--wgv71a/",
+                "https://xn--r8jz45g.xn--zckzah/%E3%83%91%E3%82%B9",
+            ]
+        );
+        assert!(urls.iter().all(|u| u.host_str() != Some("shop.example")));
     }
 
     #[test]
