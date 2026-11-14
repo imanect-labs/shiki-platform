@@ -586,3 +586,13 @@ fn fields_inside_links_are_collected_and_numbers_are_sanitized() {
         assert_eq!(super::controls::is_valid_float(s), ok, "{s:?}");
     }
 }
+
+#[test]
+fn fields_inside_buttons_are_collected() {
+    let out = r(
+        r#"<form method="post"><button><input type="hidden" name="csrf" value="T1">保存</button></form>"#,
+    );
+    let names: Vec<_> = out.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["", "csrf"]);
+    assert!(out.text.contains(r#"button "保存""#), "{}", out.text);
+}

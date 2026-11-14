@@ -697,6 +697,12 @@ impl Walker<'_> {
             }
             "button" => {
                 self.button(node, form);
+                // ボタンの中の送信項目（hidden 等）も集める。表示と ref は付けない。
+                self.invisible += 1;
+                for c in node.children_it(false) {
+                    self.walk(&c, form, wrap);
+                }
+                self.invisible -= 1;
                 true
             }
             _ => false,

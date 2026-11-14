@@ -182,7 +182,19 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         }
         let self_closing = tag.self_closing;
         let closes_itself = match ns {
-            Ns::Html => VOID.contains(&lower.as_str()),
+            // 解析器が要素を作らない開始タグは積まない（積むと、その終了タグで後の子孫まで取り除いてしまう）:
+            // body の中の html / head / body / frameset / frame と、表の外の表の部品。
+            Ns::Html => {
+                VOID.contains(&lower.as_str())
+                    || matches!(
+                        lower.as_str(),
+                        "html" | "head" | "body" | "frameset" | "frame"
+                    )
+                    || (matches!(
+                        lower.as_str(),
+                        "caption" | "colgroup" | "tbody" | "thead" | "tfoot" | "tr" | "td" | "th"
+                    ) && !table_open(&open))
+            }
             // 自己終了が効くのは外部コンテンツの要素だけ。
             Ns::Svg | Ns::Math => self_closing,
         };
@@ -265,6 +277,20 @@ fn ruby_in_scope(open: &[Open]) -> bool {
         // 外部コンテンツの要素（svg・math・統合点）も境界になる。
         if html_boundary || o.ns != Ns::Html {
             return false;
+        }
+    }
+    false
+}
+
+/// HTML の `table` が開いているか（`template` / `html` の外は見ない）。
+fn table_open(open: &[Open]) -> bool {
+    for o in open.iter().rev() {
+        if o.ns == Ns::Html {
+            match o.name.as_str() {
+                "table" => return true,
+                "template" | "html" => return false,
+                _ => {}
+            }
         }
     }
     false
@@ -619,6 +645,24 @@ mod tests {
         // `-->` で通常に戻れば、次の `</script>` で閉じる（普通のインラインスクリプト）。
         let normal = "<script><!-- if (a<b) {} --></script><p>a".repeat(1_000);
         assert!(!clip_depth(&normal, 16).1);
+    }
+
+    #[test]
+    fn markup_tricks_are_still_clipped() {
+        // 解析器が無視する開始タグ（body の中の head、表の外の tr 等）は積まない
+        // （その終了タグで後の div まで取り除かない）。
+        for (open, close) in [
+            ("<head>", "</head>"),
+            ("<tr>", "</tr>"),
+            ("<td>", "</td>"),
+            ("<body>", "</body>"),
+        ] {
+            let s = format!("<body>{}", format!("{open}<div>{close}").repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
+        }
+        // 表の中の行・セルは従来どおり同種で閉じる。
+        let table = format!("<table>{}</table>", "<tr><td>1</td></tr>".repeat(10_000));
+        assert!(!clip_depth(&table, 16).1);
         // bogus comment の中の偽のタグで状態をずらさせない。
         for open in ["<!", "<?", "</ "] {
             let s = format!("{open}<script>{}", "<div>".repeat(100_000));
