@@ -1,0 +1,14 @@
+[
+  { "id": "password", "q": "パスワードかえたい", "screen": "/settings/security" },
+  { "id": "password-polite", "q": "Shiki のパスワードを変更する方法を教えてください", "screen": "/settings/security" },
+  { "id": "dark", "q": "画面を暗くしたい。ダークモードってある？", "screen": "/settings/appearance" },
+  { "id": "totp", "q": "2段階認証を設定したい", "screen": "/settings/security" },
+  { "id": "send-key", "q": "Enter で勝手に送信されるのをやめたい", "screen": "/settings/chat" },
+  { "id": "default-model", "q": "新しいチャットで最初から使うモデルを決めておきたい", "screen": "/settings/chat" },
+  { "id": "tone", "q": "AI の口調をもっと砕けた感じにしたい", "screen": "/settings/ai" },
+  { "id": "sessions", "q": "どの端末でログインしてるか確認したい", "screen": "/settings/sessions" },
+  { "id": "rename", "q": "会話のタイトルを変えるには？", "screen": null },
+  { "id": "share", "q": "この会話を同僚に見せたい", "screen": null },
+  { "id": "attach-drive", "q": "ドライブにあるファイルをチャットに添付するには", "screen": "/" },
+  { "id": "word", "q": "回答を Word で保存したい", "screen": null }
+]
