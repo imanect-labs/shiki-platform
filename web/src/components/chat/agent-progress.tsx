@@ -16,6 +16,7 @@ import type { ToolName } from "@/generated/gui-spec";
 
 import { DataWriteSummary } from "./data-approval-summary";
 import { DriveMoveSummary } from "./drive-move-approval-summary";
+import { TableCreateSummary, TableUpdateSummary } from "./table-approval-summary";
 import type { ApprovalRequest } from "@/lib/chat-api";
 
 /// 試運転のカードの中身は、承認を待つときにだけ読み込む（ブロックの名前を引くワークフローのカタログを、会話の画面の
@@ -35,7 +36,13 @@ const TryWorkflowSummary = dynamic(() => import("./try-approval-summary").then((
 });
 
 /// 承認カードで、生の JSON の代わりに読める形の中身を出すツール（名前は生成した語彙で縛る）。
-const SUMMARIZED_TOOLS = ["data_record_write", "drive.move", "try_workflow"] as const satisfies readonly ToolName[];
+const SUMMARIZED_TOOLS = [
+  "data_record_write",
+  "drive.move",
+  "try_workflow",
+  "data_table_create",
+  "data_table_update",
+] as const satisfies readonly ToolName[];
 type SummarizedTool = (typeof SUMMARIZED_TOOLS)[number];
 
 function isSummarized(name: string): name is SummarizedTool {
@@ -52,6 +59,10 @@ function ApprovalSummary({ name, input }: { name: SummarizedTool; input: unknown
       return <DriveMoveSummary input={input} />;
     case "try_workflow":
       return <TryWorkflowSummary input={input} />;
+    case "data_table_create":
+      return <TableCreateSummary input={input} />;
+    case "data_table_update":
+      return <TableUpdateSummary input={input} />;
   }
 }
 

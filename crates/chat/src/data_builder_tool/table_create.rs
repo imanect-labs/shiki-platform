@@ -138,18 +138,19 @@ fn created(table: &DataTable, fsm: Option<&FsmSpec>) -> ToolOutcome {
     outcome
 }
 
+/// 状態の列の選択肢を、状態の一覧に置き換える（説明文の約束・選択肢を書かなくても作れる）。
+fn apply_states(fields: &mut [data::FieldDef], fsm: Option<&FsmSpec>) {
+    let Some(spec) = fsm else { return };
+    if let Some(f) = fields.iter_mut().find(|f| f.key == spec.status_field) {
+        f.options.clone_from(&spec.states);
+    }
+}
+
 /// 今回の入力で作られるはずの列の形（状態の列の選択肢は状態の一覧になる）。
 fn expected_shapes(fields: &[data::FieldDef], fsm: Option<&FsmSpec>) -> Vec<Value> {
-    fields
-        .iter()
-        .map(|f| {
-            let mut f = f.clone();
-            if let Some(spec) = fsm.filter(|s| s.status_field == f.key) {
-                f.options.clone_from(&spec.states);
-            }
-            field_shape(&f)
-        })
-        .collect()
+    let mut fields = fields.to_vec();
+    apply_states(&mut fields, fsm);
+    fields.iter().map(field_shape).collect()
 }
 
 #[async_trait]
@@ -243,7 +244,10 @@ impl Tool for DataTableCreateTool {
             Ok(_) => {}
             Err(e) => return Ok(failure(&e)),
         }
-        // 3. 作る（スキーマの検証・持ち主・監査は data）。
+        // 3. 作る（スキーマの検証・持ち主・監査は data）。状態の列は、最初から状態の一覧を選択肢に持つ
+        //    （select は選択肢が要るので、FSM を付ける前の作成で落ちないように）。
+        let mut fields = fields;
+        apply_states(&mut fields, fsm.as_ref());
         let schema = new_schema(fields, input.row_policy, input.field_policy);
         let table = match self
             .deps

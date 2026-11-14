@@ -164,7 +164,8 @@ fn expense_input(name: &str) -> Value {
             { "key": "amount", "display_name": "金額", "type": "number", "required": true },
             { "key": "kind", "display_name": "区分", "type": "select", "options": ["交通費", "備品"] },
             { "key": "applicant", "display_name": "申請者", "type": "created_by" },
-            { "key": "status", "display_name": "状態", "type": "select", "options": ["x"] }
+            // 状態の列は選択肢を書かなくてよい（状態の一覧になる）。
+            { "key": "status", "display_name": "状態", "type": "select" }
         ],
         "row_policy": { "read": { "any": [
             { "field_cmp": { "field": "applicant", "op": "eq", "value": "user_id" } },

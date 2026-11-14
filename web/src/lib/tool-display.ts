@@ -535,6 +535,31 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: named("table"),
   },
+  // テーブルを作る・直す（D-10 の T05）。直すときの入力は id（UUID）なので対象に出さない（名前は承認カードが出す）。
+  data_table_create: {
+    icon: Table2,
+    category: "write",
+    lead: (t) => (t ? `テーブル「${t}」を` : "テーブルを"),
+    verb: "作成",
+    suru: true,
+    target: named("name"),
+  },
+  data_table_update: {
+    icon: Table2,
+    category: "write",
+    lead: () => "テーブルの定義を",
+    verb: "変更",
+    suru: true,
+  },
+  // 保存ビューを作る・直す（D-10 の T06）。`view` を渡したら既存のビューの新しい版。
+  data_view_save: {
+    icon: Table2,
+    category: "write",
+    lead: (t) => (t ? `保存ビュー「${t}」を` : "保存ビューを"),
+    verb: (input) => (input.view ? "更新" : "保存"),
+    suru: true,
+    target: named("name"),
+  },
   // ドライブのファイル・フォルダ（種別を問わない・#942）。
   "drive.find": {
     icon: FolderSearch,

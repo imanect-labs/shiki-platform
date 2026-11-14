@@ -62,6 +62,7 @@ e2e = [
     "agent-full-stack.spec.ts",
     "agent-tools.spec.ts",
     "ai-insights.spec.ts",
+    "ai-table-builder.spec.ts",
     "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
     "artifacts-owned-paging.spec.ts",
@@ -282,6 +283,7 @@ e2e = [
 pages = ["web/src/app/(auth)/workflows/**"]
 crates = ["shiki-chat"]
 e2e = [
+    "ai-table-builder.spec.ts",
     "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
     "approval-form.spec.ts",
