@@ -88,7 +88,9 @@ async function appBody(page: Page, id: string, version: number) {
 async function ask(page: Page, tool: string, args: Record<string, unknown>) {
   await page.goto("/");
   const input = page.getByLabel("メッセージを入力");
-  await input.fill(`calltool:${tool} ${JSON.stringify(args)}`);
+  // Markdown の入力欄は記法に化ける本文を丸ごとエスケープする（画面のフェンス ``` がコードになる）ので、
+  // バッククォートは JSON の \u0060 で送る（読み戻すと同じ文字列）。
+  await input.fill(`calltool:${tool} ${JSON.stringify(args).replaceAll("`", "\\u0060")}`);
   await page.getByRole("button", { name: "送信" }).click();
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
 }
@@ -133,6 +135,7 @@ test("作るのは確認なしで下書きになり、直す承認カードは�
   const stale = card.getByTestId("miniapp-update-summary");
   await expect(stale).toBeVisible({ timeout: 30_000 });
   await expect(stale).toContainText("AI が読んだ後にアプリが変わっています（今は v1）");
+  if (SHOTS) await card.screenshot({ path: `${SHOTS}/ai-miniapp-update-card-stale.png` });
   await card.getByRole("button", { name: "却下" }).click();
   await waitAnswered(page);
   expect((await findApp(page, name))?.currentVersion).toBe(1);

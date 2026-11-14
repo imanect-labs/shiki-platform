@@ -185,13 +185,14 @@ export function MiniappUpdateSummary({ input }: { input: unknown }) {
           ? `保存は下書きになります。使う人に出ているのは公開中の v${state.published} のままで、アプリの画面で公開するまで変わりません。`
           : "保存は下書きになります。まだ公開していないので、使えるのは編集できる人だけです。"}
       </p>
-      {!body ? (
-        <p className="text-[11px] text-muted-foreground">
-          今のアプリを読めなかったため、今の版との差は表示していません（直せるのは編集できる人だけです）。
-        </p>
-      ) : version !== null && state.latest !== null && version !== state.latest ? (
+      {/* 読んだ版が古い（または無い版）ときは、差より先にそれを言う（承認しても保存されない）。 */}
+      {version !== null && state.latest !== null && version !== state.latest ? (
         <p className="text-[11px] text-amber-700 dark:text-amber-300">
           AI が読んだ後にアプリが変わっています（今は v{state.latest}）。承認しても保存されず、読み直しになります。
+        </p>
+      ) : !body ? (
+        <p className="text-[11px] text-muted-foreground">
+          今のアプリを読めなかったため、今の版との差は表示していません（直せるのは編集できる人だけです）。
         </p>
       ) : null}
       {description != null && description !== body?.description ? (
@@ -230,10 +231,11 @@ export function MiniappUpdateSummary({ input }: { input: unknown }) {
           ) : null}
         </Section>
       ) : null}
-      {workflows ? (
-        <PinChanges title="束ねるワークフロー（ボタンの実行先）" current={body?.workflows ?? []} next={workflows} />
+      {/* 今のピンを読めないときは比べない（全部を「新しく束ねる」と誤って出さない）。 */}
+      {body && workflows ? (
+        <PinChanges title="束ねるワークフロー（ボタンの実行先）" current={body.workflows} next={workflows} />
       ) : null}
-      {views ? <PinChanges title="束ねる保存ビュー（表）" current={body?.data_views ?? []} next={views} /> : null}
+      {body && views ? <PinChanges title="束ねる保存ビュー（表）" current={body.data_views ?? []} next={views} /> : null}
     </div>
   );
 }
