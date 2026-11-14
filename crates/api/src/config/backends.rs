@@ -649,7 +649,7 @@ impl Default for TabularConfig {
 
 /// web 検索プロバイダ（web_search / web_fetch ツール・Phase 4）。
 ///
-/// クラウド/オンプレの差は backend の値で吸収する（SaaS=Brave / オンプレ=SearXNG /
+/// クラウド/オンプレの差は backend の値で吸収する（SaaS=Brave・TinyFish / オンプレ=SearXNG /
 /// テスト・エアギャップ=Stub）。既定は `None`＝web ツールを提示しない。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebSearchConfig {
@@ -659,6 +659,9 @@ pub struct WebSearchConfig {
     /// Brave Search API キー（`backend=brave` のとき必須。将来 crates/secrets へ移行）。
     #[serde(default)]
     pub brave_api_key: Option<String>,
+    /// TinyFish Search API キー（`backend=tinyfish` のとき必須。将来 crates/secrets へ移行）。
+    #[serde(default)]
+    pub tinyfish_api_key: Option<String>,
     /// SearXNG ベース URL（`backend=searxng` のとき必須。例 `http://searxng:8080`）。
     #[serde(default)]
     pub searxng_base_url: Option<String>,
@@ -669,6 +672,8 @@ pub struct WebSearchConfig {
 pub enum WebSearchBackend {
     /// Brave Search API（SaaS）。
     Brave,
+    /// TinyFish Search API（SaaS）。
+    Tinyfish,
     /// 自己ホスト SearXNG（オンプレ）。
     Searxng,
     /// 決定的スタブ（テスト/CI/エアギャップ）。
