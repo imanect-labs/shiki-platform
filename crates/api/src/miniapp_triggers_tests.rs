@@ -209,7 +209,21 @@ async fn cron_tick_records_run_and_advances_next() {
     .await
     .unwrap();
 
-    cron_tick(&deps(pool.clone())).await.unwrap();
+    // 1 回の tick は期限の古い順に 20 件まで。共有の DB にほかの試験の期限の来た行があると、この行は後の tick に
+    // 回るので、この行を処理するまで回す（762f7bf2 と同じ・並べて走る試験の tick が先に処理しても同じ結果になる）。
+    let tick = deps(pool.clone());
+    for _ in 0..50 {
+        cron_tick(&tick).await.unwrap();
+        let (at,): (chrono::DateTime<chrono::Utc>,) =
+            sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+                .bind(sched_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if at != due {
+            break;
+        }
+    }
 
     let (runs,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
