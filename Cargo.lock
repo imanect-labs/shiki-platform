@@ -1804,7 +1804,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2490,7 +2490,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tower-service",
  "tracing",
@@ -3285,7 +3285,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3989,7 +3989,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "once_cell",
@@ -4009,7 +4009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -4087,6 +4087,21 @@ name = "protoc-bin-vendored-win32"
 version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
+
+[[package]]
+name = "psl"
+version = "2.1.253"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82576eafaa94759a92a0cf047f34d227665811d5cdf70f4b11e25cd813f3de54"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "psm"
@@ -4187,7 +4202,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4225,7 +4240,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tracing",
  "windows-sys 0.59.0",
 ]
@@ -4733,7 +4748,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4791,7 +4806,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5177,6 +5192,7 @@ dependencies = [
  "shiki-sandbox-client",
  "shiki-testenv",
  "shiki-textenc",
+ "shiki-web-access",
  "shiki-websearch",
  "sqlx",
  "thiserror 2.0.18",
@@ -5358,6 +5374,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiki-browser"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cookie",
+ "dom_query",
+ "encoding_rs",
+ "psl",
+ "reqwest 0.12.28",
+ "shiki-authz",
+ "shiki-sandbox-client",
+ "shiki-web-access",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "shiki-bug-report"
 version = "0.0.0"
 dependencies = [
@@ -5376,6 +5412,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "utoipa",
  "uuid",
 ]
@@ -5397,6 +5434,7 @@ dependencies = [
  "shiki-agent-core",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-bug-report",
  "shiki-collab",
  "shiki-data",
  "shiki-durable",
@@ -5849,6 +5887,19 @@ version = "0.0.0"
 dependencies = [
  "chardetng",
  "encoding_rs",
+]
+
+[[package]]
+name = "shiki-web-access"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "encoding_rs",
+ "reqwest 0.12.28",
+ "shiki-sandbox-client",
+ "shiki-textenc",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -6936,7 +6987,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8276,7 +8327,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -30,7 +30,7 @@
 //!
 //! # 回し方
 //!
-//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0145・0150 の
+//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0147・0152 の
 //!   `membership_reconcile_cursor`）から `batch_size` 人（既定 500・1〜1,000）を照合する。最後まで読んだら頭に戻る。
 //!   ディレクトリの N 人を 1 周するのに ceil(N / batch_size) 回かかる（既定では 1,000 人で 2 分、10,000 人で 20 分）。
 //! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（所属グループで決まらないロールの候補がある人は

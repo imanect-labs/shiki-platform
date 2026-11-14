@@ -12,7 +12,9 @@ pub mod fs;
 pub mod fs_append;
 pub mod fs_write;
 mod mime;
-pub mod public_fetch;
+/// 公開 Web への取得の共通関門（`crates/web-access` に移設・docs/agent/browser.md §2）。
+/// 既存の参照（`agent_core::tools::public_fetch`）を保つため再公開する。
+pub use web_access::public_fetch;
 pub mod quote_check;
 mod sandbox_exec;
 pub mod shell;

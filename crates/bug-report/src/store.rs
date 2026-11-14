@@ -42,7 +42,7 @@ pub(crate) async fn report(
     id: Uuid,
 ) -> Result<BugReport, Error> {
     let value: serde_json::Value = sqlx::query_scalar(
-        "SELECT snapshot FROM bug_report WHERE tenant_id=$1 AND org=$2 AND id=$3 FOR UPDATE",
+        "SELECT snapshot FROM bug_report WHERE tenant_id=$1 AND org=$2 AND id=$3 AND body_purged_at IS NULL FOR UPDATE",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())

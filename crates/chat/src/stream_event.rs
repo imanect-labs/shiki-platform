@@ -57,6 +57,13 @@ pub enum StreamEventKind {
     /// 引用。
     Citation(Citation),
     HelpCitation(agent_core::help_cite::HelpCitation),
+    HelpCaseRef {
+        case_id: String,
+    },
+    BugReportDraft {
+        report_id: String,
+        rev: i64,
+    },
     /// ツール成果物のファイル参照（code_interpreter の保存済み成果物・Task 4.11）。
     FileRef {
         node_id: String,
@@ -194,6 +201,8 @@ impl StreamEventKind {
             StreamEventKind::ToolResult { .. } => "tool_result",
             StreamEventKind::Citation(_) => "citation",
             StreamEventKind::HelpCitation(_) => "help_citation",
+            StreamEventKind::HelpCaseRef { .. } => "help_case_ref",
+            StreamEventKind::BugReportDraft { .. } => "bug_report_draft",
             StreamEventKind::FileRef { .. } => "file_ref",
             StreamEventKind::WorkflowRef { .. } => "workflow_ref",
             StreamEventKind::NoteRef { .. } => "note_ref",

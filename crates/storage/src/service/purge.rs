@@ -10,7 +10,7 @@
 //!
 //! 1 つの Tx の中で、ノード・closure・版・アップロードの宣言・共有リンク・Office のロックの行を消し、blob の参照数を
 //! 消した版の数だけ減らす。DB の外にあるもの（OpenFGA のタプルと本体）は同じ Tx で片付け待ち
-//! （`storage_purge_pending`・migration 0156）に積み、commit の後にその場で片付ける（タプル → 本体の順・PIT-38 の
+//! （`storage_purge_pending`・migration 0158）に積み、commit の後にその場で片付ける（タプル → 本体の順・PIT-38 の
 //! 「データを先に閉じる」）。その場で片付けきれなかった分と失敗した分は、掃除（`purge_pending`）がやり直す。
 //! 検索の索引（`rag_chunk`・`doc_block`・ベクタ・全文）は、ファイルごとの delete のイベントで索引の側が消す。
 //!

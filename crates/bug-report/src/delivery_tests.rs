@@ -743,3 +743,6 @@ async fn revoked_membership_and_changed_destination_stop_unstarted_delivery() {
         Status::Held
     );
 }
+
+#[path = "retention_tests.rs"]
+mod retention_tests;

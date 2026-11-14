@@ -273,6 +273,7 @@ Phase 1（ストレージ・ReBAC）・Phase 8（監査）。詳細: [phase-14.m
 | 会話ブランチUI | 任意 | 発話の編集による枝の切り替えと「新しいチャットに分岐」は実装済み（#1166）。再生成の枝は未着手（[parallel-tracks.md](./roadmap/parallel-tracks.md) トラックBR） |
 | **音声入力（トラックASR）** | Phase 3 の後ならいつでも | マイクの発話を文字にして入力欄へ。認識は `SpeechToText` トレイト裏でオンプレ完結。対話用 GPU に CUDA MPS で同居（GPU 追加なし）。[parallel-tracks.md](./roadmap/parallel-tracks.md) |
 | **一太郎（JTD）→ docx 変換（トラックJTD）** | Phase 1・2 の後ならいつでも | 官公庁・学会が現在も配布する `.jtd` を扱う。**Collabora / LibreOffice は JTD を読めない**ため Phase 11 の Office 経路は流用できず、変換器を自前で持つ（所有フォーク `vendor/openjtd`）。原本は保持し docx 派生を rendition として生成、以後は既存 docx 経路に乗せる。[parallel-tracks.md](./roadmap/parallel-tracks.md) / [fork-policy](./jtd/fork-policy.md) |
+| **エージェントブラウザ（トラックAB）** | Phase 4・5 の後ならいつでも（設計の決定事項は承認済み・2026-11） | Web ページをたどり・フォームを送り・JS で描画されるページも扱う。既定は JS 非実行の自前テキストエンジン、JS が要るページだけ隔離した Chromium に切り替える（オンプレで軽く動かすため）。PoC まで（2026-11・#1264）。[browser.md](./agent/browser.md) / [parallel-tracks.md](./roadmap/parallel-tracks.md) |
 
 ## マイルストーン要約
 

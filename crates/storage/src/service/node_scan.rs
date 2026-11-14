@@ -314,7 +314,7 @@ impl StorageService {
 /// 引数は `$1` = org・`$2` = tenant_id・`$3` = 語（ILIKE の模様）・`$4`・`$5` = 続きの位置（並びの値・id）・`$6` = 件数・
 /// `$7` = 種別（`NULL` は両方）・`$8`・`$9` = 続きの位置（種別・名前）。並びは [`child_order_sql`]（フォルダー優先・
 /// 名前の自然順・#1040）。語は `hit` の列にだけ使い、候補は選ばない（[モジュール文書](self)）。名前の順では、向きごとの
-/// 索引（migration 0143 の `node_name_scan_idx`・`node_name_scan_desc_idx`）をたどって打ち切る前提で、計画の回帰
+/// 索引（migration 0145 の `node_name_scan_idx`・`node_name_scan_desc_idx`）をたどって打ち切る前提で、計画の回帰
 /// テストが EXPLAIN する。
 #[must_use]
 pub fn named_scan_sql(sort: ChildSort) -> String {

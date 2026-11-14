@@ -219,9 +219,16 @@ shiki-yui = { path = "crates/yui" }
 shiki-chat = { path = "crates/chat" }
 shiki-sandbox-client = { path = "crates/sandbox-client" }
 shiki-websearch = { path = "crates/websearch" }
+shiki-web-access = { path = "crates/web-access" }
+shiki-browser = { path = "crates/browser" }
 
 # URL 解析（web ツールの入力検証・SSRF 系ホスト拒否）
 url = "2"
+# 公開サフィックス一覧（登録可能ドメイン＝eTLD+1）。エージェントブラウザの cookie の Domain 属性の検証と
+# SameSite の同一サイト判定に使う（docs/agent/browser.md §5.2）。
+psl = "2"
+# Set-Cookie の構文解析（属性・Max-Age・Expires・SameSite）。axum-extra 経由で既に依存グラフにある版。
+cookie = "0.18"
 # シェル語の分割（ゲストコマンドの引数パース・quote 対応）
 shlex = "1"
 

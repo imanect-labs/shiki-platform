@@ -1,0 +1,34 @@
+[package]
+name = "shiki-web-access"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+# 公開 Web への取得の共通関門（PIT-48）と、取得したバイト列の文字コード判定。
+# web_fetch・回答画像の代理取得・エージェントブラウザ（docs/agent/browser.md §2）が共有する。
+# agent-core と crates/browser の両方から使うため、どちらにも依存しない下位クレートに置く。
+[lib]
+name = "web_access"
+
+[dependencies]
+shiki-sandbox-client.workspace = true
+
+reqwest.workspace = true
+tokio = { workspace = true, features = ["time"] }
+url.workspace = true
+encoding_rs.workspace = true
+# BOM・UTF-8・推定はファイルの文字コードの判定と共有する（GAP-45・判定を 2 つ持たない）。
+shiki-textenc.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait.workspace = true
+
+# lib 名 sandbox_client で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-sandbox-client", "shiki-textenc"]
+
+[lints]
+workspace = true

@@ -82,6 +82,23 @@ impl ChatWorker {
                 tools.push(Arc::new(doc_search));
             }
         }
+        if !run.autonomous && run.mini_app_id.is_none() && skills.is_empty() {
+            if let Some(service) = &self.bug_report {
+                if let Some(ctx) = super::build_ctx(run) {
+                    let binding = shiki_bug_report::HelpRun {
+                        run_id: run.run_id,
+                        fencing: run.fencing_token,
+                    };
+                    if let Ok(case_id) = service.available_help_case(&ctx, &binding).await {
+                        tools.push(Arc::new(super::bug_report_tool::BugReportDraftTool {
+                            service: service.clone(),
+                            binding,
+                            case_id,
+                        }));
+                    }
+                }
+            }
+        }
         if let Some(help) = &self.help_search {
             tools.push(Arc::new(agent_core::HelpSearchTool::new(help.clone())));
         }

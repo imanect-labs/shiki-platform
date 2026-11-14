@@ -361,8 +361,8 @@ pub(crate) fn build_sandbox(
     Ok(Some(Arc::new(client)))
 }
 
-// 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。配線の列挙なので行数も main と同じ理由で許す。
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)] // 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。
+#[allow(clippy::too_many_lines)] // 配線の composition root。追加した依存もこの関数に集約する。
 pub(crate) async fn wire_chat(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -387,6 +387,7 @@ pub(crate) async fn wire_chat(
         Option<&Arc<workflow_engine::WorkflowRunLauncher>>,
         Option<&Arc<workflow_engine::RunStore>>,
     ),
+    bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -544,6 +545,7 @@ pub(crate) async fn wire_chat(
         worker_config,
     )
     .with_help_search(wire_help(config, search)?)
+    .with_bug_report(bug_report)
     // 構造化データは API・ワークフローと同じチョークポイントを共有する。
     .with_data((**data).clone())
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
@@ -701,6 +703,16 @@ pub(crate) fn wire_bug_report(
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn authz::AuthzClient>,
 ) -> anyhow::Result<Option<std::sync::Arc<shiki_bug_report::BugReportService>>> {
+    let retention = shiki_bug_report::retention::Retention::new(db.clone());
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_hours(1));
+        loop {
+            interval.tick().await;
+            if retention.run_batch().await.is_err() {
+                tracing::warn!("bug-report retention batch failed");
+            }
+        }
+    });
     if !config.enabled {
         return Ok(None);
     }

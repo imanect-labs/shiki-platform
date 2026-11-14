@@ -44,6 +44,7 @@ pub(crate) struct WorkerSink {
     /// 自律 run と再開した run は最初から。通常の会話は、作成系の道具（[`super::builder_tools::CHECKPOINT_ON`]）の
     /// 呼び出しを受けた時点で立てる（R1）。立てたら run の終わりまで下ろさない。
     persist_checkpoints: bool,
+    help: Option<(Arc<shiki_bug_report::BugReportService>, authz::AuthContext)>,
     /// この sink が追記した最新の `generation_event` seq（チェックポイント封筒の境界）。
     last_seq: i64,
 }
@@ -65,10 +66,19 @@ impl WorkerSink {
             content: Vec::new(),
             lost_lease: false,
             persist_checkpoints: false,
+            help: None,
             last_seq: 0,
         }
     }
 
+    pub(crate) fn with_help(
+        mut self,
+        help: Option<Arc<shiki_bug_report::BugReportService>>,
+        ctx: &authz::AuthContext,
+    ) -> Self {
+        self.help = help.map(|service| (service, ctx.clone()));
+        self
+    }
     /// チェックポイント永続化を最初から有効化する（自律 run・再開した run・#351）。
     #[must_use]
     pub(crate) fn with_checkpoints(mut self, enabled: bool) -> Self {
@@ -149,6 +159,17 @@ impl WorkerSink {
                     tool_call_id: tool_call_id.clone(),
                     content: content.clone(),
                     ok: *ok,
+                });
+            }
+            StreamEventKind::HelpCaseRef { case_id } => {
+                self.content.push(ContentBlock::HelpCaseRef {
+                    case_id: case_id.clone(),
+                });
+            }
+            StreamEventKind::BugReportDraft { report_id, rev } => {
+                self.content.push(ContentBlock::BugReportDraft {
+                    report_id: report_id.clone(),
+                    rev: *rev,
                 });
             }
             StreamEventKind::HelpCitation(c) => {
@@ -244,8 +265,55 @@ impl WorkerSink {
 #[async_trait::async_trait]
 impl EventSink for WorkerSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+        let event = if let AgentEvent::HelpSearchReceipt {
+            tool_call_id,
+            receipt,
+        } = event
+        {
+            let Some((service, ctx)) = &self.help else {
+                return Ok(());
+            };
+            let result = service
+                .record_help_receipt(
+                    ctx,
+                    &shiki_bug_report::HelpRun {
+                        run_id: self.run_id,
+                        fencing: self.fencing_token,
+                    },
+                    &tool_call_id,
+                    shiki_bug_report::HelpReceipt {
+                        hit_count: receipt.hit_count,
+                        corpus_versions: receipt.corpus_versions,
+                        chunk_ids: receipt.chunk_ids,
+                    },
+                )
+                .await;
+            // 証拠保存失敗時はカードを出さない。検索回答自体は失わない。
+            let Ok(id) = result else {
+                return Ok(());
+            };
+            AgentEvent::HelpCaseRef {
+                case_id: id.to_string(),
+            }
+        } else {
+            event
+        };
+
         // 承認要求は、SSE で利用者に見せる前に承認待ちのツール呼び出しを run へ永続化する（承認 API が
         // 照合する・画面の再読込後も引ける・検証 C-P1-3）。
+        let event = match event {
+            AgentEvent::ToolCall { id, name, step, .. }
+                if name == agent_core::ToolName::BugReportDraft.as_str() =>
+            {
+                AgentEvent::ToolCall {
+                    id,
+                    name,
+                    step,
+                    input: serde_json::json!({}),
+                }
+            }
+            other => other,
+        };
         if let AgentEvent::ApprovalRequested {
             tool_call_id, name, ..
         } = &event

@@ -1126,3 +1126,6 @@ async fn stop_reason_reaches_done_event_and_message() {
         replayed.last()
     );
 }
+
+#[path = "worker_it/bug_report.rs"]
+mod bug_report;

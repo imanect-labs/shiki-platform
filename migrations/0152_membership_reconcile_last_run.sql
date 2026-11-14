@@ -1,4 +1,4 @@
--- 組織の member と部署の定期の照合（D-136・migration 0145）の続きの位置を直す。
+-- 組織の member と部署の定期の照合（D-136・migration 0147）の続きの位置を直す。
 --
 -- 1. 列の名前を cursor_tenant_id・cursor_user_id にする。tenant_id の列を持つ表は、テナントの撤去と移行
 --    （storage::tenant_scope）がテナントの持ち物として集める。この行はどこまで読んだかの位置で、テナントのデータでも

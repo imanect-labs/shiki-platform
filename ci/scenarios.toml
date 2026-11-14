@@ -43,6 +43,9 @@ crates = [
 # E2E の実行環境（compose の shiki-server とその依存）に載らないクレート。変更しても E2E は回さない。
 [none]
 crates = [
+    # エージェントブラウザ（docs/agent/browser.md）。ツールとして shiki-server に載るのは AB.3 からで、
+    # それまではどのページにも届かない。AB.3 で scenario.home の crates へ移す。
+    "shiki-browser",
     "shiki-fuse",
     "shiki-jtd",
     "shiki-sandbox-agent-proto",
@@ -65,6 +68,7 @@ e2e = [
     "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
     "artifacts-owned-paging.spec.ts",
+    "bug-report-ai.spec.ts",
     "chat-ai-edit-revert.spec.ts",
     "chat-branch.spec.ts",
     "chat-builder-ref.spec.ts",
@@ -78,6 +82,7 @@ e2e = [
     "chat-stop-reason.spec.ts",
     "chat.spec.ts",
     "help-search.spec.ts",
+    "home-microseason.spec.ts",
     "composer-attach-same-name.spec.ts",
     "composer-create.spec.ts",
     "composer-markdown.spec.ts",
