@@ -68,6 +68,23 @@ pub(super) fn apply_builder_budget(opts: &mut AgentOptions, config: &AppBuilderC
 }
 
 impl ChatWorker {
+    /// 作成用の予算を決める。通常の会話は、作成系の道具の初回の呼び出しで 1 回だけ広げる（HD-4 (c)・D-204）。
+    /// 対象・目的を持つ会話（ワークフローエディタの「AI に依頼」・「AI と作る」）は、最初から作成用の予算で動き、
+    /// チェックポイントも最初から保存する（T09・R1）。
+    pub(super) fn start_builder(
+        &self,
+        builder: ThreadBuilder,
+        opts: &mut AgentOptions,
+        offered: &[std::sync::Arc<dyn agent_core::Tool>],
+        sink: &mut super::sink::WorkerSink,
+    ) {
+        super::builder_tools::extend_on_builder_tools(opts, &self.config.app_builder, offered);
+        if builder.is_builder() {
+            apply_builder_budget(opts, &self.config.app_builder);
+            sink.enable_checkpoints();
+        }
+    }
+
     /// この run の会話の対象と目的を読み、注記と常時ロードを足す。戻り値で予算とチェックポイントを決める。
     ///
     /// 自律の run には当てない（自律は元から大きい予算と自分の system で動く）。

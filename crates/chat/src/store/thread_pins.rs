@@ -22,6 +22,9 @@ pub struct ThreadBuilder {
     pub purpose: Option<crate::origin::ThreadPurpose>,
 }
 
+/// [`ChatStore::thread_builder`] が読む列（対象の id・種類・目的）。
+type BuilderRow = (Option<Uuid>, Option<String>, Option<String>);
+
 impl ThreadBuilder {
     /// 作成用の会話か（最初から作成用の予算・チェックポイントで動かす）。
     #[must_use]
@@ -66,7 +69,7 @@ impl ChatStore {
         tenant_id: &str,
         thread_id: Uuid,
     ) -> Result<ThreadBuilder, ChatError> {
-        let row: Option<(Option<Uuid>, Option<String>, Option<String>)> = sqlx::query_as(
+        let row: Option<BuilderRow> = sqlx::query_as(
             "SELECT origin_artifact_id, origin_artifact_kind, purpose FROM thread \
              WHERE id = $1 AND tenant_id = $2",
         )

@@ -176,24 +176,8 @@ pub async fn create_thread(
         None
     };
 
-    // 会話の対象も**作成者の viewer 権限**で解決し、種類を確かめる（見えない対象に紐づけない・名前は解決時点の
-    // 表示名を非正規化して持つ・D-10 T09）。種類が違えば 400。fail-closed。
-    let origin_artifact = if let Some(o) = req.origin_artifact {
-        let meta = state.artifacts.get(&ctx, o.id, trace.as_deref()).await?;
-        if meta.kind != o.kind.artifact_kind() {
-            return Err(ApiError::BadRequest(format!(
-                "会話の対象の種類が違います（{} ではありません）",
-                o.kind.as_str()
-            )));
-        }
-        Some(chat::OriginArtifact {
-            kind: o.kind,
-            id: o.id,
-            name: meta.name,
-        })
-    } else {
-        None
-    };
+    let origin_artifact =
+        resolve_origin_artifact(&state, &ctx, trace.as_deref(), req.origin_artifact).await?;
 
     let store = chat_store(&state)?;
     let mut thread = store
@@ -218,22 +202,7 @@ pub async fn create_thread(
             .set_thread_workspace(thread.id, ctx.tenant_id(), folder, parent)
             .await?;
     }
-    if origin_artifact.is_some() || req.purpose.is_some() {
-        store
-            .set_thread_builder(
-                thread.id,
-                ctx.tenant_id(),
-                origin_artifact.as_ref(),
-                req.purpose,
-            )
-            .await?;
-        if let Some(o) = origin_artifact {
-            thread.origin_artifact_id = Some(o.id);
-            thread.origin_artifact_kind = Some(o.kind);
-            thread.origin_artifact_name = Some(o.name);
-        }
-        thread.purpose = req.purpose;
-    }
+    set_builder(store, &ctx, &mut thread, origin_artifact, req.purpose).await?;
     if let Some((folder_id, name)) = search_folder {
         store
             .set_thread_search_folder(thread.id, ctx.tenant_id(), folder_id, &name)
@@ -242,6 +211,52 @@ pub async fn create_thread(
         thread.search_folder_name = Some(name);
     }
     Ok(Json(thread))
+}
+
+/// 会話の対象を**作成者の viewer 権限**で解決し、種類を確かめる（見えない対象に紐づけない・名前は解決時点の表示名を
+/// 非正規化して持つ・D-10 T09）。種類が違えば 400。fail-closed。
+async fn resolve_origin_artifact(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    trace: Option<&str>,
+    req: Option<super::chat_dto::OriginArtifactRequest>,
+) -> Result<Option<chat::OriginArtifact>, ApiError> {
+    let Some(o) = req else { return Ok(None) };
+    let meta = state.artifacts.get(ctx, o.id, trace).await?;
+    if meta.kind != o.kind.artifact_kind() {
+        return Err(ApiError::BadRequest(format!(
+            "会話の対象の種類が違います（{} ではありません）",
+            o.kind.as_str()
+        )));
+    }
+    Ok(Some(chat::OriginArtifact {
+        kind: o.kind,
+        id: o.id,
+        name: meta.name,
+    }))
+}
+
+/// 作成直後のスレッドに会話の対象と目的を載せる（D-10 T09・どちらも無ければ何もしない）。
+async fn set_builder(
+    store: &chat::ChatStore,
+    ctx: &authz::AuthContext,
+    thread: &mut Thread,
+    origin: Option<chat::OriginArtifact>,
+    purpose: Option<chat::ThreadPurpose>,
+) -> Result<(), ApiError> {
+    if origin.is_none() && purpose.is_none() {
+        return Ok(());
+    }
+    store
+        .set_thread_builder(thread.id, ctx.tenant_id(), origin.as_ref(), purpose)
+        .await?;
+    if let Some(o) = origin {
+        thread.origin_artifact_id = Some(o.id);
+        thread.origin_artifact_kind = Some(o.kind);
+        thread.origin_artifact_name = Some(o.name);
+    }
+    thread.purpose = purpose;
+    Ok(())
 }
 
 /// スレッド一覧の検索語の上限（文字数）。タイトル検索に十分で、巨大なパターンを DB へ流さない。

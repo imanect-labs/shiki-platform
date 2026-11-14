@@ -134,7 +134,6 @@ export default function WorkflowEditorPage() {
               name={name}
               initialThreadId={deepLinkThreadId}
               dirty={status?.dirty ?? false}
-              savedVersion={status?.savedVersion ?? loaded.version}
               onSave={save}
               onWorkflowSaved={onWorkflowSaved}
             />

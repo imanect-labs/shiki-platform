@@ -201,6 +201,18 @@ impl ChatWorker {
     ///
     /// 開いているドキュメントの読み書きツールは遅延にしない（`always_load` へ足す）。
     /// system プロンプトがそれらを使えと指示しているのに、毎ターン検索の 1 手を挟ませない。
+    /// 開いている文書の注記に続けて、ワークフローエディタの「AI に依頼」・「AI と作る」の会話の対象と目的を注記する
+    /// （D-10 T09・[`Self::apply_builder_origin`]）。戻り値で予算とチェックポイントを決める。
+    async fn system_with_origin(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        opts: &mut AgentOptions,
+    ) -> crate::store::ThreadBuilder {
+        self.system_with_origin_document(run, opts).await;
+        self.apply_builder_origin(ctx, run, opts).await
+    }
+
     async fn system_with_origin_document(&self, run: &ClaimedRun, opts: &mut AgentOptions) {
         let base = opts
             .system
@@ -369,9 +381,7 @@ impl ChatWorker {
         let (mut opts, mut history) = (opts, history);
         // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
         // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
-        self.system_with_origin_document(run, &mut opts).await;
-        // ワークフローエディタの「AI に依頼」・「AI と作る」の会話（対象・目的・D-10 T09）。
-        let builder = self.apply_builder_origin(ctx, run, &mut opts).await;
+        let builder = self.system_with_origin(ctx, run, &mut opts).await;
         super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
         super::opts::append_skill_guidance(&mut opts, &tools);
         opts.session_id = Some(run.thread_id.to_string());
@@ -409,13 +419,7 @@ impl ChatWorker {
             &super::opts::today_note(run.created_at, self.config.timezone),
         );
 
-        // 作成系の道具の初回の呼び出しで予算を 1 回だけ広げる（通常の会話だけ・HD-4 (c)・D-204）。
-        super::builder_tools::extend_on_builder_tools(&mut opts, &self.config.app_builder, &tools);
-        // 対象・目的を持つ会話は最初から作成用の予算で動き、チェックポイントも最初から保存する（T09・R1）。
-        if builder.is_builder() {
-            super::builder_origin::apply_builder_budget(&mut opts, &self.config.app_builder);
-            sink.enable_checkpoints();
-        }
+        self.start_builder(builder, &mut opts, &tools, sink);
         // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する（自律・作成系・R1）。
         // 画像は現在の権限で読み直したものに差し替える（#1179）。
         let mut resume = resume_state(run, sink).await?;

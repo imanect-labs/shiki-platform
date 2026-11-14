@@ -56,7 +56,6 @@ export function WorkflowChatPanel({
   name,
   initialThreadId,
   dirty,
-  savedVersion,
   onSave,
   onWorkflowSaved,
 }: {
@@ -67,8 +66,6 @@ export function WorkflowChatPanel({
   initialThreadId?: string | null;
   /// エディタに保存していない変更があるか。
   dirty: boolean;
-  /// 保存済みの版（AI が読む版）。
-  savedVersion: number;
   /// エディタの変更を保存する（保存できたら true）。
   onSave: () => Promise<boolean>;
   onWorkflowSaved: (ref: { id: string; version: number }) => void;
@@ -136,7 +133,7 @@ export function WorkflowChatPanel({
             data-testid="workflow-assistant-unsaved"
           >
             <span className="min-w-0 flex-1">
-              保存していない変更があります。AI は保存済みの v{savedVersion} を読んで直します。
+              保存していない変更があります。AI は保存済みの最新版を読んで直すので、この変更は入りません。
             </span>
             <Button size="sm" variant="outline" className="h-7 px-2 text-[12px]" onClick={() => void save()} disabled={saving}>
               {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Save className="size-3.5" aria-hidden />}
