@@ -470,6 +470,8 @@ async fn run_step(
     let mut ordered: Vec<Block> = Vec::new();
     let mut usage = Usage::default();
     let mut final_stop = StopReason::EndTurn;
+    // 思考を受け取ったか（思考だけで上限に達した応答の催促は、実際に思考した応答にだけ効かせる）。
+    let mut thought = false;
     let continuing = crate::agent_observation::is_text_continuation(&state.messages);
 
     loop {
@@ -491,6 +493,7 @@ async fn run_step(
                 sink.emit(AgentEvent::Text(text)).await?;
             }
             StreamDelta::ThinkingDelta { text } => {
+                thought = true;
                 // 本文の続きを書く生成では思考を画面へ流さない。思考が挟まると直前の本文と
                 // 別ブロックになり、表の行・```ブロックの途中から続く本文が別の Markdown として
                 // 描画されて壊れる（chat の sink・画面は思考を本文の区切りにする）。
@@ -617,10 +620,12 @@ async fn run_step(
     //
     // 思考だけで出力上限に達した（本文もツール呼び出しも無い）: 作業の途中で手が止まっただけで、
     // 完了でも「本文の続き」でもない。思考を切り上げて次の手を出させる（何も積まずに次へ・main の #1261）。
+    // 思考も無い空の応答（続きの催促に何も書けずに上限で止まったなど）は、思考を絞っても変わらないので催促しない。
     // 催促を使い切っても思考だけで止まるなら、空応答の催促（「本文として書いて」）は誤った指示になるので、
     // 空の assistant を積まずに打ち切りで止める。引数の途中で切れた呼び出し（`cut`）がある応答は、
     // 下で「切れた」と返して書き直させる。
     if final_stop == StopReason::MaxTokens
+        && thought
         && calls.is_empty()
         && cut.is_empty()
         && text_acc.trim().is_empty()
