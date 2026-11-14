@@ -24,25 +24,28 @@ fn ends_url(c: char) -> bool {
 }
 
 /// 文末に付きがちな記号を落とす（対応する開き括弧が URL の中に無い閉じ括弧も落とす）。
+///
+/// 括弧の数は最初に一度だけ数え、落とすたびに減らす（閉じ括弧が連続しても長さに比例する時間で終わる）。
 fn trim_tail(mut s: &str) -> &str {
+    let (open_round, open_square) = (s.matches('(').count(), s.matches('[').count());
+    let (mut close_round, mut close_square) = (s.matches(')').count(), s.matches(']').count());
     loop {
         let Some(last) = s.chars().last() else {
             return s;
         };
-        let drop = match last {
-            '.' | ',' | ';' | ':' | '!' | '?' => true,
-            ')' => s.matches('(').count() < s.matches(')').count(),
-            ']' => s.matches('[').count() < s.matches(']').count(),
-            _ => false,
-        };
-        if !drop {
-            return s;
+        match last {
+            '.' | ',' | ';' | ':' | '!' | '?' => {}
+            ')' if open_round < close_round => close_round -= 1,
+            ']' if open_square < close_square => close_square -= 1,
+            _ => return s,
         }
         s = &s[..s.len() - last.len_utf8()];
     }
 }
 
-/// 本文に書かれた http(s) の URL（重複なし・出現順・上限 [`MAX_URLS`]）。
+/// 本文に書かれた http(s) の URL（重複なし・渡した本文の順・上限 [`MAX_URLS`]）。
+///
+/// 上限に達したら残りは拾わない。新しい発話を優先したいときは、新しい順に渡す。
 #[must_use]
 pub fn user_urls<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<Url> {
     let mut out: Vec<Url> = Vec::new();
@@ -120,6 +123,20 @@ mod tests {
             ]
         );
         assert!(urls.iter().all(|u| u.host_str() != Some("shop.example")));
+    }
+
+    /// 閉じ括弧が大量に続いても、対応の無いものだけを落として短時間で終わる（CodeRabbit 指摘）。
+    #[test]
+    fn long_runs_of_closing_brackets_are_trimmed_linearly() {
+        let text = format!("https://a.example/x(1){}", ")".repeat(200_000));
+        let started = std::time::Instant::now();
+        let urls = user_urls([text.as_str()]);
+        assert_eq!(strs(&urls), ["https://a.example/x(1)"]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            trim_tail("https://a.example/[x]]."),
+            "https://a.example/[x]"
+        );
     }
 
     #[test]
