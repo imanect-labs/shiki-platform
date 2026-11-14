@@ -1,0 +1,40 @@
+[package]
+name = "shiki-browser"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+# エージェントブラウザ（docs/agent/browser.md）。エンジン差（JS 非実行のテキストエンジン / Chromium）を
+# BrowserEngine トレイトの裏に置き、cookie jar・履歴・ref の世代は BrowserSession が持つ。
+[lib]
+name = "browser"
+
+[dependencies]
+shiki-authz.workspace = true
+shiki-sandbox-client.workspace = true
+shiki-web-access.workspace = true
+
+async-trait.workspace = true
+cookie.workspace = true
+dom_query.workspace = true
+encoding_rs.workspace = true
+psl.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["time", "rt"] }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait.workspace = true
+
+# lib 名 authz / sandbox_client / web_access で参照するため machete が誤検出する（実際は使用中）。
+[package.metadata.cargo-machete]
+ignored = ["shiki-authz", "shiki-sandbox-client", "shiki-web-access"]
+
+[lints]
+workspace = true

@@ -40,7 +40,7 @@ pub(crate) use render::Page;
 
 use crate::tool::{Tool, ToolError, ToolOutcome};
 
-mod decode;
+use web_access::decode;
 mod doc;
 mod envelope;
 

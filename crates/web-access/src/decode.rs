@@ -20,14 +20,14 @@ use encoding_rs::Encoding;
 const META_SCAN_BYTES: usize = 4096;
 
 /// デコード結果。
-pub(super) struct Decoded {
+pub struct Decoded {
     pub text: String,
     /// 実際に使ったエンコーディング名（観測・デバッグ用）。
     pub encoding: &'static str,
 }
 
 /// 本文バイト列を文字列へ落とす。判定不能でも**必ず成功する**（推定にフォールバックする）。
-pub(super) fn decode(body: &[u8], content_type: Option<&str>) -> Decoded {
+pub fn decode(body: &[u8], content_type: Option<&str>) -> Decoded {
     let declared = Encoding::for_bom(body)
         .map(|(enc, _)| enc)
         .or_else(|| from_content_type(content_type))
