@@ -8,7 +8,7 @@
 use serde_json::{Map, Value};
 
 use super::ValidationError;
-use crate::ir::expr::{template_pieces, TemplateExpr, TemplatePiece, MAX_TEMPLATE_VARS};
+use crate::ir::expr::{template_pieces, FromRef, TemplateExpr, TemplatePiece, MAX_TEMPLATE_VARS};
 use crate::ir::{Trigger, WorkflowIr};
 
 /// 警告のコード: `{{key}}`（エスケープした波括弧）で vars のキーを囲んでいる。
@@ -19,6 +19,25 @@ pub const TEMPLATE_UNCLOSED_BRACE: &str = "ir.template_unclosed_brace";
 /// JSON Pointer の子の位置（`~` と `/` をエスケープする）。
 pub(super) fn child(path: &str, key: &str) -> String {
     format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+/// `$template` の差し込み（vars の値）の `$from`（形の崩れたものと `$from` でない値は `None`）と、書いた
+/// `"default": null` を外したか。
+///
+/// 差し込みの null は空の文字にならず、値が無いものとして step を失敗させる（実行の `resolve_template`・ir.md §3.1）
+/// ので、差し込みの `"default": null` は既定値にならない。保存の照合（祖先でない参照の default の要否・解決しない
+/// ときの振る舞いの文）と入力の参照の注意は、既定値なしとして読む（BUG-288 で null を既定値として残した後も、
+/// 差し込みでは前と同じに止める）。
+pub(super) fn template_var_ref(v: &Value) -> Option<(FromRef, bool)> {
+    if !v.as_object()?.contains_key("$from") {
+        return None;
+    }
+    let mut from: FromRef = serde_json::from_value(v.clone()).ok()?;
+    let null_default = from.default.as_ref().is_some_and(Value::is_null);
+    if null_default {
+        from.default = None;
+    }
+    Some((from, null_default))
 }
 
 /// vars に無いプレースホルダの一覧（重複は 1 つにまとめる・空なら問題なし）。

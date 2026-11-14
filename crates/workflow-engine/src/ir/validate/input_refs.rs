@@ -13,7 +13,7 @@
 
 use serde_json::Value;
 
-use super::template::child;
+use super::template::{child, template_var_ref};
 use super::ValidationError;
 use crate::ir::expr::FromRef;
 use crate::ir::WorkflowIr;
@@ -69,6 +69,22 @@ fn refs(value: &Value, path: &str, out: &mut Vec<(String, FromRef)>) {
                 if let Ok(from) = serde_json::from_value::<FromRef>(value.clone()) {
                     if from.from == "input" {
                         out.push((path.to_string(), from));
+                    }
+                }
+                return;
+            }
+            // 差し込みの `"default": null` は既定値にならない（[`template_var_ref`]）。
+            if let (true, Some(vars)) = (
+                map.contains_key("$template"),
+                map.get("vars").and_then(Value::as_object),
+            ) {
+                let vars_path = child(path, "vars");
+                for (k, v) in vars {
+                    let at = child(&vars_path, k);
+                    match template_var_ref(v) {
+                        Some((from, _)) if from.from == "input" => out.push((at, from)),
+                        Some(_) => {}
+                        None => refs(v, &at, out),
                     }
                 }
                 return;
@@ -185,6 +201,32 @@ mod tests {
                 (
                     Some("/params/input/c/0".into()),
                     "「m」は入力項目にありません。手動で実行するときに欄が出ないため、値が入らないときは既定値を使います。".into()
+                ),
+            ]
+        );
+    }
+
+    /// 差し込みの `"default": null` は既定値にならない（解決できずに失敗する）ので、「既定値を使います」と言わない。
+    /// 差し込みでない値の位置の null の既定値は既定値。
+    #[test]
+    fn a_null_default_in_a_template_var_is_not_called_a_default() {
+        let got = warned(
+            schema(),
+            json!({
+                "t": { "$template": "{z}", "vars": { "z": { "$from": "input", "path": "/memo", "default": null } } },
+                "v": { "$from": "input", "path": "/memo", "default": null }
+            }),
+        );
+        assert_eq!(
+            got,
+            vec![
+                (
+                    Some("/params/input/t/vars/z".into()),
+                    "「memo」は入力項目にありません。手動で実行するときに欄が出ないため、値が入らないと、このブロックは失敗します。".into()
+                ),
+                (
+                    Some("/params/input/v".into()),
+                    "「memo」は入力項目にありません。手動で実行するときに欄が出ないため、値が入らないときは既定値を使います。".into()
                 ),
             ]
         );

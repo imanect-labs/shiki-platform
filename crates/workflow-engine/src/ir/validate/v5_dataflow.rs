@@ -12,7 +12,7 @@ use serde_json::Value;
 mod output_refs;
 use output_refs::{OutputShapes, Place, UNKNOWN_OUTPUT_PATH};
 
-use super::template::{child, missing_placeholders};
+use super::template::{child, missing_placeholders, template_var_ref};
 use super::ValidationError;
 use crate::ir::expr::{
     CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr, MAX_REGEX_LEN,
@@ -181,14 +181,29 @@ fn check_template(
         ));
     }
     // vars の値も参照として検査する（source 名・祖先性・path の形）。生 JSON を見るので、形の崩れた
-    // `$from`（リテラルに読まれたもの）も弾ける。
+    // `$from`（リテラルに読まれたもの）も弾ける。差し込みの `"default": null` は既定値にならない（解決できずに
+    // 失敗する）ので、既定値なしとして照らし、誤りの文で言い添える。
     if let Some(vars) = raw.get("vars").and_then(Value::as_object) {
         let vars_path = child(path, "vars");
         for (k, v) in vars {
-            check_value(v, &child(&vars_path, k), ctx, errors);
+            let at = child(&vars_path, k);
+            let Some((from, null_default)) = template_var_ref(v) else {
+                check_value(v, &at, ctx, errors);
+                continue;
+            };
+            let before = errors.len();
+            check_from(&from, &at, ctx, Place::Value, errors);
+            if null_default {
+                for e in &mut errors[before..] {
+                    e.message.push_str(TEMPLATE_NULL_DEFAULT);
+                }
+            }
         }
     }
 }
+
+/// 差し込みの `"default": null` を書いた参照の誤りに添える文。
+const TEMPLATE_NULL_DEFAULT: &str = "（$template の差し込みでは、default の null は値が無いのと同じで、解決できずに失敗します。空の文字にするなら \"default\": \"\" と書きます）";
 
 /// `$from` の source を検証する（祖先性・default 要否・path の形・出力の形から決まる path の有無）。
 ///
@@ -532,6 +547,53 @@ mod tests {
             let null_default = json!({ "$from": format!("nodes.{ng}.output"), "default": null });
             assert!(bad_refs(wf(null_default)).is_empty(), "{ng} null");
         }
+    }
+
+    /// `$template` の差し込みの `"default": null` は既定値にならない（差し込みの null は解決できずに失敗する・
+    /// 実行の `resolve_template`）。祖先でない参照は止め、文で言い添える。空の文字の既定値は通り、祖先の参照の
+    /// null の既定値も（前と同じく）止めない。
+    #[test]
+    fn a_null_default_in_a_template_var_is_no_default() {
+        let wf = |from: &str, default: serde_json::Value| {
+            json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "a", "type": "storage.read", "params": {} },
+                    { "id": "loose", "type": "storage.read", "params": {} },
+                    { "id": "b", "type": "storage.read", "params": { "id": {
+                        "$template": "[{d}]",
+                        "vars": { "d": { "$from": format!("nodes.{from}.output"), "path": "/x", "default": default } }
+                    } } }
+                ],
+                "edges": [{ "from": "a", "to": "b" }]
+            })
+        };
+        let errs = |v: serde_json::Value| {
+            let mut errs = Vec::new();
+            check(&ir(v), &mut errs);
+            errs
+        };
+        let null_loose = errs(wf("loose", json!(null)));
+        assert_eq!(null_loose.len(), 1, "{null_loose:?}");
+        assert_eq!(null_loose[0].code, "ir.bad_ref");
+        assert_eq!(null_loose[0].path.as_deref(), Some("/params/id/vars/d"));
+        assert!(
+            null_loose[0].message.ends_with(TEMPLATE_NULL_DEFAULT),
+            "{null_loose:?}"
+        );
+        assert!(errs(wf("loose", json!(""))).is_empty());
+        assert!(errs(wf("a", json!(null))).is_empty());
+        // 差し込みでない値の位置の null の既定値は既定値のまま（項目を空にする書込など）。
+        let plain = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "loose", "type": "storage.read", "params": {} },
+                { "id": "b", "type": "storage.read", "params": {
+                    "id": { "$from": "nodes.loose.output", "path": "/x", "default": null } } }
+            ],
+            "edges": []
+        });
+        assert!(errs(plain).is_empty());
     }
 
     /// 入れ子の繰り返しの中は、内側の繰り返しの祖先（外側の中のブロック）と、外側の繰り返しの祖先（本体）を
