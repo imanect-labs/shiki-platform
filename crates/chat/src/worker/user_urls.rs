@@ -36,6 +36,7 @@ mod tests {
             invoked_actions: Vec::new(),
             bound_actions: Vec::new(),
             ui_runs: Vec::new(),
+            stop_reason: None,
             created_at: chrono::Utc::now(),
         }
     }

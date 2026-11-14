@@ -243,6 +243,26 @@ impl ChatWorker {
         });
     }
 
+    /// プロファイルを決めた後の、どのプロファイルにも共通の組み立て（開いている文書・添付の読み方・ツールの案内・
+    /// 会話の id・常時ロードのツール）。
+    async fn dress_turn_opts(
+        &self,
+        run: &ClaimedRun,
+        opts: &mut AgentOptions,
+        attachments: &[agent_core::AttachmentRef],
+        tools: &[Arc<dyn agent_core::Tool>],
+        tools_in_use: Vec<String>,
+    ) {
+        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
+        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
+        self.system_with_origin_document(run, opts).await;
+        super::opts::append_attachment_readers(opts, attachments, tools);
+        super::opts::append_tool_guidance(opts, tools);
+        opts.session_id = Some(run.thread_id.to_string());
+        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
+        opts.tool_search.always_load.extend(tools_in_use);
+    }
+
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
     ///
     /// 戻り値は回答が途中で止まった理由（出力の上限・手数や費用の上限・ループの検知・GAP-106）。
@@ -374,14 +394,8 @@ impl ChatWorker {
         let approver = Some(approver);
 
         let (mut opts, mut history) = (opts, history);
-        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
-        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
-        self.system_with_origin_document(run, &mut opts).await;
-        super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
-        super::opts::append_tool_guidance(&mut opts, &tools);
-        opts.session_id = Some(run.thread_id.to_string());
-        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
-        opts.tool_search.always_load.extend(tools_in_use);
+        self.dress_turn_opts(run, &mut opts, &attachments, &tools, tools_in_use)
+            .await;
         // 本人のカスタム指示（#900）はプロファイルの基本指示の後、skill の指示文より**前**に置く
         // （手順書の記述・発話ごとのツール指定・門の注記が後ろから優先される）。誘導のみで、
         // ツール・承認・認可には触れない。
