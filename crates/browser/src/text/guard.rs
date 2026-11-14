@@ -167,17 +167,45 @@ fn name_at(b: &[u8], i: usize) -> &str {
     std::str::from_utf8(&b[i.min(end)..end]).unwrap_or("")
 }
 
-/// タグの `>` の直後の位置（引用符の中の `>` は飛ばす）。
+/// タグの中の tokenizer の状態（HTML 標準の tag / attribute 系の状態を縮めたもの）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TagState {
+    TagName,
+    BeforeAttrName,
+    AttrName,
+    AfterAttrName,
+    BeforeValue,
+    Quoted(u8),
+    Unquoted,
+}
+
+/// タグの `>` の直後の位置。`i` はタグ名の先頭。
+///
+/// 引用符が値を囲むのは `=` の直後だけ（`<div x=a'>` の `'` は値の一部、`<div a"b>` の `"` は名前の一部）。
+/// 引用符を一律に数えると、閉じない引用符で後続のタグをまとめて読み飛ばし、深さを少なく数える。
 fn tag_end(b: &[u8], mut i: usize) -> Option<usize> {
-    let mut quote: Option<u8> = None;
+    use TagState::{
+        AfterAttrName, AttrName, BeforeAttrName, BeforeValue, Quoted, TagName, Unquoted,
+    };
+    let mut state = TagName;
     while i < b.len() {
         let c = b[i];
-        match quote {
-            Some(q) if c == q => quote = None,
-            None if c == b'"' || c == b'\'' => quote = Some(c),
-            None if c == b'>' => return Some(i + 1),
-            Some(_) | None => {}
-        }
+        let ws = c.is_ascii_whitespace();
+        state = match state {
+            Quoted(q) if c == q => BeforeAttrName,
+            Quoted(q) => Quoted(q),
+            _ if c == b'>' => return Some(i + 1),
+            BeforeValue if c == b'"' || c == b'\'' => Quoted(c),
+            BeforeValue if ws => BeforeValue,
+            BeforeValue | Unquoted if !ws => Unquoted,
+            AttrName | AfterAttrName if c == b'=' => BeforeValue,
+            AttrName if !ws && c != b'/' => AttrName,
+            TagName if !ws && c != b'/' => TagName,
+            AttrName | AfterAttrName if ws => AfterAttrName,
+            _ if c == b'/' || ws => BeforeAttrName,
+            // 属性名の先頭（`=` で始まる名前も名前の一部）。
+            _ => AttrName,
+        };
         i += 1;
     }
     None
@@ -245,6 +273,15 @@ mod tests {
         // タグ名は空白・`/`・`>` まで（`<div:x>` は `</div>` では閉じない）。
         let colon = "<div:x></div>".repeat(100_000);
         assert!(clip_depth(&colon, MAX_PARSE_DEPTH).1);
+        // 引用符の無い値の中の引用符は値の一部（後続のタグを引用として飛ばさない）。
+        let quote_in_value = format!("<div x=a'>{}", "<div>".repeat(100_000));
+        assert!(clip_depth(&quote_in_value, MAX_PARSE_DEPTH).1);
+        let quote_in_name = format!("<div a\"b>{}", "<div>".repeat(100_000));
+        assert!(clip_depth(&quote_in_name, MAX_PARSE_DEPTH).1);
+        // 引用符で囲んだ値の中の `>` はタグの終わりではない。
+        let quoted = format!("<div x = \"a>b\" y='c>d'>{}", "<div>".repeat(100_000));
+        assert!(clip_depth(&quoted, MAX_PARSE_DEPTH).1);
+        assert_eq!(tag_end(b"div x = \"a>b\">rest", 0), Some(14));
         // SVG の中でも HTML の要素は抜け出して入れ子になる。
         let breakout = "<svg><div/>".repeat(100_000);
         assert!(clip_depth(&breakout, MAX_PARSE_DEPTH).1);

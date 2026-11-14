@@ -29,6 +29,8 @@ pub(crate) struct Form {
     /// 送り先。None は明示された action を解決できない（`javascript:` 等）＝送信しない。
     pub action: Option<Url>,
     pub post: bool,
+    /// `method="dialog"`（ダイアログを閉じるだけで HTTP 要求を送らない）。テキストエンジンでは送信しない。
+    pub dialog: bool,
     pub enctype: String,
     id: Option<String>,
 }
@@ -43,6 +45,8 @@ pub(crate) struct Field {
     pub element: Option<u32>,
     /// `disabled`（祖先の `<fieldset disabled>` を含む）。送信に載せず、押せない。
     pub disabled: bool,
+    /// `readonly`。値は送るが、利用者（モデル）は書き換えられない。
+    pub readonly: bool,
     form_attr: Option<String>,
 }
 
@@ -82,6 +86,8 @@ pub(crate) struct SubmitOverrides {
     /// `formaction` が明示されているのに解決できない（`javascript:` 等）＝送信しない。
     pub bad_action: bool,
     pub post: Option<bool>,
+    /// `formmethod="dialog"`。
+    pub dialog: Option<bool>,
     pub enctype: Option<String>,
 }
 
@@ -480,6 +486,9 @@ impl Walker<'_> {
                 post: node
                     .attr("method")
                     .is_some_and(|m| m.eq_ignore_ascii_case("post")),
+                dialog: node
+                    .attr("method")
+                    .is_some_and(|m| m.eq_ignore_ascii_case("dialog")),
                 enctype: node.attr("enctype").map_or_else(
                     || "application/x-www-form-urlencoded".to_string(),
                     |e| e.to_ascii_lowercase(),

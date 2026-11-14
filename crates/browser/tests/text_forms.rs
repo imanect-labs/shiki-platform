@@ -488,3 +488,61 @@ async fn origin_header_follows_redirect_taint() {
         Some(a_origin.as_str())
     );
 }
+
+#[tokio::test]
+async fn empty_formaction_dialog_readonly_and_no_content() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/edit" => http(
+            "200 OK",
+            &[],
+            r#"<form method="post" action="/publish"><input name="no" value="A-1" readonly aria-label="注文番号">
+               <button formaction="">保存</button><button formmethod="dialog">閉じる</button></form>
+               <dialog open><form method="dialog"><input name="d" aria-label="ダイアログ欄"><button>OK</button></form></dialog>
+               <form method="post" action="/nocontent"><button>記録</button></form>"#,
+        ),
+        "/nocontent" => http("204 No Content", &[("Content-Type", "")], ""),
+        _ => http("200 OK", &[], "<p>受信</p>"),
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s
+        .navigate(u(port, "app.example.com", "/edit"))
+        .await
+        .unwrap();
+    assert!(snap.text.contains("(読み取り専用)"), "{}", snap.text);
+
+    // 読み取り専用の欄は書き換えられないが、値は送る。
+    assert!(matches!(
+        s.act(Action::Fill(find(&snap, "注文番号"), "B-2".into()))
+            .await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    // 明示された空の formaction は、フォームの action ではなく文書の URL へ送る。
+    s.act(Action::Click(find(&snap, "保存"))).await.unwrap();
+    assert_eq!(last(&log, "/edit").body, "no=A-1");
+    assert_eq!(last(&log, "/edit").method, "POST");
+
+    // method="dialog" / formmethod="dialog" は送らない（plan も同じ）。
+    let snap = s
+        .navigate(u(port, "app.example.com", "/edit"))
+        .await
+        .unwrap();
+    let before = log.lock().unwrap().len();
+    for label in ["閉じる", "OK"] {
+        let action = Action::Click(find(&snap, label));
+        assert!(
+            matches!(s.plan(&action), Err(BrowserError::Unsupported(_))),
+            "{label}"
+        );
+        assert!(
+            matches!(s.act(action).await, Err(BrowserError::Unsupported(_))),
+            "{label}"
+        );
+    }
+    assert_eq!(log.lock().unwrap().len(), before, "1 度も送らない");
+
+    // 204 No Content は成功として、表示中のページを保つ。
+    let after = s.act(Action::Click(find(&snap, "記録"))).await.unwrap();
+    assert_eq!(last(&log, "/nocontent").method, "POST");
+    assert_eq!(after.url.path(), "/edit");
+    assert!(after.text.contains("注文番号"), "{}", after.text);
+}

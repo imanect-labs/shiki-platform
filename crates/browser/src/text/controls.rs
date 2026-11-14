@@ -43,6 +43,17 @@ impl Walker<'_> {
         }
     }
 
+    /// 入力欄の注記（無効・読み取り専用）。
+    fn textbox_suffix(&self, node: &NodeRef<'_>) -> &'static str {
+        if self.is_disabled(node) {
+            " (無効)"
+        } else if node.has_attr("readonly") {
+            " (読み取り専用)"
+        } else {
+            ""
+        }
+    }
+
     /// 部品がフォームに属するか（`form` 属性があればそれが優先し、無い id なら属さない）。
     fn has_owner(&self, node: &NodeRef<'_>, form: Option<usize>) -> bool {
         match node.attr("form") {
@@ -65,6 +76,7 @@ impl Walker<'_> {
             kind,
             element: element.map(|e| e.index),
             disabled,
+            readonly: node.has_attr("readonly"),
             form_attr: node.attr("form").map(|f| f.to_string()),
         });
     }
@@ -88,7 +100,7 @@ impl Walker<'_> {
             id,
         );
         if let Some(id) = id {
-            let suffix = self.disabled_suffix(node);
+            let suffix = self.textbox_suffix(node);
             self.token(&format!(
                 "[{id} textbox \"{label}\" value=\"{}\"{suffix}]",
                 collapse(&value)
@@ -98,14 +110,24 @@ impl Walker<'_> {
 
     /// 送信ボタンの `formaction` / `formmethod` / `formenctype`。
     fn overrides(&self, node: &NodeRef<'_>) -> Option<Box<SubmitOverrides>> {
-        let formaction = node.attr("formaction").filter(|a| !a.trim().is_empty());
-        let action = formaction.as_ref().and_then(|a| self.resolve(a));
+        // 明示された空の formaction は文書の URL（属性が無いときだけフォームの action を使う）。
+        let formaction = node.attr("formaction");
+        let action = formaction.as_ref().and_then(|a| {
+            if a.trim().is_empty() {
+                Some(self.base.clone())
+            } else {
+                self.resolve(a)
+            }
+        });
         let o = SubmitOverrides {
             bad_action: formaction.is_some() && action.is_none(),
             action,
             post: node
                 .attr("formmethod")
                 .map(|m| m.eq_ignore_ascii_case("post")),
+            dialog: node
+                .attr("formmethod")
+                .map(|m| m.eq_ignore_ascii_case("dialog")),
             enctype: node.attr("formenctype").map(|e| e.to_ascii_lowercase()),
         };
         (o != SubmitOverrides::default()).then(|| Box::new(o))
@@ -240,7 +262,7 @@ impl Walker<'_> {
                     } else {
                         value
                     };
-                    let suffix = self.disabled_suffix(node);
+                    let suffix = self.textbox_suffix(node);
                     self.token(&format!(
                         "[{id} textbox \"{label}\" type={ty} value=\"{shown}\"{suffix}]"
                     ));

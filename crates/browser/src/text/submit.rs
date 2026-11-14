@@ -63,6 +63,9 @@ pub(crate) fn build(
             .clone()
             .ok_or_else(|| BrowserError::Unsupported("action（http/https 以外）".into()))?,
     };
+    if overrides.and_then(|o| o.dialog).unwrap_or(form.dialog) {
+        return Err(BrowserError::Unsupported("method=dialog".into()));
+    }
     let post = overrides.and_then(|o| o.post).unwrap_or(form.post);
     let enctype = overrides
         .and_then(|o| o.enctype.clone())

@@ -370,6 +370,12 @@ impl EnginePage for TextPage {
             .fetcher
             .fetch(&req, jar, self.redirect_check.as_ref())
             .await?;
+        // 204 No Content は文書を置き換えない成功応答（表示中のページ・入力・履歴を保つ）。
+        if fetched.status == 204 {
+            if let Ok(cur) = self.current() {
+                return Ok(cur.snapshot.clone());
+            }
+        }
         if !is_htmlish(fetched.content_type.as_deref(), &fetched.body) {
             return Err(BrowserError::NotHtml {
                 content_type: fetched.content_type.unwrap_or_default(),
@@ -429,6 +435,9 @@ impl EnginePage for TextPage {
                     return Err(BrowserError::NotInteractive("入力"));
                 }
                 let field = self.enabled_field(index)?;
+                if self.current()?.fields[field].readonly {
+                    return Err(BrowserError::NotInteractive("入力（読み取り専用の欄）"));
+                }
                 let mut state = self.current()?.state.clone();
                 state.entry(field).or_default().value = Some(value);
                 self.rerender(state).await
