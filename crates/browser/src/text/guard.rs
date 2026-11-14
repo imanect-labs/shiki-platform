@@ -115,8 +115,8 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
     while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
         i += off;
         let rest = &b[i..];
-        // 外部コンテンツの中の CDATA は `]]>` までが文字（中の `<` はタグではない）。
-        if in_foreign(&open) && rest.starts_with(b"<![CDATA[") {
+        // 現在のノードが HTML の要素でなければ（統合点の foreignObject 等も含む）、CDATA は `]]>` までが文字。
+        if open.last().is_some_and(|o| o.ns != Ns::Html) && rest.starts_with(b"<![CDATA[") {
             match find(b, i + 9, b"]]>") {
                 Some(end) => i = end + 3,
                 None => return (html, false),
@@ -520,6 +520,16 @@ mod tests {
             let s = format!("{opener}{}", "<div>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{opener}");
         }
+    }
+
+    #[test]
+    fn foreign_content_tricks_are_still_clipped() {
+        // 統合点（foreignObject）の直下の CDATA も読み飛ばす。
+        let cdata_fo = format!(
+            "<svg><foreignObject><![CDATA[</foreignObject></svg><script>]]></foreignObject></svg>{}",
+            "<div>".repeat(100_000)
+        );
+        assert!(clip_depth(&cdata_fo, MAX_PARSE_DEPTH).1);
         // 外部コンテンツの中の CDATA の中の偽のタグで状態をずらさせない。
         let cdata = format!(
             "<svg><![CDATA[</svg><script>]]></svg>{}",

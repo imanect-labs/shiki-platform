@@ -308,10 +308,14 @@ impl Walker<'_> {
         let mut first_is_placeholder = false;
         for d in node.descendants_it() {
             if d.node_name().is_some_and(|n| &*n == "option") {
-                let text = collapse(&d.text());
-                let value = d
-                    .attr("value")
-                    .map_or_else(|| text.clone(), |v| v.to_string());
+                // 表示名は空でない label 属性、無ければ中のテキスト。値は value 属性、無ければ中のテキスト。
+                let inner = collapse(&d.text());
+                let text = d
+                    .attr("label")
+                    .map(|l| collapse(&l))
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| inner.clone());
+                let value = d.attr("value").map_or(inner, |v| v.to_string());
                 let disabled = d.has_attr("disabled")
                     || d.parent().is_some_and(|p| {
                         p.node_name().is_some_and(|n| &*n == "optgroup") && p.has_attr("disabled")

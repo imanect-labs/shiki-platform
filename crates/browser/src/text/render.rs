@@ -514,7 +514,7 @@ impl Walker<'_> {
         }
         if matches!(
             name.as_str(),
-            "script" | "style" | "template" | "head" | "svg" | "iframe" | "object"
+            "script" | "style" | "template" | "head" | "svg" | "iframe" | "object" | "datalist"
         ) {
             return;
         }
@@ -689,12 +689,16 @@ impl Walker<'_> {
 
     /// `form="id"` 属性で外のフォームに属する項目を結び付ける（フォームが後に現れてもよい）。
     fn bind_form_attrs(&mut self) {
+        // id → 最初のフォームの位置（項目ごとに全フォームを探して二乗にしない）。
+        let mut by_id: HashMap<&str, usize> = HashMap::new();
+        for (i, form) in self.forms.iter().enumerate() {
+            if let Some(id) = form.id.as_deref() {
+                by_id.entry(id).or_insert(i);
+            }
+        }
         for f in &mut self.fields {
             if let Some(target) = &f.form_attr {
-                f.form = self
-                    .forms
-                    .iter()
-                    .position(|form| form.id.as_deref() == Some(target));
+                f.form = by_id.get(target.as_str()).copied();
             }
         }
     }

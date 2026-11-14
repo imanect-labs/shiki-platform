@@ -472,3 +472,42 @@ fn many_selected_options_render_in_linear_time() {
     );
     assert!(matches!(&out.fields[0].kind, FieldKind::Select { values } if values.len() == 50_000));
 }
+
+#[test]
+fn datalist_controls_are_not_submitted_and_option_labels_are_shown() {
+    let out = r(
+        r#"<form><input name="city" list="cities" value="Osaka" aria-label="都市">
+        <datalist id="cities"><select name="city"><option>Tokyo</option></select></datalist>
+        <select name="pref" aria-label="県"><option value="1" label="東京"></option><option value="2" label=" "> 大阪 </option></select></form>"#,
+    );
+    let names: Vec<_> = out.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["city", "pref"], "datalist の中の部品は送らない");
+    // 空でない label 属性が表示名。空白だけの label は使わず中のテキスト。値は value 属性。
+    assert_eq!(
+        out.elements[1].kind,
+        ElementKind::Select {
+            options: vec![
+                ("1".to_string(), "東京".to_string()),
+                ("2".to_string(), "大阪".to_string())
+            ],
+            multiple: false,
+        }
+    );
+}
+
+#[test]
+fn form_attribute_binding_is_linear() {
+    let html = format!(
+        "<body>{}{}</body>",
+        "<form id=f></form>".repeat(20_000),
+        "<input form=z>".repeat(20_000)
+    );
+    let started = std::time::Instant::now();
+    let out = r(&html);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(out.fields.iter().all(|f| f.form.is_none()));
+}
