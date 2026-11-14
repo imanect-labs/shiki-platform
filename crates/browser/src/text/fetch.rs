@@ -90,6 +90,10 @@ impl Fetcher {
                     ),
             }
             .header(ACCEPT, "text/html,application/xhtml+xml;q=0.9,text/*;q=0.5");
+            // この要求を送る前に判定する（最初の別サイトへの転送先から Strict を外す）。
+            if !same_site(&chain_root, &target.url) {
+                crossed = true;
+            }
             let ctx = RequestContext {
                 initiator: req.initiator.clone(),
                 top_level: true,
@@ -110,9 +114,6 @@ impl Fetcher {
                         tracing::debug!(target: "browser", host = %target.host, ?reason, "set-cookie を取り込まなかった");
                     }
                 }
-            }
-            if !same_site(&chain_root, &target.url) {
-                crossed = true;
             }
             let status = response.status();
             if status.is_redirection() {

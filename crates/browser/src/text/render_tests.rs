@@ -190,7 +190,7 @@ fn field_state_overrides_values() {
         <select name="s"><option value="1">一</option><option value="2">二</option></select></form></body>"#;
     let mut state = HashMap::new();
     state.insert(
-        1,
+        0,
         FieldState {
             value: Some("検索語".into()),
             checked: None,
@@ -198,7 +198,7 @@ fn field_state_overrides_values() {
         },
     );
     state.insert(
-        2,
+        1,
         FieldState {
             value: None,
             checked: Some(true),
@@ -206,7 +206,7 @@ fn field_state_overrides_values() {
         },
     );
     state.insert(
-        3,
+        2,
         FieldState {
             value: None,
             checked: None,
@@ -257,4 +257,53 @@ fn deep_nesting_does_not_overflow_the_stack() {
     );
     let out = render(&labels, &base(), 1, 12_000, &HashMap::new());
     assert!(out.elements[0].label.chars().count() <= MAX_LABEL_CHARS);
+}
+
+#[test]
+fn base_href_resolves_links_but_not_omitted_actions() {
+    let out = render(
+        r#"<head><base href="/app/"></head><body><a href="next">次</a>
+           <form action="save"><input name="a"></form><form><input name="b"></form></body>"#,
+        &base(),
+        1,
+        12_000,
+        &HashMap::new(),
+    );
+    assert!(
+        out.text.contains("→ https://portal.example.com/app/next"),
+        "{}",
+        out.text
+    );
+    assert_eq!(
+        out.forms[0].action.as_str(),
+        "https://portal.example.com/app/save"
+    );
+    // action を省いたフォームは文書の URL へ送る。
+    assert_eq!(
+        out.forms[1].action.as_str(),
+        "https://portal.example.com/dir/page"
+    );
+}
+
+#[test]
+fn disabled_options_are_not_selectable_or_default() {
+    let out = r(
+        r#"<form><select name="s" aria-label="選択"><option value="" disabled>選んでください</option>
+        <optgroup label="g" disabled><option value="x">X</option></optgroup><option value="y">Y</option>
+        <option value="z" disabled selected>Z</option></select></form>"#,
+    );
+    assert_eq!(
+        out.fields[0].kind,
+        FieldKind::Select {
+            values: vec!["y".into()]
+        }
+    );
+    assert_eq!(
+        out.elements[0].kind,
+        ElementKind::Select {
+            options: vec![("y".to_string(), "Y".to_string())],
+            multiple: false,
+        }
+    );
+    assert!(out.text.contains(r#""z"=Z(無効)"#), "{}", out.text);
 }

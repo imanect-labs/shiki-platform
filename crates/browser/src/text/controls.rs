@@ -12,14 +12,20 @@ use super::{button_token, collapse, label_text, Field, FieldKind, SubmitOverride
 use crate::snapshot::{ElementKind, RefId};
 
 impl Walker<'_> {
-    fn value(&self, id: Option<RefId>, default: String) -> String {
-        id.and_then(|i| self.state.get(&i.index))
+    /// 次に積む項目の利用者が入れた値。状態は ref ではなく**項目の位置**で持つ
+    /// （ref の無い項目＝CSS で隠れたラジオ等も、同じグループの選択解除で書き換えるため）。
+    fn pending_state(&self) -> Option<&super::FieldState> {
+        self.state.get(&self.fields.len())
+    }
+
+    fn value(&self, default: String) -> String {
+        self.pending_state()
             .and_then(|s| s.value.clone())
             .unwrap_or(default)
     }
 
-    fn checked(&self, id: Option<RefId>, default: bool) -> bool {
-        id.and_then(|i| self.state.get(&i.index))
+    fn checked(&self, default: bool) -> bool {
+        self.pending_state()
             .and_then(|s| s.checked)
             .unwrap_or(default)
     }
@@ -71,7 +77,7 @@ impl Walker<'_> {
             },
             &label,
         );
-        let value = self.value(id, node.text().to_string());
+        let value = self.value(node.text().to_string());
         self.push_field(
             node,
             form,
@@ -163,7 +169,7 @@ impl Walker<'_> {
                     ElementKind::Checkbox
                 };
                 let id = self.push_element(kind, &label);
-                let checked = self.checked(id, node.has_attr("checked"));
+                let checked = self.checked(node.has_attr("checked"));
                 let value = if value.is_empty() { "on".into() } else { value };
                 self.push_field(
                     node,
@@ -198,7 +204,7 @@ impl Walker<'_> {
                     },
                     &label,
                 );
-                let value = self.value(id, value);
+                let value = self.value(value);
                 self.push_field(
                     node,
                     form,
@@ -227,7 +233,8 @@ impl Walker<'_> {
     pub(super) fn select(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
         let label = self.label_for(node, wrap);
         let multiple = node.has_attr("multiple");
-        let mut options = Vec::new();
+        // (value, 表示名, 無効か)。`<option disabled>` と `<optgroup disabled>` の中の選択肢は選べず、送らない。
+        let mut all: Vec<(String, String, bool)> = Vec::new();
         let mut selected = Vec::new();
         for d in node.descendants_it() {
             if d.node_name().is_some_and(|n| &*n == "option") {
@@ -235,29 +242,44 @@ impl Walker<'_> {
                 let value = d
                     .attr("value")
                     .map_or_else(|| text.clone(), |v| v.to_string());
-                if d.has_attr("selected") {
+                let disabled = d.has_attr("disabled")
+                    || d.parent().is_some_and(|p| {
+                        p.node_name().is_some_and(|n| &*n == "optgroup") && p.has_attr("disabled")
+                    });
+                if d.has_attr("selected") && !disabled {
                     if !multiple {
                         selected.clear();
                     }
                     selected.push(value.clone());
                 }
-                options.push((value, text));
+                all.push((value, text, disabled));
             }
         }
-        // 単一選択で何も選ばれていなければ先頭が選ばれる。複数選択・選択肢なしは何も選ばない。
+        // 単一選択で何も選ばれていなければ、最初の有効な選択肢が選ばれる。複数選択・選択肢なしは何も選ばない。
         if !multiple && selected.is_empty() {
-            if let Some((v, _)) = options.first() {
+            if let Some((v, _, _)) = all.iter().find(|(_, _, d)| !d) {
                 selected.push(v.clone());
             }
         }
-        let listed = options
+        let listed = all
             .iter()
-            .map(|(v, t)| format!("{v:?}={t}"))
+            .map(|(v, t, d)| {
+                if *d {
+                    format!("{v:?}={t}(無効)")
+                } else {
+                    format!("{v:?}={t}")
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
+        let options: Vec<(String, String)> = all
+            .into_iter()
+            .filter(|(_, _, d)| !d)
+            .map(|(v, t, _)| (v, t))
+            .collect();
         let id = self.push_element(ElementKind::Select { options, multiple }, &label);
-        let values = id
-            .and_then(|i| self.state.get(&i.index))
+        let values = self
+            .pending_state()
             .and_then(|s| s.selected.clone())
             .unwrap_or(selected);
         self.push_field(

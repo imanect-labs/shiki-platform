@@ -102,8 +102,11 @@ pub(crate) struct Rendered {
 }
 
 struct Walker<'a> {
+    /// 文書の URL（action を省いたフォームの送り先）。
     base: &'a Url,
-    state: &'a HashMap<u32, FieldState>,
+    /// リンクと明示的な action の解決の基準（文書の最初の `<base href>`。無ければ文書の URL）。
+    link_base: Url,
+    state: &'a HashMap<usize, FieldState>,
     generation: u32,
     labels_for: HashMap<String, String>,
     lines: Vec<String>,
@@ -130,7 +133,7 @@ pub(crate) fn render(
     base: &Url,
     generation: u32,
     max_chars: usize,
-    state: &HashMap<u32, FieldState>,
+    state: &HashMap<usize, FieldState>,
 ) -> Rendered {
     // 入れ子が深すぎる文書は、解析器へ渡す前に切る（二乗の解析時間を防ぐ・guard.rs）。
     let (html, clipped) = super::guard::clip_depth(html, super::guard::MAX_PARSE_DEPTH);
@@ -155,8 +158,16 @@ pub(crate) fn render(
         .iter()
         .filter_map(|f| f.attr("id").map(|i| i.to_string()))
         .collect();
+    let link_base = doc
+        .select("base[href]")
+        .first()
+        .attr("href")
+        .and_then(|h| base.join(h.trim()).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .unwrap_or_else(|| base.clone());
     let mut w = Walker {
         base,
+        link_base,
         state,
         generation,
         labels_for,
@@ -341,7 +352,7 @@ impl Walker<'_> {
     }
 
     fn resolve(&self, href: &str) -> Option<Url> {
-        let u = self.base.join(href.trim()).ok()?;
+        let u = self.link_base.join(href.trim()).ok()?;
         matches!(u.scheme(), "http" | "https").then_some(u)
     }
 

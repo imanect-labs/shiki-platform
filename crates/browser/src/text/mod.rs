@@ -129,7 +129,7 @@ struct Current {
     snapshot: Snapshot,
     forms: Vec<Form>,
     fields: Vec<Field>,
-    state: HashMap<u32, FieldState>,
+    state: HashMap<usize, FieldState>,
 }
 
 /// テキストエンジンの 1 セッション。
@@ -163,11 +163,27 @@ fn is_htmlish(content_type: Option<&str>, body: &[u8]) -> bool {
     first == Some(&b'<') && !body.starts_with(b"%PDF") && !body.starts_with(b"PK")
 }
 
+fn is_plain_text(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|ct| {
+        ct.split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("text/plain")
+    })
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 impl TextPage {
     async fn show(
         &mut self,
         entry_index: usize,
-        state: HashMap<u32, FieldState>,
+        state: HashMap<usize, FieldState>,
         new_generation: bool,
     ) -> Result<Snapshot, BrowserError> {
         let entry = self.history.get(entry_index).ok_or(BrowserError::NoPage)?;
@@ -236,7 +252,7 @@ impl TextPage {
 
     async fn rerender(
         &mut self,
-        state: HashMap<u32, FieldState>,
+        state: HashMap<usize, FieldState>,
     ) -> Result<Snapshot, BrowserError> {
         let last = self
             .history
@@ -302,32 +318,28 @@ impl TextPage {
         })
     }
 
-    fn toggle(&self, index: u32) -> Result<HashMap<u32, FieldState>, BrowserError> {
+    /// チェックボックス・ラジオを切り替える（状態は項目の位置で持つ）。ラジオは同じフォーム・同じ名前の
+    /// 他の項目を、ref の無いもの（CSS で隠れたもの）も含めて外す。
+    fn toggle(&self, field: usize) -> Result<HashMap<usize, FieldState>, BrowserError> {
         let cur = self.current()?;
         let mut state = cur.state.clone();
-        let field = cur
-            .fields
-            .iter()
-            .find(|f| f.element == Some(index))
-            .ok_or(BrowserError::NotInteractive("クリック"))?;
-        let FieldKind::Check { checked, radio, .. } = &field.kind else {
+        let target = &cur.fields[field];
+        let FieldKind::Check { checked, radio, .. } = &target.kind else {
             return Err(BrowserError::NotInteractive("クリック"));
         };
         if *radio {
-            // 同じフォーム・同じ名前の他のラジオを外す。
-            for other in cur.fields.iter().filter(|o| {
-                o.element != Some(index)
-                    && o.form == field.form
-                    && o.name == field.name
-                    && matches!(o.kind, FieldKind::Check { radio: true, .. })
-            }) {
-                if let Some(e) = other.element {
-                    state.entry(e).or_default().checked = Some(false);
+            for (pos, other) in cur.fields.iter().enumerate() {
+                if pos != field
+                    && other.form == target.form
+                    && other.name == target.name
+                    && matches!(other.kind, FieldKind::Check { radio: true, .. })
+                {
+                    state.entry(pos).or_default().checked = Some(false);
                 }
             }
-            state.entry(index).or_default().checked = Some(true);
+            state.entry(field).or_default().checked = Some(true);
         } else {
-            state.entry(index).or_default().checked = Some(!checked);
+            state.entry(field).or_default().checked = Some(!checked);
         }
         Ok(state)
     }
@@ -351,10 +363,16 @@ impl EnginePage for TextPage {
             });
         }
         let decoded = web_access::decode::decode(&fetched.body, fetched.content_type.as_deref());
+        // プレーンテキストは HTML として解析しない（中の `<a>` や `<form>` の例を操作できる部品にしない）。
+        let html = if is_plain_text(fetched.content_type.as_deref()) {
+            format!("<pre>{}</pre>", escape_html(&decoded.text))
+        } else {
+            decoded.text
+        };
         self.push_history(HistoryEntry {
             url: fetched.url,
             status: fetched.status,
-            html: Arc::from(decoded.text),
+            html: Arc::from(html),
             body_truncated: fetched.truncated,
         });
         let last = self.history.len() - 1;
@@ -373,8 +391,8 @@ impl EnginePage for TextPage {
                         self.load(req, jar).await
                     }
                     ElementKind::Checkbox | ElementKind::Radio => {
-                        self.enabled_field(index)?;
-                        let state = self.toggle(index)?;
+                        let field = self.enabled_field(index)?;
+                        let state = self.toggle(field)?;
                         self.rerender(state).await
                     }
                     ElementKind::Button { submits: true } => {
@@ -393,9 +411,9 @@ impl EnginePage for TextPage {
                 if !matches!(kind, ElementKind::TextBox { .. }) {
                     return Err(BrowserError::NotInteractive("入力"));
                 }
-                self.enabled_field(index)?;
+                let field = self.enabled_field(index)?;
                 let mut state = self.current()?.state.clone();
-                state.entry(index).or_default().value = Some(value);
+                state.entry(field).or_default().value = Some(value);
                 self.rerender(state).await
             }
             Action::Select(id, wanted) => {
@@ -427,7 +445,7 @@ impl EnginePage for TextPage {
                 } else {
                     vec![value]
                 };
-                state.entry(index).or_default().selected = Some(selected);
+                state.entry(field).or_default().selected = Some(selected);
                 self.rerender(state).await
             }
             Action::Submit(id) => {

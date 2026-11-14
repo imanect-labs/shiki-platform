@@ -26,11 +26,70 @@ const RAW_TEXT: &[&str] = &[
     "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes",
 ];
 
+/// 終了タグの対応付けで越えない境界（HTML の解析器もこの外の要素を閉じない）。
+const SCOPE_BOUNDARY: &[&str] = &[
+    "table", "template", "caption", "marquee", "object", "applet", "html", "svg", "math",
+];
+
+/// 外部コンテンツ（SVG・MathML）から HTML へ抜ける要素（HTML 標準の「breakout」）。
+const FOREIGN_BREAKOUT: &[&str] = &[
+    "b",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "listing",
+    "menu",
+    "meta",
+    "nobr",
+    "ol",
+    "p",
+    "pre",
+    "ruby",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "strike",
+    "sub",
+    "sup",
+    "table",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "font",
+];
+
 /// 入れ子の深さが `max_depth` を超える手前までを返す（超えなければ全体）。切ったかどうかも返す。
+///
+/// 少なく数えると防壁が効かないので、迷ったら多く数える側に倒す:
+/// - 自己終了（`<x/>`）は、解析器が従う SVG・MathML の中でだけ閉じたとみなす（HTML の要素では無視される）。
+/// - 終了タグは、開いている要素に同じ名前があり、間に境界（`table` 等）が無いときだけ閉じる
+///   （対応しない終了タグを並べて数を減らさせない）。
 pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
     let b = html.as_bytes();
     let mut i = 0;
-    let mut depth = 0usize;
+    let mut open: Vec<String> = Vec::new();
     while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
         i += off;
         let rest = &b[i..];
@@ -42,7 +101,7 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             continue;
         }
         if rest.len() > 1 && rest[1] == b'/' {
-            depth = depth.saturating_sub(usize::from(!is_optional_end(name_at(b, i + 2))));
+            close(&mut open, &name_at(b, i + 2).to_ascii_lowercase());
             i = tag_end(b, i + 2).unwrap_or(b.len());
             continue;
         }
@@ -50,26 +109,48 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             i += 1;
             continue;
         }
-        let name = name_at(b, i + 1);
+        let lower = name_at(b, i + 1).to_ascii_lowercase();
         let Some(end) = tag_end(b, i + 1) else {
             return (html, false);
         };
+        let mut foreign = open.iter().any(|n| n == "svg" || n == "math");
+        if foreign && FOREIGN_BREAKOUT.contains(&lower.as_str()) {
+            // HTML の要素が来ると解析器は外部コンテンツを抜ける。
+            if let Some(p) = open.iter().rposition(|n| n == "svg" || n == "math") {
+                open.truncate(p);
+            }
+            foreign = false;
+        }
         let self_closing = end >= 2 && b[end - 2] == b'/';
-        let lower = name.to_ascii_lowercase();
-        if !(self_closing || VOID.contains(&lower.as_str()) || is_optional_end(name)) {
-            depth += 1;
-            if depth > max_depth {
+        let closes_itself =
+            VOID.contains(&lower.as_str()) || is_optional_end(&lower) || (foreign && self_closing);
+        if !closes_itself {
+            open.push(lower.clone());
+            if open.len() > max_depth {
                 return (&html[..i], true);
             }
         }
         i = end;
-        if RAW_TEXT.contains(&lower.as_str()) {
+        if !foreign && RAW_TEXT.contains(&lower.as_str()) {
             // 生テキストの中の `<` はタグではない。対応する終了タグまで飛ばす。
-            let close = format!("</{lower}");
-            i = find_ci(b, i, close.as_bytes()).unwrap_or(b.len());
+            let close_tag = format!("</{lower}");
+            i = find_ci(b, i, close_tag.as_bytes()).unwrap_or(b.len());
         }
     }
     (html, false)
+}
+
+/// 終了タグで閉じる（同じ名前が開いていて、間に境界が無いときだけ）。
+fn close(open: &mut Vec<String>, name: &str) {
+    for p in (0..open.len()).rev() {
+        if open[p] == name {
+            open.truncate(p);
+            return;
+        }
+        if SCOPE_BOUNDARY.contains(&open[p].as_str()) {
+            return;
+        }
+    }
 }
 
 fn is_optional_end(name: &str) -> bool {
@@ -144,6 +225,25 @@ mod tests {
         // 開いたままの <p> / <li> は深さに数えない。
         let flat = "<p>a".repeat(10_000);
         assert!(!clip_depth(&flat, 16).1);
+    }
+
+    #[test]
+    fn tricks_that_undercount_are_still_clipped() {
+        // HTML の要素の自己終了は無視される（解析器は入れ子にする）。
+        let selfclose = "<div/>".repeat(100_000);
+        assert!(clip_depth(&selfclose, MAX_PARSE_DEPTH).1);
+        // 対応しない終了タグでは減らない。
+        let bogus = "<div></bogus>".repeat(100_000);
+        assert!(clip_depth(&bogus, MAX_PARSE_DEPTH).1);
+        // 境界の外の要素は終了タグで閉じない。
+        let scoped = "<div><table></div>".repeat(100_000);
+        assert!(clip_depth(&scoped, MAX_PARSE_DEPTH).1);
+        // SVG の中の自己終了は閉じる（アイコンの多いページを切らない）。
+        let icons = format!("<svg>{}</svg>", "<path d=\"M0\"/>".repeat(10_000)).repeat(20);
+        assert!(!clip_depth(&icons, MAX_PARSE_DEPTH).1);
+        // SVG の中でも HTML の要素は抜け出して入れ子になる。
+        let breakout = "<svg><div/>".repeat(100_000);
+        assert!(clip_depth(&breakout, MAX_PARSE_DEPTH).1);
     }
 
     #[test]

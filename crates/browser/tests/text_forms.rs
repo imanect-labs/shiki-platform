@@ -287,3 +287,67 @@ async fn redirect_check_and_cross_site_chain() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn hidden_radio_plain_text_and_first_hop_strict() {
+    let route: support::Route = Arc::new(|req: &Req| {
+        match (req.host.as_str(), req.target.as_str()) {
+            (_, "/radio") => http(
+                "200 OK",
+                &[],
+                r#"<form method="post" action="/r"><div style="display:none"><input type="radio" name="plan" value="hidden" checked></div>
+               <label><input type="radio" name="plan" value="pro"> プロ</label><button>決定</button></form>"#,
+            ),
+            (_, "/plain") => http(
+                "200 OK",
+                &[("Content-Type", "text/plain; charset=utf-8")],
+                "例: <a href=\"/x\">リンク</a> <script>本文</script>",
+            ),
+            ("start.example.com", "/go") => http(
+                "302 Found",
+                &[(
+                    "Location",
+                    &format!("http://bank.example.org:{}/me", req.port),
+                )],
+                "",
+            ),
+            ("bank.example.org", "/set") => http(
+                "200 OK",
+                &[("Set-Cookie", "s=1; SameSite=Strict; Path=/")],
+                "<p>ok</p>",
+            ),
+            _ => http("200 OK", &[], "<p>受信</p>"),
+        }
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+
+    // CSS で隠れた checked のラジオも、同じグループの選択で外れる。
+    let snap = s
+        .navigate(u(port, "app.example.com", "/radio"))
+        .await
+        .unwrap();
+    let snap = s.act(Action::Click(find(&snap, "プロ"))).await.unwrap();
+    s.act(Action::Click(find(&snap, "決定"))).await.unwrap();
+    assert_eq!(last(&log, "/r").body, "plan=pro");
+
+    // text/plain は HTML として解析しない（中の <a> をリンクにしない・<script> の中身を消さない）。
+    let plain = s
+        .navigate(u(port, "app.example.com", "/plain"))
+        .await
+        .unwrap();
+    assert!(plain.elements.is_empty(), "{:?}", plain.elements);
+    assert!(
+        plain.text.contains("<script>本文</script>"),
+        "{}",
+        plain.text
+    );
+
+    // アドレスバー相当の遷移でも、最初の別サイトへの転送先には Strict を付けない。
+    s.navigate(u(port, "bank.example.org", "/set"))
+        .await
+        .unwrap();
+    s.navigate(u(port, "start.example.com", "/go"))
+        .await
+        .unwrap();
+    assert_eq!(last(&log, "/me").cookie, None);
+}
