@@ -58,8 +58,14 @@ impl Walker<'_> {
     fn has_owner(&self, node: &NodeRef<'_>, form: Option<usize>) -> bool {
         match node.attr("form") {
             Some(id) => self.form_ids.contains(&*id),
-            None => form.is_some(),
+            None => self.owner(form).is_some(),
         }
+    }
+
+    /// 祖先のフォームが無ければ、表の中で最後に開いたフォーム（form element pointer の代わり）。
+    /// 表から補った所有者は子孫へ引き継がず、部品ごとにその時点の最新を引く（行ごとにフォームを開く表）。
+    fn owner(&self, form: Option<usize>) -> Option<usize> {
+        form.or_else(|| self.table_forms.iter().rev().find_map(|f| *f))
     }
 
     pub(super) fn push_field(
@@ -70,6 +76,7 @@ impl Walker<'_> {
         element: Option<RefId>,
     ) {
         let disabled = self.is_disabled(node);
+        let form = self.owner(form);
         self.fields.push(Field {
             form,
             name: node.attr("name").map(|n| n.to_string()).unwrap_or_default(),

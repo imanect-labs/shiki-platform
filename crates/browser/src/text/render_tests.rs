@@ -614,3 +614,18 @@ fn form_opened_inside_a_table_owns_the_following_controls() {
         ElementKind::Button { submits: true }
     ));
 }
+
+#[test]
+fn each_row_form_in_a_table_owns_its_own_controls() {
+    let out = r(
+        r#"<table><tr><form action="/one"><td><input name="a" aria-label="一"></td></form></tr>
+        <tr><form action="/two"><td><input name="b" aria-label="二"><button>保存</button></td></form></tr></table>"#,
+    );
+    let owners: Vec<_> = out
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.form))
+        .collect();
+    assert_eq!(owners, [("a", Some(0)), ("b", Some(1)), ("", Some(1))]);
+    assert_eq!(out.forms[1].action.as_ref().unwrap().path(), "/two");
+}

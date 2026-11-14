@@ -648,8 +648,6 @@ impl Walker<'_> {
         }
         let mut legend_seen = false;
         for c in node.children_it(false) {
-            // 表の中で開いたフォームがあれば、所有者の無い後続の部品はそのフォームに属する。
-            let form = form.or_else(|| self.table_forms.last().copied().flatten());
             // `<fieldset disabled>` の最初の `<legend>` の中は、その fieldset による無効化を受けない（HTML 標準）。
             let first_legend = fieldset_disabled
                 && !legend_seen

@@ -187,7 +187,7 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             Ns::Html => {
                 VOID.contains(&lower.as_str())
                     // `image` は解析器が `img` に読み替える。`keygen` も空要素として扱われる。
-                    || matches!(lower.as_str(), "image" | "keygen")
+                    || matches!(lower.as_str(), "image" | "keygen" | "basefont" | "bgsound")
                     || matches!(
                         lower.as_str(),
                         "html" | "head" | "body" | "frameset" | "frame"
@@ -663,7 +663,7 @@ mod tests {
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
         }
         // `image`（img に読み替え）と `keygen` は空要素（その終了タグで中の要素を取り除かない）。
-        for tag in ["image", "keygen"] {
+        for tag in ["image", "keygen", "basefont", "bgsound"] {
             let s = format!("<body>{}", format!("<{tag}><x></{tag}>").repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
         }
