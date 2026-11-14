@@ -75,6 +75,7 @@ e2e = [
     "chat-scroll-follow.spec.ts",
     "chat.spec.ts",
     "help-search.spec.ts",
+    "home-microseason.spec.ts",
     "composer-attach-same-name.spec.ts",
     "composer-create.spec.ts",
     "composer-markdown.spec.ts",
