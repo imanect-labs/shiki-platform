@@ -642,11 +642,20 @@ pub enum DataWriteOp {
         to: String,
         expected_rev: Option<i64>,
     },
+    /// 結果は step の出力と同じ形（件数・`errors`〔先頭の一部〕・状態）に、ポートの中だけの [`BULK_FAILED_ROWS`] を
+    /// 足したもの。
     BulkUpsert {
         rows: Vec<data::BulkUpsertRow>,
         abort_on_invalid: bool,
     },
 }
+
+/// 一括 upsert の結果の、ポートの中だけの項目: 断られた行の全部（`[{ row, rejected, update_of }]`・行番号の昇順。
+/// `rejected` は適用の段で拒否されたか〔偽なら検証の段で不合格〕、`update_of` は更新の行が書き換えようとした
+/// レコード〔作成の行は null〕）。`errors` は先頭の一部だけなので、同じレコードを探す列の取り込み直し
+/// （[`super::data_bulk_match`]）はこちらで断られた行を選ぶ。ノードが読んで外し、step の出力・効果の記録には出さない。
+/// 返さないポート（テストの fake）では `errors` から選ぶ。
+pub const BULK_FAILED_ROWS: &str = "failed_rows";
 
 impl DataWriteOp {
     /// 能力 API 名（監査・スコープの語彙）。

@@ -63,7 +63,7 @@ pub use nodes::{
     CodeRunReq, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, DataWriteOp, DataWriteReq,
     DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq,
     LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
-    StorageWriteReq, WebFetchReq,
+    StorageWriteReq, WebFetchReq, BULK_FAILED_ROWS,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

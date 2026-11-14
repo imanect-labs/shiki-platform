@@ -112,9 +112,10 @@ mod viewer_context;
 pub const CONDITION_SEMANTICS_TABLE: &str = include_str!("query/semantics_table.json");
 
 pub use bulk::{
-    BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep, BulkImportWorker,
-    BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE, LAZY_INDEX_MIN_ROWS,
-    MAX_BULK_CSV_BYTES, MAX_BULK_ROWS, MAX_BULK_ROW_BYTES, MAX_BULK_ROW_KEY_BYTES, ROW_KEY_COLUMN,
+    BulkFailedRow, BulkImportOptions, BulkImportRow, BulkImportStatus, BulkImportStep,
+    BulkImportWorker, BulkIndexMode, BulkRowError, BulkUpsertRow, BULK_CHUNK, BULK_IMPORT_QUEUE,
+    LAZY_INDEX_MIN_ROWS, MAX_BULK_CSV_BYTES, MAX_BULK_ROWS, MAX_BULK_ROW_BYTES,
+    MAX_BULK_ROW_KEY_BYTES, ROW_KEY_COLUMN,
 };
 pub use change_view::{ChangeEventKind, ChangeEventRef, ChangeEventView};
 pub use creator_grant::OwnRecordRights;

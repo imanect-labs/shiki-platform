@@ -45,6 +45,7 @@
 mod apply;
 pub(crate) mod csv;
 mod job;
+mod report;
 mod resolver;
 mod upsert;
 mod validate;
@@ -64,6 +65,7 @@ use crate::{map_db, DataError};
 
 pub use csv::{MAX_BULK_CSV_BYTES, ROW_KEY_COLUMN};
 pub use job::BulkImportWorker;
+pub use report::BulkFailedRow;
 
 /// 一括取込ジョブのキュー名。
 pub const BULK_IMPORT_QUEUE: &str = "data_bulk_import";

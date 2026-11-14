@@ -37,4 +37,5 @@ pub use ports::{
     CsvQueryTable, CsvWriteReq, DataWriteOp, DataWriteReq, DecideCache, DocReadReq, ExecCtx,
     HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError,
     ResolvedSecretView, ResolvedSkillView, StorageListReq, StorageWriteReq, WebFetchReq,
+    BULK_FAILED_ROWS,
 };

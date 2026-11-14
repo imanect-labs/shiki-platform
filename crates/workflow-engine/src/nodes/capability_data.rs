@@ -26,7 +26,7 @@ use super::capability::{journaled, parse_params};
 use super::capability_data_keyed::{AddingUpdate, MatchedBulk};
 use super::data_upsert;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError};
+use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError, BULK_FAILED_ROWS};
 use super::resolver::{as_string, as_uuid, opt_param, param, typed, ParamResolver};
 
 /// 値式を UUID へ（テーブル・レコードの指定）。
@@ -124,15 +124,15 @@ pub(crate) async fn journaled_data_write(
         key: req.idempotency_key.clone(),
         via,
     };
-    journaled_data_effect(
-        journal,
-        audit,
-        ec,
-        &effect,
-        digest_body,
-        ports.data_write(ec, req),
-    )
-    .await
+    // 一括 upsert の断られた行の全部（ポートの中だけの項目）は、step の出力にも効果の記録にも出さない。
+    let apply = async {
+        let mut out = ports.data_write(ec, req).await?;
+        if let Value::Object(m) = &mut out {
+            m.remove(BULK_FAILED_ROWS);
+        }
+        Ok(out)
+    };
+    journaled_data_effect(journal, audit, ec, &effect, digest_body, apply).await
 }
 
 /// 1 つの step の data の書込（監査の操作名・テーブル・冪等キー・経路）。

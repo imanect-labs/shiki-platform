@@ -222,12 +222,27 @@ impl Env {
         }
     }
 
+    /// 読める行の全部（ページを辿る）。
     async fn records(&self, who: &AuthContext, table: Uuid) -> Vec<data::DataRecord> {
-        self.data
-            .list_records(who, table, &data::ListRecordsOptions::default(), None)
-            .await
-            .unwrap()
-            .items
+        let mut out = Vec::new();
+        let mut cursor = None;
+        loop {
+            let opts = data::ListRecordsOptions {
+                limit: 200,
+                cursor,
+                ..data::ListRecordsOptions::default()
+            };
+            let page = self
+                .data
+                .list_records(who, table, &opts, None)
+                .await
+                .unwrap();
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return out,
+            }
+        }
     }
 
     async fn grant(&self, who: &AuthContext, rel: Relation, table: Uuid) {
@@ -707,34 +722,45 @@ async fn bulk_upsert_with_no_rows_succeeds_with_zero_counts() {
 /// （`abort_on_invalid`）でも同じ。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_bulk_upserts_of_new_keys_all_write_every_row() {
+    race_new_keys(4, 5, ["S", "T"]).await;
+}
+
+/// 断られた行が結果の誤りの文の上限（100 件）より多くても、全部を取り込み直す（101 行目からも書かれる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_bulk_upserts_of_more_rows_than_the_reported_errors_write_every_row() {
+    race_new_keys(3, 150, ["U", "V"]).await;
+}
+
+/// `tasks` 本の実行が、まだ無い同じ `rows` 個の値を同時に取り込む（`abort_on_invalid` の偽と真・値の頭は `prefixes`）。
+async fn race_new_keys(tasks: usize, rows: i64, prefixes: [&str; 2]) {
     let Some(env) = setup().await else { return };
     let env = Arc::new(env);
     let tenant = format!("t-{}", Uuid::new_v4().simple());
     let alice = user(&tenant, "alice");
     let body = async {
         let table = items_table(&env, &alice).await;
-        for (abort_on_invalid, prefix) in [(false, "S"), (true, "T")] {
-            let barrier = Arc::new(tokio::sync::Barrier::new(4));
-            let mut tasks = Vec::new();
-            for n in 0..4 {
-                let rows: Vec<Value> = (1..=5)
+        for (abort_on_invalid, prefix) in [(false, prefixes[0]), (true, prefixes[1])] {
+            let barrier = Arc::new(tokio::sync::Barrier::new(tasks));
+            let mut handles = Vec::new();
+            for n in 0..tasks {
+                let data: Vec<Value> = (1..=rows)
                     .map(|k| json!({ "data": { "sku": format!("{prefix}-{k}"), "stock": n } }))
                     .collect();
                 let params = json!({ "table": table.to_string(), "match_on": "sku",
-                                     "abort_on_invalid": abort_on_invalid, "rows": rows });
+                                     "abort_on_invalid": abort_on_invalid, "rows": data });
                 let (env, tenant, barrier) =
                     (Arc::clone(&env), tenant.clone(), Arc::clone(&barrier));
-                tasks.push(tokio::spawn(async move {
+                handles.push(tokio::spawn(async move {
                     barrier.wait().await;
                     env.run(&tenant, "alice", "data.bulk_upsert", params).await
                 }));
             }
             let mut created = 0;
-            for t in tasks {
+            for t in handles {
                 let out = t.await.unwrap();
                 assert!(out.ok, "{out:?}");
                 let o = &out.output;
-                created += 5 - o["rows_matched"].as_i64().unwrap();
+                created += rows - o["rows_matched"].as_i64().unwrap();
                 assert_eq!(
                     (
                         &o["status"],
@@ -742,22 +768,27 @@ async fn concurrent_bulk_upserts_of_new_keys_all_write_every_row() {
                         &o["rows_invalid"],
                         &o["rows_rejected"]
                     ),
-                    (&json!("done"), &json!(5), &json!(0), &json!(0)),
+                    (&json!("done"), &json!(rows), &json!(0), &json!(0)),
                     "{abort_on_invalid}: {out:?}"
                 );
                 assert_eq!(o["errors"], json!([]), "{out:?}");
+                assert!(
+                    o.get("failed_rows").is_none(),
+                    "ポートの中だけの項目は出さない"
+                );
             }
             // どの値も追加したのは 1 本だけ（ほかは当てた行・取り込み直した行として更新に数える）。
-            assert_eq!(created, 5, "{abort_on_invalid}");
-            let rows = env.records(&alice, table).await;
-            let mut skus: Vec<String> = rows
+            assert_eq!(created, rows, "{abort_on_invalid}");
+            let stored = env.records(&alice, table).await;
+            let mut skus: Vec<String> = stored
                 .iter()
                 .filter_map(|r| r.data["sku"].as_str())
                 .filter(|s| s.starts_with(prefix))
                 .map(str::to_string)
                 .collect();
             skus.sort();
-            let want: Vec<String> = (1..=5).map(|k| format!("{prefix}-{k}")).collect();
+            let mut want: Vec<String> = (1..=rows).map(|k| format!("{prefix}-{k}")).collect();
+            want.sort();
             assert_eq!(skus, want, "同じ値は 1 件ずつ");
         }
     };

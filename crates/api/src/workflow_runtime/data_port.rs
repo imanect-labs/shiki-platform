@@ -19,7 +19,8 @@ use data::{BulkImportOptions, DataError, DataQuery, DataStore, FsmStore, TableRe
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use uuid::Uuid;
-use workflow_engine::{DataWriteOp, DataWriteReq, ExecCtx, PortError};
+use workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS;
+use workflow_engine::{DataWriteOp, DataWriteReq, ExecCtx, PortError, BULK_FAILED_ROWS};
 
 use super::auth::auth_ctx;
 
@@ -461,6 +462,20 @@ impl DataPort<'_> {
             .iter()
             .map(|e| json!({ "row": e.row_no, "key": e.key, "message": e.message }))
             .collect();
+        // 断られた行の全部（誤りの文は先頭の一部だけ）。同じレコードを探す列の取り込み直しが選ぶのに使い、ノードが
+        // 外す（step の出力に出さない・[`BULK_FAILED_ROWS`]）。
+        let failed: Vec<Value> = if st.rows_invalid + st.rows_rejected > 0 {
+            let limit = i64::try_from(MAX_WORKFLOW_BULK_ROWS).unwrap_or(i64::MAX);
+            a.data
+                .bulk_import_failed_rows(&a.ctx, table_id, import_id, limit)
+                .await
+                .map_err(map_data)?
+                .iter()
+                .map(|f| json!({ "row": f.row_no, "rejected": f.rejected, "update_of": f.update_of }))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(json!({
             "import_id": import_id,
             "status": st.status,
@@ -470,6 +485,7 @@ impl DataPort<'_> {
             "rows_rejected": st.rows_rejected,
             "errors": errors,
             "last_error": st.last_error,
+            BULK_FAILED_ROWS: failed,
         }))
     }
 }
