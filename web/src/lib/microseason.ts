@@ -113,10 +113,14 @@ const PHASES = ["初候", "次候", "末候"] as const;
 
 const RAD = Math.PI / 180;
 
+/// ΔT = TT − UTC（2020 年代の値。年 0.1 秒程度しか動かないので定数で持つ）。
+const DELTA_T_MS = 69_000;
+
 /// 太陽の視黄経（度・0〜360）。Meeus『Astronomical Algorithms』25 章の低精度式。
-/// 誤差は 0.01° 程度（境目の時刻で十数分）で、日単位の判定には十分。ΔT（約 1 分）は無視する。
+/// 誤差は 0.01° 程度（境目の時刻で十数分）で、日単位の判定には十分。
+/// 式は力学時（TT）で書かれているので、UTC との差 ΔT（2020 年代で約 69 秒）を足してから使う。
 export function solarLongitude(at: Date): number {
-  const jd = at.getTime() / 86_400_000 + 2_440_587.5;
+  const jd = (at.getTime() + DELTA_T_MS) / 86_400_000 + 2_440_587.5;
   const t = (jd - 2_451_545) / 36_525;
   const l0 = 280.46646 + 36_000.76983 * t + 0.0003032 * t * t;
   const m = (357.52911 + 35_999.05029 * t - 0.0001537 * t * t) * RAD;
