@@ -175,6 +175,7 @@ impl ChatStore {
                             .flatten(),
                         reply: outcome.reply.map(gui::displayable_reply),
                         has_reply: outcome.has_reply,
+                        reply_tone: outcome.reply_tone,
                         result_expired: run_id.is_some()
                             && live_state.is_none()
                             && row_status.is_some(),

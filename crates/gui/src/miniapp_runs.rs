@@ -233,6 +233,7 @@ impl MiniAppStore {
                             .flatten(),
                         reply: outcome.reply.map(displayable_reply),
                         has_reply: outcome.has_reply,
+                        reply_tone: outcome.reply_tone,
                         // run が消えた（保持期間の GC）なら、写した状態だけが残っている。
                         result_expired: run_id.is_some()
                             && live_state.is_none()

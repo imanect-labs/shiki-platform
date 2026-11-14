@@ -50,13 +50,15 @@ const TONE_BORDER: Record<ReplyTone, string> = {
 };
 
 /// 状態の表示。待機中は何を待っているか、成功でも業務上の失敗・注意を返したなら「完了」とその色にする
-/// （「成功」と「貸し出しできませんでした」を並べない）。
+/// （「成功」と「貸し出しできませんでした」を並べない）。結果を付けない古い行も、サーバーが返す結果の色合いの要約
+/// （`reply_tone`）で同じに出す（最新の 1 件だけ「完了」で、後ろに記録が増えると「成功」に変わっていた）。
 function statusView(r: YuiRun): StatusView {
   if (r.status === "waiting" && r.waiting_for === "approval") {
     return { label: "承認待ち", icon: Hourglass, tone: STATUS.waiting.tone };
   }
   if (r.status === "succeeded") {
-    const tones = (r.reply?.sections ?? []).map((s) => s.tone);
+    const tones: ReplyTone[] = (r.reply?.sections ?? []).map((s) => s.tone);
+    if (r.reply_tone) tones.push(r.reply_tone);
     if (tones.includes("error")) return { label: "完了", icon: CheckCircle2, tone: "text-destructive" };
     if (tones.includes("warning")) {
       return { label: "完了", icon: CheckCircle2, tone: "text-[color:var(--season-autumn)]" };

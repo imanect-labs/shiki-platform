@@ -517,6 +517,10 @@ pub struct UiActionRun {
     /// 結果があるか（押した本人にだけ）。
     #[serde(default)]
     pub has_reply: bool,
+    /// 結果の色合いのうち、いちばん強いもの（押した本人にだけ・error → warning → success → neutral）。`reply` を
+    /// 付けなかった古い行でも、業務上の失敗（error）を返した run を「成功」と出さずに言い分けるのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_tone: Option<workflow_engine::ReplyTone>,
     /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
     #[serde(default)]
     pub result_expired: bool,

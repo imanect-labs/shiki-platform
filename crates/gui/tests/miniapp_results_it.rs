@@ -457,6 +457,9 @@ async fn results_reach_only_the_person_who_pressed_the_button() {
     // 一覧で節を付けるのは最新の終わった 1 件だけ。古い行は開けば読める。
     assert_eq!(older.run_id, Some(a1));
     assert!(older.has_reply && older.reply.is_none());
+    // 結果の色合いの要約は、節を付けない古い行にも付く（いちばん強い色合い・業務上の失敗の言い分けに使う）。
+    assert_eq!(older.reply_tone, Some(workflow_engine::ReplyTone::Success));
+    assert_eq!(latest.reply_tone, Some(workflow_engine::ReplyTone::Neutral));
     let opened = mini_apps.my_run(&alice, app_id, a1, None).await.unwrap();
     assert_eq!(texts(opened.reply.as_ref()).len(), 2);
 
@@ -477,4 +480,5 @@ async fn results_reach_only_the_person_who_pressed_the_button() {
     let expired = mini_apps.my_run(&alice, app_id, a1, None).await.unwrap();
     assert_eq!(expired.status, MiniAppRunStatus::Succeeded);
     assert!(expired.result_expired && expired.reply.is_none() && !expired.has_reply);
+    assert_eq!(expired.reply_tone, None);
 }

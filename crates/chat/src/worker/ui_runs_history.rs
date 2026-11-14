@@ -84,6 +84,7 @@ mod tests {
             failure: None,
             reply: None,
             has_reply: false,
+            reply_tone: None,
             result_expired: false,
         };
         let id = uuid::Uuid::nil();
@@ -143,6 +144,7 @@ mod tests {
                 omitted: 0,
             }),
             has_reply: true,
+            reply_tone: Some(ReplyTone::Error),
             result_expired: false,
         };
         let text = ui_runs_text(&[

@@ -116,6 +116,10 @@ pub struct MiniAppRun {
     /// 結果があるか（`reply` を付けなかった行でも分かる）。
     #[serde(default)]
     pub has_reply: bool,
+    /// 結果の色合いのうち、いちばん強いもの（error → warning → success → neutral・結果が無ければ無い）。`reply` を
+    /// 付けなかった古い行でも、業務上の失敗（error）を返した run を「成功」と出さずに言い分けるのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_tone: Option<workflow_engine::ReplyTone>,
     /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
     #[serde(default)]
     pub result_expired: bool,

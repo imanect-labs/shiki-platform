@@ -21,7 +21,7 @@ import type { UiActionRun } from "@/lib/chat-api";
 /// 起動したワークフローの記録 1 件（会話の記録・ミニアプリの記録の共通の形）。
 /// 結果（`reply`）・失敗の理由（`failure`）は押した本人の記録にだけ付く（GAP-09）。
 export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> &
-  Partial<Pick<UiActionRun, "waiting_for" | "failure" | "reply" | "has_reply" | "result_expired">> & {
+  Partial<Pick<UiActionRun, "waiting_for" | "failure" | "reply" | "has_reply" | "reply_tone" | "result_expired">> & {
     run_id?: string | null;
     values?: { label: string; value: string }[];
   };

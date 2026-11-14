@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use super::{map_db, RunStoreError};
 use crate::run::failure::{failure_code, run_failure};
-use crate::run::outcome::{ReplySection, RunFailure, RunReply, WaitingFor};
+use crate::run::outcome::{ReplySection, ReplyTone, RunFailure, RunReply, WaitingFor};
 use crate::run::RunStatus;
 
 /// 失敗した run の理由の code を引く 2 つの列（別名 `r` の run に対する式・[`failure_code`] に渡す）。
@@ -59,6 +59,9 @@ pub struct OwnOutcome {
     pub failure: Option<RunFailure>,
     /// 返した節があるか（`reply` を求めなかった run でも分かる）。
     pub has_reply: bool,
+    /// 返した節の色合いのうち、いちばん強いもの（error → warning → success → neutral の順・節が無ければ `None`）。
+    /// `reply` を求めなかった run でも分かる（一覧で、結果を付けない古い行の状態を「業務上の失敗」と言い分ける）。
+    pub reply_tone: Option<ReplyTone>,
     /// 返した節（`with_reply` に含めた run だけ）。
     pub reply: Option<RunReply>,
 }
@@ -98,8 +101,24 @@ type OwnRow = (
     Option<String>,
     Option<String>,
     Option<String>,
-    bool,
+    Option<i32>,
 );
+
+/// 返した節の色合いの強さ（別名 `r` の run に対する式・節が無ければ NULL）。[`tone_of_rank`] で戻す。
+const REPLY_TONE_RANK: &str = "(SELECT max(CASE s.output->>'tone' WHEN 'error' THEN 3 \
+         WHEN 'warning' THEN 2 WHEN 'success' THEN 1 ELSE 0 END) \
+       FROM step_execution s WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
+         AND s.step_path = ANY(r.reply_nodes) AND s.status = 'succeeded')";
+
+/// [`REPLY_TONE_RANK`] の強さを色合いに戻す（知らない値はふつう）。
+fn tone_of_rank(rank: i32) -> ReplyTone {
+    match rank {
+        3 => ReplyTone::Error,
+        2 => ReplyTone::Warning,
+        1 => ReplyTone::Success,
+        _ => ReplyTone::Neutral,
+    }
+}
 
 impl RunOutcomeReader {
     pub fn new(db: PgPool) -> Self {
@@ -156,10 +175,7 @@ impl RunOutcomeReader {
         // 失敗の理由は「最初の未処理の失敗 step」（error の出口を取っていない・map の要素ではない）の code。
         // map の要素の失敗で map が落ちたときは、要素の側の最初の失敗の code で分類する。
         let rows: Vec<OwnRow> = sqlx::query_as(&format!(
-            "SELECT r.run_id, r.status, r.fail_reason, {FAILURE_CODE_COLUMNS}, \
-                EXISTS (SELECT 1 FROM step_execution s \
-                        WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
-                          AND s.step_path = ANY(r.reply_nodes) AND s.status = 'succeeded') \
+            "SELECT r.run_id, r.status, r.fail_reason, {FAILURE_CODE_COLUMNS}, {REPLY_TONE_RANK} \
              FROM workflow_run r WHERE r.run_id = ANY($2) AND {OWN_RUN}"
         ))
         .bind(ctx.tenant_id())
@@ -170,7 +186,7 @@ impl RunOutcomeReader {
         .await
         .map_err(map_db)?;
         let mut out: HashMap<Uuid, OwnOutcome> = HashMap::new();
-        for (run_id, status, fail_reason, step_code, item_code, has_reply) in rows {
+        for (run_id, status, fail_reason, step_code, item_code, tone_rank) in rows {
             let failure = (status == "failed").then(|| {
                 let code = failure_code(step_code.as_deref(), item_code.as_deref());
                 run_failure(run_id, code, fail_reason.as_deref())
@@ -179,7 +195,8 @@ impl RunOutcomeReader {
                 run_id,
                 OwnOutcome {
                     failure,
-                    has_reply,
+                    has_reply: tone_rank.is_some(),
+                    reply_tone: tone_rank.map(tone_of_rank),
                     reply: None,
                 },
             );

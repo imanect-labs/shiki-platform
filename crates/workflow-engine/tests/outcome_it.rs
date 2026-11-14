@@ -30,8 +30,8 @@ use workflow_engine::nodes::ports::{
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, FailureCategory, NodeContext,
-    NodeExecutor, NodeResult, ReplyBody, RunOutcomeReader, RunStatus, RunStore, WaitingFor,
-    WorkerConfig, WorkflowIr, WorkflowWorker,
+    NodeExecutor, NodeResult, ReplyBody, ReplyTone, RunOutcomeReader, RunStatus, RunStore,
+    WaitingFor, WorkerConfig, WorkflowIr, WorkflowWorker,
 };
 
 async fn setup() -> Option<PgPool> {
@@ -311,6 +311,81 @@ async fn only_the_taken_branch_replies_and_only_to_the_invoker() {
         .await
         .unwrap()
         .is_empty());
+}
+
+/// 結果の色合いは、節を求めなかった run（一覧の古い行）にも、いちばん強いもの（error → warning → success →
+/// neutral）で返る。結果の無い run には無い。
+#[tokio::test]
+async fn the_strongest_reply_tone_is_returned_without_the_sections() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let section = |id: &str, tone: &str| {
+        json!({ "id": id, "type": "workflow.reply",
+                "params": { "format": "text", "tone": tone, "value": format!("{id} の結果") } })
+    };
+    let mut runs = Vec::new();
+    for (nodes, edges) in [
+        (
+            json!([
+                section("a", "neutral"),
+                section("b", "error"),
+                section("c", "success")
+            ]),
+            json!([{ "from": "a", "to": "b" }, { "from": "b", "to": "c" }]),
+        ),
+        (
+            json!([section("a", "success"), section("b", "warning")]),
+            json!([{ "from": "a", "to": "b" }]),
+        ),
+        (json!([section("a", "success")]), json!([])),
+        (
+            json!([reply("a", "text", json!("色の指定なし"))]),
+            json!([]),
+        ),
+        (
+            json!([{ "id": "check", "type": "control.branch",
+                  "params": { "condition": { "cmp": { "left": true, "op": "eq", "right": false } } } },
+                section("never", "error")]),
+            json!([{ "from": "check", "from_port": "true", "to": "never" }]),
+        ),
+    ] {
+        let run = create(
+            &pool,
+            &tenant,
+            "acme",
+            Uuid::new_v4(),
+            "alice",
+            "user",
+            json!({}),
+            &ir(nodes, edges),
+        )
+        .await;
+        runs.push(run);
+    }
+    drive(&pool, &tenant).await;
+    let reader = RunOutcomeReader::new(pool.clone());
+    let alice = user(&tenant, "alice", "acme");
+    let got = reader.own_outcomes(&alice, &runs, &[]).await.unwrap();
+    let tones: Vec<Option<ReplyTone>> = runs.iter().map(|r| got[r].reply_tone).collect();
+    assert_eq!(
+        tones,
+        [
+            Some(ReplyTone::Error),
+            Some(ReplyTone::Warning),
+            Some(ReplyTone::Success),
+            Some(ReplyTone::Neutral),
+            None,
+        ]
+    );
+    assert!(
+        runs.iter().all(|r| got[r].reply.is_none()),
+        "節は求めた run だけ"
+    );
+    assert_eq!(
+        runs.iter().map(|r| got[r].has_reply).collect::<Vec<_>>(),
+        [true, true, true, true, false],
+        "通らなかった分岐の reply は数えない"
+    );
 }
 
 /// schedule の run（実行主体は workflow プリンシパル）の結果は、主体の id を名乗っても返らない。
