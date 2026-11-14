@@ -134,6 +134,7 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             };
             open.push(Open {
                 name: lower.clone(),
+                ns,
                 content_foreign,
             });
             if open.len() > max_depth {
@@ -161,6 +162,7 @@ enum Ns {
 /// （SVG・MathML の要素で、HTML の統合点＝`foreignObject` 等でないもの）。
 struct Open {
     name: String,
+    ns: Ns,
     content_foreign: bool,
 }
 
@@ -173,23 +175,16 @@ fn in_foreign(open: &[Open]) -> bool {
     open.last().is_some_and(|o| o.content_foreign)
 }
 
-/// 次に開く要素の名前空間。外部コンテンツの中では親の名前空間を継ぐ（`svg` の中の `math` は MathML）。
+/// 次に開く要素の名前空間。外部コンテンツの中では名前によらず親の名前空間を継ぐ
+/// （解析器と同じ。`<svg><math>` の `math` は SVG の要素で、その中の `foreignObject` は SVG の統合点）。
 fn namespace(open: &[Open], name: &str) -> Ns {
-    match name {
-        "svg" => Ns::Svg,
-        "math" => Ns::Math,
-        _ if in_foreign(open) => {
-            // 直近の svg / math の根で決まる。
-            match open
-                .iter()
-                .rev()
-                .find(|o| o.name == "svg" || o.name == "math")
-            {
-                Some(o) if o.name == "math" => Ns::Math,
-                _ => Ns::Svg,
-            }
-        }
-        _ => Ns::Html,
+    match open.last() {
+        Some(parent) if parent.content_foreign => parent.ns,
+        _ => match name {
+            "svg" => Ns::Svg,
+            "math" => Ns::Math,
+            _ => Ns::Html,
+        },
     }
 }
 
@@ -338,6 +333,12 @@ mod tests {
         // SVG の HTML 統合点（foreignObject 等）の中では自己終了は効かない。
         let integration = format!("<svg><foreignObject>{}", "<x-node/>".repeat(100_000));
         assert!(clip_depth(&integration, MAX_PARSE_DEPTH).1);
+        // 外部コンテンツの中の `math` は親（SVG）の名前空間を継ぐので、その中の foreignObject も統合点。
+        let nested = format!("<svg><math><foreignObject>{}", "<x-node/>".repeat(100_000));
+        assert!(clip_depth(&nested, MAX_PARSE_DEPTH).1);
+        // 逆に MathML の統合点（mi）の中の svg は SVG になる。
+        let mi = format!("<math><mi><svg>{}</svg>", "<path/>".repeat(100_000));
+        assert!(!clip_depth(&mi, MAX_PARSE_DEPTH).1);
         // 外部コンテンツの中では、終了タグを省略できる HTML の要素名でも入れ子になる。
         let foreign_option = format!("<svg>{}", "<option>".repeat(100_000));
         assert!(clip_depth(&foreign_option, MAX_PARSE_DEPTH).1);
