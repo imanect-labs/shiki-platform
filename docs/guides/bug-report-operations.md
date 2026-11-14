@@ -22,7 +22,12 @@ case は expires_at（作成から24時間）で物理削除する。利用可�
 監査は既存の tenant.audit_retention_days に従い、報告の90日処理では消さない。
 tenant 消去は tenant_id を持つ表を依存順で導出する既存 purge に含まれる。
 台帳の状態が deleting/deleted の tenant は claim/照合を停止する。
-停止前に開始した外部送信は取り戻せないため、停止時は進行中配送も確認する。
+claim は org lock の取得後に台帳行を押さえて状態を再確認するため、撤去の開始（deleting への更新）は
+進行中の claim の commit を待ち、開始後に新しい claim は成立しない。
+ただし commit 済みの claim は lease の期限まで外部送信を続けられる。撤去の開始後でも、
+外部送信の開始前に撤去が完了していれば、その 1 件は撤去後に送信されることがある。
+送信済みの外部 issue は取り戻せないため、撤去時は lease 期限まで待ってから配送台帳の
+sending / delivery_unknown を確認し、外部に作られた issue は送り先側で消去を判断する。
 
 ## 監視
 
