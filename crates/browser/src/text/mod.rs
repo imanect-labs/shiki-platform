@@ -191,22 +191,44 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// 表示中のページの変え方（[`TextPage::show`]）。
+enum Change {
+    /// 同じページを入力状態だけ変えて描き直す（世代は変えない）。
+    Rerender,
+    /// 新しいページを履歴に積む。
+    Push(HistoryEntry),
+    /// 一つ前のページに戻る。
+    Back,
+}
+
 impl TextPage {
+    /// 描画して表示中のページを差し替える。
+    ///
+    /// 履歴・世代・`current` は**描画が終わってからまとめて**確定する。描画を待つ間に future が破棄
+    /// （呼び出し側の期限切れ等）されても、表示中のページとその ref はそのまま操作できる。
     async fn show(
         &mut self,
-        entry_index: usize,
+        change: Change,
         state: HashMap<usize, FieldState>,
-        new_generation: bool,
     ) -> Result<Snapshot, BrowserError> {
-        let entry = self.history.get(entry_index).ok_or(BrowserError::NoPage)?;
-        if new_generation {
-            self.generation += 1;
+        let entry = match &change {
+            Change::Rerender => self.history.last(),
+            Change::Push(entry) => Some(entry),
+            Change::Back => self
+                .history
+                .len()
+                .checked_sub(2)
+                .and_then(|i| self.history.get(i)),
         }
+        .ok_or(BrowserError::NoPage)?;
         let html = Arc::clone(&entry.html);
         let url = entry.url.clone();
         let status = entry.status;
         let body_truncated = entry.body_truncated;
-        let generation = self.generation;
+        let generation = match change {
+            Change::Rerender => self.generation,
+            Change::Push(_) | Change::Back => self.generation + 1,
+        };
         let max_chars = self.engine.limits.max_chars;
         let render_state = state.clone();
         let render_url = url.clone();
@@ -225,6 +247,14 @@ impl TextPage {
             needs_js: rendered.needs_js,
             truncated: rendered.truncated || body_truncated,
         };
+        match change {
+            Change::Rerender => {}
+            Change::Push(entry) => self.push_history(entry),
+            Change::Back => {
+                self.history.pop();
+            }
+        }
+        self.generation = generation;
         self.current = Some(Current {
             snapshot: snapshot.clone(),
             forms: rendered.forms,
@@ -267,12 +297,7 @@ impl TextPage {
         &mut self,
         state: HashMap<usize, FieldState>,
     ) -> Result<Snapshot, BrowserError> {
-        let last = self
-            .history
-            .len()
-            .checked_sub(1)
-            .ok_or(BrowserError::NoPage)?;
-        self.show(last, state, false).await
+        self.show(Change::Rerender, state).await
     }
 
     /// ref の番号に対応する送信項目の位置（`rendered.fields` の添字）。
@@ -388,14 +413,13 @@ impl EnginePage for TextPage {
         } else {
             decoded.text
         };
-        self.push_history(HistoryEntry {
+        let entry = HistoryEntry {
             url: fetched.url,
             status: fetched.status,
             html: Arc::from(html),
             body_truncated: fetched.truncated,
-        });
-        let last = self.history.len() - 1;
-        self.show(last, HashMap::new(), true).await
+        };
+        self.show(Change::Push(entry), HashMap::new()).await
     }
 
     async fn act(&mut self, action: Action, jar: &mut CookieJar) -> Result<Snapshot, BrowserError> {
@@ -484,9 +508,7 @@ impl EnginePage for TextPage {
                 if self.history.len() < 2 {
                     return Err(BrowserError::NoHistory);
                 }
-                self.history.pop();
-                let last = self.history.len() - 1;
-                self.show(last, HashMap::new(), true).await
+                self.show(Change::Back, HashMap::new()).await
             }
         }
     }
@@ -550,5 +572,67 @@ mod content_type_tests {
         assert!(!is_htmlish(None, b"%PDF-1.7"));
         assert!(!is_htmlish(None, b"PK\x03\x04"));
         assert!(!is_htmlish(None, b""));
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use std::net::SocketAddr;
+
+    use super::*;
+
+    struct NoDns;
+
+    #[async_trait]
+    impl HostResolver for NoDns {
+        async fn lookup(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, &'static str> {
+            Err("使わない")
+        }
+    }
+
+    fn entry(url: &str, html: &str) -> HistoryEntry {
+        HistoryEntry {
+            url: Url::parse(url).unwrap(),
+            status: 200,
+            html: Arc::from(html),
+            body_truncated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_render_keeps_the_current_page_usable() {
+        let mut page = TextPage {
+            engine: TextEngine::new(Arc::new(NoDns), TextLimits::default()),
+            redirect_check: None,
+            generation: 1,
+            history: Vec::new(),
+            current: None,
+        };
+        let snap = page
+            .show(
+                Change::Push(entry("https://a.example/", "<a href=/x>次</a>")),
+                HashMap::new(),
+            )
+            .await
+            .unwrap();
+        let link = snap.elements[0].id;
+        // 描画を待つ間に future を破棄する（呼び出し側の期限切れ）。
+        let big = "<p>本文</p>".repeat(200_000);
+        let cancelled = tokio::time::timeout(
+            Duration::ZERO,
+            page.show(
+                Change::Push(entry("https://a.example/big", &big)),
+                HashMap::new(),
+            ),
+        )
+        .await;
+        assert!(cancelled.is_err(), "描画の途中で破棄する");
+        // 履歴・世代・表示中のページは前のまま揃っていて、その ref で操作できる。
+        assert_eq!(page.history.len(), 1);
+        assert!(page.element(link).is_ok());
+        assert_eq!(page.next_generation(), link.generation + 1);
+        let again = page.snapshot().await.unwrap();
+        assert_eq!(again.url.as_str(), "https://a.example/");
+        assert_eq!(again.elements[0].id, link);
     }
 }

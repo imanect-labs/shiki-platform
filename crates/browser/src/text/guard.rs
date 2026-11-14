@@ -94,8 +94,8 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         i += off;
         let rest = &b[i..];
         if rest.starts_with(b"<!--") {
-            match find(b, i + 4, b"-->") {
-                Some(end) => i = end + 3,
+            match comment_end(b, i + 4) {
+                Some(end) => i = end,
                 None => return (html, false),
             }
             continue;
@@ -259,6 +259,24 @@ fn tag_end(b: &[u8], mut i: usize) -> Option<usize> {
     None
 }
 
+/// コメント（`<!--` の直後の `from` から）の終わりの直後の位置。HTML tokenizer と同じく、
+/// `<!-->` / `<!--->` は空のコメントとしてすぐ閉じ、`-->` のほか `--!>` でも閉じる。
+fn comment_end(b: &[u8], from: usize) -> Option<usize> {
+    let rest = b.get(from..)?;
+    if rest.starts_with(b">") {
+        return Some(from + 1);
+    }
+    if rest.starts_with(b"->") {
+        return Some(from + 2);
+    }
+    let close = find(b, from, b"-->").map(|p| p + 3);
+    let bang = find(b, from, b"--!>").map(|p| p + 4);
+    match (close, bang) {
+        (Some(a), Some(c)) => Some(a.min(c)),
+        (a, c) => a.or(c),
+    }
+}
+
 fn find(b: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     b.get(from..)?
         .windows(needle.len())
@@ -321,6 +339,11 @@ mod tests {
         // タグ名は空白・`/`・`>` まで（`<div:x>` は `</div>` では閉じない）。
         let colon = "<div:x></div>".repeat(100_000);
         assert!(clip_depth(&colon, MAX_PARSE_DEPTH).1);
+        // 空のコメント（`<!-->` / `<!--->`）と `--!>` はその場で閉じる（後続を読み飛ばさない）。
+        for opener in ["<!-->", "<!--->", "<!-- x --!>"] {
+            let s = format!("{opener}{}", "<div>".repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{opener}");
+        }
         // 引用符の無い値の中の引用符は値の一部（後続のタグを引用として飛ばさない）。
         let quote_in_value = format!("<div x=a'>{}", "<div>".repeat(100_000));
         assert!(clip_depth(&quote_in_value, MAX_PARSE_DEPTH).1);
