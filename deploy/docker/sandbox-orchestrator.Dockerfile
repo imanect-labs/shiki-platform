@@ -74,7 +74,9 @@ COPY --from=builder /usr/local/bin/shiki-netns-holder /usr/local/bin/
 COPY --from=builder /usr/local/bin/secure-exec-sidecar /usr/local/bin/
 COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
 # gVisor 既定ティアの前提アセットをイメージへ同梱する（#346・ボリューム上書きも可）。
-COPY --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
+# 0755 を明示する。非 root（sandbox ユーザー）が**読めない** runsc は rootless の自己再実行で
+# EACCES になる（fetch-native-assets.sh の注記）。取得側の権限に依存しない二重の手当て。
+COPY --chmod=0755 --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
 COPY --from=rootfs-src / /opt/shiki/sandbox-assets/rootfs
 RUN mv /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf.sandbox /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf && \
     mv /opt/shiki/sandbox-assets/rootfs/etc/hosts.sandbox /opt/shiki/sandbox-assets/rootfs/etc/hosts && \
