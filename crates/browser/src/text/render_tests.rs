@@ -511,3 +511,21 @@ fn form_attribute_binding_is_linear() {
     );
     assert!(out.fields.iter().all(|f| f.form.is_none()));
 }
+
+#[test]
+fn long_base_href_and_huge_text_do_not_blow_up_memory() {
+    // 長い base と多数の相対リンク: 巨大な URL をリンクごとに作らない（リンクにしない）。
+    let html = format!(
+        "<head><base href=\"https://example.com/{}/\"></head><body>{}</body>",
+        "a".repeat(500_000),
+        "<a href=\"x\">x</a>".repeat(3_000)
+    );
+    let out = r(&html);
+    assert!(out.elements.is_empty());
+    assert!(out.text.len() < 200_000, "{}", out.text.len());
+    // 本文は描きながら上限で止める（全部描いてから切らない）。
+    let big = format!("<body>{}</body>", "<p>あいうえお</p>".repeat(200_000));
+    let out = render(&big, &base(), 1, 1_000, &HashMap::new());
+    assert!(out.truncated);
+    assert!(out.text.chars().count() <= 1_000 + 20, "{}", out.text.len());
+}

@@ -20,6 +20,8 @@ const MAX_ELEMENTS: usize = 3_000;
 /// 降りる深さの上限。描画は再帰するので、深い入れ子でスタックを溢れさせない
 /// （スタック溢れは panic でなく abort になり、プロセスごと落ちる）。実在のページは 100 段に満たない。
 const MAX_DEPTH: u32 = 256;
+/// 扱う URL の長さの上限（バイト）。ブラウザの実用上の上限に合わせる。
+const MAX_URL_BYTES: usize = 8 * 1024;
 /// ラベル・リンク・ボタンの表示名の上限（文字）。入れ子のラベルで二乗の連結をさせない。
 const MAX_LABEL_CHARS: usize = 200;
 
@@ -140,6 +142,11 @@ struct Walker<'a> {
     lines: Vec<String>,
     cur: String,
     visible_chars: usize,
+    /// これまでに描いた本文のバイト数と、その上限（`max_chars` から決める）。
+    out_bytes: usize,
+    budget: usize,
+    /// 上限に達して以降のテキストを捨てたか。
+    overflow: bool,
     link_chars: usize,
     visited: usize,
     elements: Vec<ElementInfo>,
@@ -256,6 +263,10 @@ pub(crate) fn render(
         invisible: 0,
         disabled: 0,
         depth: 0,
+        out_bytes: 0,
+        // 文字数の上限を UTF-8 で最大 4 バイトとして見積もる（全部描いてから切るのでは確保が先に膨らむ）。
+        budget: max_chars.saturating_mul(4).saturating_add(4096),
+        overflow: false,
     };
     let root = doc.body().unwrap_or_else(|| doc.root());
     w.walk(&root, None, None);
@@ -265,7 +276,7 @@ pub(crate) fn render(
     let nonlink = w.visible_chars.saturating_sub(w.link_chars);
     let needs_js = (has_script && nonlink < NEEDS_JS_THRESHOLD).then_some(NeedsJs::ScriptRendered);
     let mut text = w.lines.join("\n");
-    let truncated = clipped || text.chars().count() > max_chars;
+    let truncated = clipped || w.overflow || text.chars().count() > max_chars;
     if truncated {
         text = text.chars().take(max_chars).collect();
         text.push_str("\n…（以降は省略）");
@@ -383,7 +394,7 @@ fn line_prefix(name: &str) -> &'static str {
 
 impl Walker<'_> {
     fn text(&mut self, s: &str) {
-        if self.invisible > 0 {
+        if self.invisible > 0 || self.full() {
             return;
         }
         if self.pre > 0 {
@@ -396,7 +407,9 @@ impl Walker<'_> {
             }
             for part in parts {
                 let line = std::mem::take(&mut self.cur);
-                self.lines.push(line.trim_end().to_string());
+                let line = line.trim_end().to_string();
+                self.out_bytes += line.len() + 1;
+                self.lines.push(line);
                 self.visible_chars += part.chars().count();
                 self.cur.push_str(part);
             }
@@ -422,7 +435,7 @@ impl Walker<'_> {
     }
 
     fn token(&mut self, t: &str) {
-        if self.invisible > 0 {
+        if self.invisible > 0 || self.full() {
             return;
         }
         if !self.cur.is_empty() && !self.cur.ends_with(' ') {
@@ -440,14 +453,28 @@ impl Walker<'_> {
             self.cur.trim()
         };
         if !line.is_empty() {
-            self.lines.push(format!("{prefix}{line}"));
+            let line = format!("{prefix}{line}");
+            self.out_bytes += line.len() + 1;
+            self.lines.push(line);
         }
         self.cur.clear();
     }
 
     fn resolve(&self, href: &str) -> Option<Url> {
+        // 長すぎる URL は扱わない（長い base と多数の相対リンクで、リンクごとに巨大な URL を複製させない）。
+        if self.link_base.as_str().len() + href.len() > MAX_URL_BYTES {
+            return None;
+        }
         let u = self.link_base.join(href.trim()).ok()?;
-        matches!(u.scheme(), "http" | "https").then_some(u)
+        (matches!(u.scheme(), "http" | "https") && u.as_str().len() <= MAX_URL_BYTES).then_some(u)
+    }
+
+    /// 本文の蓄積が上限に達したか（達したら以降のテキストを捨て、切り詰めたことにする）。
+    fn full(&mut self) -> bool {
+        if self.out_bytes + self.cur.len() >= self.budget {
+            self.overflow = true;
+        }
+        self.overflow
     }
 
     fn label_for(&self, node: &NodeRef<'_>, wrap: Option<&str>) -> String {

@@ -198,6 +198,10 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         if ns == Ns::Html && RAW_TEXT.contains(&lower.as_str()) {
             // 生テキストの中の `<` はタグではない。対応する終了タグまで飛ばす。
             // 終了タグ名の直後が区切り（空白・`/`・`>`）のときだけ（`</stylex>` は style を閉じない）。
+            if lower == "script" {
+                i = script_end(b, i);
+                continue;
+            }
             let close_tag = format!("</{lower}");
             let mut from = i;
             i = loop {
@@ -427,6 +431,55 @@ fn scan_tag(b: &[u8], mut i: usize) -> Option<Tag> {
     None
 }
 
+/// `<script>` の中身の終わり（`</script>` の位置）。HTML tokenizer の script data の状態を追う:
+/// `<!--` で escaped に入り、その中の `<script` で double-escaped に入る。double-escaped の中の
+/// `</script>` は escaped に戻るだけで要素を閉じない。`-->` でどちらからも通常に戻る。
+fn script_end(b: &[u8], mut i: usize) -> usize {
+    #[derive(PartialEq)]
+    enum St {
+        Data,
+        Escaped,
+        Double,
+    }
+    let delim = |p: usize| {
+        b.get(p)
+            .is_none_or(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>')
+    };
+    let at = |p: usize, s: &[u8]| {
+        b.get(p..p + s.len())
+            .is_some_and(|w| w.eq_ignore_ascii_case(s))
+    };
+    let mut st = St::Data;
+    while i < b.len() {
+        if b[i] == b'<' {
+            if st == St::Data && at(i, b"<!--") {
+                st = St::Escaped;
+                i += 4;
+                continue;
+            }
+            if at(i, b"</script") && delim(i + 8) {
+                if st == St::Double {
+                    st = St::Escaped;
+                    i += 8;
+                    continue;
+                }
+                return i;
+            }
+            if st == St::Escaped && at(i, b"<script") && delim(i + 7) {
+                st = St::Double;
+                i += 7;
+                continue;
+            }
+        } else if st != St::Data && at(i, b"-->") {
+            st = St::Data;
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    b.len()
+}
+
 /// コメント（`<!--` の直後の `from` から）の終わりの直後の位置。HTML tokenizer と同じく、
 /// `<!-->` / `<!--->` は空のコメントとしてすぐ閉じ、`-->` のほか `--!>` でも閉じる。
 fn comment_end(b: &[u8], from: usize) -> Option<usize> {
@@ -541,6 +594,15 @@ mod tests {
             let s = format!("<svg>{end}{}", "<x-node/>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{end}");
         }
+        // script の double-escaped の中の `</script>` は要素を閉じない。
+        let double = format!(
+            "<script><!--<script></script><style></script>{}",
+            "<div>".repeat(100_000)
+        );
+        assert!(clip_depth(&double, MAX_PARSE_DEPTH).1);
+        // `-->` で通常に戻れば、次の `</script>` で閉じる（普通のインラインスクリプト）。
+        let normal = "<script><!-- if (a<b) {} --></script><p>a".repeat(1_000);
+        assert!(!clip_depth(&normal, 16).1);
         // 生テキストの終了タグは名前全体で照合する（`</stylex>` で style を抜けない）。
         let rawtext = format!(
             "<style></stylex><script></style>{}",
