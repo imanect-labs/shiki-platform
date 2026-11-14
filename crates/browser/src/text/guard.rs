@@ -157,11 +157,12 @@ fn is_optional_end(name: &str) -> bool {
     OPTIONAL_END.iter().any(|n| n.eq_ignore_ascii_case(name))
 }
 
-/// `i` から始まるタグ名（英数字と `-`）。
+/// `i` から始まるタグ名。HTML の tokenizer と同じく、空白・`/`・`>` までをすべて名前とする
+/// （`<div:x>` は `div` ではなく `div:x`。途中で切ると `</div>` で閉じたと誤認する）。
 fn name_at(b: &[u8], i: usize) -> &str {
     let end = b[i.min(b.len())..]
         .iter()
-        .position(|c| !(c.is_ascii_alphanumeric() || *c == b'-'))
+        .position(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'>')
         .map_or(b.len(), |p| i + p);
     std::str::from_utf8(&b[i.min(end)..end]).unwrap_or("")
 }
@@ -241,6 +242,9 @@ mod tests {
         // SVG の中の自己終了は閉じる（アイコンの多いページを切らない）。
         let icons = format!("<svg>{}</svg>", "<path d=\"M0\"/>".repeat(10_000)).repeat(20);
         assert!(!clip_depth(&icons, MAX_PARSE_DEPTH).1);
+        // タグ名は空白・`/`・`>` まで（`<div:x>` は `</div>` では閉じない）。
+        let colon = "<div:x></div>".repeat(100_000);
+        assert!(clip_depth(&colon, MAX_PARSE_DEPTH).1);
         // SVG の中でも HTML の要素は抜け出して入れ子になる。
         let breakout = "<svg><div/>".repeat(100_000);
         assert!(clip_depth(&breakout, MAX_PARSE_DEPTH).1);

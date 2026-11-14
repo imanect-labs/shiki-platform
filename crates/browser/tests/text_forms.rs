@@ -403,3 +403,31 @@ async fn image_buttons_empty_values_bad_actions_origin_and_history() {
     }
     assert_eq!(log.lock().unwrap().len(), before, "1 度も送らない");
 }
+
+#[tokio::test]
+async fn fragment_links_stay_in_the_same_document() {
+    let route: support::Route = Arc::new(|_: &Req| {
+        http(
+            "200 OK",
+            &[],
+            r##"<form><input name="q" aria-label="検索語"></form><a href="#help">説明へ</a><h2 id="help">説明</h2>"##,
+        )
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s
+        .navigate(u(port, "app.example.com", "/page"))
+        .await
+        .unwrap();
+    let snap = s
+        .act(Action::Fill(find(&snap, "検索語"), "入力済み".into()))
+        .await
+        .unwrap();
+    let before = log.lock().unwrap().len();
+    assert!(s
+        .plan(&Action::Click(find(&snap, "説明へ")))
+        .unwrap()
+        .is_none());
+    let after = s.act(Action::Click(find(&snap, "説明へ"))).await.unwrap();
+    assert_eq!(log.lock().unwrap().len(), before, "再取得しない");
+    assert!(after.text.contains(r#"value="入力済み""#), "{}", after.text);
+}

@@ -163,6 +163,18 @@ fn is_htmlish(content_type: Option<&str>, body: &[u8]) -> bool {
     first == Some(&b'<') && !body.starts_with(b"%PDF") && !body.starts_with(b"PK")
 }
 
+/// フラグメント以外が同じ（同じ文書の中の移動）で、フラグメントがあるか。
+fn same_document(current: &Url, href: &Url) -> bool {
+    if href.fragment().is_none() {
+        return false;
+    }
+    let mut a = current.clone();
+    let mut b = href.clone();
+    a.set_fragment(None);
+    b.set_fragment(None);
+    a == b
+}
+
 fn is_plain_text(content_type: Option<&str>) -> bool {
     content_type.is_some_and(|ct| {
         ct.split(';')
@@ -386,9 +398,13 @@ impl EnginePage for TextPage {
                 let (index, kind, label) = self.element(id)?;
                 match kind {
                     ElementKind::Link { href } => {
-                        let initiator = Some(self.current()?.snapshot.url.clone());
+                        let current = self.current()?.snapshot.url.clone();
+                        // 同じ文書の中のフラグメントへのリンクは再取得しない（入力内容と、POST の結果ページを保つ）。
+                        if same_document(&current, &href) {
+                            return Ok(self.current()?.snapshot.clone());
+                        }
                         let mut req = LoadRequest::get(href);
-                        req.initiator = initiator;
+                        req.initiator = Some(current);
                         self.load(req, jar).await
                     }
                     ElementKind::Checkbox | ElementKind::Radio => {
@@ -476,8 +492,12 @@ impl EnginePage for TextPage {
                 let (index, kind, _) = self.element(*id)?;
                 match kind {
                     ElementKind::Link { href } => {
+                        let current = self.current()?.snapshot.url.clone();
+                        if same_document(&current, &href) {
+                            return Ok(None);
+                        }
                         let mut request = LoadRequest::get(href);
-                        request.initiator = Some(self.current()?.snapshot.url.clone());
+                        request.initiator = Some(current);
                         Ok(Some(PlannedRequest {
                             request,
                             masked_fields: Vec::new(),

@@ -307,3 +307,20 @@ fn disabled_options_are_not_selectable_or_default() {
     );
     assert!(out.text.contains(r#""z"=Z(無効)"#), "{}", out.text);
 }
+
+#[test]
+fn first_legend_of_disabled_fieldset_stays_enabled() {
+    let out = r(
+        r#"<form><fieldset disabled><legend><input name="in_legend" aria-label="凡例の中"></legend>
+        <input name="body" aria-label="本体"><legend><input name="second" aria-label="二つ目の凡例"></legend></fieldset></form>"#,
+    );
+    let disabled: Vec<_> = out
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.disabled))
+        .collect();
+    assert_eq!(
+        disabled,
+        [("in_legend", false), ("body", true), ("second", true)]
+    );
+}

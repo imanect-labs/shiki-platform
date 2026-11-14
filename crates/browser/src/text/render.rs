@@ -494,8 +494,21 @@ impl Walker<'_> {
         if fieldset_disabled {
             self.disabled += 1;
         }
+        let mut legend_seen = false;
         for c in node.children_it(false) {
-            self.walk(&c, form, wrap);
+            // `<fieldset disabled>` の最初の `<legend>` の中は、その fieldset による無効化を受けない（HTML 標準）。
+            let first_legend = fieldset_disabled
+                && !legend_seen
+                && c.is_element()
+                && c.node_name().is_some_and(|n| &*n == "legend");
+            if first_legend {
+                legend_seen = true;
+                self.disabled -= 1;
+                self.walk(&c, form, wrap);
+                self.disabled += 1;
+            } else {
+                self.walk(&c, form, wrap);
+            }
         }
         if fieldset_disabled {
             self.disabled -= 1;
