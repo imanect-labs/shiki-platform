@@ -347,7 +347,7 @@ services:
           pids: 512
 
   # web 検索（オンプレ向け SearXNG・websearch profile でオプトイン起動）。
-  # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）、テストは stub を使う。
+  # SaaS は Brave（SHIKI__WEBSEARCH__BRAVE_API_KEY）か TinyFish（SHIKI__WEBSEARCH__TINYFISH_API_KEY）、テストは stub を使う。
   searxng:
     restart: unless-stopped
     # SearXNG は rolling tag で古いタグが GC される（2025.6.20 は upstream から消滅・
@@ -691,9 +691,10 @@ services:
       SHIKI__OFFICE__WEB_ORIGIN: ${SHIKI__OFFICE__WEB_ORIGIN:-http://localhost:3000}
       # スライドエディタ砂箱（第3リスナ /builtin/ 配信・Task 11.2）。イメージ同梱の dist を指す。
       SHIKI__GATEWAY__BUILTIN_DIR: ${SHIKI__GATEWAY__BUILTIN_DIR:-/opt/shiki/builtin}
-      # web 検索（Phase 4 web ツール）。dev 既定は stub（決定的）。本番は brave / searxng。
+      # web 検索（Phase 4 web ツール）。dev 既定は stub（決定的）。本番は brave / tinyfish / searxng。
       SHIKI__WEBSEARCH__BACKEND: ${SHIKI__WEBSEARCH__BACKEND:-stub}
       SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}
+      SHIKI__WEBSEARCH__TINYFISH_API_KEY: ${SHIKI__WEBSEARCH__TINYFISH_API_KEY:-}
       SHIKI__WEBSEARCH__SEARXNG_BASE_URL: ${SHIKI__WEBSEARCH__SEARXNG_BASE_URL:-http://searxng:8080}
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
       # ingestion-worker / Qdrant 側と同じ値（#812）。既定値は dev 用の固定文字列。

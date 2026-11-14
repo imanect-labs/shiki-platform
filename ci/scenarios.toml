@@ -43,9 +43,6 @@ crates = [
 # E2E の実行環境（compose の shiki-server とその依存）に載らないクレート。変更しても E2E は回さない。
 [none]
 crates = [
-    # エージェントブラウザ（docs/agent/browser.md）。ツールとして shiki-server に載るのは AB.3 からで、
-    # それまではどのページにも届かない。AB.3 で scenario.home の crates へ移す。
-    "shiki-browser",
     "shiki-fuse",
     "shiki-jtd",
     "shiki-sandbox-agent-proto",
@@ -59,7 +56,8 @@ crates = [
 # チャットの部品（アシスタントパネル・選択範囲の AI）は各エディタでも使うので、そのシナリオも shiki-chat を持つ。
 [scenario.home]
 pages = ["web/src/app/(auth)/page.tsx", "web/src/app/(auth)/c/**"]
-crates = ["shiki-chat", "shiki-rag", "shiki-agent-core", "shiki-bug-report"]
+# shiki-browser はチャットの browser ツールの本体（docs/agent/browser.md・AB.3）。
+crates = ["shiki-chat", "shiki-rag", "shiki-agent-core", "shiki-bug-report", "shiki-browser"]
 e2e = [
     "admin-console.spec.ts",
     "agent-full-stack.spec.ts",

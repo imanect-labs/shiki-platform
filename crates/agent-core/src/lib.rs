@@ -68,7 +68,7 @@ pub use tool::{
 };
 pub use tool_search::CatalogSearch;
 pub use tools::{
-    run_doc_search, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
+    run_doc_search, BrowserTool, CodeInterpreterTool, DocSearchResult, DocSearchTool, FsAppendTool,
     FsDeleteTool, FsEditTool, FsListTool, FsReadTool, FsWriteTool, GrepTool, QuoteCheckTool,
     ShellTool, SubagentLimits, SubagentTool, TranslateLimits, WebFetchTool, WebSearchTool,
     WebTranslateTool,

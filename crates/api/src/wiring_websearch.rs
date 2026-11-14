@@ -7,10 +7,10 @@ use anyhow::Context;
 
 use api::config::{AppConfig, WebSearchBackend};
 
-/// web 検索プロバイダ（Brave/SearXNG/Stub）を構築する（未設定は None）。
+/// web 検索プロバイダ（Brave/TinyFish/SearXNG/Stub）を構築する（未設定は None）。
 /// web 検索プロバイダ（Phase 4 web ツール）の配線。`websearch.backend` 未指定なら `None`。
 ///
-/// クラウド/オンプレ差は `SearchProvider` トレイト裏で吸収する（Brave=SaaS / SearXNG=オンプレ /
+/// クラウド/オンプレ差は `SearchProvider` トレイト裏で吸収する（Brave・TinyFish=SaaS / SearXNG=オンプレ /
 /// Stub=テスト・エアギャップ）。
 pub(crate) fn wire_websearch(
     config: &AppConfig,
@@ -37,6 +37,21 @@ pub(crate) fn wire_websearch(
                     anyhow::anyhow!("websearch.backend=brave には brave_api_key が必要です")
                 })?;
             Arc::new(websearch::BraveSearchProvider::new(
+                search_http,
+                api_key,
+                None,
+            ))
+        }
+        WebSearchBackend::Tinyfish => {
+            let api_key = config
+                .websearch
+                .tinyfish_api_key
+                .clone()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("websearch.backend=tinyfish には tinyfish_api_key が必要です")
+                })?;
+            Arc::new(websearch::TinyfishSearchProvider::new(
                 search_http,
                 api_key,
                 None,

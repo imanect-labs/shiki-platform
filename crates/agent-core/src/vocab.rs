@@ -65,6 +65,9 @@ vocab_enum! {
         WebFetch => "web_fetch",
         /// Web ページの本文を指定言語へ訳して会話に表示する（docs/agent/web-translate.md）。
         WebTranslate => "web_translate",
+        /// JS を実行しないブラウザで、ページを開いてリンク・フォームを操作する（読む操作のみ・
+        /// docs/agent/browser.md §6.1）。出所の無い URL・別オリジン宛て・POST の送信は自分で拒否する。
+        Browser => "browser",
         CodeInterpreter => "code_interpreter",
         FsList => "fs_list",
         FsRead => "fs_read",
@@ -264,7 +267,9 @@ impl ToolName {
             | Self::DriveMove
             | Self::DriveCopy
             // 翻訳を頼まれたときだけ使う（skill `translate` が名指しするので遅延でも 1 手で載る）。
-            | Self::WebTranslate => ToolLoading::Deferred,
+            | Self::WebTranslate
+            // 読むだけなら web_fetch で足りる。フォーム・ページ送りが要るときだけ載せる。
+            | Self::Browser => ToolLoading::Deferred,
         }
     }
 
@@ -357,7 +362,7 @@ impl ToolName {
                 "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
             }
             Self::DriveFind => {
-                "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"
+                "drive folder file find search locate lookup path data csv excel ドライブ フォルダ ファイル 探す 検索 場所 保存先 データ 元データ 集計"
             }
             Self::DriveMove => {
                 "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
@@ -367,6 +372,10 @@ impl ToolName {
             }
             Self::WebTranslate => {
                 "translate translation web page url website language english japanese 翻訳 訳す 和訳 英訳 ページ サイト 記事"
+            }
+            Self::Browser => {
+                "browser browse navigate click link form submit search pagination web page site \
+                 ブラウザ 操作 クリック リンク フォーム 入力 送信 検索 ページ送り 次のページ サイト"
             }
             Self::Skill
             | Self::SkillSearch

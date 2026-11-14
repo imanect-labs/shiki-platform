@@ -60,7 +60,10 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: \
         -r /tmp/rootfs-requirements.txt \
     && rm /tmp/rootfs-requirements.txt \
     && printf 'nameserver 169.254.0.1\n' > /etc/resolv.conf.sandbox \
-    && printf '127.0.0.1 localhost\n' > /etc/hosts.sandbox
+    && printf '127.0.0.1 localhost\n' > /etc/hosts.sandbox \
+    # bind マウント先（bundle.rs の ROOTFS_MOUNTPOINTS）。root は読み取り専用で runsc が作れないため、
+    # 無いと create が毎回 `waiting for sandbox to start: EOF` で落ちる。
+    && mkdir -p /workspace /__exec
 
 FROM debian:bookworm-slim
 # iproute2: egress netns holder が `ip` でゲートウェイ IF を構成する。
@@ -74,7 +77,9 @@ COPY --from=builder /usr/local/bin/shiki-netns-holder /usr/local/bin/
 COPY --from=builder /usr/local/bin/secure-exec-sidecar /usr/local/bin/
 COPY --from=commands-builder /opt/shiki/commands /opt/shiki/commands
 # gVisor 既定ティアの前提アセットをイメージへ同梱する（#346・ボリューム上書きも可）。
-COPY --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
+# 0755 を明示する。非 root（sandbox ユーザー）が**読めない** runsc は rootless の自己再実行で
+# EACCES になる（fetch-native-assets.sh の注記）。取得側の権限に依存しない二重の手当て。
+COPY --chmod=0755 --from=native-assets /app/deploy/sandbox-assets/bin/runsc /opt/shiki/sandbox-assets/bin/runsc
 COPY --from=rootfs-src / /opt/shiki/sandbox-assets/rootfs
 RUN mv /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf.sandbox /opt/shiki/sandbox-assets/rootfs/etc/resolv.conf && \
     mv /opt/shiki/sandbox-assets/rootfs/etc/hosts.sandbox /opt/shiki/sandbox-assets/rootfs/etc/hosts && \

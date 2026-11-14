@@ -213,6 +213,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::DocRead
         | ToolName::WebSearch
         | ToolName::WebFetch
+        | ToolName::Browser
         | ToolName::FsList
         | ToolName::FsRead
         | ToolName::Grep

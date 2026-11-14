@@ -32,6 +32,8 @@ pub(super) struct ThreadHistory {
     pub attachments: Vec<agent_core::AttachmentRef>,
     /// この会話で使われている（使う前提の）ツール名（tool search で常時ロードに回す）。
     pub tools_in_use: Vec<String>,
+    /// ユーザーがこの会話で書いた URL（`browser` が事前許可で開ける出所の初期値・browser.md §6.2）。
+    pub user_urls: Vec<url::Url>,
 }
 
 impl ChatWorker {
@@ -79,6 +81,7 @@ impl ChatWorker {
         .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
+        let user_urls = super::user_urls::user_urls(&msgs, assistant_message_id);
         // 直近の assistant ターンだけ、ツールの作業記録を次の user 発話の前に添える
         // （前のターンで見つけた id・値を次のターンで使えるように・history_work_log.rs）。
         let logged_from = msgs
@@ -170,6 +173,7 @@ impl ChatWorker {
             messages: out,
             attachments,
             tools_in_use,
+            user_urls,
         })
     }
 
@@ -256,6 +260,7 @@ impl ChatWorker {
             messages: history,
             attachments,
             tools_in_use,
+            user_urls,
         } = thread_history;
         // skill のピン解決（複数可・Task 6.9/#344・fail-closed: 読めないピンは run を失敗させる）。
         let skills = crate::skill::AppliedSkill::load_pins(
@@ -268,7 +273,9 @@ impl ChatWorker {
 
         // 提示ツール一式（共通＋ワークフロー・skill・ドキュメント/Office/CSV・データ）は
         // worker/toolset.rs に集約する。自律専用のツールは下で足す。
-        let mut tools = self.base_tools(ctx, run, &skills, &attachments).await?;
+        let mut tools = self
+            .base_tools(ctx, run, &skills, &attachments, user_urls)
+            .await?;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
@@ -371,7 +378,7 @@ impl ChatWorker {
         // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
         self.system_with_origin_document(run, &mut opts).await;
         super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
-        super::opts::append_skill_guidance(&mut opts, &tools);
+        super::opts::append_tool_guidance(&mut opts, &tools);
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);

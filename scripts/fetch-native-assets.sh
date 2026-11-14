@@ -57,7 +57,11 @@ while read -r sha rel url extra; do
       rm -rf "$tmpd" "$dl"
       ;;
     *)
-      chmod +x "$dl"
+      # **0755 にする（+x ではなく）。** mktemp は 0600 で作るので +x だと 0711 になり、
+      # root 以外は読めない。読めないバイナリを実行したプロセスは dumpable=0 になり、
+      # runsc --rootless の自己再実行（/proc/self/exe・親が子の uid_map を書く）が
+      # EACCES で落ちる（プレビューのコード実行が全滅した・2026-11-14）。
+      chmod 0755 "$dl"
       mv "$dl" "$dest"
       ;;
   esac

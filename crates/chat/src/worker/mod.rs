@@ -24,6 +24,7 @@ mod job_lease;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
 mod opts;
 mod run_model;
+mod user_urls;
 pub use opts::parse_timezone;
 mod bug_report_tool;
 mod search_scope;
