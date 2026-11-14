@@ -79,3 +79,31 @@ test("http や記法を壊す URL は差し込まない", () => {
   const [out] = placeHelpFigures([text], [cite(1, [{ url: "http://x/a.png", alt: "a" }, { url: "https://x/a b).png", alt: "b" }])]);
   expect(out).toBe(text);
 });
+
+test("リンクやコードに書いた図の URL では足すのをやめない", () => {
+  const text = `1. 開きます [H1]。[図を見る](${FIG1}) \`${FIG2}\``;
+  const [out] = placeHelpFigures([text], [cite(1, [{ url: FIG1, alt: "a" }, { url: FIG2, alt: "b" }])]);
+  expect(out.split("\n")).toEqual([text, `   ![a](${FIG1})`, `   ![b](${FIG2})`]);
+});
+
+test("インラインコードの中の番号は差し込む位置にしない", () => {
+  const text = "1. `[H1]` という表記です。\n2. 保存します [H1]。";
+  const [out] = placeHelpFigures([text], [cite(1, [{ url: FIG1, alt: "a" }])]);
+  expect(out.split("\n")).toEqual(["1. `[H1]` という表記です。", "2. 保存します [H1]。", `   ![a](${FIG1})`]);
+});
+
+test("項目の継続行で引いたときは、その項目の下に字下げして足す", () => {
+  const text = "1. 個人設定を開きます。\n   パスワードを選びます [H1]。\n   続けて入力します。\n2. 保存します。\n\n最後に確認します [H2]。";
+  const [out] = placeHelpFigures([text], [cite(1, [{ url: FIG1, alt: "a" }]), cite(2, [{ url: FIG2, alt: "b" }])]);
+  expect(out.split("\n")).toEqual([
+    "1. 個人設定を開きます。",
+    "   パスワードを選びます [H1]。",
+    "   続けて入力します。",
+    `   ![a](${FIG1})`,
+    "2. 保存します。",
+    "",
+    "最後に確認します [H2]。",
+    "",
+    `![b](${FIG2})`,
+  ]);
+});

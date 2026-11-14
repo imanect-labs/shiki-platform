@@ -105,6 +105,8 @@ export function placeHelpFigures(
   max = MAX_PLACED_HELP_FIGURES,
 ): string[] {
   const all = texts.join("\n");
+  // 重複とみなすのは、本文に画像として埋め込んだ図だけ（リンクやコードに書いた URL では図は出ない）。
+  const embedded = embeddedImageUrls(all);
   const byId = new Map(citations.map((c) => [c.cite_id, c]));
   const planned = new Set<string>();
   // 区切りごとの差し込み: 行番号 → 足す行。
@@ -115,7 +117,7 @@ export function placeHelpFigures(
     const c = byId.get(id);
     if (!c) continue;
     const figures = (c.images ?? []).filter(
-      (i) => /^https:\/\/[^\s()<>]+$/.test(i.url) && !all.includes(i.url) && !planned.has(i.url),
+      (i) => /^https:\/\/[^\s()<>]+$/.test(i.url) && !embedded.has(i.url) && !planned.has(i.url),
     );
     if (figures.length === 0) continue;
     const at = findAnchor(lines, id);
@@ -149,26 +151,63 @@ function citedInOrder(text: string): number[] {
   return out;
 }
 
+/// 本文に画像として埋め込んだ URL（`![説明](URL)`・コードの中は数えない）。
+function embeddedImageUrls(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const { code, s } of splitByCode(text)) {
+    if (code) continue;
+    for (const m of s.matchAll(/!\[[^\]]*\]\(\s*<?([^\s()<>]+)>?/g)) out.add(m[1]);
+  }
+  return out;
+}
+
+/// その行が、コードの外で `marker` を引いているか。
+function citesOutsideCode(line: string, marker: string): boolean {
+  return splitByCode(line).some(({ code, s }) => !code && s.includes(marker));
+}
+
+const BLOCK_START = /^\s*(\||#|>)/;
+
 /// `[Hn]` を最初に引いた手順の、差し込む位置（区切り・その項目/段落の最後の行・字下げ）。
 /// 字下げが `null` なら段落の後ろ。番号付き・箇条書きの項目を段落より優先する（手順の下に置く）。
+/// 項目の継続行（字下げした 2 行目以降）で引いたときも、その項目の下に置く。
 function findAnchor(lines: string[][], id: number): [number, number, number | null] | null {
   const marker = `[H${id}]`;
   let paragraph: [number, number, number | null] | null = null;
   for (let seg = 0; seg < lines.length; seg++) {
     const ls = lines[seg];
     let fenced = false;
+    // いま中にいる項目の、本文の字下げ（項目の外なら null）。
+    let itemIndent: number | null = null;
+    const endOf = (i: number) => {
+      let end = i;
+      while (
+        end + 1 < ls.length &&
+        ls[end + 1].trim() &&
+        !LIST_ITEM.test(ls[end + 1]) &&
+        !FENCE.test(ls[end + 1]) &&
+        !BLOCK_START.test(ls[end + 1])
+      )
+        end++;
+      return end;
+    };
     for (let i = 0; i < ls.length; i++) {
       const l = ls[i];
       if (FENCE.test(l)) {
         fenced = !fenced;
         continue;
       }
-      if (fenced || !l.includes(marker) || /^\s*(\||#|>)/.test(l)) continue;
+      if (fenced) continue;
       const item = LIST_ITEM.exec(l);
-      let end = i;
-      while (end + 1 < ls.length && ls[end + 1].trim() && !LIST_ITEM.test(ls[end + 1]) && !FENCE.test(ls[end + 1]) && !/^\s*(\||#|>)/.test(ls[end + 1])) end++;
-      if (item) return [seg, end, item[1].length + item[2].length + item[3].length];
-      paragraph ??= [seg, end, null];
+      if (item) itemIndent = item[1].length + item[2].length + item[3].length;
+      else if (l.trim()) {
+        const indent = l.length - l.trimStart().length;
+        const lazy = i > 0 && ls[i - 1].trim() !== "";
+        if (itemIndent !== null && indent < itemIndent && !lazy) itemIndent = null;
+      }
+      if (BLOCK_START.test(l) || !citesOutsideCode(l, marker)) continue;
+      if (itemIndent !== null) return [seg, endOf(i), itemIndent];
+      paragraph ??= [seg, endOf(i), null];
     }
   }
   return paragraph;
