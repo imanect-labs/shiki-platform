@@ -28,8 +28,13 @@ claim は org lock の取得後に台帳行を押さえて状態を再確認す�
 外部送信の開始前に撤去が完了していれば、その 1 件は撤去後に送信されることがある。
 lease の期限は送信の終了を保証しない（ワーカーが遅れると期限後に送信が始まることもある）。
 また tenant 撤去の purge は配送台帳も消去する。送信済みの外部 issue は取り戻せないため、
-撤去を始める前に配送台帳の sending / delivery_unknown / sent の report_id・外部 ID・URL を控え、
-撤去後に送り先で照合して、外部に作られた issue の消去を送り先側で判断する。
+撤去は次の順で行う。
+1. tenant を deleting にして新しい claim を止める（purge はまだ始めない）。
+2. 配送台帳の queued / sending / delivery_unknown / sent について、配送 ID（`bug_report_delivery.id`）・
+   report_id・送り先 repository・外部 ID・URL を控える。照合マーカーは配送 ID なので、外部 ID・URL が
+   まだ無い配送も配送 ID で控える。
+3. purge を進め、撤去後に送り先で配送 ID のマーカーを照合し、外部に作られた issue の消去を送り先側で判断する。
+   結果不明の配送は、送り先で見つからなくても未作成とは判断しない（後から作られる可能性を残して扱う）。
 
 ## 監視
 
