@@ -26,6 +26,8 @@
 #     --no-prepare        pnpm install と pnpm gen:api を飛ばす
 #     --shots             画面を撮る spec の画像を結果の置き場に残す（E2E_SHOTS_DIR）
 #     --verbose           Playwright の出力をそのまま画面にも出す
+#     --rag               社内文書の検索（qdrant と ingestion-worker）も立てる（dev-up.sh --rag。worker のイメージを
+#                         初回にビルドし、常駐で 2GB 前後を使う。検索を使う spec（*-rag.spec.ts など）が飛ばされずに走る）
 #     --db NAME / --store NAME   確かめ用の DB とストアの名前（shiki_verify・shiki-verify で始まる名前だけ）
 #
 # かかる時間（2 CPU・メモリ 10GB の手元のマシンで）:
@@ -138,6 +140,7 @@ DB_NAME=shiki_verify
 STORE=shiki-verify
 REDIS_DB=2
 LABEL=verify-main
+WITH_RAG=0
 
 need_val() {
   if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then die "$1 には値が要ります" 2; fi
@@ -161,6 +164,7 @@ while [ $# -gt 0 ]; do
     --no-prepare)     PREPARE=0 ;;
     --shots)          SHOTS=1 ;;
     --verbose)        VERBOSE=1 ;;
+    --rag)            WITH_RAG=1 ;;
     --db)             need_val "$@"; DB_NAME=$2; shift ;;
     --store)          need_val "$@"; STORE=$2; shift ;;
     --down)           ACTION=down ;;
@@ -466,6 +470,7 @@ reset_fga_store() {
 
 start_stack() {  # start_stack first|restart
   local args=(--db-name "$DB_NAME" --store-name "$STORE" --bucket "$BUCKET" --redis-db "$REDIS_DB" --run-label "$LABEL") rc
+  [ "$WITH_RAG" = 1 ] && args+=(--rag)
   STACK_STARTED=1
   STACK_READY=0
   if [ "$1" = first ]; then
