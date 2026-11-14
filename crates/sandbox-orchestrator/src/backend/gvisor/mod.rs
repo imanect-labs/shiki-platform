@@ -64,6 +64,7 @@ impl GvisorBackend {
                 rootfs_dir.display()
             )));
         }
+        ensure_mountpoints(&rootfs_dir)?;
         std::fs::create_dir_all(&state_root)
             .map_err(|e| SandboxError::Unavailable(format!("gvisor state dir: {e}")))?;
         // 前回クラッシュの残骸を掃除（best-effort・kill_on_drop が主・PIT: 残留ゼロ）。
@@ -257,6 +258,24 @@ impl Backend for GvisorBackend {
     }
 }
 
+/// rootfs に bind マウント先があることを確かめる。無ければ作り（書ける開発ホスト向け）、作れなければ
+/// create のたびに落ちる代わりに起動時に理由つきで弾く（読み取り専用のイメージでは作れない）。
+fn ensure_mountpoints(rootfs_dir: &Path) -> Result<(), SandboxError> {
+    for name in bundle::ROOTFS_MOUNTPOINTS {
+        let dir = rootfs_dir.join(name);
+        if dir.is_dir() {
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return Err(SandboxError::Unavailable(format!(
+                "gvisor rootfs にマウント先 /{name} が無く、作れない ({e}): {} — イメージの rootfs に作っておく",
+                rootfs_dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// runsc の stderr の末尾を、create の失敗に添える（host 側 runsc の出力で、ゲスト由来ではない）。
 async fn with_runsc_stderr(err: SandboxError, stderr_path: &Path) -> SandboxError {
     /// 添える最大文字数（エラーがログ・ツール結果を埋めないように）。
@@ -290,6 +309,29 @@ mod tests {
         let d = std::env::temp_dir().join(format!("gv-test-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// マウント先が無い rootfs は、書けるなら作り、書けなければ起動時に理由つきで弾く。
+    #[test]
+    fn missing_mountpoints_are_created_or_rejected() {
+        let d = scratch("mountpoints");
+        ensure_mountpoints(&d).unwrap();
+        for name in bundle::ROOTFS_MOUNTPOINTS {
+            assert!(d.join(name).is_dir(), "{name} が作られていない");
+        }
+
+        let ro = scratch("mountpoints-ro");
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let res = ensure_mountpoints(&ro);
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // root は書き込み権限を無視するので、root で走るときは弾かれることを確かめられない。
+        if ro.join("workspace").is_dir() {
+            return;
+        }
+        match res {
+            Err(SandboxError::Unavailable(msg)) => assert!(msg.contains("/workspace"), "{msg}"),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 
     /// 0711 の runsc（実行はできるが読めない）は、create のたびに落ちる代わりに起動時に理由つきで弾く。

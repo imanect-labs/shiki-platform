@@ -522,6 +522,9 @@ jobs:
             test -r "$SANDBOX__GVISOR__RUNSC_BIN"
             "$SANDBOX__GVISOR__RUNSC_BIN" --version | head -1
             test -x "$SANDBOX__GVISOR__ROOTFS_DIR/usr/local/bin/python3"
+            # bind マウント先が無いと、読み取り専用の root に runsc が作れず create が毎回落ちる。
+            test -d "$SANDBOX__GVISOR__ROOTFS_DIR/workspace"
+            test -d "$SANDBOX__GVISOR__ROOTFS_DIR/__exec"
             ls "$SANDBOX__GVISOR__ROOTFS_DIR"/usr/local/lib/python3.12/site-packages | grep -E "^(numpy|pandas)$"
             u=$(id -u); echo "uid=$u"; [ "$u" != "0" ]
           '

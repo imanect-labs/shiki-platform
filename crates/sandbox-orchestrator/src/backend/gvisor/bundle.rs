@@ -9,6 +9,13 @@ use std::path::Path;
 use sandbox_client::SandboxLimits;
 use serde_json::{json, Value};
 
+/// rootfs 側に**予め在る必要がある** bind マウント先（`/workspace`・`/__exec`）。
+///
+/// root は読み取り専用なので、runsc の gofer はマウント先が無いと `mkdir` できずに起動ごと落ちる
+/// （`cannot read client sync file: waiting for sandbox to start: EOF` としか出ない）。
+/// イメージ側で作り、起動時に検査する（プレビューのコード実行が全滅した・2026-11-14）。
+pub(super) const ROOTFS_MOUNTPOINTS: [&str; 2] = ["workspace", "__exec"];
+
 /// バンドルの `config.json` を組み立てる。
 ///
 /// - `rootfs`: 共有 RO rootfs のホストパス。
