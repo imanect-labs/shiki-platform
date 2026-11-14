@@ -13,7 +13,7 @@ import * as React from "react";
 import type { Citation, ContentBlock, HelpCitation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { useHelpCitations } from "./help-sources";
-import { helpImageTexts, helpLinkHosts } from "@/lib/help-citation";
+import { helpImageTexts, helpLinkHosts, placeHelpFigures } from "@/lib/help-citation";
 import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
@@ -220,6 +220,16 @@ export function MessageTimeline({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 引用が変わったかは sourcesKey が表す
     [sourcesKey],
   );
+  // 引いたヘルプの図のうち本文に無いものを、その手順の下に足す（生成が終わってから）。
+  const textsKey = segments.map((s) => (s.kind === "text" ? s.text : "")).join("\u0000");
+  const placedTexts = React.useMemo(
+    () => {
+      const texts = segments.map((s) => (s.kind === "text" ? s.text : ""));
+      return streaming || helpCitations.length === 0 ? texts : placeHelpFigures(texts, helpCitations);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 本文が変わったかは textsKey、出典は sourcesKey が表す
+    [textsKey, sourcesKey, streaming],
+  );
   const leading =
     // 本文も操作もまだ無い（生成の開始直後）、または操作が無く引用だけある。
     (streaming && segments.length === 0) || (firstWork < 0 && citations.length > 0);
@@ -276,7 +286,7 @@ export function MessageTimeline({
               imageProxy={imageProxy}
               linkSources={linkSources}
             >
-              {linkifyCitations(s.text, citations, helpCitations)}
+              {linkifyCitations(placedTexts[i] ?? s.text, citations, helpCitations)}
             </Markdown>
           </div>
         );

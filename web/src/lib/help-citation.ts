@@ -82,3 +82,99 @@ export function helpAppLinks(citations: readonly HelpCitation[]): { path: string
   }
   return [...out.values()];
 }
+
+/// 1 件の回答で自動で差し込む図の上限（本文が図で埋まらないように）。
+export const MAX_PLACED_HELP_FIGURES = 4;
+
+const LIST_ITEM = /^(\s*)(\d{1,3}[.)]|[-*+])(\s+)\S/;
+const FENCE = /^\s*(```|~~~)/;
+
+/// 本文で引いたヘルプ（`[Hn]`）の図のうち、モデルが本文に入れなかったものを、その番号を最初に
+/// 引いた手順（番号付き・箇条書きの項目。無ければ段落）の下に差し込む。
+///
+/// 図を入れるかをモデルに任せると、図のある手順を引いても入れない回がある。図の中の番号（①など）を
+/// 本文が使っていれば、図が無いと読めない。表示のときだけ足し、保存した本文は変えない。
+/// 生成中は呼ばない（モデルがこれから図を書くかもしれず、差し込んだ図が後から消えて位置が飛ぶ）。
+///
+/// `texts` は 1 件の回答の本文の区切り（ツールを挟んだ前後）。図は 1 回答で 1 度だけ出す。
+/// 表・見出し・コードの中には差し込まない。URL はサーバが組んだもので、表示は回答の画像と同じく
+/// 代理取得を通る（{@link helpImageTexts} が出所に含める）。
+export function placeHelpFigures(
+  texts: readonly string[],
+  citations: readonly HelpCitation[],
+  max = MAX_PLACED_HELP_FIGURES,
+): string[] {
+  const all = texts.join("\n");
+  const byId = new Map(citations.map((c) => [c.cite_id, c]));
+  const planned = new Set<string>();
+  // 区切りごとの差し込み: 行番号 → 足す行。
+  const inserts = texts.map(() => new Map<number, string[]>());
+  const lines = texts.map((t) => t.split("\n"));
+  const order = citedInOrder(all);
+  for (const id of order) {
+    const c = byId.get(id);
+    if (!c) continue;
+    const figures = (c.images ?? []).filter(
+      (i) => /^https:\/\/[^\s()<>]+$/.test(i.url) && !all.includes(i.url) && !planned.has(i.url),
+    );
+    if (figures.length === 0) continue;
+    const at = findAnchor(lines, id);
+    if (!at) continue;
+    const take = figures.slice(0, Math.max(0, max - planned.size));
+    if (take.length === 0) break;
+    take.forEach((f) => planned.add(f.url));
+    const [seg, end, indent] = at;
+    const md = take.map((f) => `${" ".repeat(indent ?? 0)}![${figureAlt(f.alt)}](${f.url})`);
+    // 段落の後ろなら独立した段落にする。項目の中なら字下げして項目に含める。
+    const add = indent === null ? ["", ...md, ...(lines[seg][end + 1]?.trim() ? [""] : [])] : md;
+    const prev = inserts[seg].get(end) ?? [];
+    inserts[seg].set(end, [...prev, ...add]);
+  }
+  return lines.map((ls, seg) => {
+    if (inserts[seg].size === 0) return texts[seg];
+    return ls.flatMap((l, i) => [l, ...(inserts[seg].get(i) ?? [])]).join("\n");
+  });
+}
+
+/// 本文で引いたヘルプの番号を、最初に出た順に（コードの中は数えない）。
+function citedInOrder(text: string): number[] {
+  const out: number[] = [];
+  for (const { code, s } of splitByCode(text)) {
+    if (code) continue;
+    for (const m of s.matchAll(/\[H(\d+)\]/g)) {
+      const n = Number.parseInt(m[1], 10);
+      if (!out.includes(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+/// `[Hn]` を最初に引いた手順の、差し込む位置（区切り・その項目/段落の最後の行・字下げ）。
+/// 字下げが `null` なら段落の後ろ。番号付き・箇条書きの項目を段落より優先する（手順の下に置く）。
+function findAnchor(lines: string[][], id: number): [number, number, number | null] | null {
+  const marker = `[H${id}]`;
+  let paragraph: [number, number, number | null] | null = null;
+  for (let seg = 0; seg < lines.length; seg++) {
+    const ls = lines[seg];
+    let fenced = false;
+    for (let i = 0; i < ls.length; i++) {
+      const l = ls[i];
+      if (FENCE.test(l)) {
+        fenced = !fenced;
+        continue;
+      }
+      if (fenced || !l.includes(marker) || /^\s*(\||#|>)/.test(l)) continue;
+      const item = LIST_ITEM.exec(l);
+      let end = i;
+      while (end + 1 < ls.length && ls[end + 1].trim() && !LIST_ITEM.test(ls[end + 1]) && !FENCE.test(ls[end + 1]) && !/^\s*(\||#|>)/.test(ls[end + 1])) end++;
+      if (item) return [seg, end, item[1].length + item[2].length + item[3].length];
+      paragraph ??= [seg, end, null];
+    }
+  }
+  return paragraph;
+}
+
+/// 図の説明を Markdown の画像の説明に入れられる形にする（括弧・改行で記法を壊さない）。
+function figureAlt(alt: string): string {
+  return alt.replace(/[\[\]\r\n]/g, " ").trim();
+}

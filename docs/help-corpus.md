@@ -42,6 +42,10 @@ base URL は origin のみ。相対 URL は /help/ 配下に限定し traversal 
   表示は回答の画像の代理取得（`/threads/{id}/messages/{message_id}/image`）を通り、出所に数えるのは
   HelpCitation の `images` だけ（抜粋の文に書かれた画像は数えない）。ブラウザから公開ヘルプへ直接は読まない。
   抜粋は plain text として表示する（2026-11-13 human 指示で「回答に図を出す」へ変更）。
+  モデルが本文に入れなかった図は、生成が終わった後の表示で、その `[Hn]` を最初に引いた手順（番号付き・
+  箇条書きの項目。無ければ段落）の下に足す（`placeHelpFigures`・1 回答 4 枚まで・表/見出し/コードには
+  入れない）。保存した本文は変えない。図を入れるかをモデルに任せると、図のある手順を引いても入れない回が
+  あるため（下の「回答の評価」で 17/24）。
 - 画面リンク: チャンクの `app_links`（原稿の front matter `app_paths` と shiki-hp の `help/app-routes.json`）。
   1 ページに複数あり得る。読み込み時に同一オリジンの静的パスだけに絞り（`/api`・`/auth`・`/login`・クエリ・
   `//host` は拒否）、モデルは「画面:」の行を `[名前](パス)` で案内する。回答下にも「この操作を行う画面」として出す。
@@ -49,7 +53,39 @@ base URL は origin のみ。相対 URL は /help/ 配下に限定し traversal 
 出典は社内文書の Citation と分離した HelpCitation、checkpoint は専用台帳を保存する。
 公開ヘルプなので共有閲覧の file ReBAC 例外を追加しない。既存 doc_search の二段 authz は変更しない。
 classic_rag=true の旧経路はツールを使わないため対象外。通常（既定）と自律のツール経路が対象。
-実 LLM の選択品質は stub の決定的な動作確認と区別し、別途評価する。
+実 LLM の選択品質は stub の決定的な動作確認と区別し、別途評価する（次節）。
+
+## 回答の評価
+
+実際のモデルでの回答の質は `scripts/help-eval/run.mjs` で数える（CI では回さない）。
+`questions.json` の質問をブラウザで送り、次を数えて集計を出す。作った会話は最後に消す。
+
+- help_search を呼んだか・最初の検索がヘルプか・doc_search も呼んだか
+- 期待する画面へのリンク（`questions.json` の `screen`）が本文にあるか
+- 引いたヘルプに図があるとき、図が表示されたか（うちモデルが本文に入れた数）
+- 図が無いのに ① などの図の番号を使ったか・所要時間
+
+```bash
+CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
+  node scripts/help-eval/run.mjs --base https://shiki-preview.imanect.app --runs 3 --out /tmp/help-eval.jsonl
+```
+
+プレビューへの入り方は giken-ops の `docs/shiki-preview-agent-access.md`。結果は回ごとに揺れるので、
+指示や表示を変えたら前後で同じ質問・同じ回数を流して比べる。
+
+2026-11-14 の結果（プレビュー・既定モデル・12 問 × 3 回）:
+
+| 指標 | 変更前 | 変更後 |
+| --- | --- | --- |
+| help_search を呼んだ | 31/36 | AFTER_HELP |
+| 最初の検索がヘルプ | 29/36 | AFTER_FIRST |
+| doc_search も呼んだ | 6/36 | AFTER_DOC |
+| 画面リンクが本文にある | 25/27 | AFTER_SCREEN |
+| 図を出せる回で図が出た | 17/24 | AFTER_FIGS |
+| 所要時間（中央値 / 最大） | 6 秒 / 21 秒 | AFTER_MS |
+
+変更は、Shiki 自体の操作（どのシステムか書かれていないパスワードの質問、画面でできる操作をしたいという
+依頼を含む）はまずヘルプを引くという指示と、上の図の差し込み。
 
 ## ローカル検証（2026-11-12）
 

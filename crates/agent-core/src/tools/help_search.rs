@@ -61,7 +61,7 @@ impl Tool for HelpSearchTool {
         ToolName::HelpSearch.as_str()
     }
     fn description(&self) -> &'static str {
-        "Shiki 自体の操作・使い方・できることを顧客向けヘルプから検索する。社内規程は doc_search。根拠の番号を [H1] の形で付ける。"
+        "Shiki 自体の操作・設定・使い方・できること（ログイン・パスワード、チャット、ドライブ、個人設定など）を顧客向けヘルプから検索する。Shiki の操作の質問では doc_search より先に使う。社内規程は doc_search。根拠の番号を [H1] の形で付ける。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{
