@@ -83,9 +83,10 @@ pub enum ElementKind {
     TextBox {
         input_type: String,
     },
-    /// 選択肢（value, 表示名）。
+    /// 選択肢（value, 表示名）。`multiple` なら複数選べる（選ぶたびに切り替わる）。
     Select {
         options: Vec<(String, String)>,
+        multiple: bool,
     },
     Checkbox,
     Radio,

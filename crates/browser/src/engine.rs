@@ -3,6 +3,9 @@
 //! cloud/onprem・エンジン差（JS 非実行のテキストエンジン / Chromium）はここで吸収する。
 //! cookie jar はエンジンではなく `BrowserSession` が持ち、呼び出しのたびに渡す（§5.1）。
 
+use std::fmt;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use authz::AuthContext;
 use url::{Origin, Url};
@@ -10,11 +13,33 @@ use url::{Origin, Url};
 use crate::cookie_jar::CookieJar;
 use crate::snapshot::{EngineKind, RefId, Snapshot};
 
+/// リダイレクトの転送先を照合する関数（true なら追従してよい）。
+pub type RedirectCheck = Arc<dyn Fn(&Url) -> bool + Send + Sync>;
+
 /// セッションを開くときの設定。
-#[derive(Debug, Clone)]
+#[derive(Clone, Default)]
 pub struct SessionOpts {
     /// ref の世代の開始値。エンジンを切り替えても世代が巻き戻らないよう、セッションが渡す。
     pub first_generation: u32,
+    /// リダイレクトの転送先の照合（出所の規則・browser.md §6.2）。None なら関門の検証だけで追従する。
+    pub redirect_check: Option<RedirectCheck>,
+}
+
+impl fmt::Debug for SessionOpts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionOpts")
+            .field("first_generation", &self.first_generation)
+            .field("redirect_check", &self.redirect_check.is_some())
+            .finish()
+    }
+}
+
+/// 操作が送ることになる要求（送る前に、ツールが承認の要否を判定するために使う・browser.md §6.1）。
+#[derive(Debug, Clone)]
+pub struct PlannedRequest {
+    pub request: LoadRequest,
+    /// 送る値のうち、承認ダイアログで伏せる項目の名前（パスワード欄）。
+    pub masked_fields: Vec<String>,
 }
 
 /// HTTP メソッド（ブラウザが送るものだけ）。
@@ -89,6 +114,8 @@ pub enum BrowserError {
     NoSuchOption,
     #[error("この送信方式（{0}）には対応していません")]
     Unsupported(String),
+    #[error("リダイレクトの転送先（{to}）はこの操作では開けません")]
+    RedirectNotAllowed { to: Url },
     #[error("戻れる履歴がありません")]
     NoHistory,
     #[error("まだページを開いていません")]
@@ -123,6 +150,10 @@ pub trait EnginePage: Send {
 
     /// 現在のスナップショット。
     async fn snapshot(&mut self) -> Result<Snapshot, BrowserError>;
+
+    /// 操作が送ることになる要求を、送らずに返す（遷移しない操作は None）。ツールはこれで
+    /// 送り先・メソッドを確かめてから、範囲外なら実行を拒否する（browser.md §6.1）。
+    fn plan(&self, action: &Action) -> Result<Option<PlannedRequest>, BrowserError>;
 
     /// 次に使う世代（エンジン切替でセッションが引き継ぐ）。
     fn next_generation(&self) -> u32;

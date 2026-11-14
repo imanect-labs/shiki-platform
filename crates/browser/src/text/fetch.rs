@@ -16,8 +16,8 @@ use time::OffsetDateTime;
 use url::Url;
 use web_access::public_fetch::{self, AddrGuard, PinError};
 
-use crate::cookie_jar::{CookieJar, RequestContext};
-use crate::engine::{BrowserError, LoadRequest, Method};
+use crate::cookie_jar::{same_site, CookieJar, RequestContext};
+use crate::engine::{BrowserError, LoadRequest, Method, RedirectCheck};
 
 /// 取得の設定。
 #[derive(Clone)]
@@ -41,11 +41,28 @@ pub(crate) struct Fetched {
 }
 
 impl Fetcher {
+    /// 取得する。`timeout` はリダイレクトを含めた 1 回の取得全体にかかる。
+    /// `check` は 301/302/303/307/308 の転送先を照合する口（出所の規則・browser.md §6.2。呼び出し側が渡す）。
     pub(crate) async fn fetch(
         &self,
         req: &LoadRequest,
         jar: &mut CookieJar,
+        check: Option<&RedirectCheck>,
     ) -> Result<Fetched, BrowserError> {
+        tokio::time::timeout(self.timeout, self.fetch_inner(req, jar, check))
+            .await
+            .map_err(|_| BrowserError::Fetch("時間内に取得が終わりませんでした".into()))?
+    }
+
+    async fn fetch_inner(
+        &self,
+        req: &LoadRequest,
+        jar: &mut CookieJar,
+        check: Option<&RedirectCheck>,
+    ) -> Result<Fetched, BrowserError> {
+        // SameSite の判定の基点（要求元のページ。アドレスバー相当なら最初の URL）。
+        let chain_root = req.initiator.clone().unwrap_or_else(|| req.url.clone());
+        let mut crossed = false;
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut form = req.form.clone();
@@ -77,6 +94,7 @@ impl Fetcher {
                 initiator: req.initiator.clone(),
                 top_level: true,
                 safe_method: method == Method::Get,
+                cross_site_redirect: crossed,
             };
             if let Some(cookie) = jar.header_for(&target.url, &ctx, OffsetDateTime::now_utc()) {
                 builder = builder.header(COOKIE, cookie);
@@ -93,6 +111,9 @@ impl Fetcher {
                     }
                 }
             }
+            if !same_site(&chain_root, &target.url) {
+                crossed = true;
+            }
             let status = response.status();
             if status.is_redirection() {
                 let Some(next) = response
@@ -108,6 +129,9 @@ impl Fetcher {
                 };
                 if hop == self.max_redirects {
                     break;
+                }
+                if check.is_some_and(|c| !c(&next)) {
+                    return Err(BrowserError::RedirectNotAllowed { to: next });
                 }
                 match status {
                     StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {

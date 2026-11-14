@@ -4,7 +4,7 @@
 //! 操作できる要素に ref を振り、行単位のテキストに埋め込む。DOM 構築と走査は CPU バウンドなので、
 //! 呼び出し側が `spawn_blocking` へ逃がす（PIT-23）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use dom_query::{Document, NodeRef};
 use url::Url;
@@ -17,6 +17,11 @@ pub(crate) const NEEDS_JS_THRESHOLD: usize = 200;
 const MAX_NODES: usize = 300_000;
 /// ref を振る要素数の上限。
 const MAX_ELEMENTS: usize = 3_000;
+/// 降りる深さの上限。描画は再帰するので、深い入れ子でスタックを溢れさせない
+/// （スタック溢れは panic でなく abort になり、プロセスごと落ちる）。実在のページは 100 段に満たない。
+const MAX_DEPTH: u32 = 256;
+/// ラベル・リンク・ボタンの表示名の上限（文字）。入れ子のラベルで二乗の連結をさせない。
+const MAX_LABEL_CHARS: usize = 200;
 
 /// フォームの送信方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,14 +32,16 @@ pub(crate) struct Form {
     id: Option<String>,
 }
 
-/// 送信に載る項目（文書順）。
+/// 送信に載る項目（文書順）。CSS で隠れた項目も持つ（ブラウザは見た目によらず送る）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Field {
     pub form: Option<usize>,
     pub name: String,
     pub kind: FieldKind,
-    /// ref を振った要素の番号（hidden は無し）。
+    /// ref を振った要素の番号（hidden・見えない項目は無し）。
     pub element: Option<u32>,
+    /// `disabled`（祖先の `<fieldset disabled>` を含む）。送信に載せず、押せない。
+    pub disabled: bool,
     form_attr: Option<String>,
 }
 
@@ -42,12 +49,15 @@ pub(crate) struct Field {
 pub(crate) enum FieldKind {
     Text {
         value: String,
+        /// パスワード欄（値を承認ダイアログで伏せる）。
+        secret: bool,
     },
     Hidden {
         value: String,
     },
+    /// 選ばれている value（`multiple` でなければ 0〜1 個）。
     Select {
-        value: String,
+        values: Vec<String>,
     },
     Check {
         value: String,
@@ -57,7 +67,17 @@ pub(crate) enum FieldKind {
     Button {
         value: String,
         submits: bool,
+        /// 押したボタンの `formaction` / `formmethod` / `formenctype`（フォームの値を上書きする）。
+        overrides: Option<Box<SubmitOverrides>>,
     },
+}
+
+/// 送信ボタンが持つ、フォームの送信方式の上書き（HTML 標準の form submission）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SubmitOverrides {
+    pub action: Option<Url>,
+    pub post: Option<bool>,
+    pub enctype: Option<String>,
 }
 
 /// 利用者が入れた値（ref の番号ごと）。描画し直しても保つ。
@@ -65,6 +85,8 @@ pub(crate) enum FieldKind {
 pub(crate) struct FieldState {
     pub value: Option<String>,
     pub checked: Option<bool>,
+    /// セレクトで選んだ value（`multiple` でなければ 1 個）。
+    pub selected: Option<Vec<String>>,
 }
 
 /// 描画結果。
@@ -92,6 +114,14 @@ struct Walker<'a> {
     elements: Vec<ElementInfo>,
     forms: Vec<Form>,
     fields: Vec<Field>,
+    /// 文書内のフォームの id（`form="id"` の送信ボタンが送れるかの判定に使う）。
+    form_ids: HashSet<String>,
+    /// CSS 等で見えない部分木の中にいる深さ（項目は集めるが、表示も ref もしない）。
+    invisible: u32,
+    /// `<fieldset disabled>` の中にいる深さ。
+    disabled: u32,
+    /// いまの深さ（[`MAX_DEPTH`] で打ち切る）。
+    depth: u32,
 }
 
 /// HTML を描画する。`max_chars` を超えた本文は切る（文字数で数える）。
@@ -102,6 +132,8 @@ pub(crate) fn render(
     max_chars: usize,
     state: &HashMap<u32, FieldState>,
 ) -> Rendered {
+    // 入れ子が深すぎる文書は、解析器へ渡す前に切る（二乗の解析時間を防ぐ・guard.rs）。
+    let (html, clipped) = super::guard::clip_depth(html, super::guard::MAX_PARSE_DEPTH);
     let doc = Document::from(html);
     let title = doc.select("title").first().text().trim().to_string();
     let mut labels_for = HashMap::new();
@@ -117,6 +149,12 @@ pub(crate) fn render(
             .unwrap_or_default();
         !(ty.contains("json") || ty.contains("template"))
     });
+    let form_ids = doc
+        .select("form[id]")
+        .nodes()
+        .iter()
+        .filter_map(|f| f.attr("id").map(|i| i.to_string()))
+        .collect();
     let mut w = Walker {
         base,
         state,
@@ -130,6 +168,10 @@ pub(crate) fn render(
         elements: Vec::new(),
         forms: Vec::new(),
         fields: Vec::new(),
+        form_ids,
+        invisible: 0,
+        disabled: 0,
+        depth: 0,
     };
     let root = doc.body().unwrap_or_else(|| doc.root());
     w.walk(&root, None, None);
@@ -139,7 +181,7 @@ pub(crate) fn render(
     let nonlink = w.visible_chars.saturating_sub(w.link_chars);
     let needs_js = (has_script && nonlink < NEEDS_JS_THRESHOLD).then_some(NeedsJs::ScriptRendered);
     let mut text = w.lines.join("\n");
-    let truncated = text.chars().count() > max_chars;
+    let truncated = clipped || text.chars().count() > max_chars;
     if truncated {
         text = text.chars().take(max_chars).collect();
         text.push_str("\n…（以降は省略）");
@@ -161,8 +203,14 @@ fn collapse(s: &str) -> String {
 
 /// ラベル・リンク・ボタンの表示名（select / option / script の中身は含めず、画像は alt を使う）。
 fn label_text(node: &NodeRef<'_>) -> String {
-    fn collect(node: &NodeRef<'_>, out: &mut String) {
+    fn collect(node: &NodeRef<'_>, out: &mut String, depth: u32) {
+        if depth > MAX_DEPTH {
+            return;
+        }
         for c in node.children_it(false) {
+            if out.len() > MAX_LABEL_CHARS * 4 {
+                return;
+            }
             if c.is_text() {
                 out.push_str(&c.text());
                 out.push(' ');
@@ -176,13 +224,13 @@ fn label_text(node: &NodeRef<'_>) -> String {
                         out.push(' ');
                     }
                 }
-                _ => collect(&c, out),
+                _ => collect(&c, out, depth + 1),
             }
         }
     }
     let mut out = String::new();
-    collect(node, &mut out);
-    collapse(&out)
+    collect(node, &mut out, 0);
+    collapse(&out).chars().take(MAX_LABEL_CHARS).collect()
 }
 
 fn is_hidden(node: &NodeRef<'_>) -> bool {
@@ -251,6 +299,9 @@ fn line_prefix(name: &str) -> &'static str {
 
 impl Walker<'_> {
     fn text(&mut self, s: &str) {
+        if self.invisible > 0 {
+            return;
+        }
         let collapsed = collapse(s);
         let leading = s.starts_with(char::is_whitespace);
         let trailing = s.ends_with(char::is_whitespace);
@@ -271,6 +322,9 @@ impl Walker<'_> {
     }
 
     fn token(&mut self, t: &str) {
+        if self.invisible > 0 {
+            return;
+        }
         if !self.cur.is_empty() && !self.cur.ends_with(' ') {
             self.cur.push(' ');
         }
@@ -310,7 +364,7 @@ impl Walker<'_> {
 
     /// 要素に ref を振る。上限を超えたら None（テキストとしては残す）。
     fn push_element(&mut self, kind: ElementKind, label: &str) -> Option<RefId> {
-        if self.elements.len() >= MAX_ELEMENTS {
+        if self.invisible > 0 || self.elements.len() >= MAX_ELEMENTS {
             return None;
         }
         let id = RefId {
@@ -326,39 +380,17 @@ impl Walker<'_> {
         Some(id)
     }
 
-    fn value(&self, id: Option<RefId>, default: String) -> String {
-        id.and_then(|i| self.state.get(&i.index))
-            .and_then(|s| s.value.clone())
-            .unwrap_or(default)
-    }
-
-    fn checked(&self, id: Option<RefId>, default: bool) -> bool {
-        id.and_then(|i| self.state.get(&i.index))
-            .and_then(|s| s.checked)
-            .unwrap_or(default)
-    }
-
-    fn push_field(
-        &mut self,
-        node: &NodeRef<'_>,
-        form: Option<usize>,
-        kind: FieldKind,
-        element: Option<RefId>,
-    ) {
-        self.fields.push(Field {
-            form,
-            name: node.attr("name").map(|n| n.to_string()).unwrap_or_default(),
-            kind,
-            element: element.map(|e| e.index),
-            form_attr: node.attr("form").map(|f| f.to_string()),
-        });
-    }
-
     fn walk(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
         self.visited += 1;
-        if self.visited > MAX_NODES {
+        if self.visited > MAX_NODES || self.depth > MAX_DEPTH {
             return;
         }
+        self.depth += 1;
+        self.walk_inner(node, form, wrap);
+        self.depth -= 1;
+    }
+
+    fn walk_inner(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
         if node.is_text() {
             self.text(&node.text());
             return;
@@ -394,17 +426,29 @@ impl Walker<'_> {
             return;
         }
         if is_hidden(node) {
+            // 見えない部分木も、送信に載る項目だけは集める（CSRF トークン等を CSS で隠すサイトがある）。
+            self.invisible += 1;
+            self.descend(&name, node, form, wrap);
+            self.invisible -= 1;
             return;
         }
         if self.leaf(&name, node, form, wrap) {
             return;
         }
+        self.descend(&name, node, form, wrap);
+    }
 
-        let block = is_block(&name);
+    /// 子へ降りる（ブロックの改行・表のセル区切り・フォーム・ラベル・`<fieldset disabled>`）。
+    fn descend(&mut self, name: &str, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
+        if self.invisible > 0 && self.leaf(name, node, form, wrap) {
+            return;
+        }
+
+        let block = is_block(name);
         if block {
             self.flush("");
         }
-        if matches!(name.as_str(), "td" | "th") && !self.cur.is_empty() {
+        if matches!(name, "td" | "th") && !self.cur.is_empty() {
             self.cur.push_str(" | ");
         }
         let mut form = form;
@@ -429,11 +473,18 @@ impl Walker<'_> {
         }
         let label = (name == "label").then(|| label_text(node));
         let wrap = label.as_deref().or(wrap);
+        let fieldset_disabled = name == "fieldset" && node.has_attr("disabled");
+        if fieldset_disabled {
+            self.disabled += 1;
+        }
         for c in node.children_it(false) {
             self.walk(&c, form, wrap);
         }
+        if fieldset_disabled {
+            self.disabled -= 1;
+        }
         if block {
-            self.flush(line_prefix(&name));
+            self.flush(line_prefix(name));
         }
     }
 
@@ -488,173 +539,15 @@ impl Walker<'_> {
                 .map(|s| collapse(&s))
                 .unwrap_or_default();
         }
+        if self.invisible > 0 {
+            return;
+        }
         let n = label.chars().count();
         self.visible_chars += n;
         self.link_chars += n;
         match self.push_element(ElementKind::Link { href: href.clone() }, &label) {
             Some(id) => self.token(&format!("[{id} link \"{label}\" → {href}]")),
             None => self.text(&label),
-        }
-    }
-
-    fn textarea(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
-        let label = self.label_for(node, wrap);
-        let id = self.push_element(
-            ElementKind::TextBox {
-                input_type: "textarea".into(),
-            },
-            &label,
-        );
-        let value = self.value(id, node.text().to_string());
-        self.push_field(
-            node,
-            form,
-            FieldKind::Text {
-                value: value.clone(),
-            },
-            id,
-        );
-        if let Some(id) = id {
-            self.token(&format!(
-                "[{id} textbox \"{label}\" value=\"{}\"]",
-                collapse(&value)
-            ));
-        }
-    }
-
-    fn button(&mut self, node: &NodeRef<'_>, form: Option<usize>) {
-        let ty = node
-            .attr("type")
-            .map_or_else(|| "submit".to_string(), |t| t.to_ascii_lowercase());
-        let submits = ty == "submit" && form.is_some();
-        let mut label = label_text(node);
-        if label.is_empty() {
-            label = self.label_for(node, None);
-        }
-        let value = node
-            .attr("value")
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        let id = self.push_element(ElementKind::Button { submits }, &label);
-        self.push_field(node, form, FieldKind::Button { value, submits }, id);
-        if let Some(id) = id {
-            self.token(&button_token(id, &label, submits));
-        }
-    }
-
-    fn input(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
-        let ty = node
-            .attr("type")
-            .map_or_else(|| "text".to_string(), |t| t.to_ascii_lowercase());
-        let value = node
-            .attr("value")
-            .map(|v| v.to_string())
-            .unwrap_or_default();
-        let label = self.label_for(node, wrap);
-        match ty.as_str() {
-            "checkbox" | "radio" => {
-                let kind = if ty == "radio" {
-                    ElementKind::Radio
-                } else {
-                    ElementKind::Checkbox
-                };
-                let id = self.push_element(kind, &label);
-                let checked = self.checked(id, node.has_attr("checked"));
-                let value = if value.is_empty() { "on".into() } else { value };
-                self.push_field(
-                    node,
-                    form,
-                    FieldKind::Check {
-                        value,
-                        checked,
-                        radio: ty == "radio",
-                    },
-                    id,
-                );
-                if let Some(id) = id {
-                    self.token(&format!("[{id} {ty} \"{label}\" checked={checked}]"));
-                }
-            }
-            "submit" | "image" | "button" | "reset" => {
-                let submits = matches!(ty.as_str(), "submit" | "image") && form.is_some();
-                let text = if value.is_empty() {
-                    "送信".to_string()
-                } else {
-                    value.clone()
-                };
-                let id = self.push_element(ElementKind::Button { submits }, &text);
-                self.push_field(node, form, FieldKind::Button { value, submits }, id);
-                if let Some(id) = id {
-                    self.token(&button_token(id, &text, submits));
-                }
-            }
-            "file" => self.text(&format!(" （ファイル選択欄「{label}」は扱えません） ")),
-            _ => {
-                let id = self.push_element(
-                    ElementKind::TextBox {
-                        input_type: ty.clone(),
-                    },
-                    &label,
-                );
-                let value = self.value(id, value);
-                self.push_field(
-                    node,
-                    form,
-                    FieldKind::Text {
-                        value: value.clone(),
-                    },
-                    id,
-                );
-                if let Some(id) = id {
-                    // パスワード欄の値は常に伏せる（browser.md §4）。
-                    let shown = if ty == "password" {
-                        "*".repeat(value.chars().count())
-                    } else {
-                        value
-                    };
-                    self.token(&format!(
-                        "[{id} textbox \"{label}\" type={ty} value=\"{shown}\"]"
-                    ));
-                }
-            }
-        }
-    }
-
-    fn select(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
-        let label = self.label_for(node, wrap);
-        let mut options = Vec::new();
-        let mut selected = None;
-        for d in node.descendants_it() {
-            if d.node_name().is_some_and(|n| &*n == "option") {
-                let text = collapse(&d.text());
-                let value = d
-                    .attr("value")
-                    .map_or_else(|| text.clone(), |v| v.to_string());
-                if d.has_attr("selected") || selected.is_none() && options.is_empty() {
-                    selected = Some(value.clone());
-                }
-                options.push((value, text));
-            }
-        }
-        let listed = options
-            .iter()
-            .map(|(v, t)| format!("{v:?}={t}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let id = self.push_element(ElementKind::Select { options }, &label);
-        let value = self.value(id, selected.unwrap_or_default());
-        self.push_field(
-            node,
-            form,
-            FieldKind::Select {
-                value: value.clone(),
-            },
-            id,
-        );
-        if let Some(id) = id {
-            self.token(&format!(
-                "[{id} select \"{label}\" value={value:?} options: {listed}]"
-            ));
         }
     }
 
@@ -671,13 +564,19 @@ impl Walker<'_> {
     }
 }
 
-fn button_token(id: RefId, label: &str, submits: bool) -> String {
-    if submits {
-        format!("[{id} button \"{label}\"]")
+fn button_token(id: RefId, label: &str, submits: bool, disabled: bool) -> String {
+    let note = if disabled {
+        " (無効)"
+    } else if submits {
+        ""
     } else {
-        format!("[{id} button \"{label}\" (要JS)]")
-    }
+        " (要JS)"
+    };
+    format!("[{id} button \"{label}\"{note}]")
 }
+
+#[path = "controls.rs"]
+mod controls;
 
 #[cfg(test)]
 #[path = "render_tests.rs"]

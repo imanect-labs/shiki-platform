@@ -194,6 +194,7 @@ fn field_state_overrides_values() {
         FieldState {
             value: Some("検索語".into()),
             checked: None,
+            selected: None,
         },
     );
     state.insert(
@@ -201,13 +202,15 @@ fn field_state_overrides_values() {
         FieldState {
             value: None,
             checked: Some(true),
+            selected: None,
         },
     );
     state.insert(
         3,
         FieldState {
-            value: Some("2".into()),
+            value: None,
             checked: None,
+            selected: Some(vec!["2".into()]),
         },
     );
     let out = render(html, &base(), 4, 12_000, &state);
@@ -222,7 +225,36 @@ fn field_state_overrides_values() {
     assert_eq!(
         out.fields[0].kind,
         FieldKind::Text {
-            value: "検索語".into()
+            value: "検索語".into(),
+            secret: false
         }
     );
+}
+
+#[test]
+fn deep_nesting_does_not_overflow_the_stack() {
+    // 10 万段の入れ子（約 1MB）。深さの上限で打ち切り、スタックを溢れさせない。
+    let depth = 100_000;
+    let html = format!(
+        "<body>{}<p>深い</p>{}</body>",
+        "<div>".repeat(depth),
+        "</div>".repeat(depth)
+    );
+    let started = std::time::Instant::now();
+    let out = render(&html, &base(), 1, 12_000, &HashMap::new());
+    assert!(!out.text.contains("深い"), "上限より深い部分は描かない");
+    assert!(out.truncated);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    // 入れ子のラベルも上限で打ち切る（二乗の連結をしない）。
+    let labels = format!(
+        "<body><input id=a>{}{}</body>",
+        "<label for=a>ラベル".repeat(200),
+        "</label>".repeat(200)
+    );
+    let out = render(&labels, &base(), 1, 12_000, &HashMap::new());
+    assert!(out.elements[0].label.chars().count() <= MAX_LABEL_CHARS);
 }

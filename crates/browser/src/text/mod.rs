@@ -4,7 +4,9 @@
 //! `web_access::decode` を共有する（関門を二重実装しない・§2）。
 
 mod fetch;
+mod guard;
 mod render;
+mod submit;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -18,11 +20,12 @@ use web_access::public_fetch::{self, AddrGuard};
 
 use crate::cookie_jar::CookieJar;
 use crate::engine::{
-    Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, Method, SessionOpts,
+    Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, PlannedRequest, RedirectCheck,
+    SessionOpts,
 };
 use crate::snapshot::{ElementKind, EngineKind, RefId, Snapshot};
 use fetch::Fetcher;
-use render::{FieldKind, FieldState, Rendered};
+use render::{Field, FieldKind, FieldState, Form};
 
 /// テキストエンジンの上限。
 #[derive(Debug, Clone)]
@@ -104,6 +107,7 @@ impl BrowserEngine for TextEngine {
     ) -> Result<Box<dyn EnginePage>, BrowserError> {
         Ok(Box::new(TextPage {
             engine: self.clone(),
+            redirect_check: opts.redirect_check.clone(),
             generation: opts.first_generation,
             history: Vec::new(),
             current: None,
@@ -115,30 +119,48 @@ impl BrowserEngine for TextEngine {
 struct HistoryEntry {
     url: Url,
     status: u16,
-    html: String,
+    /// 描画し直すたびに複製しないよう共有する。
+    html: Arc<str>,
     body_truncated: bool,
 }
 
 /// 現在表示しているページ。
 struct Current {
-    rendered: Rendered,
     snapshot: Snapshot,
+    forms: Vec<Form>,
+    fields: Vec<Field>,
     state: HashMap<u32, FieldState>,
 }
 
 /// テキストエンジンの 1 セッション。
 pub struct TextPage {
     engine: TextEngine,
+    redirect_check: Option<RedirectCheck>,
     generation: u32,
     history: Vec<HistoryEntry>,
     current: Option<Current>,
 }
 
-fn is_htmlish(content_type: Option<&str>) -> bool {
-    content_type.is_none_or(|ct| {
-        let ct = ct.to_ascii_lowercase();
-        ct.starts_with("text/") || ct.contains("html") || ct.contains("xml")
-    })
+/// HTML（またはテキスト）として読んでよい応答か（browser.md §8: テキスト系の Content-Type のみ）。
+///
+/// `xml` を含むだけの型（docx・xlsx・pptx の `…openxmlformats…`）は通さない。Content-Type が無いときは
+/// 中身で判定する（先頭が `<` で、PDF・ZIP の magic bytes でない）。
+fn is_htmlish(content_type: Option<&str>, body: &[u8]) -> bool {
+    if let Some(ct) = content_type {
+        let mime = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        return matches!(
+            mime.as_str(),
+            "text/html" | "application/xhtml+xml" | "text/plain"
+        );
+    }
+    let text = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
+    let first = text.iter().find(|c| !c.is_ascii_whitespace());
+    first == Some(&b'<') && !body.starts_with(b"%PDF") && !body.starts_with(b"PK")
 }
 
 impl TextPage {
@@ -152,7 +174,7 @@ impl TextPage {
         if new_generation {
             self.generation += 1;
         }
-        let html = entry.html.clone();
+        let html = Arc::clone(&entry.html);
         let url = entry.url.clone();
         let status = entry.status;
         let body_truncated = entry.body_truncated;
@@ -169,15 +191,16 @@ impl TextPage {
         let snapshot = Snapshot {
             url,
             status,
-            title: rendered.title.clone(),
-            text: rendered.text.clone(),
-            elements: rendered.elements.clone(),
-            needs_js: rendered.needs_js.clone(),
+            title: rendered.title,
+            text: rendered.text,
+            elements: rendered.elements,
+            needs_js: rendered.needs_js,
             truncated: rendered.truncated || body_truncated,
         };
         self.current = Some(Current {
-            rendered,
             snapshot: snapshot.clone(),
+            forms: rendered.forms,
+            fields: rendered.fields,
             state,
         });
         Ok(snapshot)
@@ -223,88 +246,66 @@ impl TextPage {
         self.show(last, state, false).await
     }
 
-    fn form_of(&self, index: u32) -> Option<usize> {
-        self.current
-            .as_ref()?
-            .rendered
+    /// ref の番号に対応する送信項目の位置（`rendered.fields` の添字）。
+    fn field_of(&self, index: u32) -> Result<usize, BrowserError> {
+        self.current()?
             .fields
             .iter()
-            .find(|f| f.element == Some(index))
-            .and_then(|f| f.form)
+            .position(|f| f.element == Some(index))
+            .ok_or(BrowserError::NotInteractive("操作"))
     }
 
-    /// フォームを送信する要求を組み立てる（`submitter` は押したボタンの番号）。
+    /// 無効な部品は操作させない（ブラウザでも押せない・入力できない）。
+    fn enabled_field(&self, index: u32) -> Result<usize, BrowserError> {
+        let i = self.field_of(index)?;
+        if self.current()?.fields[i].disabled {
+            return Err(BrowserError::NotInteractive("操作（無効になっている部品）"));
+        }
+        Ok(i)
+    }
+
+    /// フォームを送信する要求（`submitter` は押したボタンの項目の位置。None なら Enter による送信）。
     fn submission(
         &self,
-        form_index: usize,
-        submitter: Option<u32>,
+        field: usize,
+        submitter: Option<usize>,
     ) -> Result<LoadRequest, BrowserError> {
         let cur = self.current()?;
-        let form = cur
-            .rendered
-            .forms
-            .get(form_index)
-            .ok_or(BrowserError::NotInteractive("送信"))?;
-        if form.enctype.starts_with("multipart/") || form.enctype.starts_with("text/plain") {
-            return Err(BrowserError::Unsupported(form.enctype.clone()));
-        }
-        let mut pairs = Vec::new();
-        for f in cur
-            .rendered
+        let form = cur.fields[field]
+            .form
+            .ok_or(BrowserError::NotInteractive("送信（フォームの外の部品）"))?;
+        let submitter = match submitter {
+            Some(s) => Some(s),
+            None => submit::default_submitter(&cur.fields, form)?,
+        };
+        submit::build(&cur.forms, &cur.fields, &cur.snapshot.url, form, submitter)
+    }
+
+    /// 送信の要求と、承認ダイアログで伏せる項目（同じフォームのパスワード欄）。
+    fn planned(
+        &self,
+        field: usize,
+        submitter: Option<usize>,
+    ) -> Result<PlannedRequest, BrowserError> {
+        let request = self.submission(field, submitter)?;
+        let cur = self.current()?;
+        let form = cur.fields[field].form;
+        let masked_fields = cur
             .fields
             .iter()
-            .filter(|f| f.form == Some(form_index))
-        {
-            if f.name.is_empty() {
-                continue;
-            }
-            match &f.kind {
-                FieldKind::Text { value }
-                | FieldKind::Hidden { value }
-                | FieldKind::Select { value } => {
-                    pairs.push((f.name.clone(), value.clone()));
-                }
-                FieldKind::Check {
-                    value,
-                    checked: true,
-                    ..
-                } => pairs.push((f.name.clone(), value.clone())),
-                FieldKind::Button { value, .. }
-                    if f.element.is_some() && f.element == submitter =>
-                {
-                    pairs.push((f.name.clone(), value.clone()));
-                }
-                FieldKind::Check { .. } | FieldKind::Button { .. } => {}
-            }
-        }
-        let initiator = Some(cur.snapshot.url.clone());
-        if form.post {
-            Ok(LoadRequest {
-                url: form.action.clone(),
-                method: Method::Post,
-                form: pairs,
-                initiator,
-                approved_origin: Some(form.action.origin()),
-            })
-        } else {
-            let mut url = form.action.clone();
-            url.set_fragment(None);
-            url.query_pairs_mut().clear().extend_pairs(&pairs);
-            Ok(LoadRequest {
-                url,
-                method: Method::Get,
-                form: Vec::new(),
-                initiator,
-                approved_origin: None,
-            })
-        }
+            .filter(|f| f.form == form && matches!(f.kind, FieldKind::Text { secret: true, .. }))
+            .map(|f| f.name.clone())
+            .collect();
+        Ok(PlannedRequest {
+            request,
+            masked_fields,
+        })
     }
 
     fn toggle(&self, index: u32) -> Result<HashMap<u32, FieldState>, BrowserError> {
         let cur = self.current()?;
         let mut state = cur.state.clone();
         let field = cur
-            .rendered
             .fields
             .iter()
             .find(|f| f.element == Some(index))
@@ -314,7 +315,7 @@ impl TextPage {
         };
         if *radio {
             // 同じフォーム・同じ名前の他のラジオを外す。
-            for other in cur.rendered.fields.iter().filter(|o| {
+            for other in cur.fields.iter().filter(|o| {
                 o.element != Some(index)
                     && o.form == field.form
                     && o.name == field.name
@@ -339,8 +340,12 @@ impl EnginePage for TextPage {
         req: LoadRequest,
         jar: &mut CookieJar,
     ) -> Result<Snapshot, BrowserError> {
-        let fetched = self.engine.fetcher.fetch(&req, jar).await?;
-        if !is_htmlish(fetched.content_type.as_deref()) {
+        let fetched = self
+            .engine
+            .fetcher
+            .fetch(&req, jar, self.redirect_check.as_ref())
+            .await?;
+        if !is_htmlish(fetched.content_type.as_deref(), &fetched.body) {
             return Err(BrowserError::NotHtml {
                 content_type: fetched.content_type.unwrap_or_default(),
             });
@@ -349,7 +354,7 @@ impl EnginePage for TextPage {
         self.push_history(HistoryEntry {
             url: fetched.url,
             status: fetched.status,
-            html: decoded.text,
+            html: Arc::from(decoded.text),
             body_truncated: fetched.truncated,
         });
         let last = self.history.len() - 1;
@@ -368,14 +373,13 @@ impl EnginePage for TextPage {
                         self.load(req, jar).await
                     }
                     ElementKind::Checkbox | ElementKind::Radio => {
+                        self.enabled_field(index)?;
                         let state = self.toggle(index)?;
                         self.rerender(state).await
                     }
                     ElementKind::Button { submits: true } => {
-                        let form = self
-                            .form_of(index)
-                            .ok_or(BrowserError::NotInteractive("送信"))?;
-                        let req = self.submission(form, Some(index))?;
+                        let field = self.enabled_field(index)?;
+                        let req = self.submission(field, Some(field))?;
                         self.load(req, jar).await
                     }
                     ElementKind::Button { submits: false } => Err(BrowserError::NeedsJs { label }),
@@ -389,30 +393,47 @@ impl EnginePage for TextPage {
                 if !matches!(kind, ElementKind::TextBox { .. }) {
                     return Err(BrowserError::NotInteractive("入力"));
                 }
+                self.enabled_field(index)?;
                 let mut state = self.current()?.state.clone();
                 state.entry(index).or_default().value = Some(value);
                 self.rerender(state).await
             }
             Action::Select(id, wanted) => {
                 let (index, kind, _) = self.element(id)?;
-                let ElementKind::Select { options } = kind else {
+                let ElementKind::Select { options, multiple } = kind else {
                     return Err(BrowserError::NotInteractive("選択"));
                 };
+                let field = self.enabled_field(index)?;
                 let value = options
                     .iter()
                     .find(|(v, label)| *v == wanted || *label == wanted)
                     .map(|(v, _)| v.clone())
                     .ok_or(BrowserError::NoSuchOption)?;
-                let mut state = self.current()?.state.clone();
-                state.entry(index).or_default().value = Some(value);
+                let cur = self.current()?;
+                let mut state = cur.state.clone();
+                let selected = if multiple {
+                    // 複数選択は選ぶたびに切り替える。
+                    let mut now = match &cur.fields[field].kind {
+                        FieldKind::Select { values } => values.clone(),
+                        _ => Vec::new(),
+                    };
+                    match now.iter().position(|v| *v == value) {
+                        Some(p) => {
+                            now.remove(p);
+                        }
+                        None => now.push(value),
+                    }
+                    now
+                } else {
+                    vec![value]
+                };
+                state.entry(index).or_default().selected = Some(selected);
                 self.rerender(state).await
             }
             Action::Submit(id) => {
                 let (index, _, _) = self.element(id)?;
-                let form = self
-                    .form_of(index)
-                    .ok_or(BrowserError::NotInteractive("送信"))?;
-                let req = self.submission(form, None)?;
+                let field = self.field_of(index)?;
+                let req = self.submission(field, None)?;
                 self.load(req, jar).await
             }
             Action::Back => {
@@ -430,7 +451,56 @@ impl EnginePage for TextPage {
         Ok(self.current()?.snapshot.clone())
     }
 
+    fn plan(&self, action: &Action) -> Result<Option<PlannedRequest>, BrowserError> {
+        match action {
+            Action::Click(id) => {
+                let (index, kind, _) = self.element(*id)?;
+                match kind {
+                    ElementKind::Link { href } => {
+                        let mut request = LoadRequest::get(href);
+                        request.initiator = Some(self.current()?.snapshot.url.clone());
+                        Ok(Some(PlannedRequest {
+                            request,
+                            masked_fields: Vec::new(),
+                        }))
+                    }
+                    ElementKind::Button { submits: true } => {
+                        let field = self.enabled_field(index)?;
+                        self.planned(field, Some(field)).map(Some)
+                    }
+                    _ => Ok(None),
+                }
+            }
+            Action::Submit(id) => {
+                let (index, _, _) = self.element(*id)?;
+                let field = self.field_of(index)?;
+                self.planned(field, None).map(Some)
+            }
+            Action::Fill(..) | Action::Select(..) | Action::Back => Ok(None),
+        }
+    }
+
     fn next_generation(&self) -> u32 {
         self.generation + 1
+    }
+}
+
+#[cfg(test)]
+mod content_type_tests {
+    use super::is_htmlish;
+
+    #[test]
+    fn content_types() {
+        assert!(is_htmlish(Some("text/html; charset=utf-8"), b""));
+        assert!(is_htmlish(Some("Application/XHTML+XML"), b""));
+        assert!(!is_htmlish(
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            b"PK"
+        ));
+        assert!(!is_htmlish(Some("application/pdf"), b"%PDF"));
+        assert!(is_htmlish(None, b"\xef\xbb\xbf  <html>"));
+        assert!(!is_htmlish(None, b"%PDF-1.7"));
+        assert!(!is_htmlish(None, b"PK\x03\x04"));
+        assert!(!is_htmlish(None, b""));
     }
 }

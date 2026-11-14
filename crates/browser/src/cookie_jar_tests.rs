@@ -13,6 +13,7 @@ fn nav() -> RequestContext {
         initiator: None,
         top_level: true,
         safe_method: true,
+        cross_site_redirect: false,
     }
 }
 
@@ -21,6 +22,7 @@ fn from(initiator: &str, safe_method: bool) -> RequestContext {
         initiator: Some(u(initiator)),
         top_level: true,
         safe_method,
+        cross_site_redirect: false,
     }
 }
 
@@ -265,11 +267,13 @@ fn partitioned_cookies_follow_top_level_site() {
         initiator: Some(u("https://shop.example/")),
         top_level: false,
         safe_method: true,
+        cross_site_redirect: false,
     };
     let in_other = RequestContext {
         initiator: Some(u("https://other.example/")),
         top_level: false,
         safe_method: true,
+        cross_site_redirect: false,
     };
     assert!(jar.header_for(&embed, &in_shop, now()).is_some());
     assert_eq!(jar.header_for(&embed, &in_other, now()), None);
@@ -295,15 +299,15 @@ fn export_and_replace_all_round_trip() {
 #[test]
 fn limits_evict_oldest() {
     let mut jar = CookieJar::new();
-    for i in 0..(MAX_PER_DOMAIN + 5) {
+    for i in 0..(MAX_PER_SITE + 5) {
         set(&mut jar, "https://example.com/", &format!("c{i}=1; Path=/")).unwrap();
     }
-    assert_eq!(jar.len(), MAX_PER_DOMAIN);
+    assert_eq!(jar.len(), MAX_PER_SITE);
     let header = jar
         .header_for(&u("https://example.com/"), &nav(), now())
         .unwrap();
     assert!(!header.contains("c0=1"), "最も古いものから捨てる");
-    assert!(header.contains(&format!("c{}=1", MAX_PER_DOMAIN + 4)));
+    assert!(header.contains(&format!("c{}=1", MAX_PER_SITE + 4)));
     let big = format!("big={}", "x".repeat(MAX_NAME_VALUE_BYTES));
     assert_eq!(
         set(&mut jar, "https://example.com/", &big),
@@ -331,5 +335,52 @@ fn ip_hosts_cannot_widen_with_domain() {
     assert_eq!(
         set(&mut jar, "https://example.com/", "bad"),
         Err(Rejected::Unparsable)
+    );
+}
+
+#[test]
+fn one_site_cannot_evict_another_sites_cookies() {
+    let mut jar = CookieJar::new();
+    set(
+        &mut jar,
+        "https://bank.example/",
+        "sid=1; Secure; HttpOnly; Path=/",
+    )
+    .unwrap();
+    // 攻撃者のサイトが Domain 属性を変えて大量に入れても、自分のサイトの枠の中で古いものが消えるだけ。
+    let host = "https://a.b.c.d.e.evil.example/";
+    for d in [
+        "",
+        "; Domain=b.c.d.e.evil.example",
+        "; Domain=c.d.e.evil.example",
+        "; Domain=evil.example",
+    ] {
+        for i in 0..50 {
+            set(&mut jar, host, &format!("x{i}=1; Path=/{d}")).unwrap();
+        }
+    }
+    assert_eq!(
+        jar.header_for(&u("https://bank.example/"), &nav(), now()),
+        Some("sid=1".into())
+    );
+}
+
+#[test]
+fn cross_site_redirect_chain_drops_strict_cookies() {
+    let mut jar = CookieJar::new();
+    set(
+        &mut jar,
+        "https://site.example/",
+        "s=1; SameSite=Strict; Path=/",
+    )
+    .unwrap();
+    let mut ctx = from("https://site.example/forum", true);
+    assert!(jar
+        .header_for(&u("https://site.example/account"), &ctx, now())
+        .is_some());
+    ctx.cross_site_redirect = true;
+    assert_eq!(
+        jar.header_for(&u("https://site.example/account"), &ctx, now()),
+        None
     );
 }

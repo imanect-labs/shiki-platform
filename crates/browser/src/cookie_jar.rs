@@ -18,8 +18,9 @@ use url::{Host, Url};
 
 /// jar 全体の上限（溢れたら最も古いものから捨てる）。
 const MAX_COOKIES: usize = 300;
-/// 1 ドメインあたりの上限。
-const MAX_PER_DOMAIN: usize = 50;
+/// 1 サイト（登録可能ドメイン＝eTLD+1）あたりの上限。ドメインの文字列ごとに数えると、1 つのサイトが
+/// Domain 属性を変えて jar を埋め、他サイトの cookie（ログイン中のセッション）を追い出せる。
+const MAX_PER_SITE: usize = 50;
 /// 名前＋値の上限（RFC 6265bis §5.6 の 4096 バイト）。
 const MAX_NAME_VALUE_BYTES: usize = 4096;
 
@@ -62,6 +63,9 @@ pub struct RequestContext {
     pub top_level: bool,
     /// 安全なメソッド（GET / HEAD）か。
     pub safe_method: bool,
+    /// リダイレクトの連鎖の途中で別サイトを通った。以後は同一サイトとみなさない
+    /// （連鎖に別サイトが入った時点で Strict を外す・RFC 6265bis）。
+    pub cross_site_redirect: bool,
 }
 
 /// [`CookieJar::store`] が受け取らなかった理由（観測用。値は含めない）。
@@ -192,7 +196,8 @@ impl CookieJar {
     ) -> Option<String> {
         let host = host_of(url)?;
         let secure_target = url.scheme() == "https";
-        let same_site = ctx.initiator.as_ref().is_none_or(|i| same_site(i, url));
+        let same_site =
+            !ctx.cross_site_redirect && ctx.initiator.as_ref().is_none_or(|i| same_site(i, url));
         let top_site = site_key(
             ctx.initiator
                 .as_ref()
@@ -297,14 +302,27 @@ impl CookieJar {
     }
 
     fn evict(&mut self) {
-        // ドメインごとの上限 → 全体の上限の順に、古いものから捨てる。
-        let mut domains: Vec<String> = self.cookies.iter().map(|c| c.domain.clone()).collect();
-        domains.sort();
-        domains.dedup();
-        for d in domains {
-            while self.cookies.iter().filter(|c| c.domain == d).count() > MAX_PER_DOMAIN {
-                if let Some(i) = self.oldest(|c| c.domain == d) {
-                    self.cookies.remove(i);
+        // サイトごとの上限 → 全体の上限の順に、古いものから捨てる。
+        let mut sites: Vec<String> = self
+            .cookies
+            .iter()
+            .map(|c| registrable(&c.domain))
+            .collect();
+        sites.sort();
+        sites.dedup();
+        for site in sites {
+            while self
+                .cookies
+                .iter()
+                .filter(|c| registrable(&c.domain) == site)
+                .count()
+                > MAX_PER_SITE
+            {
+                match self.oldest(|c| registrable(&c.domain) == site) {
+                    Some(i) => {
+                        self.cookies.remove(i);
+                    }
+                    None => break,
                 }
             }
         }
@@ -373,6 +391,11 @@ fn resolve_domain(host: &str, url: &Url, attr: Option<&str>) -> Result<(String, 
         };
     }
     Ok((d, false))
+}
+
+/// ドメインの登録可能ドメイン（eTLD+1）。判定できなければそのまま。
+fn registrable(domain: &str) -> String {
+    psl::domain_str(domain).unwrap_or(domain).to_string()
 }
 
 fn is_public_suffix(domain: &str) -> bool {

@@ -10,7 +10,10 @@ use authz::AuthContext;
 use url::Url;
 
 use crate::cookie_jar::CookieJar;
-use crate::engine::{Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, SessionOpts};
+use crate::engine::{
+    Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, PlannedRequest, RedirectCheck,
+    SessionOpts,
+};
 use crate::snapshot::Snapshot;
 
 /// 開いてよい URL の出所（browser.md §6.2）。
@@ -58,6 +61,7 @@ pub struct BrowserSession {
     page: Option<Box<dyn EnginePage>>,
     jar: CookieJar,
     provenance: Provenance,
+    redirect_check: Option<RedirectCheck>,
 }
 
 impl BrowserSession {
@@ -77,7 +81,15 @@ impl BrowserSession {
             page: None,
             jar: CookieJar::new(),
             provenance,
+            redirect_check: None,
         }
+    }
+
+    /// リダイレクトの転送先の照合を設定する（最初のページを開く前に呼ぶ・browser.md §6.2）。
+    #[must_use]
+    pub fn with_redirect_check(mut self, check: RedirectCheck) -> Self {
+        self.redirect_check = Some(check);
+        self
     }
 
     async fn page(&mut self) -> Result<&mut Box<dyn EnginePage>, BrowserError> {
@@ -88,6 +100,7 @@ impl BrowserSession {
                     &self.ctx,
                     &SessionOpts {
                         first_generation: 0,
+                        redirect_check: self.redirect_check.clone(),
                     },
                 )
                 .await?;
@@ -116,6 +129,14 @@ impl BrowserSession {
         };
         self.jar = jar;
         self.after(result)
+    }
+
+    /// 操作が送ることになる要求を、送らずに返す（ツールが承認の要否を判定する・browser.md §6.1）。
+    pub fn plan(&self, action: &Action) -> Result<Option<PlannedRequest>, BrowserError> {
+        match self.page.as_ref() {
+            Some(page) => page.plan(action),
+            None => Err(BrowserError::NoPage),
+        }
     }
 
     /// 現在のスナップショット。

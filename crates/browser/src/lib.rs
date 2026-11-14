@@ -16,7 +16,8 @@ pub mod text;
 
 pub use cookie_jar::CookieJar;
 pub use engine::{
-    Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, Method, SessionOpts,
+    Action, BrowserEngine, BrowserError, EnginePage, LoadRequest, Method, PlannedRequest,
+    RedirectCheck, SessionOpts,
 };
 pub use session::{BrowserSession, Provenance};
 pub use snapshot::{ElementInfo, ElementKind, EngineKind, NeedsJs, RefId, Snapshot};
