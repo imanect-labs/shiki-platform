@@ -59,6 +59,17 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         },
         AgentEvent::Citation(c) => StreamEventKind::Citation(to_citation(c)),
         AgentEvent::HelpCitation(c) => StreamEventKind::HelpCitation(c.clone()),
+        AgentEvent::HelpCaseRef { case_id } => StreamEventKind::HelpCaseRef {
+            case_id: case_id.clone(),
+        },
+        AgentEvent::BugReportDraft { report_id, rev } => StreamEventKind::BugReportDraft {
+            report_id: report_id.clone(),
+            rev: *rev,
+        },
+        // 証拠は本人 API へ保存する sink だけが消費し、SSE に公開しない。
+        AgentEvent::HelpSearchReceipt { .. } => StreamEventKind::Status {
+            status: crate::model::RunStatus::Running,
+        },
         AgentEvent::Artifact { artifact, .. } => StreamEventKind::FileRef {
             node_id: artifact.node_id.clone(),
             name: artifact.name.clone(),

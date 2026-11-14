@@ -154,6 +154,9 @@ impl std::fmt::Display for AuditAction {
 
 // 記録する文字列は変えない（古い行と食い違う）。足すときは分類と表示名も一緒に決める。
 audit_actions! {
+    HelpSearchReceipt = "help.search_receipt", "ヘルプ検索の実行を記録", Chat;
+    HelpCaseResolution = "help.case_resolution", "ヘルプの解決状態を確認", Chat;
+    HelpReportIntent = "help.report_intent", "不具合報告の希望を確認", Chat;
     BugReportDraftCreate = "bug_report.draft_create", "不具合報告の下書きを作成", Chat;
     BugReportDraftUpdate = "bug_report.draft_update", "不具合報告の下書きを編集", Chat;
     BugReportSubmit = "bug_report.submit", "不具合報告を提出", Chat;

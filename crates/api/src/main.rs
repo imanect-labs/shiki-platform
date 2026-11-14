@@ -240,6 +240,7 @@ async fn run() -> anyhow::Result<()> {
         authz.clone(),
     ));
 
+    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz)?;
     // ワークフロー実行時（Stage A W3）: enabled のとき launcher/runs を組み、worker/scheduler/relay を spawn。
     // 会話の試運転（try_workflow・T04）が同じ launcher/runs を使うので、wire_chat より先に組む。
     // 履歴 GC ワーカーは enabled に依らず起動する（保持は新規実行の可否と独立・#448）。
@@ -279,6 +280,7 @@ async fn run() -> anyhow::Result<()> {
         egress_proxy.as_ref(),
         // 会話の AI の試運転（try_workflow・T04）。ワークフローの実行時が無効なら提示しない。
         (workflow_launcher.as_ref(), workflow_runs.as_ref()),
+        bug_report.clone(),
     )
     .await?;
 
@@ -359,7 +361,6 @@ async fn run() -> anyhow::Result<()> {
         },
         &config.membership_reconcile,
     );
-    let bug_report = wiring::wire_bug_report(&config.bug_report, &db, &authz)?;
     let state = AppState {
         bug_report,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),

@@ -198,6 +198,13 @@ pub enum ContentBlock {
     /// 引用（doc_search / 古典 RAG 注入の戻り）。
     Citation(Citation),
     HelpCitation(agent_core::help_cite::HelpCitation),
+    HelpCaseRef {
+        case_id: String,
+    },
+    BugReportDraft {
+        report_id: String,
+        rev: i64,
+    },
     /// 保存済みワークフローへの参照カード（emit_workflow・Task 10.13）。
     /// `workflow = {id, name, display_name, version}`（保存パイプライン通過済みのみ）。
     WorkflowRef {

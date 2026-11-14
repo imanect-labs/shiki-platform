@@ -98,6 +98,11 @@ impl Tool for HelpSearchTool {
         } else {
             HEADER
         });
+        out.help_search_receipt = Some(crate::tool::HelpSearchReceipt {
+            hit_count: u32::try_from(hits.len()).unwrap_or(u32::MAX),
+            corpus_versions: hits.iter().map(|h| h.corpus_version.clone()).collect(),
+            chunk_ids: hits.iter().map(|h| h.chunk_id.clone()).collect(),
+        });
         for (i, hit) in hits.into_iter().enumerate() {
             render_hit(&mut out.content, i, &hit)
                 .map_err(|e| ToolError::Internal(e.to_string()))?;

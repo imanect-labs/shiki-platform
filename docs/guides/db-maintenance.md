@@ -82,17 +82,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
-**ドライブの `node` の索引（migration 0140 `node_shared_scan_idx`・0143 `node_name_scan_idx` と
+**ドライブの `node` の索引（migration 0142 `node_shared_scan_idx`・0145 `node_name_scan_idx` と
 `node_name_scan_desc_idx`・BUG-162・BUG-187）** も、上と同じ手順で事前に作れる（どれも `create index if not exists`）。
 構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が大きな
 環境では事前に作るか、停止時間を取って当てる（読むのは止まらない）。
 
 ```sql
--- BUG-162 / migration 0140: ドライブの「共有されたもの」を更新の順に引く
+-- BUG-162 / migration 0142: ドライブの「共有されたもの」を更新の順に引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
     ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
 
--- BUG-187 / migration 0143: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
+-- BUG-187 / migration 0145: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
     ON node (tenant_id, org, (kind <> 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_desc_idx

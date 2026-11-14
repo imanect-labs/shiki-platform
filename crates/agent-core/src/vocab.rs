@@ -56,6 +56,7 @@ vocab_enum! {
         SkillSearch => "skill_search",
         DocSearch => "doc_search",
         HelpSearch => "help_search",
+        BugReportDraft => "bug_report_draft",
         /// 索引済み文書の本文を窓で読む（検索で当たった文書を引用の外まで読み進める・#425）。
         DocRead => "doc_read",
         /// レポートの引用が証拠台帳に実在するかの機械照合（#409・読み取りのみ）。
@@ -209,6 +210,7 @@ impl ToolName {
         match self {
             Self::Skill
             | Self::SkillSearch
+            | Self::BugReportDraft
             | Self::HelpSearch
             | Self::DocSearch
             | Self::DocRead
@@ -368,6 +370,7 @@ impl ToolName {
             }
             Self::Skill
             | Self::SkillSearch
+            | Self::BugReportDraft
             | Self::HelpSearch
             | Self::DocSearch
             | Self::DocRead

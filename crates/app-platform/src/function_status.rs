@@ -1,4 +1,4 @@
-//! B2 の自動実行（event・cron）の関数の直近の失敗（GAP-60 の残り・migration 0148）。
+//! B2 の自動実行（event・cron）の関数の直近の失敗（GAP-60 の残り・migration 0150）。
 //!
 //! 自動実行の失敗（シークレット・トークン・実行の誤り・関数の失敗）を、作成者が見られる場所に残す。関数ごとに 1 行で、
 //! 行があるのは「その関数の最後の自動実行が失敗した」とき。次に成功したら消す（実行のたびに行を足さない）。
@@ -29,7 +29,7 @@ pub enum FunctionTrigger {
 }
 
 impl FunctionTrigger {
-    /// 記録する名前（migration 0148 の check と同じ）。
+    /// 記録する名前（migration 0150 の check と同じ）。
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
