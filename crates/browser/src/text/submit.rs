@@ -27,7 +27,19 @@ pub(crate) fn default_submitter(
         Some(i) if fields[i].disabled => Err(BrowserError::NotInteractive(
             "送信（既定の送信ボタンが無効）",
         )),
-        other => Ok(other),
+        Some(i) => Ok(Some(i)),
+        // 送信ボタンが無いとき、暗黙の送信を阻む入力欄が複数あればブラウザは送信しない。
+        None if fields
+            .iter()
+            .filter(|f| f.form == Some(form_index) && f.blocks_implicit)
+            .count()
+            > 1 =>
+        {
+            Err(BrowserError::NotInteractive(
+                "送信（送信ボタンが無く、入力欄が複数あるフォーム）",
+            ))
+        }
+        None => Ok(None),
     }
 }
 

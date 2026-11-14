@@ -210,7 +210,7 @@ fn field_state_overrides_values() {
         FieldState {
             value: None,
             checked: None,
-            selected: Some(vec!["2".into()]),
+            selected: Some(vec![1]),
         },
     );
     let out = render(html, &base(), 4, 12_000, &state);

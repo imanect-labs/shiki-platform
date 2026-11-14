@@ -665,3 +665,49 @@ async fn forms_use_the_document_charset_and_back_restores_inputs() {
     s.act(Action::Click(find(&back, "POST"))).await.unwrap();
     assert_eq!(last(&log, "/p").body, "q=draft");
 }
+
+#[tokio::test]
+async fn options_are_chosen_by_position_and_implicit_submission_rules() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/f" => http(
+            "200 OK",
+            &[],
+            r#"<form method="post" action="/scope"><select name="scope" required aria-label="範囲">
+               <option value="">選択してください</option><option value="">すべて</option></select><button>絞る</button></form>
+               <form method="post" action="/two"><input name="a" aria-label="一つ目"><input name="b" type="email" aria-label="二つ目"></form>
+               <form method="post" action="/one"><input name="a" aria-label="単独"><textarea name="t" aria-label="本文"></textarea></form>"#,
+        ),
+        _ => http("200 OK", &[], "<p>ok</p>"),
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s.navigate(u(port, "app.example.com", "/f")).await.unwrap();
+    // 先頭の placeholder だけが選ばれている → 未入力。
+    assert!(matches!(
+        s.plan(&Action::Click(find(&snap, "絞る"))),
+        Err(BrowserError::Required(_))
+    ));
+    // 同じ空の値でも、表示名で選んだ 2 つ目の選択肢は placeholder ではない。
+    let snap = s
+        .act(Action::Select(find(&snap, "範囲"), "すべて".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "絞る"))).await.unwrap();
+    assert_eq!(last(&log, "/scope").body, "scope=");
+
+    // 送信ボタンが無く、暗黙の送信を阻む入力欄が 2 つあるフォームは Enter で送らない。
+    let snap = s.navigate(u(port, "app.example.com", "/f")).await.unwrap();
+    let before = log.lock().unwrap().len();
+    let enter = Action::Submit(find(&snap, "一つ目"));
+    assert!(matches!(
+        s.plan(&enter),
+        Err(BrowserError::NotInteractive(_))
+    ));
+    assert!(matches!(
+        s.act(enter).await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    assert_eq!(log.lock().unwrap().len(), before, "送らない");
+    // 阻む入力欄が 1 つだけ（textarea は数えない）なら Enter で送る。
+    s.act(Action::Submit(find(&snap, "単独"))).await.unwrap();
+    assert_eq!(last(&log, "/one").body, "a=&t=");
+}

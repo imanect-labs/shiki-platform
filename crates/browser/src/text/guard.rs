@@ -160,7 +160,7 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
                 open.pop();
             }
         }
-        let self_closing = end >= 2 && b[end - 2] == b'/';
+        let self_closing = tag.self_closing;
         let closes_itself = match ns {
             Ns::Html => VOID.contains(&lower.as_str()),
             // 自己終了が効くのは外部コンテンツの要素だけ。
@@ -335,6 +335,8 @@ type AttrSpan = (std::ops::Range<usize>, Option<std::ops::Range<usize>>);
 /// 読み取ったタグ（`end` は `>` の直後）。
 struct Tag {
     end: usize,
+    /// tokenizer の自己終了フラグ（`/` の直後に `>`。引用符なしの値の中の `/` は値の一部で数えない）。
+    self_closing: bool,
     attrs: Vec<AttrSpan>,
 }
 
@@ -358,13 +360,23 @@ fn scan_tag(b: &[u8], mut i: usize) -> Option<Tag> {
     };
     let mut state = TagName;
     let mut attrs: Vec<AttrSpan> = Vec::new();
+    // 直前の文字が自己終了の `/` だったか（属性値の外の `/`）。
+    let mut slash = false;
     while i < b.len() {
         let c = b[i];
         let ws = c.is_ascii_whitespace();
+        let was_slash = slash;
+        slash = c == b'/' && matches!(state, TagName | BeforeAttrName | AttrName | AfterAttrName);
         let next = match state {
             Quoted(q) if c == q => BeforeAttrName,
             Quoted(q) => Quoted(q),
-            _ if c == b'>' => return Some(Tag { end: i + 1, attrs }),
+            _ if c == b'>' => {
+                return Some(Tag {
+                    end: i + 1,
+                    self_closing: was_slash,
+                    attrs,
+                })
+            }
             BeforeValue if c == b'"' || c == b'\'' => Quoted(c),
             BeforeValue if ws => BeforeValue,
             BeforeValue | Unquoted if !ws => Unquoted,
@@ -506,6 +518,12 @@ mod tests {
             "<div>".repeat(100_000)
         );
         assert!(clip_depth(&rawtext, MAX_PARSE_DEPTH).1);
+        // 引用符なしの値の末尾の `/` は自己終了ではない（`<g x=y/>` は入れ子になる）。
+        let unquoted_slash = format!("<svg>{}", "<g x=y/>".repeat(100_000));
+        assert!(clip_depth(&unquoted_slash, MAX_PARSE_DEPTH).1);
+        // 引用符の後・空白の後の `/` は自己終了（SVG のアイコンを切らない）。
+        let icons = format!("<svg>{}</svg>", "<path d=\"M0\"/><g x=y />".repeat(10_000));
+        assert!(!clip_depth(&icons, MAX_PARSE_DEPTH).1);
         // 引用符の無い値の中の引用符は値の一部（後続のタグを引用として飛ばさない）。
         let quote_in_value = format!("<div x=a'>{}", "<div>".repeat(100_000));
         assert!(clip_depth(&quote_in_value, MAX_PARSE_DEPTH).1);

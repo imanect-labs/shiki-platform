@@ -57,6 +57,10 @@ pub(crate) struct Field {
     pub required: bool,
     /// セレクトの未入力（何も選ばれていない・placeholder だけが選ばれている）。他の部品では使わない。
     pub value_missing: bool,
+    /// セレクトで選ばれている選択肢の位置（有効な選択肢の並びでの位置）。複数選択の切り替えに使う。
+    pub selected_options: Vec<usize>,
+    /// Enter による暗黙の送信を阻む入力欄（text・password・number 等）か。
+    pub blocks_implicit: bool,
     form_attr: Option<String>,
 }
 
@@ -109,7 +113,8 @@ pub(crate) struct FieldState {
     pub value: Option<String>,
     pub checked: Option<bool>,
     /// セレクトで選んだ value（`multiple` でなければ 1 個）。
-    pub selected: Option<Vec<String>>,
+    /// 選んだ選択肢の位置（スナップショットに出した有効な選択肢の並びでの位置）。値は重複し得るので位置で持つ。
+    pub selected: Option<Vec<usize>>,
 }
 
 /// 描画結果。

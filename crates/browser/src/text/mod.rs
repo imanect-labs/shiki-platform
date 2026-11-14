@@ -500,28 +500,26 @@ impl EnginePage for TextPage {
                     return Err(BrowserError::NotInteractive("選択"));
                 };
                 let field = self.enabled_field(index)?;
-                let value = options
+                // 表示名を優先し、無ければ値で探す（値は重複し得るので、選んだ選択肢を位置で持つ）。
+                let k = options
                     .iter()
-                    .find(|(v, label)| *v == wanted || *label == wanted)
-                    .map(|(v, _)| v.clone())
+                    .position(|(_, label)| *label == wanted)
+                    .or_else(|| options.iter().position(|(v, _)| *v == wanted))
                     .ok_or(BrowserError::NoSuchOption)?;
                 let cur = self.current()?;
                 let mut state = cur.state.clone();
                 let selected = if multiple {
                     // 複数選択は選ぶたびに切り替える。
-                    let mut now = match &cur.fields[field].kind {
-                        FieldKind::Select { values } => values.clone(),
-                        _ => Vec::new(),
-                    };
-                    match now.iter().position(|v| *v == value) {
+                    let mut now = cur.fields[field].selected_options.clone();
+                    match now.iter().position(|p| *p == k) {
                         Some(p) => {
                             now.remove(p);
                         }
-                        None => now.push(value),
+                        None => now.push(k),
                     }
                     now
                 } else {
-                    vec![value]
+                    vec![k]
                 };
                 state.entry(field).or_default().selected = Some(selected);
                 self.rerender(state).await

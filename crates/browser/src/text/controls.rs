@@ -79,6 +79,8 @@ impl Walker<'_> {
             readonly: node.has_attr("readonly"),
             required: node.has_attr("required"),
             value_missing: false,
+            selected_options: Vec::new(),
+            blocks_implicit: false,
             form_attr: node.attr("form").map(|f| f.to_string()),
         });
     }
@@ -261,6 +263,24 @@ impl Walker<'_> {
                     },
                     id,
                 );
+                // Enter による暗黙の送信を阻む入力欄（HTML 標準の implicit submission）。
+                if let Some(f) = self.fields.last_mut() {
+                    f.blocks_implicit = matches!(
+                        ty.as_str(),
+                        "text"
+                            | "search"
+                            | "url"
+                            | "tel"
+                            | "email"
+                            | "password"
+                            | "date"
+                            | "month"
+                            | "week"
+                            | "time"
+                            | "datetime-local"
+                            | "number"
+                    );
+                }
                 if let Some(id) = id {
                     // パスワード欄の値は常に伏せる（browser.md §4）。
                     let shown = if ty == "password" {
@@ -332,32 +352,31 @@ impl Walker<'_> {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        // 送るのは選ばれていて無効でない選択肢だけ。利用者が選び直した値は有効な選択肢から選んだもの
-        // （Action::Select は有効な選択肢しか受け付けない）なので、そのまま送る。
-        // 利用者が選び直した値は、その値を持つ最初の有効な選択肢を選んだものとして扱う。
-        let chosen_state = self.pending_state().and_then(|s| s.selected.clone());
-        let selected_idx: Vec<usize> = match &chosen_state {
+        // 有効な選択肢の並び（スナップショットに出す順）での位置 → 全選択肢での位置。
+        let enabled_pos: Vec<usize> = (0..all.len()).filter(|&i| !all[i].2).collect();
+        // 利用者が選び直した選択肢は位置で持つ（値が重複しても取り違えない）。
+        let selected_idx: Vec<usize> = match self.pending_state().and_then(|s| s.selected.clone()) {
             Some(chosen) => chosen
                 .iter()
-                .filter_map(|v| all.iter().position(|(ov, _, d)| ov == v && !d))
+                .filter_map(|k| enabled_pos.get(*k).copied())
                 .collect(),
-            None => selected.clone(),
+            None => selected,
         };
+        let selected_options: Vec<usize> = selected_idx
+            .iter()
+            .filter_map(|i| enabled_pos.iter().position(|p| p == i))
+            .collect();
         // required の未入力（HTML 標準の valueMissing）: 何も選ばれていないか、placeholder だけが選ばれている。
         // placeholder を考えるのは単一選択で表示行数が 1 のときだけ。
         let placeholder = !multiple && size <= 1 && first_is_placeholder;
         let value_missing = selected_idx.is_empty() || (placeholder && selected_idx == [0]);
-        let (values, submitted): (Vec<String>, Vec<String>) = match chosen_state {
-            Some(chosen) => (chosen.clone(), chosen),
-            None => (
-                selected.iter().map(|&i| all[i].0.clone()).collect(),
-                selected
-                    .iter()
-                    .filter(|&&i| !all[i].2)
-                    .map(|&i| all[i].0.clone())
-                    .collect(),
-            ),
-        };
+        // 表示するのは選ばれている値、送るのはそのうち無効でない選択肢の値。
+        let values: Vec<String> = selected_idx.iter().map(|&i| all[i].0.clone()).collect();
+        let submitted: Vec<String> = selected_idx
+            .iter()
+            .filter(|&&i| !all[i].2)
+            .map(|&i| all[i].0.clone())
+            .collect();
         let options: Vec<(String, String)> = all
             .into_iter()
             .filter(|(_, _, d)| !d)
@@ -367,6 +386,7 @@ impl Walker<'_> {
         self.push_field(node, form, FieldKind::Select { values: submitted }, id);
         if let Some(f) = self.fields.last_mut() {
             f.value_missing = value_missing;
+            f.selected_options = selected_options;
         }
         if let Some(id) = id {
             let shown = if multiple {
