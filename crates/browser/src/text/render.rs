@@ -197,6 +197,9 @@ fn superseded_radios(doc: &Document) -> HashSet<NodeId> {
             table_forms.entry(t.id).or_default().push(f.id);
         }
     }
+    for fs in table_forms.values_mut() {
+        fs.sort_unstable();
+    }
     let mut last: HashMap<(Option<NodeId>, String), NodeId> = HashMap::new();
     let mut superseded = HashSet::new();
     for r in doc.select("input[checked]").nodes() {
@@ -220,9 +223,12 @@ fn superseded_radios(doc: &Document) -> HashSet<NodeId> {
                     r.ancestors_it(None)
                         .filter(|a| a.node_name().is_some_and(|n| &*n == "table"))
                         .find_map(|t| {
-                            table_forms
-                                .get(&t.id)
-                                .and_then(|fs| fs.iter().rev().find(|f| **f < r.id).copied())
+                            // 文書順に並べたフォームを二分探索する（ラジオごとに全件を探さない）。
+                            table_forms.get(&t.id).and_then(|fs| {
+                                fs.partition_point(|f| *f < r.id)
+                                    .checked_sub(1)
+                                    .map(|i| fs[i])
+                            })
                         })
                 }),
         };

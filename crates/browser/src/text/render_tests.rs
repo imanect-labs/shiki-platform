@@ -648,3 +648,19 @@ fn checked_radios_in_separate_table_row_forms_are_separate_groups() {
         .collect();
     assert_eq!(checked, [(Some(0), true), (Some(1), true)]);
 }
+
+#[test]
+fn many_radios_and_table_forms_render_in_bounded_time() {
+    let html = format!(
+        "<table><tr><td>{}</td></tr>{}</table>",
+        "<input type=radio name=r checked>".repeat(20_000),
+        "<form></form>".repeat(20_000)
+    );
+    let started = std::time::Instant::now();
+    let _ = r(&html);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
