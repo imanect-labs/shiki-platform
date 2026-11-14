@@ -969,7 +969,11 @@ jobs:
   web-e2e:
     name: "Web E2E (Playwright: ログイン→保護ページ→ログアウト)"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Playwright の shard はファイルの名前の順に並べてテストの数で区切るので、長く待つ serial の spec（キャンペーンの
+    # APP の 18 本・cron の発火を最大 150 秒待つなど）が 1 つの shard に固まる。全量の実行でその shard は準備を含めて
+    # 約 25 分になり、流し直しが 1 本入ると 30 分を超えうるので、上限を 45 分にする（PR の待ち時間はカバレッジの
+    # ジョブで決まるので延びない・GAP-155）。
+    timeout-minutes: 45
     # spec が 650 本を超え、1 ジョブ（1 worker）では 30 分に収まらなくなった。4 つに分けて並べる（各ジョブが自分の
     # compose を立てるので、前の spec の残したデータも分かれる）。落ちた spec の記録は rglob で集める（selection-gap）。
     strategy:
