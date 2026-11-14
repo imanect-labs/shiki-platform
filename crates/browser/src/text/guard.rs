@@ -132,10 +132,17 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             continue;
         }
         let lower = name_at(b, i + 1).to_ascii_lowercase();
-        let Some(end) = tag_end(b, i + 1) else {
+        let Some(tag) = scan_tag(b, i + 1) else {
             return (html, false);
         };
-        if in_foreign(&open) && FOREIGN_BREAKOUT.contains(&lower.as_str()) {
+        let end = tag.end;
+        // `font` が抜けるのは color / face / size の属性があるときだけ。
+        let breakout = FOREIGN_BREAKOUT.contains(&lower.as_str())
+            && (lower != "font"
+                || ["color", "face", "size"]
+                    .iter()
+                    .any(|a| tag.attr(b, a).is_some()));
+        if in_foreign(&open) && breakout {
             // HTML の要素が来ると解析器は外部コンテンツを抜ける（HTML の要素か統合点まで閉じる）。
             while in_foreign(&open) {
                 open.pop();
@@ -163,6 +170,13 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             let content_foreign = match ns {
                 Ns::Html => false,
                 Ns::Svg => !SVG_INTEGRATION.contains(&lower.as_str()),
+                // annotation-xml が統合点になるのは encoding が HTML のときだけ。
+                Ns::Math if lower == "annotation-xml" => {
+                    !tag.attr(b, "encoding").is_some_and(|e| {
+                        e.eq_ignore_ascii_case(b"text/html")
+                            || e.eq_ignore_ascii_case(b"application/xhtml+xml")
+                    })
+                }
                 Ns::Math => !MATH_INTEGRATION.contains(&lower.as_str()),
             };
             open.push(Open {
@@ -202,7 +216,7 @@ struct Open {
 /// SVG の HTML 統合点（中の開始タグは HTML として解析される）。
 const SVG_INTEGRATION: &[&str] = &["foreignobject", "desc", "title"];
 /// MathML の統合点（`annotation-xml` は encoding によるが、多く数える側＝HTML とみなす）。
-const MATH_INTEGRATION: &[&str] = &["mi", "mo", "mn", "ms", "mtext", "annotation-xml"];
+const MATH_INTEGRATION: &[&str] = &["mi", "mo", "mn", "ms", "mtext"];
 
 /// `ruby` がスコープの中にあるか（間に `table`・`td` 等の境界があれば無い・HTML 標準の「has an element in scope」）。
 fn ruby_in_scope(open: &[Open]) -> bool {
@@ -229,7 +243,24 @@ fn in_foreign(open: &[Open]) -> bool {
 /// （解析器と同じ。`<svg><math>` の `math` は SVG の要素で、その中の `foreignObject` は SVG の統合点）。
 fn namespace(open: &[Open], name: &str) -> Ns {
     match open.last() {
+        // annotation-xml の直下の svg は SVG。
+        Some(parent)
+            if parent.content_foreign
+                && parent.ns == Ns::Math
+                && parent.name == "annotation-xml"
+                && name == "svg" =>
+        {
+            Ns::Svg
+        }
         Some(parent) if parent.content_foreign => parent.ns,
+        // MathML のテキスト統合点の直下の mglyph / malignmark は MathML のまま。
+        Some(parent)
+            if parent.ns == Ns::Math
+                && MATH_INTEGRATION.contains(&parent.name.as_str())
+                && matches!(name, "mglyph" | "malignmark") =>
+        {
+            Ns::Math
+        }
         _ => match name {
             "svg" => Ns::Svg,
             "math" => Ns::Math,
@@ -261,21 +292,46 @@ enum TagState {
 }
 
 /// タグの `>` の直後の位置。`i` はタグ名の先頭。
+fn tag_end(b: &[u8], i: usize) -> Option<usize> {
+    scan_tag(b, i).map(|t| t.end)
+}
+
+/// 属性の名前と値のバイト範囲。
+type AttrSpan = (std::ops::Range<usize>, Option<std::ops::Range<usize>>);
+
+/// 読み取ったタグ（`end` は `>` の直後）。
+struct Tag {
+    end: usize,
+    attrs: Vec<AttrSpan>,
+}
+
+impl Tag {
+    /// 属性の値（名前は ASCII で大小を区別しない。値の無い属性は空）。同名は最初のものが有効。
+    fn attr<'a>(&self, b: &'a [u8], name: &str) -> Option<&'a [u8]> {
+        self.attrs
+            .iter()
+            .find(|(n, _)| b[n.clone()].eq_ignore_ascii_case(name.as_bytes()))
+            .map(|(_, v)| v.clone().map_or(&b[0..0], |v| &b[v]))
+    }
+}
+
+/// タグを読む。`i` はタグ名の先頭。
 ///
 /// 引用符が値を囲むのは `=` の直後だけ（`<div x=a'>` の `'` は値の一部、`<div a"b>` の `"` は名前の一部）。
 /// 引用符を一律に数えると、閉じない引用符で後続のタグをまとめて読み飛ばし、深さを少なく数える。
-fn tag_end(b: &[u8], mut i: usize) -> Option<usize> {
+fn scan_tag(b: &[u8], mut i: usize) -> Option<Tag> {
     use TagState::{
         AfterAttrName, AttrName, BeforeAttrName, BeforeValue, Quoted, TagName, Unquoted,
     };
     let mut state = TagName;
+    let mut attrs: Vec<AttrSpan> = Vec::new();
     while i < b.len() {
         let c = b[i];
         let ws = c.is_ascii_whitespace();
-        state = match state {
+        let next = match state {
             Quoted(q) if c == q => BeforeAttrName,
             Quoted(q) => Quoted(q),
-            _ if c == b'>' => return Some(i + 1),
+            _ if c == b'>' => return Some(Tag { end: i + 1, attrs }),
             BeforeValue if c == b'"' || c == b'\'' => Quoted(c),
             BeforeValue if ws => BeforeValue,
             BeforeValue | Unquoted if !ws => Unquoted,
@@ -287,6 +343,32 @@ fn tag_end(b: &[u8], mut i: usize) -> Option<usize> {
             // 属性名の先頭（`=` で始まる名前も名前の一部）。
             _ => AttrName,
         };
+        // 名前と値の範囲を記録する。
+        match (state, next) {
+            (AttrName, AttrName) => {
+                if let Some((n, _)) = attrs.last_mut() {
+                    n.end = i + 1;
+                }
+            }
+            (_, AttrName) => attrs.push((i..i + 1, None)),
+            (BeforeValue, Quoted(_)) => {
+                if let Some((_, v)) = attrs.last_mut() {
+                    *v = Some(i + 1..i + 1);
+                }
+            }
+            (BeforeValue, Unquoted) => {
+                if let Some((_, v)) = attrs.last_mut() {
+                    *v = Some(i..i + 1);
+                }
+            }
+            (Quoted(_), Quoted(_)) | (Unquoted, Unquoted) => {
+                if let Some((_, Some(v))) = attrs.last_mut() {
+                    v.end = i + 1;
+                }
+            }
+            _ => {}
+        }
+        state = next;
         i += 1;
     }
     None
@@ -394,6 +476,42 @@ mod tests {
         let quoted = format!("<div x = \"a>b\" y='c>d'>{}", "<div>".repeat(100_000));
         assert!(clip_depth(&quoted, MAX_PARSE_DEPTH).1);
         assert_eq!(tag_end(b"div x = \"a>b\">rest", 0), Some(14));
+        let t = scan_tag(b"font COLOR = 'red' face=x size>", 0).unwrap();
+        let b = b"font COLOR = 'red' face=x size>";
+        assert_eq!(t.attr(b, "color"), Some(&b"red"[..]));
+        assert_eq!(t.attr(b, "face"), Some(&b"x"[..]));
+        assert_eq!(t.attr(b, "size"), Some(&b""[..]));
+        assert_eq!(t.attr(b, "class"), None);
+        // 属性の無い font は外部コンテンツを抜けない（中の input は SVG の要素として入れ子になる）。
+        let font = format!("<svg><font>{}", "<input>".repeat(100_000));
+        assert!(clip_depth(&font, MAX_PARSE_DEPTH).1);
+        // 属性のある font は抜ける（以降の input は HTML の空要素）。
+        let font_attr = format!("<svg><font color=red>{}", "<input>".repeat(100_000));
+        assert!(!clip_depth(&font_attr, MAX_PARSE_DEPTH).1);
+        // encoding の無い・HTML でない annotation-xml は統合点ではない。
+        for open in [
+            "<math><annotation-xml>",
+            "<math><annotation-xml encoding=\"image/svg+xml\">",
+        ] {
+            let s = format!("{open}{}", "<input>".repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
+        }
+        let html_xml = format!(
+            "<math><annotation-xml encoding=\"Text/HTML\">{}",
+            "<input>".repeat(100_000)
+        );
+        assert!(!clip_depth(&html_xml, MAX_PARSE_DEPTH).1);
+        // MathML のテキスト統合点の直下の mglyph / malignmark は MathML のまま。
+        for tag in ["mglyph", "malignmark"] {
+            let s = format!("<math><mi><{tag}>{}", "<input>".repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
+        }
+        // annotation-xml の直下の svg は SVG（その foreignObject は統合点）。
+        let ann_svg = format!(
+            "<math><annotation-xml><svg><foreignObject>{}",
+            "<x-node/>".repeat(100_000)
+        );
+        assert!(clip_depth(&ann_svg, MAX_PARSE_DEPTH).1);
         // SVG の HTML 統合点（foreignObject 等）の中では自己終了は効かない。
         let integration = format!("<svg><foreignObject>{}", "<x-node/>".repeat(100_000));
         assert!(clip_depth(&integration, MAX_PARSE_DEPTH).1);
