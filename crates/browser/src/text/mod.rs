@@ -225,7 +225,8 @@ impl TextPage {
     fn push_history(&mut self, entry: HistoryEntry) {
         self.history.push(entry);
         let limits = &self.engine.limits;
-        while self.history.len() > limits.max_history
+        // 現在のページは必ず残す（max_history が 0 でも開けるように）。
+        while self.history.len() > limits.max_history.max(1)
             || (self.history.len() > 1
                 && self.history.iter().map(|h| h.html.len()).sum::<usize>()
                     > limits.max_history_bytes)
@@ -450,7 +451,7 @@ impl EnginePage for TextPage {
             }
             Action::Submit(id) => {
                 let (index, _, _) = self.element(id)?;
-                let field = self.field_of(index)?;
+                let field = self.enabled_field(index)?;
                 let req = self.submission(field, None)?;
                 self.load(req, jar).await
             }
@@ -491,7 +492,7 @@ impl EnginePage for TextPage {
             }
             Action::Submit(id) => {
                 let (index, _, _) = self.element(*id)?;
-                let field = self.field_of(index)?;
+                let field = self.enabled_field(index)?;
                 self.planned(field, None).map(Some)
             }
             Action::Fill(..) | Action::Select(..) | Action::Back => Ok(None),

@@ -384,3 +384,32 @@ fn cross_site_redirect_chain_drops_strict_cookies() {
         None
     );
 }
+
+#[test]
+fn partitioned_requires_secure_and_expired_cookies_are_evicted_first() {
+    let mut jar = CookieJar::new();
+    assert_eq!(
+        set(&mut jar, "https://example.com/", "p=1; Partitioned; Path=/"),
+        Err(Rejected::PartitionedWithoutSecure)
+    );
+    // 有効な sid の後に、すぐ切れる cookie で枠を埋める。
+    set(&mut jar, "https://example.com/", "sid=1; Path=/").unwrap();
+    for i in 0..(MAX_PER_SITE - 1) {
+        set(
+            &mut jar,
+            "https://example.com/",
+            &format!("t{i}=1; Path=/; Max-Age=1"),
+        )
+        .unwrap();
+    }
+    // 期限が切れた後に 1 件足しても、有効な sid は押し出されない。
+    let later = now() + time::Duration::seconds(5);
+    let url = u("https://example.com/");
+    jar.store(&url, &url, "new=1; Path=/", later).unwrap();
+    let header = jar.header_for(&url, &nav(), later).unwrap();
+    assert!(
+        header.contains("sid=1") && header.contains("new=1"),
+        "{header}"
+    );
+    assert_eq!(jar.len(), 2);
+}

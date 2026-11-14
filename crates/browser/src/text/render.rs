@@ -26,7 +26,8 @@ const MAX_LABEL_CHARS: usize = 200;
 /// フォームの送信方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Form {
-    pub action: Url,
+    /// 送り先。None は明示された action を解決できない（`javascript:` 等）＝送信しない。
+    pub action: Option<Url>,
     pub post: bool,
     pub enctype: String,
     id: Option<String>,
@@ -67,6 +68,8 @@ pub(crate) enum FieldKind {
     Button {
         value: String,
         submits: bool,
+        /// `<input type="image">`。押すと name=value ではなく座標（`name.x` / `name.y`）を送る。
+        image: bool,
         /// 押したボタンの `formaction` / `formmethod` / `formenctype`（フォームの値を上書きする）。
         overrides: Option<Box<SubmitOverrides>>,
     },
@@ -76,6 +79,8 @@ pub(crate) enum FieldKind {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SubmitOverrides {
     pub action: Option<Url>,
+    /// `formaction` が明示されているのに解決できない（`javascript:` 等）＝送信しない。
+    pub bad_action: bool,
     pub post: Option<bool>,
     pub enctype: Option<String>,
 }
@@ -464,11 +469,12 @@ impl Walker<'_> {
         }
         let mut form = form;
         if name == "form" {
-            let action = node
-                .attr("action")
-                .filter(|a| !a.trim().is_empty())
-                .and_then(|a| self.resolve(&a))
-                .unwrap_or_else(|| self.base.clone());
+            // 省略・空なら文書の URL。明示されていて解決できない（`javascript:` 等）なら送信させない
+            // （現在のページへの送信にすり替えない）。
+            let action = match node.attr("action").filter(|a| !a.trim().is_empty()) {
+                Some(a) => self.resolve(&a),
+                None => Some(self.base.clone()),
+            };
             self.forms.push(Form {
                 action,
                 post: node

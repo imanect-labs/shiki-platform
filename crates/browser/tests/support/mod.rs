@@ -24,6 +24,7 @@ pub struct Req {
     pub port: u16,
     pub target: String,
     pub cookie: Option<String>,
+    pub origin: Option<String>,
     pub body: String,
 }
 
@@ -114,6 +115,7 @@ pub async fn serve(route: Route) -> (SocketAddr, Arc<Mutex<Vec<Req>>>) {
                     port: port.parse().unwrap_or(80),
                     target,
                     cookie: header("cookie"),
+                    origin: header("origin"),
                     body: String::from_utf8_lossy(&buf[head_end..]).to_string(),
                 };
                 log.lock().unwrap().push(req.clone());

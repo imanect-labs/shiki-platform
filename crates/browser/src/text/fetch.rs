@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, COOKIE, LOCATION, ORIGIN, SET_COOKIE};
 use reqwest::StatusCode;
 use sandbox_client::net_guard::HostResolver;
 use time::OffsetDateTime;
@@ -63,6 +63,8 @@ impl Fetcher {
         // SameSite の判定の基点（要求元のページ。アドレスバー相当なら最初の URL）。
         let chain_root = req.initiator.clone().unwrap_or_else(|| req.url.clone());
         let mut crossed = false;
+        // 連鎖の途中で要求元と別のオリジンを通ったら、Origin は "null" にする（Fetch 標準の redirect-tainted）。
+        let mut origin_tainted = false;
         let mut url = req.url.clone();
         let mut method = req.method;
         let mut form = req.form.clone();
@@ -90,6 +92,17 @@ impl Fetcher {
                     ),
             }
             .header(ACCEPT, "text/html,application/xhtml+xml;q=0.9,text/*;q=0.5");
+            // フォームの POST には要求元の Origin を付ける（付けないと Django 等の CSRF 保護に弾かれる）。
+            if method == Method::Post {
+                if let Some(initiator) = &req.initiator {
+                    let origin = if origin_tainted {
+                        "null".to_string()
+                    } else {
+                        initiator.origin().ascii_serialization()
+                    };
+                    builder = builder.header(ORIGIN, origin);
+                }
+            }
             // この要求を送る前に判定する（最初の別サイトへの転送先から Strict を外す）。
             if !same_site(&chain_root, &target.url) {
                 crossed = true;
@@ -151,6 +164,11 @@ impl Fetcher {
                         // 301 / 302 / 303: POST は本文なしの GET になる。
                         method = Method::Get;
                         form.clear();
+                    }
+                }
+                if let Some(initiator) = &req.initiator {
+                    if target.url.origin() != initiator.origin() {
+                        origin_tainted = true;
                     }
                 }
                 url = next;

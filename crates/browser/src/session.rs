@@ -110,24 +110,24 @@ impl BrowserSession {
     }
 
     /// アドレスバー相当で開く（出所の判定は呼び出し側のツールが済ませている前提）。
+    ///
+    /// jar はセッションに置いたまま借用して渡す（取り出して戻す形だと、呼び出し側の期限で future が
+    /// 途中で捨てられたときに jar ごと消え、ログイン状態を失う）。
     pub async fn navigate(&mut self, url: Url) -> Result<Snapshot, BrowserError> {
-        let mut jar = std::mem::take(&mut self.jar);
-        let result = match self.page().await {
-            Ok(page) => page.load(LoadRequest::get(url), &mut jar).await,
-            Err(e) => Err(e),
+        self.page().await?;
+        let result = match self.page.as_mut() {
+            Some(page) => page.load(LoadRequest::get(url), &mut self.jar).await,
+            None => Err(BrowserError::NoPage),
         };
-        self.jar = jar;
         self.after(result)
     }
 
     /// ページへの操作。
     pub async fn act(&mut self, action: Action) -> Result<Snapshot, BrowserError> {
-        let mut jar = std::mem::take(&mut self.jar);
         let result = match self.page.as_mut() {
-            Some(page) => page.act(action, &mut jar).await,
+            Some(page) => page.act(action, &mut self.jar).await,
             None => Err(BrowserError::NoPage),
         };
-        self.jar = jar;
         self.after(result)
     }
 

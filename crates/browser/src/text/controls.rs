@@ -98,11 +98,11 @@ impl Walker<'_> {
 
     /// 送信ボタンの `formaction` / `formmethod` / `formenctype`。
     fn overrides(&self, node: &NodeRef<'_>) -> Option<Box<SubmitOverrides>> {
+        let formaction = node.attr("formaction").filter(|a| !a.trim().is_empty());
+        let action = formaction.as_ref().and_then(|a| self.resolve(a));
         let o = SubmitOverrides {
-            action: node
-                .attr("formaction")
-                .filter(|a| !a.trim().is_empty())
-                .and_then(|a| self.resolve(&a)),
+            bad_action: formaction.is_some() && action.is_none(),
+            action,
             post: node
                 .attr("formmethod")
                 .map(|m| m.eq_ignore_ascii_case("post")),
@@ -117,6 +117,7 @@ impl Walker<'_> {
         form: Option<usize>,
         label: &str,
         submit_type: bool,
+        image: bool,
     ) {
         let submits = submit_type && self.has_owner(node, form);
         let value = node
@@ -131,6 +132,7 @@ impl Walker<'_> {
             FieldKind::Button {
                 value,
                 submits,
+                image,
                 overrides,
             },
             id,
@@ -149,7 +151,7 @@ impl Walker<'_> {
         if label.is_empty() {
             label = self.label_for(node, None);
         }
-        self.push_button(node, form, &label, submit_type);
+        self.push_button(node, form, &label, submit_type, false);
     }
 
     pub(super) fn input(&mut self, node: &NodeRef<'_>, form: Option<usize>, wrap: Option<&str>) {
@@ -170,7 +172,12 @@ impl Walker<'_> {
                 };
                 let id = self.push_element(kind, &label);
                 let checked = self.checked(node.has_attr("checked"));
-                let value = if value.is_empty() { "on".into() } else { value };
+                // value 属性が無いときだけ "on"。明示された空文字は空のまま送る。
+                let value = if node.has_attr("value") {
+                    value
+                } else {
+                    "on".into()
+                };
                 self.push_field(
                     node,
                     form,
@@ -189,12 +196,24 @@ impl Walker<'_> {
                 }
             }
             "submit" | "image" | "button" | "reset" => {
-                let text = if value.is_empty() {
-                    "送信".to_string()
+                // 画像ボタンの表示名は alt（value は表示されない）。
+                let shown = if ty == "image" {
+                    node.attr("alt").map(|a| collapse(&a)).unwrap_or_default()
                 } else {
                     value
                 };
-                self.push_button(node, form, &text, matches!(ty.as_str(), "submit" | "image"));
+                let text = if shown.is_empty() {
+                    "送信".to_string()
+                } else {
+                    shown
+                };
+                self.push_button(
+                    node,
+                    form,
+                    &text,
+                    matches!(ty.as_str(), "submit" | "image"),
+                    ty == "image",
+                );
             }
             "file" => self.text(&format!(" （ファイル選択欄「{label}」は扱えません） ")),
             _ => {

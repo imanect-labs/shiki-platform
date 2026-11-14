@@ -50,9 +50,19 @@ pub(crate) fn build(
             FieldKind::Button { overrides, .. } => overrides.as_deref(),
             _ => None,
         });
-    let action = overrides
-        .and_then(|o| o.action.clone())
-        .unwrap_or_else(|| form.action.clone());
+    if overrides.is_some_and(|o| o.bad_action) {
+        return Err(BrowserError::Unsupported(
+            "formaction（http/https 以外）".into(),
+        ));
+    }
+    let action = match overrides.and_then(|o| o.action.clone()) {
+        Some(a) => a,
+        // 明示された action を解決できない（`javascript:` 等）フォームは送らない。
+        None => form
+            .action
+            .clone()
+            .ok_or_else(|| BrowserError::Unsupported("action（http/https 以外）".into()))?,
+    };
     let post = overrides.and_then(|o| o.post).unwrap_or(form.post);
     let enctype = overrides
         .and_then(|o| o.enctype.clone())
@@ -63,7 +73,23 @@ pub(crate) fn build(
 
     let mut pairs = Vec::new();
     for (i, f) in fields.iter().enumerate() {
-        if f.form != Some(form_index) || f.disabled || f.name.is_empty() {
+        if f.form != Some(form_index) || f.disabled {
+            continue;
+        }
+        // 押した画像ボタンは座標を送る（名前が無ければ x / y）。座標はテキストエンジンには無いので 0。
+        if let FieldKind::Button { image: true, .. } = &f.kind {
+            if Some(i) == submitter {
+                let (x, y) = if f.name.is_empty() {
+                    ("x".to_string(), "y".to_string())
+                } else {
+                    (format!("{}.x", f.name), format!("{}.y", f.name))
+                };
+                pairs.push((x, "0".to_string()));
+                pairs.push((y, "0".to_string()));
+            }
+            continue;
+        }
+        if f.name.is_empty() {
             continue;
         }
         match &f.kind {

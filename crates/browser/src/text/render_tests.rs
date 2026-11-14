@@ -61,7 +61,7 @@ fn links_inputs_and_headings() {
     assert_eq!(out.forms.len(), 1);
     assert!(out.forms[0].post);
     assert_eq!(
-        out.forms[0].action.as_str(),
+        out.forms[0].action.as_ref().unwrap().as_str(),
         "https://portal.example.com/order"
     );
     let names: Vec<_> = out.fields.iter().map(|f| f.name.as_str()).collect();
@@ -275,12 +275,12 @@ fn base_href_resolves_links_but_not_omitted_actions() {
         out.text
     );
     assert_eq!(
-        out.forms[0].action.as_str(),
+        out.forms[0].action.as_ref().unwrap().as_str(),
         "https://portal.example.com/app/save"
     );
     // action を省いたフォームは文書の URL へ送る。
     assert_eq!(
-        out.forms[1].action.as_str(),
+        out.forms[1].action.as_ref().unwrap().as_str(),
         "https://portal.example.com/dir/page"
     );
 }

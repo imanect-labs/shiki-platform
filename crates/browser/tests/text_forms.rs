@@ -199,7 +199,8 @@ async fn plan_reports_target_without_sending() {
     assert_eq!(log.lock().unwrap().len(), before, "plan は送らない");
 }
 
-#[tokio::test]
+// スタブの応答は同期関数で返すので、遅延（sleep）が取得側のタイマーを止めないよう複数スレッドで回す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_check_and_cross_site_chain() {
     let route: support::Route =
         Arc::new(|req: &Req| match (req.host.as_str(), req.target.as_str()) {
@@ -350,4 +351,55 @@ async fn hidden_radio_plain_text_and_first_hop_strict() {
         .await
         .unwrap();
     assert_eq!(last(&log, "/me").cookie, None);
+}
+
+#[tokio::test]
+async fn image_buttons_empty_values_bad_actions_origin_and_history() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/f" => http(
+            "200 OK",
+            &[],
+            r#"<form method="post" action="/post"><input type="checkbox" name="c" value="" checked aria-label="空値">
+               <input type="image" name="go" alt="画像で送信" value="ignored"><input name="t" aria-label="入力" disabled>
+               <button>送信</button></form>
+               <form action="javascript:alert(1)"><input name="pw" type="password" aria-label="JS フォーム"><button>JS送信</button></form>
+               <form action="/ok"><button formaction="javascript:void(0)">偽の送り先</button></form>"#,
+        ),
+        _ => http("200 OK", &[], "<p>受信</p>"),
+    });
+    let limits = TextLimits {
+        max_history: 0,
+        ..TextLimits::default()
+    };
+    let (mut s, port, log) = start(route, limits).await;
+    // max_history が 0 でも現在のページは開ける。
+    let snap = s.navigate(u(port, "app.example.com", "/f")).await.unwrap();
+
+    // 画像ボタンは座標を送り、明示された空の value は空のまま送る。POST には要求元の Origin が付く。
+    s.act(Action::Click(find(&snap, "画像で送信")))
+        .await
+        .unwrap();
+    let posted = last(&log, "/post");
+    assert_eq!(posted.body, "c=&go.x=0&go.y=0");
+    assert_eq!(
+        posted.origin.as_deref(),
+        Some(format!("http://app.example.com:{port}").as_str())
+    );
+
+    let snap = s.navigate(u(port, "app.example.com", "/f")).await.unwrap();
+    // 無効な入力欄からの Enter 送信は拒否する。
+    assert!(matches!(
+        s.act(Action::Submit(find(&snap, "入力"))).await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    // 解決できない action / formaction は、現在のページへの送信にすり替えない。
+    let before = log.lock().unwrap().len();
+    for label in ["JS送信", "偽の送り先"] {
+        let err = s.act(Action::Click(find(&snap, label))).await.unwrap_err();
+        assert!(
+            matches!(err, BrowserError::Unsupported(_)),
+            "{label}: {err:?}"
+        );
+    }
+    assert_eq!(log.lock().unwrap().len(), before, "1 度も送らない");
 }

@@ -79,6 +79,8 @@ pub enum Rejected {
     PrefixViolation,
     SameSiteNoneWithoutSecure,
     OverwritesSecure,
+    /// Partitioned は Secure 必須（CHIPS）。属性を外して普通の cookie にはしない。
+    PartitionedWithoutSecure,
 }
 
 /// run 単位の cookie jar。
@@ -136,7 +138,10 @@ impl CookieJar {
             // 未指定は Lax 扱い（Lax-by-default）。
             Some(SameSite::Lax) | None => SameSiteMode::Lax,
         };
-        let partition = if parsed.partitioned().unwrap_or(false) && secure {
+        let partition = if parsed.partitioned().unwrap_or(false) {
+            if !secure {
+                return Err(Rejected::PartitionedWithoutSecure);
+            }
             Some(site_key(top_level))
         } else {
             None
@@ -182,6 +187,8 @@ impl CookieJar {
             expires,
             creation: creation.unwrap_or(self.seq),
         });
+        // 期限切れを先に捨ててから上限を判定する（期限切れが有効な cookie を押し出さないように）。
+        self.cookies.retain(|c| c.expires.is_none_or(|e| e > now));
         self.evict();
         Ok(())
     }
