@@ -353,3 +353,16 @@ fn disabled_and_enabled_options_with_the_same_value_are_told_apart() {
     );
     assert_eq!(out.fields[0].kind, FieldKind::Select { values: vec![] });
 }
+
+#[test]
+fn preformatted_text_keeps_line_breaks_and_indentation() {
+    let out = r("<body><p>前</p><pre>if ready:\n    save()\n\tdone()\nfinish()</pre><p>後  の   文</p></body>");
+    assert!(
+        out.text
+            .contains("if ready:\n    save()\n\tdone()\nfinish()"),
+        "{}",
+        out.text
+    );
+    // pre の外は従来どおり空白を詰める。
+    assert!(out.text.contains("後 の 文"), "{}", out.text);
+}

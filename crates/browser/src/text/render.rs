@@ -132,6 +132,8 @@ struct Walker<'a> {
     form_ids: HashSet<String>,
     /// CSS 等で見えない部分木の中にいる深さ（項目は集めるが、表示も ref もしない）。
     invisible: u32,
+    /// `<pre>` の中にいる深さ（改行と字下げを保つ）。
+    pre: u32,
     /// `<fieldset disabled>` の中にいる深さ。
     disabled: u32,
     /// いまの深さ（[`MAX_DEPTH`] で打ち切る）。
@@ -184,6 +186,7 @@ pub(crate) fn render(
         labels_for,
         lines: Vec::new(),
         cur: String::new(),
+        pre: 0,
         visible_chars: 0,
         link_chars: 0,
         visited: 0,
@@ -324,6 +327,22 @@ impl Walker<'_> {
         if self.invisible > 0 {
             return;
         }
+        if self.pre > 0 {
+            // 整形済みテキストは空白を詰めず、改行ごとに行を分ける。
+            let s = s.replace("\r\n", "\n");
+            let mut parts = s.split('\n');
+            if let Some(first) = parts.next() {
+                self.visible_chars += first.chars().count();
+                self.cur.push_str(first);
+            }
+            for part in parts {
+                let line = std::mem::take(&mut self.cur);
+                self.lines.push(line.trim_end().to_string());
+                self.visible_chars += part.chars().count();
+                self.cur.push_str(part);
+            }
+            return;
+        }
         let collapsed = collapse(s);
         let leading = s.starts_with(char::is_whitespace);
         let trailing = s.ends_with(char::is_whitespace);
@@ -355,7 +374,12 @@ impl Walker<'_> {
     }
 
     fn flush(&mut self, prefix: &str) {
-        let line = self.cur.trim();
+        // 整形済みテキストの字下げは残す。
+        let line = if self.pre > 0 {
+            self.cur.trim_end()
+        } else {
+            self.cur.trim()
+        };
         if !line.is_empty() {
             self.lines.push(format!("{prefix}{line}"));
         }
@@ -503,6 +527,10 @@ impl Walker<'_> {
         if fieldset_disabled {
             self.disabled += 1;
         }
+        let pre = matches!(name, "pre" | "listing" | "plaintext");
+        if pre {
+            self.pre += 1;
+        }
         let mut legend_seen = false;
         for c in node.children_it(false) {
             // `<fieldset disabled>` の最初の `<legend>` の中は、その fieldset による無効化を受けない（HTML 標準）。
@@ -524,6 +552,9 @@ impl Walker<'_> {
         }
         if block {
             self.flush(line_prefix(name));
+        }
+        if pre {
+            self.pre -= 1;
         }
     }
 

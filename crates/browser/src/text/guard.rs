@@ -5,7 +5,8 @@
 //! 軽く数え、上限を超えた所から先は渡さない。
 //!
 //! 数え方は近似でよい（実在のページは 100 段に満たず、上限は十分に大きい）:
-//! - 空要素（`<br>` 等）・自己終了（`<x/>`）・終了タグを省略できる要素（`<p>` `<li>` `<td>` 等）は数えない。
+//! - 空要素（`<br>` 等）と、外部コンテンツ（SVG・MathML）の自己終了（`<x/>`）は数えない。
+//! - 終了タグを省略できる要素（`<p>` `<li>` `<td>` 等）は、解析器と同じく同種の要素を開いたときに閉じる。
 //! - コメントと、中身を生テキストとして扱う要素（`<script>` `<style>` 等）の中は読み飛ばす。
 
 /// 解析器へ渡す入れ子の深さの上限。
@@ -16,11 +17,28 @@ const VOID: &[&str] = &[
     "track", "wbr",
 ];
 
-/// 終了タグを省略できる要素（開いたまま次へ進む実在のページが多いので、深さに数えない）。
-const OPTIONAL_END: &[&str] = &[
-    "p", "li", "dt", "dd", "tr", "td", "th", "option", "optgroup", "tbody", "thead", "tfoot",
-    "colgroup", "rb", "rt", "rp",
-];
+/// 開くと、開いている要素の一番内側から暗黙に閉じる要素（HTML 標準の暗黙の終了タグ。その部分集合）。
+///
+/// 終了タグを省略できる要素（`<p>` `<li>` `<td>` 等）を開いたままにする実在のページは多いので、
+/// 解析器と同じく同種の要素で閉じる。ただし**一番内側にあるときだけ**閉じる（解析器が閉じない場面で
+/// 閉じて数を減らさないよう、迷ったら閉じない＝多く数える側に倒す）。
+fn implicitly_closes(name: &str, ruby_open: bool) -> &'static [&'static str] {
+    match name {
+        "p" => &["p"],
+        "li" => &["li", "p"],
+        "dt" | "dd" => &["dt", "dd", "p"],
+        "tr" => &["tr", "td", "th", "p"],
+        "td" | "th" => &["td", "th", "p"],
+        "tbody" | "thead" | "tfoot" => &["tbody", "thead", "tfoot", "tr", "td", "th", "p"],
+        "option" => &["option"],
+        "optgroup" => &["option", "optgroup"],
+        "colgroup" => &["colgroup"],
+        // rb・rt・rp・rtc が閉じるのは ruby の中だけ（外では入れ子になる）。
+        "rb" | "rtc" if ruby_open => &["rb", "rt", "rp", "rtc"],
+        "rt" | "rp" if ruby_open => &["rb", "rt", "rp"],
+        _ => &[],
+    }
+}
 
 const RAW_TEXT: &[&str] = &[
     "script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes",
@@ -120,9 +138,20 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             }
         }
         let ns = namespace(&open, &lower);
+        if ns == Ns::Html {
+            let ruby_open = matches!(lower.as_str(), "rb" | "rt" | "rp" | "rtc")
+                && open.iter().any(|o| o.ns == Ns::Html && o.name == "ruby");
+            let closes = implicitly_closes(&lower, ruby_open);
+            while open
+                .last()
+                .is_some_and(|o| o.ns == Ns::Html && closes.contains(&o.name.as_str()))
+            {
+                open.pop();
+            }
+        }
         let self_closing = end >= 2 && b[end - 2] == b'/';
         let closes_itself = match ns {
-            Ns::Html => VOID.contains(&lower.as_str()) || is_optional_end(&lower),
+            Ns::Html => VOID.contains(&lower.as_str()),
             // 自己終了が効くのは外部コンテンツの要素だけ。
             Ns::Svg | Ns::Math => self_closing,
         };
@@ -199,10 +228,6 @@ fn close(open: &mut Vec<Open>, name: &str) {
             return;
         }
     }
-}
-
-fn is_optional_end(name: &str) -> bool {
-    OPTIONAL_END.iter().any(|n| n.eq_ignore_ascii_case(name))
 }
 
 /// `i` から始まるタグ名。HTML の tokenizer と同じく、空白・`/`・`>` までをすべて名前とする
@@ -317,9 +342,17 @@ mod tests {
             "{}",
             clipped.len()
         );
-        // 開いたままの <p> / <li> は深さに数えない。
-        let flat = "<p>a".repeat(10_000);
-        assert!(!clip_depth(&flat, 16).1);
+        // 開いたままの <p> / <li> / 表 / 選択肢 / ruby は同種で閉じ、深さに数えない。
+        for flat in [
+            "<p>a<b>太字</b>".repeat(10_000),
+            format!("<ul>{}</ul>", "<li><a href=x>a</a>".repeat(10_000)),
+            format!("<table>{}</table>", "<tr><td>1<td><p>2".repeat(10_000)),
+            format!("<select>{}</select>", "<option>a".repeat(10_000)),
+            format!("<dl>{}</dl>", "<dt>a<dd>b".repeat(10_000)),
+            format!("<ruby>{}</ruby>", "漢<rp>(<rt>かん<rp>)".repeat(10_000)),
+        ] {
+            assert!(!clip_depth(&flat, 16).1, "{}", &flat[..40]);
+        }
     }
 
     #[test]
@@ -362,6 +395,14 @@ mod tests {
         // 逆に MathML の統合点（mi）の中の svg は SVG になる。
         let mi = format!("<math><mi><svg>{}</svg>", "<path/>".repeat(100_000));
         assert!(!clip_depth(&mi, MAX_PARSE_DEPTH).1);
+        // ruby の外の rb・rt・rp は暗黙に閉じず入れ子になる。
+        for tag in ["rb", "rt", "rp"] {
+            let s = format!("<body>{}", format!("<{tag}>").repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
+        }
+        // 一番内側でない（間に閉じない要素がある）ときは閉じない。
+        let section = "<li><section>".repeat(100_000);
+        assert!(clip_depth(&section, MAX_PARSE_DEPTH).1);
         // 外部コンテンツの中では、終了タグを省略できる HTML の要素名でも入れ子になる。
         let foreign_option = format!("<svg>{}", "<option>".repeat(100_000));
         assert!(clip_depth(&foreign_option, MAX_PARSE_DEPTH).1);
