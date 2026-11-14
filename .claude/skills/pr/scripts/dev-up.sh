@@ -556,6 +556,11 @@ if [ -n "$cur_tag" ] && [ "$cur_tag" != "$STORE_TAG" ]; then
   exit 1
 fi
 
+# native ＋ ローカルの RAG では、worker をホストのネットワークで動かす（native のサーバーが出す presigned URL の
+# localhost:9000 に届くように・BUG-300）。compose 版と --rag-remote は今までどおり。
+if [ "$MODE" = native ] && [ "$WITH_RAG" = 1 ] && [ "$RAG_REMOTE" = 0 ]; then
+  export COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}:docker-compose.native-rag.yml"
+fi
 # shellcheck disable=SC2086
 compose_up $DEPS
 
