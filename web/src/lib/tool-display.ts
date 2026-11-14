@@ -132,6 +132,17 @@ function objectOf(fallbackNoun: string) {
   return (t: string | null) => (t ? `${t} を` : `${fallbackNoun}を`);
 }
 
+/// `browser` の操作ごとの動詞（サ変名詞）。
+const BROWSER_VERBS: Record<string, string> = {
+  navigate: "閲覧",
+  snapshot: "閲覧",
+  back: "閲覧",
+  click: "操作",
+  fill: "入力",
+  select: "選択",
+  submit: "送信",
+};
+
 // ── 辞書（全語彙・漏れはコンパイルエラー）──────────────────────
 
 const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
@@ -215,6 +226,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     category: "browse",
     lead: objectOf("ページ"),
     verb: "翻訳",
+    suru: true,
+    target: urlTarget,
+  },
+  browser: {
+    // JS を実行しないブラウザでの読む操作（docs/agent/browser.md §6）。操作の種類で動詞を変える。
+    icon: Globe,
+    category: "browse",
+    lead: objectOf("ページ"),
+    verb: (input) => BROWSER_VERBS[typeof input.action === "string" ? input.action : ""] ?? "操作",
     suru: true,
     target: urlTarget,
   },
@@ -680,7 +700,13 @@ export function summarizeTools(items: ToolDescribable[]): string[] {
   let edits = 0;
   for (const it of items) {
     const meta = displayFor(it.name);
-    if (it.name === "web_search" || it.name === "web_fetch" || it.name === "web_translate") web += 1;
+    if (
+      it.name === "web_search" ||
+      it.name === "web_fetch" ||
+      it.name === "web_translate" ||
+      it.name === "browser"
+    )
+      web += 1;
     else if (it.name === "doc_search" || it.name === "doc_read") internal += 1;
     else if (meta.category === "write" || meta.category === "exec") edits += 1;
   }

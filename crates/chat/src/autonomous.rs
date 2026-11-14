@@ -67,17 +67,19 @@ impl AutonomousMode {
 
     /// モード→承認ポリシの写像（**単一の定義箇所**・#350）。
     ///
-    /// read-only（web_search / web_fetch / web_translate / doc_search）はどのモードでも止まらない（#350 決定）。
+    /// read-only（web_search / web_fetch / web_translate / browser / doc_search）はどのモードでも止まらない（#350 決定）。
     /// doc_search 等は `requires_confirmation=false` で素通りし、egress の 3 つは自律版の
     /// 承認ゲート対象（Task 5.6）のため全モードで事前許可に含める（web_translate は
     /// docs/agent/web-translate.md §10 の決定 4）。
     #[must_use]
     pub fn approval_policy(self) -> ApprovalPolicy {
         /// 全モード共通の事前許可（read-only egress・#350 決定）。
-        const READ_ONLY: [ToolName; 3] = [
+        const READ_ONLY: [ToolName; 4] = [
             ToolName::WebSearch,
             ToolName::WebFetch,
             ToolName::WebTranslate,
+            // 読む操作だけ。持ち出しになり得る操作はツール自身が拒否する（docs/agent/browser.md §6.1）。
+            ToolName::Browser,
         ];
         /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete / shell /
         /// office.live_edit=開いているセッションへの即時注入）は含めない。
@@ -269,6 +271,7 @@ mod tests {
         assert!(p.is_pre_authorized("web_search"));
         assert!(p.is_pre_authorized("web_fetch"));
         assert!(p.is_pre_authorized("web_translate"));
+        assert!(p.is_pre_authorized("browser"));
     }
 
     #[test]

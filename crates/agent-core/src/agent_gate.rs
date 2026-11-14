@@ -101,6 +101,8 @@ pub(crate) fn is_gated(
                 | crate::vocab::ToolName::WebSearch
                 // 取得は web_fetch と同じ egress（docs/agent/web-translate.md §5）。
                 | crate::vocab::ToolName::WebTranslate
+                // 公開 Web を開く（docs/agent/browser.md §6.1）。範囲外の操作はツールが拒否する。
+                | crate::vocab::ToolName::Browser
         )
     );
     tool_map

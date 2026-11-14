@@ -42,9 +42,10 @@ pub(super) enum GateStage {
 /// 計画フェーズまで**提示しない**ツール（調査・委譲・ドライブへの複製）。
 ///
 /// 作業ファイル（`fs_write`/`fs_read`…）は brief/outline を書くために計画段階でも要る。
-const RESEARCH_TOOLS: [ToolName; 6] = [
+const RESEARCH_TOOLS: [ToolName; 7] = [
     ToolName::WebSearch,
     ToolName::WebFetch,
+    ToolName::Browser,
     ToolName::DocSearch,
     ToolName::DocRead,
     ToolName::Subagent,
@@ -341,7 +342,13 @@ mod tests {
             s.allows("subagent"),
             "計画を子に書かせる導線は開ける（#402）"
         );
-        for denied in ["web_search", "web_fetch", "doc_search", "drive.copy"] {
+        for denied in [
+            "web_search",
+            "web_fetch",
+            "browser",
+            "doc_search",
+            "drive.copy",
+        ] {
             assert!(!s.allows(denied), "{denied} は承認後にだけ渡す");
         }
     }

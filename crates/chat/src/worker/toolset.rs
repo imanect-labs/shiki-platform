@@ -28,6 +28,7 @@ impl ChatWorker {
         skills: &[crate::skill::AppliedSkill],
         attachments: &[AttachmentRef],
         run: &ClaimedRun,
+        user_urls: Vec<url::Url>,
     ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(storage) = &self.storage {
@@ -110,6 +111,8 @@ impl ChatWorker {
             }
             tools.push(Arc::new(fetch));
         }
+        // ブラウザ（読む操作・browser.md §6）。門の絞り込み（RESEARCH_TOOLS）は呼び出し側が後で掛ける。
+        self.push_browser_tool(&mut tools, user_urls);
         // ```ui の種類ごとの書き方（早見は system にある・ui_reference で書く前に読む）。
         // 外部への入出力も認可も無い読み取りなので、図を書かせる構成なら常に提示する。
         if self.config.yui {
@@ -134,6 +137,39 @@ impl ChatWorker {
             ));
         }
         Ok(tools)
+    }
+
+    /// エージェントモードで提示するツール一式（自律プロファイル専用のものと門の絞り込みは呼び出し側）。
+    pub(super) async fn agent_tools(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+        attachments: &[AttachmentRef],
+        user_urls: Vec<url::Url>,
+    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
+        let mut tools = self.core_tools(skills, attachments, run, user_urls).await?;
+        // skill ツール（カタログ引き・#344 Task 10.11）。
+        self.push_skill_tool(&mut tools, ctx, run, skills).await;
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
+        // Office 編集/CSV ツール（worker/toolset.rs に集約）。
+        self.push_collab_tools(&mut tools);
+        self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
+        Ok(tools)
+    }
+
+    /// エージェントブラウザの読む操作（`browser`・docs/agent/browser.md §6）を提示ツールに加える。
+    ///
+    /// `web_fetch` と同じ条件（web 検索が配線されている構成＝公開 Web へ出てよい構成）でだけ提示する。
+    /// ツールは run ごとに作り、セッション（cookie jar・出所）は run の終了で捨てる（§5.1）。
+    /// `user_urls` はユーザーがこの会話で書いた URL で、事前許可で開ける出所の初期値になる（§6.2）。
+    fn push_browser_tool(&self, tools: &mut Vec<Arc<dyn Tool>>, user_urls: Vec<url::Url>) {
+        if self.web_search.is_none() {
+            return;
+        }
+        tools.push(Arc::new(agent_core::BrowserTool::text(user_urls)));
     }
 
     /// ページ翻訳（`web_translate`・docs/agent/web-translate.md）を提示ツールに加える。
