@@ -3,6 +3,7 @@
 //! 設計の正本: docs/design.md §3.1（トレイト境界）・§4.4（web ツール）。
 //! クラウド/オンプレの差はこのトレイト裏で吸収する:
 //! - [`BraveSearchProvider`] — SaaS（Brave Search API・API キーは config）。
+//! - [`TinyfishSearchProvider`] — SaaS（TinyFish Search API・API キーは config）。
 //! - [`SearxngSearchProvider`] — オンプレ（compose の SearXNG・自己ホスト）。
 //! - [`StubSearchProvider`] — テスト/エアギャップ（決定的・外部依存なし）。
 //!
@@ -23,12 +24,14 @@
 mod brave;
 mod searxng;
 mod stub;
+mod tinyfish;
 
 use authz::AuthContext;
 
 pub use brave::BraveSearchProvider;
 pub use searxng::SearxngSearchProvider;
 pub use stub::StubSearchProvider;
+pub use tinyfish::TinyfishSearchProvider;
 
 /// 検索ヒット 1 件（プロバイダ非依存の共通形）。
 #[derive(Debug, Clone, PartialEq, Eq)]
