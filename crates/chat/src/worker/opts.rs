@@ -233,7 +233,27 @@ pub(super) fn browser_guidance_section(offered: &[&str]) -> Option<String> {
     })
 }
 
-/// ツールの使い方の案内（スキルを先に読む・ブラウザのページの指示に従わない）を system へ足す。
+/// 表データの集計は元のファイルで行わせる案内（`drive.find` と `csv.query` が提示されているときだけ）。
+///
+/// **検索の抜粋から件数・内訳は出せない。** 「2024 年と 2025 年の事故データから時間帯・曜日・場所を
+/// 分析して」と頼まれたエージェントが doc_search だけを言い換えて 10 回以上繰り返し、元の CSV に
+/// たどり着かないまま「署の内訳は見つからない」と答えた（#1285・プレビュー）。drive.find は遅延
+/// ツールで名前しか見えず、保存先探し用の説明だったので選ばれなかった。
+pub(super) fn data_files_guidance_section(offered: &[&str]) -> Option<String> {
+    let find = agent_core::ToolName::DriveFind.as_str();
+    let query = agent_core::ToolName::CsvQuery.as_str();
+    if !(offered.contains(&find) && offered.contains(&query)) {
+        return None;
+    }
+    Some(format!(
+        "\n\n表データ（CSV など）の件数・内訳・集計を求められたら、検索結果の抜粋（一部の行だけ）から\
+         数えないでください。添付されていなければ、元のファイルを {find} で名前から探し、\
+         {query} で集計してください。"
+    ))
+}
+
+/// 提示ツールに応じた使い方の案内（スキルの先読み・表データの元ファイル集計・ブラウザのページの指示に従わない）を
+/// system へ足す。
 /// 照合先は提示の最終形（`tools`）。
 pub(super) fn append_tool_guidance(
     opts: &mut AgentOptions,
@@ -241,6 +261,7 @@ pub(super) fn append_tool_guidance(
 ) {
     let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     append_system_section(opts, skill_guidance_section(&offered));
+    append_system_section(opts, data_files_guidance_section(&offered));
     append_system_section(opts, browser_guidance_section(&offered));
 }
 
@@ -327,6 +348,30 @@ mod tests {
             node_id: node_id.into(),
             name: name.into(),
         }
+    }
+
+    /// drive.find と csv.query が両方提示されているときだけ、元ファイルでの集計へ誘導する（#1285）。
+    #[test]
+    fn data_files_guidance_only_when_find_and_query_are_offered() {
+        assert_eq!(data_files_guidance_section(&["doc_search"]), None);
+        assert_eq!(data_files_guidance_section(&["drive.find"]), None);
+        assert_eq!(data_files_guidance_section(&["csv.query"]), None);
+        let section = data_files_guidance_section(&["doc_search", "drive.find", "csv.query"])
+            .expect("節がある");
+        assert!(
+            section.contains("drive.find") && section.contains("csv.query"),
+            "{section}"
+        );
+
+        let mut opts = AgentOptions {
+            system: Some("基本".into()),
+            ..AgentOptions::default()
+        };
+        append_system_section(&mut opts, Some(section));
+        assert!(opts
+            .system
+            .as_deref()
+            .is_some_and(|s| s.starts_with("基本") && s.contains("csv.query")));
     }
 
     /// skill が提示されているときだけ、調べ始める前にスキルを読み込ませる（旅費申請の取りこぼし）。

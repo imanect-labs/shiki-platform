@@ -323,7 +323,7 @@ impl ToolName {
                 "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
             }
             Self::DriveFind => {
-                "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"
+                "drive folder file find search locate lookup path data csv excel ドライブ フォルダ ファイル 探す 検索 場所 保存先 データ 元データ 集計"
             }
             Self::DriveMove => {
                 "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
