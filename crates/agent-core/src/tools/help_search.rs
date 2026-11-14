@@ -175,6 +175,77 @@ mod tests {
         assert!(got.starts_with("パスキー"), "{got}");
     }
 
+    struct NoEmbed;
+    #[async_trait::async_trait]
+    impl rag::EmbeddingProvider for NoEmbed {
+        fn model_version(&self) -> &str {
+            "model-v1"
+        }
+        async fn embed(
+            &self,
+            _: &AuthContext,
+            _: rag::EmbedInput,
+            _: &[String],
+        ) -> Result<rag::EmbedResponse, rag::RagError> {
+            Err(rag::RagError::Worker("offline".into()))
+        }
+    }
+
+    /// 1 チャンクだけの同梱コーパスから作ったツール（ディレクトリは呼び出し側で消す）。
+    fn tool(dir: &std::path::Path) -> HelpSearchTool {
+        use sha2::{Digest, Sha256};
+        let hash = |b: &[u8]| format!("{:x}", Sha256::digest(b));
+        let version = "a".repeat(40);
+        let text = "設定からパスワードを変更します。";
+        let chunk = serde_json::json!({"schema_version":1,"corpus_version":version,
+            "page_id":"security/password","chunk_id":"b".repeat(64),"title":"パスワードの変更",
+            "heading_path":["手順"],"relative_url":"/help/security/password/#手順","text":text,
+            "status":"reviewed","content_sha256":hash(text.as_bytes())});
+        let chunks = format!("{chunk}\n");
+        let manifest = serde_json::json!({"schema_version":1,"corpus_id":"shiki-help",
+            "corpus_version":version,"source_commit":version,"visibility":"public",
+            "inclusion":"reviewed/final","chunk_count":1,"asset_count":0,
+            "chunks_bytes":chunks.len(),"chunks_sha256":hash(chunks.as_bytes())});
+        let vectors = format!(
+            "{}\n",
+            serde_json::json!({"chunk_id":"b".repeat(64),"vector":[1.0,0.0]})
+        );
+        let vm = serde_json::json!({"schema_version":1,"corpus_version":version,
+            "chunks_sha256":hash(chunks.as_bytes()),"model_version":"model-v1","dimension":2,
+            "normalized":true,"query_prefix":"検索クエリ: ","document_prefix":"検索文書: ",
+            "vectors_sha256":hash(vectors.as_bytes())});
+        std::fs::create_dir_all(dir).unwrap();
+        for (name, bytes) in [
+            ("manifest.json", manifest.to_string()),
+            ("chunks.jsonl", chunks),
+            ("vectors.manifest.json", vm.to_string()),
+            ("vectors.jsonl", vectors),
+        ] {
+            std::fs::write(dir.join(name), bytes).unwrap();
+        }
+        let config = rag::help::HelpConfig {
+            data_path: dir.to_str().unwrap().into(),
+            ..rag::help::HelpConfig::default()
+        };
+        let service = rag::help::HelpSearchService::load(config, Arc::new(NoEmbed))
+            .unwrap()
+            .unwrap();
+        HelpSearchTool::new(Arc::new(service))
+    }
+
+    /// Shiki の操作の質問では、社内文書より先にヘルプを引かせる（どのシステムか書かれていない
+    /// 「パスワードを変えたい」で doc_search だけを呼ぶ回があった・#1289）。
+    #[test]
+    fn description_puts_help_before_doc_search_for_shiki_operations() {
+        let dir = std::env::temp_dir().join(format!("help-tool-{}", uuid::Uuid::new_v4()));
+        let t = tool(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(t.name(), "help_search");
+        let d = t.description();
+        assert!(d.contains("パスワード"), "{d}");
+        assert!(d.contains("doc_search より先に使う"), "{d}");
+    }
+
     fn hit() -> rag::help::HelpHit {
         rag::help::HelpHit {
             corpus_version: "v".into(),
