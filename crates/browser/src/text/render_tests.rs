@@ -1,0 +1,228 @@
+use super::*;
+
+fn base() -> Url {
+    Url::parse("https://portal.example.com/dir/page").unwrap()
+}
+
+fn r(html: &str) -> Rendered {
+    render(html, &base(), 1, 12_000, &HashMap::new())
+}
+
+#[test]
+fn links_inputs_and_headings() {
+    let out = r(r#"<html><head><title> 備品申請 </title></head><body>
+        <h1>備品申請</h1>
+        <form method="post" action="/order">
+          <label>部署 <select name="dept"><option value="">選択</option><option value="s2">営業二部</option></select></label>
+          <label for="item">品目</label><input id="item" name="item">
+          <input type="password" name="pw" value="secret">
+          <input type="hidden" name="csrf" value="tok">
+          <label><input type="checkbox" name="agree" value="1"> 同意する</label>
+          <button>申請する</button>
+        </form>
+        <ul><li><a href="../docs">文書</a></li></ul></body></html>"#);
+    assert_eq!(out.title, "備品申請");
+    assert!(out.text.contains("# 備品申請"), "{}", out.text);
+    assert!(
+        out.text
+            .contains(r#"[t1.1 select "部署" value="" options: ""=選択, "s2"=営業二部]"#),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text
+            .contains(r#"[t1.2 textbox "品目" type=text value=""]"#),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text.contains(r#"value="******""#),
+        "パスワードは伏せる: {}",
+        out.text
+    );
+    assert!(!out.text.contains("secret") && !out.text.contains("tok"));
+    assert!(
+        out.text
+            .contains(r#"[t1.4 checkbox "同意する" checked=false]"#),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text.contains(r#"[t1.5 button "申請する"]"#),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.text
+            .contains("- [t1.6 link \"文書\" → https://portal.example.com/docs]"),
+        "{}",
+        out.text
+    );
+    assert_eq!(out.forms.len(), 1);
+    assert!(out.forms[0].post);
+    assert_eq!(
+        out.forms[0].action.as_str(),
+        "https://portal.example.com/order"
+    );
+    let names: Vec<_> = out.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["dept", "item", "pw", "csrf", "agree", ""]);
+    assert!(out.fields.iter().all(|f| f.form == Some(0)));
+    assert_eq!(out.needs_js, None);
+}
+
+#[test]
+fn noscript_content_is_visible_and_hidden_content_is_not() {
+    let out = r(r#"<body><noscript><p>JS 無効時の本文</p></noscript>
+        <div style="display: none">隠し</div><p hidden>隠し2</p><span aria-hidden="true">隠し3</span>
+        <script>document.write("x")</script><style>p{}</style><p>見える</p></body>"#);
+    assert!(out.text.contains("JS 無効時の本文"), "{}", out.text);
+    assert!(out.text.contains("見える"));
+    assert!(!out.text.contains("隠し"), "{}", out.text);
+    assert!(!out.text.contains("document.write"));
+}
+
+#[test]
+fn image_alt_labels_links_and_text() {
+    let out = r(
+        r#"<body><a href="/x"><img src="a.png" alt="お知らせ一覧"></a><p><img alt="ロゴ"> 本文</p>
+        <button aria-label="閉じる"></button></body>"#,
+    );
+    assert!(out.text.contains(r#"link "お知らせ一覧""#), "{}", out.text);
+    assert!(out.text.contains("ロゴ 本文"), "{}", out.text);
+    assert!(
+        out.text.contains(r#"button "閉じる" (要JS)"#),
+        "{}",
+        out.text
+    );
+}
+
+#[test]
+fn needs_js_detection() {
+    // スクリプトがあり、リンク以外の本文が乏しい → JS 必須。
+    let spa = r(
+        r#"<html><head><script type="module" src="/app.js"></script></head>
+        <body><div id="root"></div><a href="/a">ホーム</a></body></html>"#,
+    );
+    assert_eq!(spa.needs_js, Some(NeedsJs::ScriptRendered));
+    // データ用のスクリプト（JSON）だけなら JS 必須ではない。
+    let data = r(r#"<body><script type="application/ld+json">{}</script><p>短い</p></body>"#);
+    assert_eq!(data.needs_js, None);
+    // 本文が十分あればスクリプトがあっても読める。
+    let body = format!(
+        "<body><script>x()</script><p>{}</p></body>",
+        "本文".repeat(150)
+    );
+    assert_eq!(r(&body).needs_js, None);
+}
+
+#[test]
+fn tables_lists_and_details() {
+    let out = r("<body><table><tr><th>区分</th><th>国内</th></tr><tr><td>一般職</td><td>4,270円</td></tr></table>
+        <dl><dt>品名</dt><dd>ドリル</dd></dl><details><summary>質問</summary><p>答え</p></details></body>");
+    assert!(out.text.contains("| 区分 | 国内"), "{}", out.text);
+    assert!(out.text.contains("| 一般職 | 4,270円"), "{}", out.text);
+    assert!(out.text.contains("- 品名"));
+    assert!(out.text.contains("  : ドリル"));
+    assert!(out.text.contains("▸ 質問"));
+}
+
+#[test]
+fn form_attribute_binds_outside_controls_and_buttons_outside_forms_need_js() {
+    let out = r(
+        r#"<body><input name="q" form="f"><form id="f" action="/search"></form>
+        <input type="submit" value="外"><input type="file" name="up" aria-label="添付"></body>"#,
+    );
+    assert_eq!(out.fields[0].form, Some(0));
+    assert!(out.text.contains(r#"button "外" (要JS)"#), "{}", out.text);
+    assert!(
+        out.text.contains("ファイル選択欄「添付」は扱えません"),
+        "{}",
+        out.text
+    );
+    assert!(!out.forms[0].post);
+}
+
+#[test]
+fn truncates_by_chars_and_ignores_non_http_links() {
+    let out = render(
+        &format!("<body><p>{}</p><a href=\"javascript:void(0)\">js</a><a href=\"mailto:a@b\">m</a></body>", "あ".repeat(50)),
+        &base(),
+        2,
+        10,
+        &HashMap::new(),
+    );
+    assert!(out.truncated);
+    assert!(
+        out.text.starts_with("ああああああああああ\n"),
+        "{}",
+        out.text
+    );
+    assert!(
+        out.elements.is_empty(),
+        "javascript: / mailto: はリンクにしない"
+    );
+}
+
+#[test]
+fn caps_number_of_elements() {
+    let links = (0..(MAX_ELEMENTS + 10)).fold(String::new(), |mut acc, i| {
+        use std::fmt::Write as _;
+        let _ = write!(acc, "<a href=\"/{i}\">l{i}</a>");
+        acc
+    });
+    let out = render(
+        &format!("<body>{links}</body>"),
+        &base(),
+        1,
+        1_000_000,
+        &HashMap::new(),
+    );
+    assert_eq!(out.elements.len(), MAX_ELEMENTS);
+    assert!(
+        out.text.contains(&format!("l{}", MAX_ELEMENTS + 5)),
+        "上限を超えた分もテキストには残す"
+    );
+}
+
+#[test]
+fn field_state_overrides_values() {
+    let html = r#"<body><form><input name="q" value="a"><input type="checkbox" name="c">
+        <select name="s"><option value="1">一</option><option value="2">二</option></select></form></body>"#;
+    let mut state = HashMap::new();
+    state.insert(
+        1,
+        FieldState {
+            value: Some("検索語".into()),
+            checked: None,
+        },
+    );
+    state.insert(
+        2,
+        FieldState {
+            value: None,
+            checked: Some(true),
+        },
+    );
+    state.insert(
+        3,
+        FieldState {
+            value: Some("2".into()),
+            checked: None,
+        },
+    );
+    let out = render(html, &base(), 4, 12_000, &state);
+    assert!(
+        out.text
+            .contains(r#"[t4.1 textbox "q" type=text value="検索語"]"#),
+        "{}",
+        out.text
+    );
+    assert!(out.text.contains("checked=true"), "{}", out.text);
+    assert!(out.text.contains(r#"value="2""#), "{}", out.text);
+    assert_eq!(
+        out.fields[0].kind,
+        FieldKind::Text {
+            value: "検索語".into()
+        }
+    );
+}

@@ -43,6 +43,9 @@ crates = [
 # E2E の実行環境（compose の shiki-server とその依存）に載らないクレート。変更しても E2E は回さない。
 [none]
 crates = [
+    # エージェントブラウザ（docs/agent/browser.md）。ツールとして shiki-server に載るのは AB.3 からで、
+    # それまではどのページにも届かない。AB.3 で scenario.home の crates へ移す。
+    "shiki-browser",
     "shiki-fuse",
     "shiki-jtd",
     "shiki-sandbox-agent-proto",
