@@ -429,6 +429,21 @@ export async function setThreadOriginNote(threadId: string, noteId: string): Pro
   notifyThreadsChanged();
 }
 
+/// 会話の対象を付け替える（「AI と作る」の会話で作ったアプリに紐づけ、以後はアプリの画面から続ける・D-10 T11）。
+/// サーバは owner だけに許す（共有された会話の編集者は 403）。
+export async function setThreadOriginArtifact(
+  threadId: string,
+  origin: { kind: OriginArtifactKind; id: string },
+): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ origin_artifact: origin }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  notifyThreadsChanged();
+}
+
 /// スレッドの承認モードを取得する（bypass の org 許可も返す・#350）。
 export async function getAutonomousMode(
   threadId: string,

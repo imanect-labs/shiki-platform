@@ -419,6 +419,87 @@ async fn thread_origin_artifact_and_purpose() {
         .is_err());
 }
 
+/// 「AI と作る」の会話を、できたアプリに付け替える（owner のみ・目的は残す・文書の会話は付け替えない・D-10 T11）。
+#[tokio::test]
+async fn set_thread_origin_artifact_reattaches_for_the_owner_only() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, authz.clone()).await;
+    let c = ctx(&tenant);
+    let app = chat::OriginArtifact {
+        kind: chat::OriginArtifactKind::MiniApp,
+        id: uuid::Uuid::new_v4(),
+        name: "受付".into(),
+    };
+
+    let t = store
+        .create_thread(&c, "AI と作る", false, None, None)
+        .await
+        .unwrap();
+    store
+        .set_thread_builder(t.id, &tenant, None, Some(chat::ThreadPurpose::AppBuilder))
+        .await
+        .unwrap();
+    store
+        .set_thread_origin_artifact(&c, t.id, &app, None)
+        .await
+        .unwrap();
+    let got = store.get_thread(&c, t.id, None).await.unwrap();
+    assert_eq!(got.origin_artifact_id, Some(app.id));
+    assert_eq!(
+        got.origin_artifact_kind,
+        Some(chat::OriginArtifactKind::MiniApp)
+    );
+    assert_eq!(got.origin_artifact_name.as_deref(), Some("受付"));
+    assert_eq!(got.purpose, Some(chat::ThreadPurpose::AppBuilder));
+    let b = store.thread_builder(&tenant, t.id).await.unwrap();
+    assert_eq!(b.origin, Some((app.id, chat::OriginArtifactKind::MiniApp)));
+
+    // 文書の会話は付け替えない（CHECK に当てずに入力の誤りで返す）。
+    let note_thread = store
+        .create_thread(
+            &c,
+            "ノート",
+            false,
+            Some(ThreadOrigin {
+                note_id: uuid::Uuid::new_v4(),
+                note_name: "N".into(),
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .set_thread_origin_artifact(&c, note_thread.id, &app, None)
+            .await,
+        Err(chat::ChatError::Invalid(_))
+    ));
+
+    // owner の権限が無ければ付け替えない（共有された会話の編集者など）。
+    let other = store
+        .create_thread(&c, "共有された会話", false, None, None)
+        .await
+        .unwrap();
+    authz.deny_for.lock().unwrap().push((
+        c.subject().to_string(),
+        c.ns().thread(&other.id.to_string()).as_str().to_string(),
+    ));
+    assert!(store
+        .set_thread_origin_artifact(&c, other.id, &app, None)
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .thread_builder(&tenant, other.id)
+            .await
+            .unwrap()
+            .origin,
+        None
+    );
+}
+
 /// 空タイトルは既定名に正規化される。
 #[tokio::test]
 async fn create_thread_defaults_blank_title() {

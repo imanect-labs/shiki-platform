@@ -1,9 +1,11 @@
-//! スレッドの整理のルート（名前の変更・ピン留め・由来ノート・削除）。
+//! スレッドの整理のルート（名前の変更・ピン留め・由来ノート・会話の対象・削除）。
 //!
 //! - 名前の変更・ピン留め・削除はサイドバー履歴の行メニューから使う（owner のみ）。
 //! - 由来ノート（issue #282）: 下書き確定→ノート実体化時に、その会話を新ノートへ紐付けて
 //!   「ノート由来」にする。ノートは**発話ユーザーの viewer 権限**で解決（見えないノートに
 //!   紐づけない・fail-closed）。
+//! - 会話の対象（D-10 T11）: 「AI と作る」の会話でアプリができたら、持ち主の画面がその会話をアプリに紐づけ、
+//!   以後はアプリの画面のパネルから続けられるようにする（owner のみ・道具からは付け替えない）。
 //!
 //! 認可・監査は下位の StorageService / ChatStore が担う（ここでは権限を判定しない）。
 
@@ -43,9 +45,18 @@ pub async fn update_thread(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateThreadRequest>,
 ) -> Result<StatusCode, ApiError> {
-    if req.title.is_none() && req.pinned.is_none() && req.note_id.is_none() {
+    if req.title.is_none()
+        && req.pinned.is_none()
+        && req.note_id.is_none()
+        && req.origin_artifact.is_none()
+    {
         return Err(ApiError::BadRequest(
-            "title・pinned・note_id のいずれかを指定してください".into(),
+            "title・pinned・note_id・origin_artifact のいずれかを指定してください".into(),
+        ));
+    }
+    if req.note_id.is_some() && req.origin_artifact.is_some() {
+        return Err(ApiError::BadRequest(
+            "note_id と origin_artifact は同時に指定できません".into(),
         ));
     }
     let store = chat_store(&state)?;
@@ -61,6 +72,9 @@ pub async fn update_thread(
         )),
         None => None,
     };
+    let origin =
+        super::chat::resolve_origin_artifact(&state, &ctx, trace.as_deref(), req.origin_artifact)
+            .await?;
     if let Some(title) = &req.title {
         store
             .rename_thread(&ctx, id, title, trace.as_deref())
@@ -74,6 +88,11 @@ pub async fn update_thread(
     if let Some((note_id, name)) = note {
         store
             .set_thread_origin_note(&ctx, id, note_id, &name, trace.as_deref())
+            .await?;
+    }
+    if let Some(origin) = origin {
+        store
+            .set_thread_origin_artifact(&ctx, id, &origin, trace.as_deref())
             .await?;
     }
     Ok(StatusCode::NO_CONTENT)

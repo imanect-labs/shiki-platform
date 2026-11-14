@@ -215,7 +215,7 @@ pub async fn create_thread(
 
 /// 会話の対象を**作成者の viewer 権限**で解決し、種類を確かめる（見えない対象に紐づけない・名前は解決時点の表示名を
 /// 非正規化して持つ・D-10 T09）。種類が違えば 400。fail-closed。
-async fn resolve_origin_artifact(
+pub(super) async fn resolve_origin_artifact(
     state: &AppState,
     ctx: &authz::AuthContext,
     trace: Option<&str>,

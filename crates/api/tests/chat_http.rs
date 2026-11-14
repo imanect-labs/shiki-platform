@@ -2109,8 +2109,54 @@ async fn threads_record_their_origin_artifact_and_purpose() {
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
 
+    // 「AI と作る」の会話を、できたアプリに付け替える（PATCH・owner のみ・目的は残す・D-10 T11）。
+    let (st, built) = send_json(
+        &app,
+        "POST",
+        "/threads",
+        auth,
+        Some(serde_json::json!({ "purpose": "app_builder" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{built}");
+    assert!(built["origin_artifact_id"].is_null(), "{built}");
+    let built_id = built["id"].as_str().unwrap().to_string();
+    let (st, body) = send_json(
+        &app,
+        "PATCH",
+        &format!("/threads/{built_id}"),
+        auth,
+        Some(serde_json::json!({ "origin_artifact": { "kind": "mini_app", "id": app_id } })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    let (st, got) = send_json(&app, "GET", &format!("/threads/{built_id}"), auth, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(got["origin_artifact_id"], app_id.as_str(), "{got}");
+    assert_eq!(got["origin_artifact_kind"], "mini_app", "{got}");
+    assert_eq!(got["purpose"], "app_builder", "{got}");
+    // 種類が違う・文書と同時の指定は 400。
+    for req in [
+        serde_json::json!({ "origin_artifact": { "kind": "mini_app", "id": skill_id } }),
+        serde_json::json!({
+            "origin_artifact": { "kind": "mini_app", "id": app_id },
+            "note_id": uuid::Uuid::new_v4(),
+        }),
+    ] {
+        let (st, body) = send_json(
+            &app,
+            "PATCH",
+            &format!("/threads/{built_id}"),
+            auth,
+            Some(req),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    }
+
     for path in [
         format!("/threads/{tid}"),
+        format!("/threads/{built_id}"),
         format!("/artifacts/{app_id}"),
         format!("/artifacts/{skill_id}"),
     ] {

@@ -12,6 +12,7 @@ import {
   Search,
   X,
   Workflow,
+  AppWindow,
 } from "lucide-react";
 import { VisuallyHidden } from "@radix-ui/react-visually-hidden";
 
@@ -248,7 +249,7 @@ function SearchResultRow({ thread, onSelect }: { thread: Thread; onSelect: () =>
   // 文書の横で始めた会話は接頭「ノート: 」等を外し、種類アイコンと補足で由来を示す（サイドバーと揃える）。
   const { kind, title, detail } = threadDisplay(thread);
   const Icon =
-    kind === "note" ? NotebookPen : kind === "office" ? FileText : kind === "workflow" ? Workflow : MessageSquare;
+    kind === "note" ? NotebookPen : kind === "office" ? FileText : kind === "workflow" ? Workflow : kind === "mini_app" ? AppWindow : MessageSquare;
   return (
     <li>
       <button

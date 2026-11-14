@@ -35,6 +35,7 @@ import {
   ThreadNotFound,
   type ApprovalRequest,
   type AutonomousMode,
+  type BuilderRef,
   type Attachment,
   type Citation,
   type ContentBlock,
@@ -254,6 +255,7 @@ export function Conversation({
   adoptSkillDraftOnLoad = false,
   onDocumentCreated,
   onWorkflowSaved,
+  onBuilderSaved,
 }: {
   threadId: string;
   /// "page"=/c/[id] 単独表示（統一ヘッダにタイトル/共有/設定を注入・幅は max-w-3xl 中央）。
@@ -281,6 +283,9 @@ export function Conversation({
   /// AI がワークフローを保存したとき（emit_workflow の参照を受けた時点・ワークフローエディタの読み直し・D-10 T10）。
   /// 再訪の送り直しでも呼ばれ得るので、受け手は版で冪等に扱う。
   onWorkflowSaved?: (ref: { id: string; version: number }) => void;
+  /// AI がテーブル・保存ビュー・ミニアプリなどを作った・直したとき（builder_ref を受けた時点・ミニアプリの画面の
+  /// 読み直し・D-10 T11）。再訪の送り直しでも呼ばれ得るので、受け手は版で冪等に扱う。
+  onBuilderSaved?: (ref: BuilderRef) => void;
 }) {
   const isPanel = variant === "panel";
   const router = useRouter();
@@ -304,6 +309,10 @@ export function Conversation({
   React.useEffect(() => {
     onWorkflowSavedRef.current = onWorkflowSaved;
   }, [onWorkflowSaved]);
+  const onBuilderSavedRef = React.useRef(onBuilderSaved);
+  React.useEffect(() => {
+    onBuilderSavedRef.current = onBuilderSaved;
+  }, [onBuilderSaved]);
   // 読み込み時に下書きスキルを渡したか（`adoptSkillDraftOnLoad`・1 回だけ）。
   const adoptedDraftRef = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -647,8 +656,11 @@ export function Conversation({
       },
       onNoteRef: (note) =>
         updateStream((s) => (s ? { ...s, noteRefs: [...s.noteRefs, note] } : s)),
-      onBuilderRef: (item) =>
-        updateStream((s) => (s ? { ...s, builderRefs: [...s.builderRefs, item] } : s)),
+      onBuilderRef: (item) => {
+        updateStream((s) => (s ? { ...s, builderRefs: [...s.builderRefs, item] } : s));
+        const saved = parseBuilderRef(item);
+        if (saved) onBuilderSavedRef.current?.(saved);
+      },
       onTranslation: (raw) =>
         updateStream((s) => (s ? { ...s, translations: [...s.translations, raw] } : s)),
       onNoteDraft: (raw) => {

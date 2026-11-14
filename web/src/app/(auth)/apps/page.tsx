@@ -1,10 +1,14 @@
 "use client";
 
 /// ミニアプリ管理ページ（Task 6.11）: 一覧・作成・共有・実行画面への導線。
+///
+/// 「AI と作る」（D-10 T11）: 目的 app_builder の会話を作って会話の画面へ移る。AI が表・ビュー・ワークフロー・画面を
+/// 作り、画面ができたら会話の画面がその会話をアプリに紐づける（以後はアプリの画面の「AI に依頼」から続けられる）。
 
 import * as React from "react";
 import Link from "next/link";
-import { History, LayoutGrid, Loader2, Play, Share2, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { History, LayoutGrid, Loader2, Play, Share2, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -21,6 +25,7 @@ import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
 import { savedToast, UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
 import { useMe } from "@/hooks/use-me";
+import { createThread } from "@/lib/chat-api";
 
 type DialogState =
   | { kind: "closed" }
@@ -61,11 +66,41 @@ export default function AppsPage() {
     }
   };
 
+  /// 「AI と作る」: 目的 app_builder の会話を作って開く（最初の依頼は会話の画面で書く）。
+  const router = useRouter();
+  const [startingAi, setStartingAi] = React.useState(false);
+  const buildWithAi = async () => {
+    setStartingAi(true);
+    try {
+      const thread = await createThread("アプリを AI と作る", false, { purpose: "app_builder" });
+      router.push(`/c/${thread.id}`);
+    } catch {
+      setStartingAi(false);
+      toast({
+        variant: "destructive",
+        title: "AI との会話を始められませんでした",
+        description: "時間をおいて、もう一度試してください。",
+      });
+    }
+  };
+
   const createButton = (
     <Button onClick={() => setDialog({ kind: "create" })}>
       <LayoutGrid className="size-4" aria-hidden />
       アプリを作成
     </Button>
+  );
+  const aiButton = (
+    <Button variant="outline" onClick={() => void buildWithAi()} disabled={startingAi} data-testid="apps-build-with-ai">
+      {startingAi ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
+      AI と作る
+    </Button>
+  );
+  const actions = (
+    <>
+      {aiButton}
+      {createButton}
+    </>
   );
 
   return (
@@ -73,7 +108,7 @@ export default function AppsPage() {
       title="アプリ"
       description="画面とワークフローを束ねたアプリを作り、公開して共有した人に使ってもらえます。"
       className="max-w-4xl"
-      actions={createButton}
+      actions={actions}
     >
       {items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
@@ -88,8 +123,8 @@ export default function AppsPage() {
         <EmptyState
           icon={LayoutGrid}
           title="アプリはまだありません"
-          description="UI スペックとワークフローを束ねて、繰り返し使える画面にしましょう。"
-          action={createButton}
+          description="UI スペックとワークフローを束ねて、繰り返し使える画面にしましょう。AI に頼めば、表とワークフローから一緒に作れます。"
+          action={<div className="flex flex-wrap justify-center gap-2">{actions}</div>}
         />
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">

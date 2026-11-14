@@ -9,14 +9,22 @@
 /// 下書きと公開（D-16・GAP-36）: 共有した人（使う人）が開くのは公開したバージョンだけ。作る人（editor）は公開の帯で
 /// 下書きを試し、公開する・公開を戻す・前のバージョンの内容を下書きにする。バージョン履歴も作る人にだけ出す。
 /// スキルを束ねたアプリには「このアプリについて AI に聞く」を置き、アプリを付けた会話を始める（D-16 の (b)）。
+///
+/// 「AI に依頼」パネル（D-10 T11）: 編集できる人には、文書のアシスタントと同じ形（PC は右に浮かぶカード・スマホは下からの
+/// シート）で、このアプリを対象にした会話を出す。AI がこのアプリを保存したら、その下書きを開き直す。編集のダイアログを
+/// 開いていればダイアログの中身はそのまま残し（人の書きかけを黙って捨てない）、保存すると版の照合（409）が最新の読み込みを
+/// 促す。AI が保存ビューを直したら画面の表を読み直す。
 
 import * as React from "react";
 import { use } from "react";
 import { AppWindow, History, Loader2, MessageSquare, Pencil, Share2, TriangleAlert } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
+import { AssistantLayout } from "@/components/shell/assistant-sheet";
+import { MiniAppChatPanel } from "@/components/miniapp/app-assistant";
+import { useDocThreadDeepLink } from "@/hooks/use-doc-thread-deep-link";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
@@ -49,7 +57,7 @@ import {
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
 import { myBlockedReason } from "@/lib/access-wording";
-import { createThread } from "@/lib/chat-api";
+import { createThread, type BuilderRef } from "@/lib/chat-api";
 
 /// 起動の状態のうち、まだ終わっていないもの（起動中・順番待ち・実行中・待機中）。
 const OPEN_RUN_STATUSES: ReadonlySet<MiniAppRun["status"]> = new Set(["starting", "queued", "running", "waiting"]);
@@ -86,6 +94,8 @@ function findPart(
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { chatOpen, setChatOpen, deepLinkThreadId } = useDocThreadDeepLink(searchParams.get("thread"));
   const [app, setApp] = React.useState<ResolvedMiniApp | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   /// 見つからない・見る権限がない（他のテナントのアプリを含む・存在を区別しない）。
@@ -95,6 +105,8 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   /// 開くバージョン（`undefined` は公開しているバージョン。まだ公開していなければ作る人には最新）。
   const [version, setVersion] = React.useState<number | undefined>(undefined);
   const [reloadKey, setReloadKey] = React.useState(0);
+  // 画面の表を読み直した回数（起動が終わった・AI がビューを直した・権限が変わった）。
+  const [gridRevision, setGridRevision] = React.useState(0);
   const [runs, setRuns] = React.useState<MiniAppRun[]>([]);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [versionsOpen, setVersionsOpen] = React.useState(false);
@@ -111,6 +123,11 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   // 閲覧・編集の共有を受けた人には出さない（一覧が空に見え、付与が 403 になる・BUG-78）。
   const canShare = app?.can_share === true;
   const latest = app?.latest_version ?? app?.version;
+  // 知っている最新の版（AI の保存の知らせを版で冪等に扱う・再訪の送り直しで同じ版を受けても読み直さない）。
+  const latestRef = React.useRef<number | undefined>(undefined);
+  latestRef.current = latest;
+  const editingRef = React.useRef(false);
+  editingRef.current = editTarget != null;
 
   /// 編集は最新のバージョン（下書き）から始める。いま開いているのが別のバージョンなら、最新を読んでから開く。
   const openEditor = React.useCallback(async () => {
@@ -180,8 +197,12 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
           ) : null}
         </>
       ) : undefined,
+      // 「AI に依頼」は直せる人にだけ出す（使う人に AI に直させる口を見せない）。
+      assistant: canEdit
+        ? { active: chatOpen, onToggle: () => setChatOpen(!chatOpen), testId: "miniapp-assistant-toggle" }
+        : undefined,
     }),
-    [appName, subtitle, Boolean(app), canEdit, canShare, openEditor],
+    [appName, subtitle, Boolean(app), canEdit, canShare, openEditor, chatOpen, setChatOpen],
   );
 
   React.useEffect(() => {
@@ -207,6 +228,30 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
       active = false;
     };
   }, [id, version, reloadKey]);
+
+  /// AI がアプリ・保存ビューを保存したとき（パネルの会話の builder_ref・D-10 T11）。
+  const onBuilderSaved = React.useCallback(
+    (ref: BuilderRef) => {
+      if (ref.kind === "data_view") {
+        // 束ねたビューかは画面の表が知っている。読み直すだけなので、どのビューでも表を読み直す。
+        setGridRevision((n) => n + 1);
+        return;
+      }
+      if (ref.kind !== "mini_app" || ref.id !== id) return;
+      if (latestRef.current != null && ref.version <= latestRef.current) return;
+      latestRef.current = ref.version;
+      // 保存した下書きを開いて試せるようにする（使う人の画面は公開するまで変わらない）。
+      setVersion(ref.version);
+      setReloadKey((k) => k + 1);
+      toast({
+        title: `AI が v${ref.version} を保存しました`,
+        description: editingRef.current
+          ? "編集中の内容は残しています。保存すると、先に最新の内容を読み込むよう案内します。"
+          : "下書きを開きました。公開するまで、使う人の画面は変わりません。",
+      });
+    },
+    [id],
+  );
 
   /// 開いているバージョンの内容で新しい下書きを保存する（前のバージョンに戻す・公開は変えない）。
   const restore = async (from: number) => {
@@ -293,7 +338,6 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   // 起動が終わったら画面の表（```data_grid）を読み直す（ワークフローが書いた行を出す・BUG-19）。
   // 前に読んだときに動いていた起動が終わった状態になったとき、または前の一覧に無かった起動がいきなり終わった
   // 状態で現れたとき（短いフローは、押した直後の最初の一覧でもう終わっている）。最初の一覧は基準にするだけ。
-  const [gridRevision, setGridRevision] = React.useState(0);
   const seenRuns = React.useRef<Map<string, boolean> | null>(null);
   React.useEffect(() => {
     if (runsLoaded === 0) return;
@@ -396,7 +440,8 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     [gridRun, partAccess, checkAccess],
   );
 
-  return (
+  // 本文（アプリの画面）。AI のパネルを開いている間も、本文の列だけをスクロールする。
+  const body = (
     <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-1 md:py-6">
       {notPublished ? (
         <EmptyState
@@ -559,6 +604,33 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
           ) : null}
         </>
       )}
+    </div>
+  );
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <AssistantLayout
+        open={chatOpen && canEdit}
+        onClose={() => setChatOpen(false)}
+        label="アプリのアシスタント"
+        title="AI に依頼"
+        // 閉じても書きかけの依頼と会話の購読を残す（AI が保存した知らせを受け続ける）。
+        keepMounted
+        panel={
+          app && canEdit ? (
+            <MiniAppChatPanel
+              appId={app.id}
+              name={app.body.description}
+              initialThreadId={deepLinkThreadId}
+              onBuilderSaved={onBuilderSaved}
+            />
+          ) : null
+        }
+      >
+        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain">
+          {body}
+        </div>
+      </AssistantLayout>
     </div>
   );
 }

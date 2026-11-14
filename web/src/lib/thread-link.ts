@@ -11,8 +11,9 @@
 import type { Thread } from "@/lib/chat-api";
 
 /// 会話の由来。`null` は通常のチャット（または開く画面を持たない文書）。
-/// `workflow` はワークフローエディタの「AI に依頼」で始めた会話（D-10 T10）。
-export type ThreadOriginKind = "note" | "office" | "workflow" | null;
+/// `workflow` はワークフローエディタの「AI に依頼」で始めた会話（D-10 T10）。`mini_app` はミニアプリの画面の
+/// 「AI に依頼」で始めた会話と、「AI と作る」でアプリができた会話（D-10 T11）。
+export type ThreadOriginKind = "note" | "office" | "workflow" | "mini_app" | null;
 
 /// 由来の判定に使う会話の欄。
 type OriginFields = Pick<
@@ -24,6 +25,7 @@ const OFFICE_EXTENSIONS = [".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"];
 
 export function threadOriginKind(thread: OriginFields): ThreadOriginKind {
   if (thread.originArtifactId && thread.originArtifactKind === "workflow") return "workflow";
+  if (thread.originArtifactId && thread.originArtifactKind === "mini_app") return "mini_app";
   if (!thread.originNoteId) return null;
   const name = (thread.originNoteName ?? "").toLowerCase();
   if (OFFICE_EXTENSIONS.some((ext) => name.endsWith(ext))) return "office";
@@ -41,6 +43,8 @@ export function threadHref(thread: Pick<Thread, "id"> & OriginFields): string {
       return `/office/${thread.originNoteId}?thread=${thread.id}`;
     case "workflow":
       return `/workflows/${thread.originArtifactId}?thread=${thread.id}`;
+    case "mini_app":
+      return `/apps/${thread.originArtifactId}?thread=${thread.id}`;
     default:
       return `/c/${thread.id}`;
   }
@@ -48,7 +52,7 @@ export function threadHref(thread: Pick<Thread, "id"> & OriginFields): string {
 
 /// 文書の横で始めた会話のタイトルに付く接頭（`note-chat-panel.tsx`「ノート: 」・
 /// `office-chat-panel.tsx`「文書: 」が付与）。履歴では種類アイコンと 2 行目で由来を示すので外す。
-const DOC_TITLE_PREFIX = /^(?:ノート|文書|ワークフロー)[:：]\s*/u;
+const DOC_TITLE_PREFIX = /^(?:ノート|文書|ワークフロー|アプリ)[:：]\s*/u;
 const DOC_EXTENSION = /\.(?:md|docx|xlsx|pptx|odt|ods|odp)$/iu;
 
 /// 履歴・検索パレットの 1 行に出す表示用の情報。
@@ -65,6 +69,7 @@ export function threadDisplay(thread: Pick<Thread, "title" | "originArtifactName
   if (kind === null) return { kind, title: thread.title, detail: null };
   const title = thread.title.replace(DOC_TITLE_PREFIX, "") || thread.title;
   if (kind === "workflow") return { kind, title, detail: "ワークフローの会話" };
+  if (kind === "mini_app") return { kind, title, detail: "アプリの会話" };
   const docName = (thread.originNoteName ?? "").replace(DOC_EXTENSION, "");
   const noun = kind === "note" ? "ノート" : "文書";
   // 下書きを保存して文書由来になった会話はタイトルが元のチャットのまま。そのときは文書名を補う。

@@ -6,7 +6,7 @@
 /// **アクティブ会話の保存先だけが違う**ため、そこを [`ActiveThreadStore`] に抽象化して共有する。
 /// ドキュメント:会話 = 1:N（`origin_note_id` = ドキュメントの node id で会話一覧を引く）。
 /// ワークフローエディタの「AI に依頼」も同じパネルを使う（`originKind="workflow"`・会話の対象は
-/// `origin_artifact`・D-10 T09）。
+/// `origin_artifact`・D-10 T09）。ミニアプリの画面の「AI に依頼」も同じ（`originKind="mini_app"`・T11）。
 /// 会話 UI は既存 [`Conversation`]（variant=panel）を再利用する。
 ///
 /// 会話は**最初の発話を送ったとき**に作る（[`DocChatDraft`]）。パネルを開いただけ・「新しい会話」を
@@ -29,6 +29,7 @@ import {
   getThread,
   listThreads,
   postMessage,
+  type BuilderRef,
   type OriginArtifactKind,
   type Thread,
 } from "@/lib/chat-api";
@@ -72,6 +73,7 @@ export function DocChatPanel({
   hint,
   notice,
   onWorkflowSaved,
+  onBuilderSaved,
 }: {
   store: ActiveThreadStore;
   /// 紐づけ先の id（文書はストレージの node id＝origin_note_id・ワークフローは artifact id）。
@@ -94,6 +96,8 @@ export function DocChatPanel({
   notice?: React.ReactNode;
   /// AI がワークフローを保存したとき（emit_workflow の参照・エディタの読み直し・D-10 T10）。
   onWorkflowSaved?: (ref: { id: string; version: number }) => void;
+  /// AI がアプリ・ビューなどを作った・直したとき（builder_ref・ミニアプリの画面の読み直し・D-10 T11）。
+  onBuilderSaved?: (ref: BuilderRef) => void;
 }) {
   const [activeThreadId, setActiveThreadIdState] = React.useState<string | null>(() =>
     store.read(),
@@ -367,6 +371,7 @@ export function DocChatPanel({
             threadId={shownThreadId}
             variant="panel"
             onWorkflowSaved={onWorkflowSaved}
+            onBuilderSaved={onBuilderSaved}
           />
         ) : verifyingInitial ? (
           <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">

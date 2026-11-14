@@ -63,6 +63,64 @@ impl ChatStore {
         Ok(())
     }
 
+    /// 会話の対象を付け替える（「AI と作る」の会話で作ったアプリを、その会話の対象にする・D-10 T11）。
+    ///
+    /// **owner のみ**（共有された会話の編集者は付け替えられない）。対象の存在・種類と owner の viewer は API 層が
+    /// 確かめてから呼ぶこと。文書の会話（`origin_note_id` を持つ）は付け替えない（どちらの画面の会話か 1 つに決める・
+    /// 0159 の CHECK）。目的（purpose）はそのまま残す。
+    pub async fn set_thread_origin_artifact(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        origin: &crate::origin::OriginArtifact,
+        trace_id: Option<&str>,
+    ) -> Result<(), ChatError> {
+        self.require_thread(
+            ctx,
+            thread_id,
+            Relation::Owner,
+            AuditAction::ThreadSetOrigin,
+            trace_id,
+        )
+        .await?;
+        let updated = sqlx::query(
+            "UPDATE thread SET origin_artifact_id = $3, origin_artifact_kind = $4, \
+             origin_artifact_name = $5, updated_at = now() \
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL AND origin_note_id IS NULL",
+        )
+        .bind(thread_id)
+        .bind(ctx.tenant_id())
+        .bind(origin.id)
+        .bind(origin.kind.as_str())
+        .bind(&origin.name)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        if updated.rows_affected() == 0 {
+            return Err(ChatError::Invalid(
+                "文書の会話は、ほかの対象に付け替えられません".into(),
+            ));
+        }
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: AuditAction::ThreadSetOrigin,
+                    object_type: "thread",
+                    object_id: &thread_id.to_string(),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({
+                        "origin_artifact_id": origin.id.to_string(),
+                        "origin_artifact_kind": origin.kind.as_str(),
+                    }),
+                },
+            )
+            .await
+            .map_err(map_storage)?;
+        Ok(())
+    }
+
     /// スレッドの対象と目的（生成ワーカーが注記・道具・予算を決めるのに使う・無ければ `None`）。
     pub async fn thread_builder(
         &self,

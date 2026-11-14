@@ -389,6 +389,7 @@ e2e = [
     "miniapp-access-check.spec.ts",
     "miniapp-access-paths.spec.ts",
     "miniapp-ai-model-lock.spec.ts",
+    "miniapp-ai-panel.spec.ts",
     "miniapp-b1.spec.ts",
     "miniapp-card-states.spec.ts",
     "miniapp-client-missing.spec.ts",

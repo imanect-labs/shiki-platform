@@ -284,6 +284,10 @@ pub struct UpdateThreadRequest {
     /// 由来ノート（下書き確定→ノート実体化の紐付け・issue #282）。
     #[serde(default)]
     pub note_id: Option<Uuid>,
+    /// 会話の対象（ワークフロー・ミニアプリ）を付け替える（「AI と作る」の会話で作ったアプリに紐づける・D-10 T11）。
+    /// owner のみ・対象は owner の viewer 権限で解決する。`note_id` とは併用できない。
+    #[serde(default)]
+    pub origin_artifact: Option<OriginArtifactRequest>,
 }
 
 /// 一覧クエリ。

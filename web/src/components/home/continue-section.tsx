@@ -13,6 +13,7 @@ import {
   Presentation,
   ShieldCheck,
   Workflow,
+  AppWindow,
   type LucideIcon,
 } from "lucide-react";
 
@@ -181,7 +182,9 @@ export function ContinueSection({ feed }: { feed: HomeFeed }) {
                           ? FileText
                           : d.kind === "workflow"
                             ? Workflow
-                            : MessageSquareText
+                            : d.kind === "mini_app"
+                              ? AppWindow
+                              : MessageSquareText
                     }
                     seasonIndex={i}
                     title={d.title || "無題の会話"}

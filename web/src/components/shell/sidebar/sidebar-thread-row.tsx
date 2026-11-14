@@ -14,6 +14,7 @@ import {
   Share2,
   Trash2,
   Workflow,
+  AppWindow,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -41,7 +42,7 @@ export type ThreadRowActions = {
 
 /// 文書由来の会話の先頭に置く種類アイコン（小さな角丸タイル）。
 function OriginTile({ kind }: { kind: Exclude<ThreadOriginKind, null> }) {
-  const Icon = kind === "note" ? NotebookPen : kind === "workflow" ? Workflow : FileText;
+  const Icon = kind === "note" ? NotebookPen : kind === "workflow" ? Workflow : kind === "mini_app" ? AppWindow : FileText;
   return (
     <span
       aria-hidden
