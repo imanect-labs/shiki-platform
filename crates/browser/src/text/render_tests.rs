@@ -292,12 +292,9 @@ fn disabled_options_are_not_selectable_or_default() {
         <optgroup label="g" disabled><option value="x">X</option></optgroup><option value="y">Y</option>
         <option value="z" disabled selected>Z</option></select></form>"#,
     );
-    assert_eq!(
-        out.fields[0].kind,
-        FieldKind::Select {
-            values: vec!["y".into()]
-        }
-    );
+    // 無効な選択肢 z が selected なので、選ばれたまま送信からは外れる（y を既定にしない）。
+    assert_eq!(out.fields[0].kind, FieldKind::Select { values: vec![] });
+    assert!(out.text.contains(r#"value="z""#), "{}", out.text);
     assert_eq!(
         out.elements[0].kind,
         ElementKind::Select {
@@ -322,5 +319,18 @@ fn first_legend_of_disabled_fieldset_stays_enabled() {
     assert_eq!(
         disabled,
         [("in_legend", false), ("body", true), ("second", true)]
+    );
+}
+
+#[test]
+fn no_selected_option_defaults_to_first_enabled() {
+    let out = r(
+        r#"<form><select name="s"><option value="" disabled>選んでください</option><option value="a">A</option></select></form>"#,
+    );
+    assert_eq!(
+        out.fields[0].kind,
+        FieldKind::Select {
+            values: vec!["a".into()]
+        }
     );
 }

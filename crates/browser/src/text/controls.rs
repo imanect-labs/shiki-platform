@@ -265,7 +265,8 @@ impl Walker<'_> {
                     || d.parent().is_some_and(|p| {
                         p.node_name().is_some_and(|n| &*n == "optgroup") && p.has_attr("disabled")
                     });
-                if d.has_attr("selected") && !disabled {
+                // 無効な選択肢でも selected なら選ばれたまま（送信からだけ外れる・HTML 標準）。
+                if d.has_attr("selected") {
                     if !multiple {
                         selected.clear();
                     }
@@ -291,6 +292,11 @@ impl Walker<'_> {
             })
             .collect::<Vec<_>>()
             .join(", ");
+        let disabled_values: Vec<String> = all
+            .iter()
+            .filter(|(_, _, d)| *d)
+            .map(|(v, _, _)| v.clone())
+            .collect();
         let options: Vec<(String, String)> = all
             .into_iter()
             .filter(|(_, _, d)| !d)
@@ -301,14 +307,13 @@ impl Walker<'_> {
             .pending_state()
             .and_then(|s| s.selected.clone())
             .unwrap_or(selected);
-        self.push_field(
-            node,
-            form,
-            FieldKind::Select {
-                values: values.clone(),
-            },
-            id,
-        );
+        // 送るのは選ばれていて無効でないものだけ。
+        let submitted = values
+            .iter()
+            .filter(|v| !disabled_values.contains(v))
+            .cloned()
+            .collect();
+        self.push_field(node, form, FieldKind::Select { values: submitted }, id);
         if let Some(id) = id {
             let shown = if multiple {
                 format!("{values:?}")
