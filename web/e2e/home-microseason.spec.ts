@@ -22,7 +22,7 @@ test.describe("ホームの七十二候", () => {
   });
 
   for (const c of CASES) {
-    test(`${c.at.slice(0, 10)} は「${c.name}」`, async ({ page }) => {
+    test(`${c.at} は「${c.name}」`, async ({ page }) => {
       await page.clock.setFixedTime(new Date(c.at));
       await page.goto("/");
       await expect(page.getByTestId("home-microseason")).toHaveText(c.name);
