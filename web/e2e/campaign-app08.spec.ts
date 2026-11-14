@@ -10,6 +10,7 @@ import {
   WHY,
   WHY_OTHER,
   app08World,
+  cronDealRows,
   cronDeals,
   kpiOf,
   type Deal,
@@ -20,7 +21,7 @@ import { call, ok, type Json } from "./campaign/http";
 import { people, phoneOf, type People } from "./campaign/people";
 import { gridRows, pressInApp, replyText, replyTones } from "./campaign/press";
 import { noSideScroll, shot } from "./campaign/shots";
-import { jstToday, runAtDone, withMinuteCron } from "./campaign/time";
+import { CRON_WEEK_MARGIN_MS, awayFromJstWeekBoundary, jstToday, lastWeekStart, runAtDone, withMinuteCron } from "./campaign/time";
 import { cmp, files, rows, runs, type DataRecord, type NodeItem, type RunDetail } from "./campaign/truth";
 import { buildWorld, cleanupWorld, type World } from "./campaign/world";
 
@@ -42,15 +43,11 @@ test.describe.configure({ mode: "serial" });
 
 let P: People;
 let W: World;
-/// 本物の cron の週に置いた商談（組んだ日の今日から決める）。
-let cronFixture: Deal[] = [];
 
 test.beforeAll(async ({ browser }) => {
   test.setTimeout(300_000);
   P = await people(browser);
-  const today = jstToday();
-  cronFixture = cronDeals(today);
-  W = await buildWorld(P, app08World(today));
+  W = await buildWorld(P, app08World());
 });
 
 test.afterAll(async () => {
@@ -417,12 +414,20 @@ test("（F6）集計のビューを表に束ねると、0 件と出さずに、�
 });
 
 test("（追加）本物のスケジュール（毎分の写し・委譲）が、委譲元 alice の見え方（bob の商談も含む）で KPI を書く", async () => {
-  test.setTimeout(300_000);
+  test.setTimeout(300_000 + CRON_WEEK_MARGIN_MS);
   const mainBefore = (await kpiRows(WEEK.main.start)).map((r) => [r.id, r.rev]);
+  // 毎分の cron が数える「先週」に商談を置く（置いてから run までの間に週が替わらないよう、替わり目の手前なら待つ）。
+  await awayFromJstWeekBoundary();
+  const today = jstToday();
+  const cronFixture: Deal[] = cronDeals(today);
+  for (const row of cronDealRows(today)) {
+    await ok(alice(), "POST", `/data/tables/${W.tables.deals.id}/records`, { data: W.fill(row) }, [201]);
+  }
   await withMinuteCron(alice(), W.workflows.weekly, async ({ workflowId, run, detail }) => {
     expect(run.trigger_kind).toBe("schedule");
     expect(detail.status, JSON.stringify(detail.failure)).toBe("succeeded");
     const lw = await runs.stepOutput<{ start: string; end: string }>(alice(), workflowId, run.run_id, "last_week");
+    expect(lw.start, "cron の run の先週は、商談を置いた週").toBe(lastWeekStart(today));
     const pw = await runs.stepOutput<{ start: string; end: string }>(alice(), workflowId, run.run_id, "prev_week");
     const ends: RunDetail[] = [];
     for (const r of await runs.list(alice(), workflowId, { trigger_kind: "schedule" })) ends.push(await runs.waitEnd(alice(), workflowId, r.run_id, 120_000));

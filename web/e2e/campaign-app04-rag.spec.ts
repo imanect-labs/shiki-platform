@@ -9,8 +9,9 @@ import { cmp, expectSingleRow, rows, runs } from "./campaign/truth";
 import { buildWorld, cleanupWorld, type World } from "./campaign/world";
 
 /// APP-04 請求書の読み取り → 支払台帳（台帳 §7.13 の APP-04・RAG の版: 請求書は PDF）。PDF の本文は社内文書の検索の
-/// 取り込み（worker）が作るので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する（`/api/search` が
-/// 503・workflow-storage-read-document.spec.ts と同じ見分け方・D-226 (4)）。LLM は stub。
+/// 取り込み（worker）が作るので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する
+/// （構成で切っているかで見分け、有効なのに検索が答えなければ skip せずに落とす・apps/app12.ts の ragEnabled・D-226 (4)）。
+/// LLM は stub。
 /// PDF の本文は頭が「〔p.1〕」になり、stub の駆動の語を置けないので、抽出は stub の既定の最小値（文字は空・金額は 0）になる。
 /// そのため、確かめるのは仕組みだけ（§7.13）: (1) bob がドライブの画面から PDF を置くと、storage.read の step が取り込みを
 /// 待って（index_pending で失敗せず・試す回数を使わず）成功し、取り込みが終わってからの読み直しのうちに payables に

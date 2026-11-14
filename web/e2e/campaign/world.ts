@@ -162,6 +162,8 @@ export type World = {
   defer: (step: () => Promise<unknown>) => void;
   /// 内部: 片付けの材料。
   _undo: Undo;
+  /// 内部: 組み立てを止める印（beforeAll の時間切れの後に画面を閉じるとき・[`buildWorld`]）。
+  _abort: boolean;
 };
 
 type Undo = {
@@ -315,7 +317,48 @@ export async function sweepCampaignSchedules(page: Page): Promise<string[]> {
   return swept;
 }
 
-/// ドライブの画面からファイルを置き、id を返す（drive-reindex.spec.ts と同じ道）。
+/// 置くファイル。
+export type DriveFile = { name: string; content: string | Buffer; mimeType?: string };
+
+/// ドライブの画面からファイルをまとめて置き（ファイルの選択で複数を選ぶのと同じ・drive-reindex.spec.ts と同じ道）、
+/// 名前 → id を返す。開き直した直後のドライブは、画面の準備（hydration）の前に選んだファイルを黙って落とすことが
+/// ある（続けて置いた 2 つ目が出なかった・APP-04）ので、画面の準備を待ってから選び、出なければ置き直す（3 回まで）。
+/// 置き直すのは、API で見てその名前のファイルがまだ無いものだけ（二重に置かない）。
+export async function placeFilesViaDrive(page: Page, folderId: string, files: DriveFile[]): Promise<Record<string, string>> {
+  const ids: Record<string, string> = {};
+  const look = async () => {
+    const r = await call<{ items?: { id: string; name: string }[] }>(page, "GET", `/nodes?parent_id=${folderId}&limit=200`);
+    for (const c of r.body?.items ?? []) if (files.some((f) => f.name === c.name)) ids[c.name] = c.id;
+    return files.every((f) => ids[f.name]);
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // 前の回の置き方が遅れて届いていれば、その分は置き直さない。
+    if (attempt > 0 && (await look())) break;
+    const missing = files.filter((f) => !ids[f.name]);
+    await page.goto(`/drive?folder=${folderId}`);
+    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+    const input = page.locator('input[type="file"][multiple]');
+    await expect(input).toBeAttached({ timeout: 30_000 });
+    await input.setInputFiles(
+      missing.map((f) => ({
+        name: f.name,
+        mimeType: f.mimeType ?? "text/plain",
+        buffer: typeof f.content === "string" ? Buffer.from(f.content, "utf8") : f.content,
+      })),
+    );
+    const done = await expect
+      .poll(look, { timeout: 30_000, intervals: [500, 1_000, 2_000] })
+      .toBe(true)
+      .then(() => true)
+      .catch(() => false);
+    if (done) break;
+  }
+  const lost = files.filter((f) => !ids[f.name]).map((f) => f.name);
+  if (lost.length > 0) throw new Error(`ドライブの画面から置けなかった（3 回）: ${lost.join("・")}`);
+  return ids;
+}
+
+/// ドライブの画面からファイルを 1 つ置き、id を返す（[`placeFilesViaDrive`]）。
 export async function uploadFile(
   page: Page,
   folderId: string,
@@ -323,22 +366,7 @@ export async function uploadFile(
   content: string | Buffer,
   mimeType = "text/plain",
 ): Promise<string> {
-  await page.goto(`/drive?folder=${folderId}`);
-  await page
-    .locator('input[type="file"][multiple]')
-    .setInputFiles({ name, mimeType, buffer: typeof content === "string" ? Buffer.from(content, "utf8") : content });
-  let id = "";
-  await expect
-    .poll(
-      async () => {
-        const r = await call<{ items?: { id: string; name: string }[] }>(page, "GET", `/nodes?parent_id=${folderId}`);
-        id = r.body?.items?.find((c) => c.name === name)?.id ?? "";
-        return id;
-      },
-      { timeout: 30_000 },
-    )
-    .not.toBe("");
-  return id;
+  return (await placeFilesViaDrive(page, folderId, [{ name, content, mimeType }]))[name];
 }
 
 function emptyWorld(P: People, key: string, uniq: string): World {
@@ -363,20 +391,54 @@ function emptyWorld(P: People, key: string, uniq: string): World {
     fill: <T>(v: T) => fillWith(v, values),
     defer: (step) => undo.deferred.push(step),
     _undo: undo,
+    _abort: false,
   };
   return w;
 }
 
+/// 組み立てを止める印が付いていれば止める（作った分は buildWorld が片付ける）。
+function checkAbort(w: World): void {
+  if (w._abort) throw new Error(`世界 ${w.key}-${w.uniq} の組み立てを止めた（beforeAll の時間切れの後に画面を閉じる）`);
+}
+
+/// 組み立てを止めてから片付けが終わるのを待つ上限（固まった呼び出しで afterAll の時間を使い切らない）。
+const ABORT_WAIT_MS = 120_000;
+
 /// 世界を組む（alice の画面で）。落ちたら作った分を片付けてから投げ直す。
+///
+/// beforeAll が組み立ての途中で時間切れになると、spec の `W` には何も入らず、afterAll の `if (W) cleanupWorld(W)` は
+/// 片付けない（組み立ては裏で続き、画面を閉じた後に落ちて、閉じた画面での片付けも黙って失敗する）。そこで、画面を
+/// 閉じる前の片付け（`People.onClose`）に、組み立てを止めて片付けが終わるのを待つ手順を足しておく。組み立てが
+/// 終われば外す（それからは spec の afterAll が片付ける）。
 export async function buildWorld(P: People, def: WorldDef): Promise<World> {
   const uniq = def.uniq ?? uniqTag();
   const w = emptyWorld(P, def.key, uniq);
+  const run = (async () => {
+    try {
+      await build(w, def);
+      return w;
+    } catch (e) {
+      await cleanupWorld(w).catch(() => undefined);
+      throw e;
+    }
+  })();
+  const unhook = P.onClose(async () => {
+    w._abort = true;
+    const settled = run.then(
+      () => cleanupWorld(w).catch(() => undefined),
+      () => undefined,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise((resolve) => {
+      timer = setTimeout(resolve, ABORT_WAIT_MS);
+    });
+    await Promise.race([settled, limit]);
+    clearTimeout(timer);
+  });
   try {
-    await build(w, def);
-    return w;
-  } catch (e) {
-    await cleanupWorld(w).catch(() => undefined);
-    throw e;
+    return await run;
+  } finally {
+    unhook();
   }
 }
 
@@ -384,6 +446,7 @@ async function build(w: World, def: WorldDef): Promise<void> {
   const page = w.people.alice.page;
   const tenant = w.people.alice.tenant;
   await sweepCampaignSchedules(page);
+  checkAbort(w);
 
   if (def.ai?.chat) {
     w._undo.models.push(await pinStubOrgDefault(page));
@@ -424,6 +487,7 @@ async function build(w: World, def: WorldDef): Promise<void> {
   }
 
   for (const f of def.folders ?? []) {
+    checkAbort(w);
     const parent = f.parent ? w.folders[f.parent]?.id : null;
     if (f.parent && !parent) throw new Error(`フォルダー ${f.ref} の親 ${f.parent} が先に無い`);
     const name = `${f.name}-${w.uniq}`;
@@ -435,6 +499,7 @@ async function build(w: World, def: WorldDef): Promise<void> {
     }
   }
   for (const f of def.files ?? []) {
+    checkAbort(w);
     const folder = w.folders[f.folder];
     if (!folder) throw new Error(`ファイル ${f.ref} のフォルダー ${f.folder} が無い`);
     const id = await uploadFile(page, folder.id, f.name, w.fill(f.content), f.contentType);
@@ -445,6 +510,7 @@ async function build(w: World, def: WorldDef): Promise<void> {
   await buildTables(w, def.tables ?? []);
 
   for (const v of def.views ?? []) {
+    checkAbort(w);
     const table = w.tables[v.table];
     if (!table) throw new Error(`ビュー ${v.ref} の表 ${v.table} が無い`);
     const name = `${v.name}-${w.uniq}`;
@@ -456,6 +522,7 @@ async function build(w: World, def: WorldDef): Promise<void> {
   }
 
   for (const d of def.workflows ?? []) {
+    checkAbort(w);
     const name = workflowName(def.key, d.ref, w.uniq);
     w.values[`{{wf.${d.ref}}}`] = name;
     const ir = { ...w.fill(d.ir), name };
@@ -475,7 +542,10 @@ async function build(w: World, def: WorldDef): Promise<void> {
     }
   }
 
-  for (const a of def.apps ?? []) await buildApp(w, a);
+  for (const a of def.apps ?? []) {
+    checkAbort(w);
+    await buildApp(w, a);
+  }
 }
 
 /// 直接書いた部署のタプルが、サーバーの行の決まり（`has_role`）に効いていることを確かめる。タプルはサーバーと同じ
@@ -524,6 +594,7 @@ async function verifyRoles(w: World, roles: RoleDef[]): Promise<void> {
 async function buildTables(w: World, defs: TableDef[]): Promise<void> {
   const page = w.people.alice.page;
   for (const t of defs) {
+    checkAbort(w);
     const name = `${t.name}-${w.uniq}`;
     const made = await ok<{ id: string; schema: Json; schema_version: number }>(page, "POST", "/data/tables", {
       name,
@@ -536,6 +607,7 @@ async function buildTables(w: World, defs: TableDef[]): Promise<void> {
     const table = w.tables[t.ref];
     if (t.fsm) await attachFsm(w, table, t);
     for (const row of t.rows ?? []) {
+      checkAbort(w);
       const rec = await ok<Record<string, unknown>>(page, "POST", `/data/tables/${table.id}/records`, { data: w.fill(row) }, [201]);
       table.rows.push(rec);
     }

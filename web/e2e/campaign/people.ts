@@ -25,8 +25,11 @@ export type Person = {
 };
 
 export type People = Record<PersonName, Person> & {
-  /// 全員の画面を閉じる（afterAll の最後に呼ぶ）。
+  /// 全員の画面を閉じる（afterAll の最後に呼ぶ）。閉じる前に、`onClose` で足した片付けを足した逆の順で走らせる。
   close: () => Promise<void>;
+  /// 画面を閉じる前の片付けを足す（返す関数で外す）。世界の組み立てが、beforeAll の時間切れで spec の手に渡らな
+  /// かったときに、作りかけの世界を片付けるのに使う（world.ts の buildWorld）。
+  onClose: (step: () => Promise<void>) => () => void;
 };
 
 type Me = { id: string; tenant_id: string; org: string; roles: string[] };
@@ -51,7 +54,16 @@ export async function person(browser: Browser, name: PersonName): Promise<Person
 /// bob は一度ログインしてディレクトリに載る（共有の相手・メンバーの列に入れられる）。
 export async function people(browser: Browser, names: PersonName[] = ["alice", "bob", "charlie"]): Promise<People> {
   const made: Partial<Record<PersonName, Person>> = {};
+  const before = new Set<() => Promise<void>>();
+  const onClose = (step: () => Promise<void>) => {
+    before.add(step);
+    return () => {
+      before.delete(step);
+    };
+  };
   const close = async () => {
+    for (const step of [...before].reverse()) await step().catch(() => undefined);
+    before.clear();
     for (const p of Object.values(made)) await p?.ctx.close().catch(() => undefined);
   };
   try {
@@ -60,7 +72,7 @@ export async function people(browser: Browser, names: PersonName[] = ["alice", "
     await close();
     throw e;
   }
-  return { ...(made as Record<PersonName, Person>), close };
+  return { ...(made as Record<PersonName, Person>), close, onClose };
 }
 
 /// 同じ人のスマホの画面（390px・セッションを持ち込む）。呼び出し側が閉じる（`page.context().close()`）。

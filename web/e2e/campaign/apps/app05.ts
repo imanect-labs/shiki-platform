@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { expect, type Page } from "@playwright/test";
 
-import { call, type Json } from "../http";
+import type { Json } from "../http";
 import { runs, type RunDetail } from "../truth";
 import type { WorldDef } from "../world";
 
@@ -631,23 +631,8 @@ export async function waitStep(page: Page, workflowId: string, runId: string, no
   return d!;
 }
 
-/// 社内文書の検索が使える構成か（無効なら `/search` が 503・workflow-storage-read-document.spec.ts と同じ見分け方）。
-export async function ragEnabled(page: Page): Promise<boolean> {
-  return (await call(page, "POST", "/search", { query: "probe" })).status !== 503;
-}
-
-/// 文書が検索に取り込まれるまで待つ（`mark` は文書の中の一意な語）。
-export async function waitIndexed(page: Page, mark: string, fileId: string, timeout = 300_000): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const r = await call<{ results?: { file_id?: string }[] }>(page, "POST", "/search", { query: mark });
-        return r.status === 200 && (r.body?.results ?? []).some((x) => x.file_id === fileId);
-      },
-      { timeout, intervals: [3_000, 5_000], message: `文書 ${fileId} の取り込み` },
-    )
-    .toBe(true);
-}
+/// 社内文書の検索が使える構成か・文書が検索に取り込まれるまで待つ（app12.ts と同じもの・壊れた検索を skip にしない）。
+export { ragEnabled, waitIndexed } from "./app12";
 
 /// 点数の決まった計算（script と同じ・spec の期待値に使う）。
 export function expectedScore(position: string, levels: Record<string, string>): number {

@@ -1,5 +1,5 @@
 import type { Json } from "../http";
-import { addDays } from "../time";
+import { addDays, lastWeekStart } from "../time";
 import type { TableDef, WorldDef } from "../world";
 
 /// APP-03 日報の収集と週次集計レポート（営業・台帳 §7・§7.13）の世界。
@@ -75,8 +75,7 @@ export const LATE: Omit<Report, "who"> = { date: "2026-10-15", visits: 2, deals:
 /// 本物の cron が数える「先週」（今日の前の週の月曜〜日曜）に置く日報（今日から決める・cron の run の step 出力で
 /// 週を確かめ、その週に入る行だけで期待値を計算する）。
 export function cronReports(today: string): Report[] {
-  const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 = 日曜
-  const monday = addDays(today, -((dow + 6) % 7) - 7);
+  const monday = lastWeekStart(today);
   return [
     { who: "bob", date: addDays(monday, 1), visits: 2, deals: 1, prospect: 80000, note: "週の途中で 1 件" },
     { who: "alice", date: addDays(monday, 2), visits: 1, deals: 1, prospect: 120000, note: "部長の同行" },
@@ -112,6 +111,12 @@ const reportRow = (r: Report): Json => ({
   prospect: r.prospect,
   note: r.note,
 });
+
+/// [`cronReports`] の日報の表の行（世界の定義の行と同じ形）。spec が毎分の cron の確かめの直前に置く（組んだ時の今日で
+/// 置くと、spec の途中で週が替わったときに cron の週とずれる）。
+export function cronReportRows(today: string): Json[] {
+  return cronReports(today).map(reportRow);
+}
 
 const OWN = { field_cmp: { field: "rep", op: "eq", value: "user_id" } };
 const BUCHO = { has_role: { role: "{{role.bucho}}", subtree: true } };
@@ -507,15 +512,15 @@ export const LLM_VARIANTS = {
   weekly_fail: { opts: { prefix: "fail:要約の確かめ\n" }, code: "invalid" },
 } as const;
 
-/// APP-03 の世界の定義（`today` は本物の cron が数える週の日報を置くための今日の日付）。
-export function app03World(today: string): WorldDef {
+/// APP-03 の世界の定義（本物の cron が数える週の日報は spec が置く・[`cronReportRows`]）。
+export function app03World(): WorldDef {
   return {
     key: "app03",
     ai: { chat: true },
     roles: [{ ref: "bucho", members: ["alice"] }],
     folders: [{ ref: "weekly", name: "週報" }],
     tables: [
-      { ...dailyTable("daily", "日報", [...REPORTS, ...cronReports(today)], 1), shares: [{ user: "bob", role: "editor" }] },
+      { ...dailyTable("daily", "日報", REPORTS, 1), shares: [{ user: "bob", role: "editor" }] },
       dailyTable("daily_k", "日報（K 既定）", REPORTS_K),
       {
         ref: "members",

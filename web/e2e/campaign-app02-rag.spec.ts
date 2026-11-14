@@ -11,8 +11,9 @@ import { rows, runs } from "./campaign/truth";
 import { buildWorld, cleanupWorld, type World } from "./campaign/world";
 
 /// APP-02 問い合わせの一次仕分け・(4) 下書きに社内 FAQ の出典が付く（台帳 §7.13 の APP-02）。社内文書の検索（取り込みの
-/// worker・Qdrant）が要るので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する（`/api/search` が
-/// 503・D-226 (4)）。LLM は stub（下書きは prompt の折り返し）。成功判定の言い換え:
+/// worker・Qdrant）が要るので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する
+/// （構成で切っているかで見分け、有効なのに検索が答えなければ skip せずに落とす・apps/app12.ts の ragEnabled・D-226 (4)）。
+/// LLM は stub（下書きは prompt の折り返し）。成功判定の言い換え:
 /// (4) 付く出典は、押した人が読める rag.search の結果だけ。faq の step 出力の results の file_id は bob に読める文書だけで、
 ///     alice だけの社内メモが無い。行の下書きの出典（draft_sources）と結果の出典のリンクは、その部分集合。下書き（stub の
 ///     echo）に抜粋が入っている。alice が同じ問い合わせを押すと、社内メモも検索に出る（人で結果が変わる）。

@@ -11,6 +11,7 @@ import {
   WHY,
   WHY_OTHER,
   app03World,
+  cronReportRows,
   cronReports,
   totalsOf,
   yen,
@@ -21,7 +22,7 @@ import { call, ok, type Json } from "./campaign/http";
 import { people, phoneOf, type People } from "./campaign/people";
 import { gridRows, pressApi, pressApiDone, pressInApp, replyText, replyTones } from "./campaign/press";
 import { noSideScroll, shot } from "./campaign/shots";
-import { jstToday, runAtDone, withMinuteCron } from "./campaign/time";
+import { CRON_WEEK_MARGIN_MS, awayFromJstWeekBoundary, jstToday, lastWeekStart, runAtDone, withMinuteCron } from "./campaign/time";
 import { all, cmp, files, rows, runs, type DataRecord, type NodeItem, type RunDetail } from "./campaign/truth";
 import { buildWorld, cleanupWorld, type World } from "./campaign/world";
 
@@ -43,15 +44,11 @@ test.describe.configure({ mode: "serial" });
 
 let P: People;
 let W: World;
-/// 本物の cron の週に置いた日報（組んだ日の今日から決める）。
-let cronFixture: Report[] = [];
 
 test.beforeAll(async ({ browser }) => {
   test.setTimeout(300_000);
   P = await people(browser);
-  const today = jstToday();
-  cronFixture = cronReports(today);
-  W = await buildWorld(P, app03World(today));
+  W = await buildWorld(P, app03World());
 });
 
 test.afterAll(async () => {
@@ -377,9 +374,16 @@ test("（追加）同じ日付の出し直しは 1 行のまま上書きし、�
 });
 
 test("(1)(c)(4) 本物のスケジュール（毎分の写し・委譲）が 2 回動いても、alice の見え方で集計した行とファイルは週に 1 つずつ", async () => {
-  test.setTimeout(420_000);
+  test.setTimeout(420_000 + CRON_WEEK_MARGIN_MS);
   const mainFiles = await reportFiles(WEEK.main.start);
   const mainTotals = await totalsRows(WEEK.main.start);
+  // 毎分の cron が数える「先週」に日報を置く（置いてから run までの間に週が替わらないよう、替わり目の手前なら待つ）。
+  await awayFromJstWeekBoundary();
+  const today = jstToday();
+  const cronFixture: Report[] = cronReports(today);
+  for (const row of cronReportRows(today)) {
+    await ok(alice(), "POST", `/data/tables/${W.tables.daily.id}/records`, { data: W.fill(row) }, [201]);
+  }
   await withMinuteCron(
     alice(),
     W.workflows.weekly,
@@ -395,9 +399,11 @@ test("(1)(c)(4) 本物のスケジュール（毎分の写し・委譲）が 2 �
       for (const e of ends) {
         const w = await runs.stepOutput<{ start: string }>(alice(), workflowId, e.run_id, "last_week");
         test.info().annotations.push({ type: "cron の週", description: `${e.run_id}: ${w.start}` });
+        expect(w.start, "cron の run の先週は、日報を置いた週").toBe(lastWeekStart(today));
       }
       // 期待値: この週に置いた日報（alice と bob）の手計算。alice（部長）の見え方なので、alice の分も入る。
       const want = totalsOf(cronFixture, lw.start, lw.end);
+      expect(Object.keys(want).sort(), "置いた日報が cron の週にある（0 行 = 0 行で通る確かめにしない）").toEqual(["alice", "bob"]);
       const got = await expectTotals(lw.start, want);
       // 自動実行が作った行の作成者（GAP-58）: いまの動きは委譲元（有効化した alice）。docs はワークフローと書いている。
       for (const r of got) expect(r.created_by ?? (r as unknown as { owner?: string }).owner, `週次集計 ${String(r.data.key)} の作成者`).toBe(P.alice.id);

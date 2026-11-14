@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import { trashFileApi } from "./helpers";
 import {
+  PASS_SCORE,
   PEOPLE,
   REQUIREMENTS,
   app05World,
@@ -12,15 +13,17 @@ import {
   type Applicant,
 } from "./campaign/apps/app05";
 import { expectOutsiderSeesNothing } from "./campaign/checks";
+import { call } from "./campaign/http";
 import { people, type People } from "./campaign/people";
 import { pressApiDone } from "./campaign/press";
 import { jsonLine } from "./campaign/stub";
-import { audit, cmp, expectSingleRow, runs } from "./campaign/truth";
+import { audit, cmp, expectSingleRow, rows, runs } from "./campaign/truth";
 import { buildWorld, cleanupWorld, uploadFile, type World } from "./campaign/world";
 
 /// APP-05 採用応募の書類スクリーニング・PDF の履歴書の版（台帳 §7.13 の APP-05）。PDF の本文は社内文書の検索に取り込まれた
-/// 本文を読む（storage.read・D-111）ので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する（`/api/search`
-/// が 503・D-226 (4)）。LLM は stub（形を指定した llm.invoke・駆動の語は入力の志望動機にだけ置く）。
+/// 本文を読む（storage.read・D-111）ので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する
+/// （構成で切っているかで見分け、有効なのに検索が答えなければ skip せずに落とす・apps/app12.ts の ragEnabled・D-226 (4)）。
+/// LLM は stub（形を指定した llm.invoke・駆動の語は入力の志望動機にだけ置く）。
 /// 確かめること（CI の版 campaign-app05.spec.ts の (1)(4) を PDF で）:
 /// - PDF の履歴書の本文が「履歴書を読む」に届き（種類は PDF・切れていない）、伏せる script を通った後の本文と指示の文に
 ///   氏名・連絡先・住所・生年月日が無い（prompt の $template に入る step 出力・(4)(a)）。
@@ -105,6 +108,15 @@ test("PDF の履歴書: 本文が届き、伏せた後の材料に氏名・連�
   expect(read.truncated).toBe(false);
   expect(read.text.normalize("NFKC")).toContain("月次決算");
   expect(read.text).toContain(`rsm${W.uniq}`);
+  // （参考・GAP-149・判定には使わない）取り込んだ本文に康熙部首（⽉ など）が残るか、キーワードの検索でふつうの字と
+  // 部首の字のどちらで引けるかを残す（「月次決算」は部首の無い「決算」でも当たるので、1 語の「生年月日」も見る）。
+  const radicals = [...new Set([...read.text].filter((c) => c >= "\u2f00" && c <= "\u2fdf"))].join("");
+  console.log(`APP-05 RAG 参考（GAP-149）: 取り込んだ本文の康熙部首「${radicals}」`);
+  for (const q of ["月次決算", "\u2f49次決算", "生年月日", "\u2f63年\u2f49\u2f47"]) {
+    const r = await call<{ results?: { file_id?: string }[] }>(alice(), "POST", "/search", { query: q, mode: "keyword" });
+    const hit = (r.body?.results ?? []).some((x) => x.file_id === pdfId);
+    console.log(`APP-05 RAG 参考（GAP-149）: キーワード「${q}」の検索に PDF の履歴書が${hit ? "出た" : "出ない"}（${r.status}）`);
+  }
 
   // (4)(a) prompt の $template に入る step 出力（伏せた後の本文）と指示の文に、氏名・連絡先が無い。
   const masked = (await runs.stepOutput<{ text: string }>(alice(), wf, run.run_id, "mask")).text;
@@ -121,11 +133,18 @@ test("PDF の履歴書: 本文が届き、伏せた後の材料に氏名・連�
   expect(s.rows.map((r) => r.key).sort()).toEqual(REQUIREMENTS.filter((r) => r.position === "経理").map((r) => r.req_key).sort());
   expect(Object.fromEntries(s.rows.map((r) => [r.key, r.level]))).toEqual(levels);
   expect(s.score).toBe(expectedScore("経理", levels));
-  const row = await expectSingleRow(alice(), W.tables.applicants.id, cmp("applicant_no", "eq", "P-001"), "応募者 P-001");
-  expect(row.data).toMatchObject({ score: s.score, needs_review: s.needs_review, resume: pdfId, status: "評価済" });
+  // 評価済への遷移で「書類の判定」（event の run）が動き、点数が基準以上で要確認が無ければ書類通過に進める。その決まり
+  // で決まる状態になるまで待つ（評価済のまま読むと判定の run と競い、間に何かが挟まると書類通過を読む）。
+  const settled = s.score >= PASS_SCORE && s.needs_review === "なし" ? "書類通過" : "評価済";
+  const found = await expectSingleRow(alice(), W.tables.applicants.id, cmp("applicant_no", "eq", "P-001"), "応募者 P-001");
+  const row = await rows.waitForStatus(alice(), W.tables.applicants.id, found.id, [settled], { timeout: 60_000 });
+  expect(row.data).toMatchObject({ score: s.score, needs_review: s.needs_review, resume: pdfId, status: settled });
 
-  // (4)(c) PDF の監査（読んだ記録）に、氏名も本文も残らない。
-  const events = await audit.events(alice(), { object_id: pdfId, limit: 100 });
+  // (4)(c) PDF の監査（読んだ記録）に、氏名も本文も残らない。本文の読み出し（rag.doc_read）の記録があることを
+  // 確かめてから、その記録と、この PDF のほかの記録（置いた・名前を引いた など）を見る。
+  const reads = await audit.events(alice(), { action: "rag.doc_read", object_id: pdfId, limit: 50 });
+  expect(reads.length, "履歴書の本文を読んだ監査がある").toBeGreaterThan(0);
+  const events = [...reads, ...(await audit.events(alice(), { object_id: pdfId, limit: 100 }))];
   for (const e of events) {
     const text = JSON.stringify(e);
     for (const secret of [PEOPLE.sorano.name, ...PEOPLE.sorano.secrets, "月次決算"]) {

@@ -78,8 +78,8 @@ async function fillForm(page: Page, c: Claim) {
   await page.goto(`/apps/${W.apps.main.id}`);
   const fig = page.getByTestId("ui-figure").first();
   await expect(fig.getByRole("button", { name: "申請する", exact: true })).toBeEnabled({ timeout: 30_000 });
-  // 選択肢の多い choice は select で描かれ、欄の見出しと結び付いていない（読み上げの名前が無い・findings）ので、欄の箱で探す。
-  await fig.locator('[data-field="choice"]').filter({ hasText: "費目" }).locator("select").selectOption(c.category);
+  // 選択肢の多い choice は select で描かれる。欄の見出しが読み上げの名前になる（BUG-297）ので、見出しで探す。
+  await fig.getByRole("combobox", { name: "費目" }).selectOption(c.category);
   await fig.getByRole("radio", { name: c.receipt, exact: true }).click();
 }
 

@@ -108,6 +108,9 @@ const NOTE_TAIL = "相手方の雛形です。気になる点があれば教え�
 
 type Run = AppRun & { run_id: string };
 const done: Record<string, Run> = {};
+/// R1（画面から押した run）を押す前と終わった後の、日本時間の日付。レポートの「チェックした日」は run の日付
+/// （`$from run /date`）なので、どちらかと一致する（日本時間の 0 時をまたいでもよい）。
+let r1Days: [string, string] = ["", ""];
 
 function params(contract: ContractKey, note?: string): CheckInput {
   const c = CONTRACTS[contract];
@@ -182,6 +185,7 @@ test("(1)(2) 種別の全項目が AI に届き、指摘は項目ごとに 1 行
   await bob().goto(`/apps/${app.id}`);
   await bob().getByTestId("ui-figure").first().getByRole("radio", { name: "NDA", exact: true }).click();
   const due = addDays(jstToday(), 14);
+  const dayBefore = jstToday();
   const ui = await pressInApp(bob(), app.id, {
     open: false,
     button: "AI チェック",
@@ -191,6 +195,7 @@ test("(1)(2) 種別の全項目が AI に届き、指摘は項目ごとに 1 行
   expect(ui.params).toEqual({ ...params("nda", note), due });
   expect(ui.run.status, JSON.stringify(ui.run)).toBe("succeeded");
   done.r1 = { ...ui.run, run_id: ui.runId };
+  r1Days = [dayBefore, jstToday()];
   await bob().getByTestId("yui-runs").locator(`li[data-run-id="${ui.runId}"]`).getByTestId("yui-run-result").scrollIntoViewIfNeeded();
   await shot(bob(), "app07", "bob-result-pc");
 
@@ -415,7 +420,9 @@ test("(4) 結果は依頼者の画面に出て、レポートを開ける。押�
   const report = await files.text(bob(), String(review.data.report));
   expect(report).toContain("# 契約チェックの結果（株式会社しろくま精機）");
   expect(report).toContain("- リスク: 高");
-  expect(report).toContain(`- チェックした日: ${jstToday()}`);
+  // チェックした日は R1 の run の日付（押した日）。いまの日付と比べない（(1) から数分たち、日付をまたぎうる）。
+  const checkedOn = /- チェックした日: (\d{4}-\d{2}-\d{2})/.exec(report)?.[1];
+  expect(r1Days, `レポートのチェックした日 ${checkedOn} は R1 を押した日`).toContain(checkedOn);
   for (const f of judge.rows) expect(report).toContain(`| ${f.item} | ${f.severity} | ${f.verdict} |`);
 
   // 押した記録は本人の分だけ（alice には bob の記録が無いのと同じ答え）。

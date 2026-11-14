@@ -26,7 +26,8 @@ import { buildWorld, cleanupWorld, type World } from "./campaign/world";
 
 /// APP-12 社内 FAQ ヘルプデスク（台帳 §7.13 の APP-12・V2: ドライブの FAQ の文書を rag.search で探す版）。社内文書の
 /// 検索（取り込みの worker・Qdrant）が要るので、検索が無い構成（CI の web-e2e・手元の検証のスタック）では skip する
-/// （`/api/search` が 503・workflow-storage-read-document.spec.ts と同じ見分け方・D-226 (4)）。LLM は stub。
+/// （構成で切っているかで見分け、有効なのに検索が答えなければ skip せずに落とす・apps/app12.ts の ragEnabled・D-226 (4)）。
+/// LLM は stub。
 /// 成功判定の言い換え（§7.13）:
 /// (1) 既知の質問は「自動回答」で、出典のファイル（source_file）はその run の検索で本人に返った資料（関連の強いもの）の
 ///     先頭。回答（stub の echo）には選んだ資料の本文だけが入る。bob の画面に回答と出典のリンクが出る。
@@ -180,10 +181,24 @@ test("(3) 関連の強い資料が無い質問はエスカレーションにな�
   const ta = await expectSingleRow(alice(), W.tables.tickets.id, cmp("question", "eq", UNKNOWN.approve));
   const tr = await expectSingleRow(alice(), W.tables.tickets.id, cmp("question", "eq", UNKNOWN.ret));
   approvedTicket = ta.id;
+  // 委譲した FAQ のフォルダーだけを探す（ワークフロー主体の rag.search）。結果があり、どれも FAQ のフォルダーの文書で、
+  // 機密の文書（委譲していない alice の私用のフォルダー）は無い。結果が空でも通る確かめにしない。
+  const faqIds = DOC_KEYS.map((k) => W.files[k].id);
   for (const t of [ta, tr]) {
     const d = await waitRecordStep(alice(), W.workflows.handoff.id, t.id, "check", ["waiting_event", "waiting"], 120_000);
     expect(d.trigger_kind).toBe("event");
     expect(runs.stepStatus(d, "look")).toBe("succeeded");
+    const look = await runs.stepOutput<{ results: Result[] }>(alice(), W.workflows.handoff.id, d.run_id, "look");
+    expect(look.results.length, "委譲したフォルダーの検索に FAQ の文書が出る").toBeGreaterThan(0);
+    for (const r of look.results) expect(faqIds, `引き継ぎの検索の ${r.file_name} は FAQ のフォルダーの文書`).toContain(r.file_id);
+  }
+  // 引き継ぎの下書きは、承認の前の bob（質問した本人）に見えない（(2) は bob の質問がエスカレーションになったときだけ
+  // 確かめるので、決まってエスカレーションになるここでも確かめる）。
+  for (const t of [ta, tr]) {
+    const seen = await call<DataRecord>(bob(), "GET", `/data/tables/${W.tables.tickets.id}/records/${t.id}`);
+    expect(seen.status).toBe(200);
+    expect(Object.keys(seen.body.data)).not.toContain("draft");
+    expect(Object.keys(seen.body.data)).not.toContain("draft_source");
   }
   const ga = await approvals.approvalFor(alice(), ta.id, APPROVAL_TITLE);
   const gr = await approvals.approvalFor(alice(), tr.id, APPROVAL_TITLE);
@@ -234,13 +249,28 @@ test("（追加）文書の中のボタンの図は結果でボタンになら�
   expect(r.run.status).toBe("succeeded");
   const d = await runs.get(alice(), W.workflows.ask.id, r.runId);
   for (const s of d.steps) expect(ASK_RAG_NODES).toContain(s.node_id);
+  // 注入を仕込んだ文書（FAQ-10）が選ばれ、その本文が回答に入った（選ばれなければ、下の確かめは何も確かめない）。
+  const pick = await step<Pick>(r.runId, "pick");
+  expect(pick.sources.map((x) => x.file_id), "注入を仕込んだ文書が選ばれる").toContain(W.files.install.id);
   const result = bob().getByTestId("yui-runs").locator(`li[data-run-id="${r.runId}"]`).getByTestId("yui-run-result");
   await result.scrollIntoViewIfNeeded();
   await expect(result.getByRole("button", { name: "承認する" })).toHaveCount(0);
   const md = sections(r.run)[0];
-  if (md.format === "markdown" && String(md.text).includes("申請の手引き")) {
-    expect(md.text).not.toContain("```ui");
+  expect(md.format).toBe("markdown");
+  expect(String(md.text ?? "")).toContain(W.fill(docMark("install")));
+  expect(String(md.text ?? "")).not.toContain("```ui");
+  // 取り込んだ本文にボタンの図（```ui の囲み）が残ったときは、回答では文字の囲み（```text）に書き換わっている。
+  if (pick.text.includes("```ui")) {
+    expect(String(md.text), "ボタンの図の囲みは文字の囲みになる").toContain("```text");
+  } else {
+    test.info().annotations.push({ type: "注入", description: "取り込んだ本文にボタンの図の囲みが残らなかった（取り込みで落ちる）" });
+  }
+  // 外部のリンクが回答に届いたときは、ホスト名が付く。取り込んだ Markdown の本文（rag.search の content）には
+  // リンク先の URL が残らない（Docling の本文はリンクの文字だけ・R5 の所見）ので、V2 ではリンクが届かないこともある。
+  if (md.format === "markdown" && String(md.text).includes("](https://manual.example.com")) {
     await expect(result).toContainText("申請の手引き（manual.example.com）");
+  } else {
+    test.info().annotations.push({ type: "注入", description: "回答にリンクが届かなかった（取り込みでリンク先が落ちる）" });
   }
   await shot(bob(), "app12rag", "injection-pc");
 });

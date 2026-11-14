@@ -17,7 +17,10 @@ import type { WorldDef } from "../world";
 ///     結果を誰にも見せない（ir.md §7.10）ので、倉庫の人に発注の表とフォルダーの書き込みを渡すことになる。発注は
 ///     毎朝のスケジュールに任せる。
 ///   - 入出庫（待ち）: 同時に出庫したときの rev の競合を決まって通す試験用の版（§7.13 共通の決まり「同時操作」）。
-///     探してから 4 秒待ち、新しい在庫を script で計算して `expected_rev` つきで書く。負けた側は `conflict` の節を通る。
+///     探した直後に「読んだときの在庫と版」を結果に出し（押した本人の記録で読める・他人の run を /workflows から
+///     読まない #917）、[`HOLD_SEC`] 秒待ってから、新しい在庫を script で計算して `expected_rev` つきで書く。2 つの
+///     run が両方とも同じ版を読んでから書くので、負けた側は `conflict` の節を決まって通る（spec は 2 人が同じ版を
+///     読んだことを確かめる・APP-11 の貸出（待ち）と同じ形）。
 ///   - 発注点チェック（毎朝 8 時・Asia/Tokyo）: 今日の日付 → 不足 > 0 の品目 → 未完了（下書き・発注済）の発注 →
 ///     script（未完了の発注のある SKU を除き、数量 = ceil(不足 / ロット) × ロット・発注のキー = SKU:日付）→
 ///     data.bulk_upsert（match_on 発注のキー・同じ日に重ねて流しても 2 行にならない）→ 作った件数（適用 − 一致）が
@@ -49,6 +52,13 @@ export const ITEM = {
   /// 待ちを挟む版で同時に 3 個ずつ出庫する（在庫 5）。
   r302: { sku: "R-302", name: "ヘルメット 白", stock: 5, reorder_point: 1, lot_size: 1, supplier: "ことり精工", lead_time_days: 10 },
 } as const;
+
+/// 待ちを挟む版の待ち（秒）。2 つの run の「探す」の差がこれより短ければ、両方が同じ版を読んでから書く（ワーカーは
+/// 0.2 秒ごとに run を拾う・遅い機械と next dev の初回の応答の遅れを見込んで長めにする・APP-11 の HOLD_SEC と同じ）。
+export const HOLD_SEC = 15;
+
+/// 待ちを挟む版の、探した直後の結果の文。
+export const seenText = (stock: number | string, rev: number | string) => `読んだときの在庫: ${stock}（版 ${rev}）`;
 
 /// 登録の無い SKU。
 export const MISSING_SKU = "X-999";
@@ -218,6 +228,10 @@ function moveWaitIr(hold: number): Json {
       find,
       has,
       missing,
+      reply("seen", "読んだ在庫", "neutral", {
+        $template: "読んだときの在庫: {stock}（版 {rev}）",
+        vars: { stock: item("/data/stock"), rev: item("/rev") },
+      }),
       { id: "hold", type: "control.wait", label: "少し待つ", params: { kind: "duration", duration_sec: hold } },
       calc,
       enough,
@@ -250,7 +264,8 @@ function moveWaitIr(hold: number): Json {
     edges: [
       { from: "find", to: "has" },
       { from: "has", from_port: "false", to: "missing" },
-      { from: "has", from_port: "true", to: "hold" },
+      { from: "has", from_port: "true", to: "seen" },
+      { from: "seen", to: "hold" },
       { from: "hold", to: "calc" },
       { from: "calc", to: "enough" },
       { from: "enough", from_port: "false", to: "short" },
@@ -509,7 +524,7 @@ export function app06World(): WorldDef {
     ],
     workflows: [
       { ref: "move", ir: moveIr },
-      { ref: "move_wait", ir: moveWaitIr(4) },
+      { ref: "move_wait", ir: moveWaitIr(HOLD_SEC) },
       {
         ref: "check",
         ir: checkIr,

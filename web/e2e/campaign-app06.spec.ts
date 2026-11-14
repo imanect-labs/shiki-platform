@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { CSV_COLUMNS, ITEM, MISSING_SKU, OLD_PO, app06World } from "./campaign/apps/app06";
+import { CSV_COLUMNS, ITEM, MISSING_SKU, OLD_PO, app06World, seenText } from "./campaign/apps/app06";
 import { expectDenied, expectOutsiderSeesNothing, expectStatus } from "./campaign/checks";
 import { call, type Json } from "./campaign/http";
 import { people, phoneOf, type People, type PersonName } from "./campaign/people";
@@ -359,18 +359,27 @@ test("(2)(c)(d)・遷移の権限: 発注済に進めた SKU は作らず、入�
   expect(sheet.rows.map((r) => [r[1], r[3]])).toEqual([[ITEM.s101.sku, "12"]]);
 });
 
-/// 押した本人の画面で、その run の記録が終わった状態で、結果の節が `tone` で出ている。
+/// 押した本人の画面で、その run の記録が終わった状態で、結果の最後の節が `tone` で出ている（待ちを挟む版は、その前に
+/// 読んだ在庫の節がある）。
 async function expectSeenInApp(page: Page, appId: string, runId: string, tone: string, text: RegExp) {
   await page.goto(`/apps/${appId}`);
   const row = page.getByTestId("yui-runs").locator(`li[data-run-id="${runId}"]`);
   await expect(row).toHaveAttribute("data-status", "succeeded", { timeout: 30_000 });
   if ((await row.getByTestId("yui-run-result").count()) === 0) await row.getByRole("button", { name: "結果" }).click();
-  const section = row.getByTestId("yui-run-section").first();
+  const section = row.getByTestId("yui-run-section").last();
   await expect(section).toHaveAttribute("data-tone", tone, { timeout: 15_000 });
   await expect(section).toContainText(text);
 }
 
 type Pressed = { who: PersonName; runId: string; run: AppRun };
+
+/// 結果の最後の節の色合いと文（待ちを挟む版は、その前に読んだ在庫の節がある）。
+function lastTone(run: AppRun): string | undefined {
+  return replyTones(run).at(-1);
+}
+function lastText(run: AppRun): string | undefined {
+  return run.reply?.sections.at(-1)?.text;
+}
 
 /// alice と bob が同時に同じ品目を出庫する（同じ入口・本人の権限）。
 async function racePress(appId: string, version: number, actionId: string, params: Record<string, unknown>): Promise<Pressed[]> {
@@ -422,18 +431,28 @@ test("(3) 本番の IR: alice と bob が同時に 3 個ずつ出庫しても、
 });
 
 test("(3) 待ちを挟んだ版では、負けた側が rev の競合の節を通り、入庫の後の再操作で在庫が整う", async () => {
-  test.setTimeout(240_000);
+  test.setTimeout(300_000);
   const app = W.apps.wait;
   const it = ITEM.r302;
   const action = app.actions["登録"];
+  const start = await itemOf(it.sku);
+  expect(start.data.stock).toBe(it.stock);
   const pressed = await racePress(app.id, app.version, action, { sku: it.sku, qty: 3, kind: "out" });
   for (const p of pressed) expect(p.run.status, `${p.who} の run`).toBe("succeeded");
-  const won = pressed.filter((p) => replyTones(p.run)[0] === "success");
+  // 2 つの「探す」step は、どちらも待ちの間（先に書いた run が待ちを出る前）に終わった: 2 人とも、押す前と同じ版の
+  // 在庫 5 を読んだ（押した本人の記録の最初の節・探した直後に返す）。読んだ版が違えば、下の節の判定は意味が無い。
+  const seen = seenText(it.stock, start.rev);
+  expect(pressed.map((p) => [p.run.reply?.sections[0]?.tone, p.run.reply?.sections[0]?.text])).toEqual([
+    ["neutral", seen],
+    ["neutral", seen],
+  ]);
+  const won = pressed.filter((p) => lastTone(p.run) === "success");
   expect(won.length, pressed.map((p) => `${p.who}: ${replyText(p.run)}`).join(" / ")).toBe(1);
   const loser = pressed.find((p) => p !== won[0])!;
   // 両方が在庫 5 を読んでから書くので、決まって rev の競合の節（在庫が足りない節ではない）。
-  expect(replyTones(loser.run)).toEqual(["error"]);
-  expect(replyText(loser.run)).toBe("ほかの人が同時に登録しました。表を読み直して、もう一度登録してください");
+  expect(replyTones(won[0].run)).toEqual(["neutral", "success"]);
+  expect(replyTones(loser.run)).toEqual(["neutral", "error"]);
+  expect(lastText(loser.run)).toBe("ほかの人が同時に登録しました。表を読み直して、もう一度登録してください");
   const aRun = pressed.find((p) => p.who === "alice")!;
   const d = await runs.get(alice(), W.workflows.move_wait.id, aRun.run.run_id!);
   expect(runs.takenPorts(d, "enough")).toEqual(["true"]);
@@ -450,13 +469,13 @@ test("(3) 待ちを挟んだ版では、負けた側が rev の競合の節を�
   const page = P[loser.who].page;
   const deltas = [-3];
   const retry = await pressApiDone(page, app.id, { version: app.version, actionId: action, params: { sku: it.sku, qty: 3, kind: "out" } });
-  expect(replyText(retry)).toBe(`在庫が足りません。${it.name}（${it.sku}）のいまの在庫は 2 です`);
+  expect(lastText(retry)).toBe(`在庫が足りません。${it.name}（${it.sku}）のいまの在庫は 2 です`);
   const restock = await pressApiDone(page, app.id, { version: app.version, actionId: action, params: { sku: it.sku, qty: 5, kind: "in" } });
-  expect(replyTones(restock)).toEqual(["success"]);
+  expect(replyTones(restock)).toEqual(["neutral", "success"]);
   deltas.push(5);
   const again = await pressApiDone(page, app.id, { version: app.version, actionId: action, params: { sku: it.sku, qty: 3, kind: "out" } });
-  expect(replyTones(again)).toEqual(["success"]);
-  expect(replyText(again)).toBe(`${it.name}（${it.sku}）の在庫は 4 になりました`);
+  expect(replyTones(again)).toEqual(["neutral", "success"]);
+  expect(lastText(again)).toBe(`${it.name}（${it.sku}）の在庫は 4 になりました`);
   deltas.push(-3);
   // 不変条件: 最終の在庫 = 初めの在庫 + 成功した増減の合計。
   expect((await itemOf(it.sku)).data.stock).toBe(it.stock + deltas.reduce((a, b) => a + b, 0));

@@ -5,7 +5,7 @@ import { expect, type Page } from "@playwright/test";
 
 import { call, type Json } from "../http";
 import { runs, type RunDetail } from "../truth";
-import type { World, WorldDef } from "../world";
+import { placeFilesViaDrive, type DriveFile, type World, type WorldDef } from "../world";
 
 /// APP-04 請求書の読み取り → 支払台帳（経理・台帳 §7・§7.13）の世界。
 ///
@@ -528,44 +528,13 @@ export async function eventRunDone(
   return runs.waitEnd(page, workflowId, found!.run_id, 180_000);
 }
 
-/// 置くファイル。
-export type DriveFile = { name: string; content: string | Buffer; mimeType?: string };
+/// 置くファイル（world.ts の [`DriveFile`]）。
+export type { DriveFile } from "../world";
 
 /// ドライブの画面からファイルをまとめて置き（ファイルの選択で複数を選ぶのと同じ）、名前 → id を返す（world.ts の
-/// uploadFile と同じ道に、画面の準備の待ちと置き直しを足したもの）。開き直した直後のドライブは、画面の準備
-/// （hydration）の前に選んだファイルを黙って落とすことがある（続けて置いた 2 つ目が出なかった・共通部品の uploadFile は
-/// 変えないので、ここに置く）。置き直すのは、API で見てその名前のファイルがまだ無いものだけ（二重に置かない）。
+/// [`placeFilesViaDrive`]・画面の準備の待ちと置き直しつき）。置いた人の画面に、置いたファイルが出ることも確かめる。
 export async function placeManyViaDrive(page: Page, folderId: string, files: DriveFile[]): Promise<Record<string, string>> {
-  const ids: Record<string, string> = {};
-  const look = async () => {
-    const r = await call<{ items?: { id: string; name: string }[] }>(page, "GET", `/nodes?parent_id=${folderId}&limit=200`);
-    for (const c of r.body?.items ?? []) if (files.some((f) => f.name === c.name)) ids[c.name] = c.id;
-    return files.every((f) => ids[f.name]);
-  };
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // 前の回の置き方が遅れて届いていれば、その分は置き直さない。
-    if (attempt > 0 && (await look())) break;
-    const missing = files.filter((f) => !ids[f.name]);
-    await page.goto(`/drive?folder=${folderId}`);
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
-    const input = page.locator('input[type="file"][multiple]');
-    await expect(input).toBeAttached({ timeout: 30_000 });
-    await input.setInputFiles(
-      missing.map((f) => ({
-        name: f.name,
-        mimeType: f.mimeType ?? "text/plain",
-        buffer: typeof f.content === "string" ? Buffer.from(f.content, "utf8") : f.content,
-      })),
-    );
-    const done = await expect
-      .poll(look, { timeout: 30_000, intervals: [500, 1_000, 2_000] })
-      .toBe(true)
-      .then(() => true)
-      .catch(() => false);
-    if (done) break;
-  }
-  const lost = files.filter((f) => !ids[f.name]).map((f) => f.name);
-  if (lost.length > 0) throw new Error(`ドライブの画面から置けなかった（3 回）: ${lost.join("・")}`);
+  const ids = await placeFilesViaDrive(page, folderId, files);
   // 置いた人の画面に、置いたファイルが出る（押した人に見える結果）。
   for (const f of files) await expect(page.getByText(f.name, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
   return ids;
@@ -625,10 +594,8 @@ export const TINY_PNG = Buffer.from(
   "base64",
 );
 
-/// 社内文書の検索が使える構成か（無効なら `/search` が 503・workflow-storage-read-document.spec.ts と同じ見分け方）。
-export async function ragEnabled(page: Page): Promise<boolean> {
-  return (await call(page, "POST", "/search", { query: "probe" })).status !== 503;
-}
+/// 社内文書の検索が使える構成か（app12.ts の [`ragEnabled`]・構成で切っているかで見分け、壊れた検索を skip にしない）。
+export { ragEnabled } from "./app12";
 
 /// 世界の取引先の行 id（`ref` は VENDORS のキー）。
 export function vendorId(w: World, ref: keyof typeof VENDORS): string {

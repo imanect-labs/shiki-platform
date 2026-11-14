@@ -1,5 +1,5 @@
 import type { Json } from "../http";
-import { addDays } from "../time";
+import { addDays, lastWeekStart } from "../time";
 import type { GrantDef, WorldDef } from "../world";
 
 /// APP-08 週次 KPI ダッシュボード（経営企画・台帳 §7・§7.13）の世界。
@@ -103,8 +103,7 @@ export const LATE_DEAL: Deal = d("西-本-追加", "西", "受注", 200000, "202
 /// 出力で週を確かめ、その週に入る行だけで期待値を計算する）。東の受注 5 件のうち 2 件は bob の担当（委譲元 alice の
 /// 見え方に bob の商談も入ることを、伏せられずに 5 件と数えることで確かめる）。
 export function cronDeals(today: string): Deal[] {
-  const dow = new Date(`${today}T00:00:00Z`).getUTCDay(); // 0 = 日曜
-  const monday = addDays(today, -((dow + 6) % 7) - 7);
+  const monday = lastWeekStart(today);
   const day = (n: number) => addDays(monday, n);
   return [
     d("東-cron-1", "東", "受注", 210000, day(0), "alice"),
@@ -121,6 +120,12 @@ export function cronDeals(today: string): Deal[] {
     d("東-cron-前-4", "東", "受注", 100000, day(-4), "bob"),
     d("東-cron-前-5", "東", "受注", 100000, day(-1), "alice"),
   ];
+}
+
+/// [`cronDeals`] の商談表の行（世界の定義の行と同じ形）。spec が毎分の cron の確かめの直前に置く（組んだ時の今日で
+/// 置くと、spec の途中で週が替わったときに cron の週とずれる）。
+export function cronDealRows(today: string): Json[] {
+  return cronDeals(today).map(dealRow);
 }
 
 /// 小数 1 桁に丸める（script と同じ）。
@@ -552,8 +557,8 @@ const KPI_FIELDS = [
   { key: "status", display_name: "状態", type: "text" },
 ];
 
-/// APP-08 の世界の定義（`today` は本物の cron が数える週の商談を置くための今日の日付）。
-export function app08World(today: string): WorldDef {
+/// APP-08 の世界の定義（本物の cron が数える週の商談は spec が置く・[`cronDealRows`]）。
+export function app08World(): WorldDef {
   return {
     key: "app08",
     ai: { chat: true },
@@ -574,7 +579,7 @@ export function app08World(today: string): WorldDef {
           ],
           row_policy: { read: { any: [OWN, KEIEI] }, write: { any: [OWN, KEIEI] } },
         },
-        rows: [...DEALS, ...cronDeals(today)].map(dealRow),
+        rows: DEALS.map(dealRow),
         shares: [{ user: "bob", role: "viewer" }],
       },
       {

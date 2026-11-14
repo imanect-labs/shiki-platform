@@ -22,7 +22,9 @@ import { buildWorld, cleanupWorld, uploadFile, type World } from "./campaign/wor
 
 /// APP-07 契約書の条項チェック・Word の契約書と文書のチェックリストの版（台帳 §7.13 の APP-07）。Word の本文は社内文書の
 /// 検索に取り込まれた本文を読み（storage.read・D-111）、チェックリストはドライブの文書を rag.search で引くので、検索が
-/// 無い構成（CI の web-e2e・手元の検証のスタック）では skip する（`/api/search` が 503・D-226 (4)）。LLM は stub
+/// 無い構成（CI の web-e2e・手元の検証のスタック）では skip する
+/// （構成で切っているかで見分け、有効なのに検索が答えなければ skip せずに落とす・apps/app12.ts の ragEnabled・D-226 (4)）。
+/// LLM は stub
 /// （形を指定した llm.invoke・駆動の語は入力の「気になる点」にだけ置く）。
 /// 確かめること:
 /// - (3) 法務だけが見られるフォルダーのチェックリスト文書の file_id が、bob の rag.search の step 出力に無く、alice の出力には

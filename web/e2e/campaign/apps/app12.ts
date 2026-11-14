@@ -746,7 +746,17 @@ export async function waitIndexed(page: Page, mark: string, fileId: string, time
     .toBe(true);
 }
 
-/// 社内文書の検索が使える構成か（無効なら `/search` が 503・workflow-storage-read-document.spec.ts と同じ見分け方）。
+/// 社内文書の検索が使える構成か。`page` は組織の管理者（alice）。
+///
+/// 構成で切っているか（`GET /org-admin/search/backfill` の `enabled`）で見分け、`/search` の 503 だけでは決めない。
+/// `/search` は、構成で切った環境と、構成では有効だが Qdrant に届かない環境のどちらでも同じ 503 を返すので、503 だけで
+/// 見分けると、壊れた検索の環境で RAG の spec が黙って skip に化ける（R5 で Qdrant がネットワークから外れていたとき、
+/// workflow-storage-read-document.spec.ts は「無効」の側に入った）。構成で有効なら、検索が答えることを確かめて落とす。
 export async function ragEnabled(page: Page): Promise<boolean> {
-  return (await call(page, "POST", "/search", { query: "probe" })).status !== 503;
+  const status = await call<{ enabled?: boolean }>(page, "GET", "/org-admin/search/backfill");
+  expect(status.status, `取り込みの様子（組織の管理者で見る）: ${status.text.slice(0, 200)}`).toBe(200);
+  if (status.body.enabled !== true) return false;
+  const probe = await call(page, "POST", "/search", { query: "probe" });
+  expect(probe.status, `社内文書の検索は有効なのに /search が答えない（Qdrant・worker を確かめる）: ${probe.text.slice(0, 200)}`).toBe(200);
+  return true;
 }

@@ -24,6 +24,30 @@ export function addDays(day: string, n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+/// `day`（YYYY-MM-DD）の前の週の月曜（週は月曜から・transform.date の `last_week` の start と同じ）。
+export function lastWeekStart(day: string): string {
+  const dow = new Date(`${day}T00:00:00Z`).getUTCDay(); // 0 = 日曜
+  return addDays(day, -((dow + 6) % 7) - 7);
+}
+
+/// 毎分の cron の確かめで、fixture を置いてから run が終わるまでに見込む長さ（[`awayFromJstWeekBoundary`]）。
+export const CRON_WEEK_MARGIN_MS = 4 * 60_000;
+
+/// 日本時間の週の替わり目（月曜 0 時）の手前 `marginMs` の間なら、替わるまで待つ（待ったら true）。
+///
+/// 毎分の cron の run が数える「先週」は run の時刻で決まる。spec が「先週」に fixture を置いてから run が動くまでの
+/// 間に週が替わると、run は fixture の無い週を数え、判定が落ちるか、何も確かめずに通る。置く直前に呼ぶ。
+export async function awayFromJstWeekBoundary(marginMs = CRON_WEEK_MARGIN_MS): Promise<boolean> {
+  const now = Date.now();
+  const jst = new Date(now + 9 * 3_600_000); // 日本時間の暦を UTC の項目で読む
+  const toMonday = (8 - jst.getUTCDay()) % 7 || 7;
+  const next = Date.UTC(jst.getUTCFullYear(), jst.getUTCMonth(), jst.getUTCDate() + toMonday) - 9 * 3_600_000;
+  const left = next - now;
+  if (left >= marginMs) return false;
+  await new Promise((resolve) => setTimeout(resolve, left + 5_000));
+  return true;
+}
+
 /// 予定の日時（`2026-11-09T09:00` は日本時間で読む・時差つきも可）を指定して手動で動かし、run の id を返す。
 export async function runAt(page: Page, workflowId: string, scheduledAt: string, input: Json = {}): Promise<string> {
   const r = await ok<{ run_id: string | null }>(page, "POST", `/workflows/${workflowId}/runs`, { input, scheduled_at: scheduledAt }, [202]);
