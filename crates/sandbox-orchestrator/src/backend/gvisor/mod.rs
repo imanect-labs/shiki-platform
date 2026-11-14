@@ -49,6 +49,15 @@ impl GvisorBackend {
                 "runsc binary not found/executable: {runsc_bin}"
             )));
         }
+        // **実行できても読めないと動かない。** 読めないバイナリを実行したプロセスは dumpable=0 になり、
+        // `--rootless` の自己再実行（親が子の uid_map を書く）が EACCES で落ちる。create のたびに
+        // 「running にならない」とだけ出て原因が見えないので、起動時に理由つきで弾く（0711 で
+        // プレビューのコード実行が全滅した・2026-11-14）。
+        if let Err(e) = std::fs::File::open(runsc_bin) {
+            return Err(SandboxError::Unavailable(format!(
+                "runsc binary not readable ({e}): {runsc_bin} — rootless の自己再実行には読み取り権限が要る（0755 にする）"
+            )));
+        }
         if !rootfs_dir.is_dir() {
             return Err(SandboxError::Unavailable(format!(
                 "gvisor rootfs dir not found: {}",
@@ -198,6 +207,11 @@ impl Backend for GvisorBackend {
         // メモリ上限は OCI spec の `linux.resources.memory.limit`（bundle.rs・ゲスト可視の
         // ソフト上限。現行 runsc に旧 `--total-memory` フラグは無い）＋ orchestrator 側
         // watchdog（超過 kill）の二重防御（#346・cgroups 無し環境ではソフト強制・PIT-24）。
+        // stderr はファイルへ残す。捨てると create が「running にならない」とだけ失敗し、
+        // runsc 自身のエラー（権限・名前空間・seccomp）が誰にも見えない。
+        let stderr_path = state_dir.join("runsc-run.stderr");
+        let stderr_file = std::fs::File::create(&stderr_path)
+            .map_err(|e| SandboxError::Internal(format!("create runsc stderr: {e}")))?;
         let run_child = runsc_base(&self.runsc, &root_dir, netns_pid, network)
             .arg("run")
             .arg("--bundle")
@@ -205,13 +219,15 @@ impl Backend for GvisorBackend {
             .arg(&id)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| SandboxError::Unavailable(format!("runsc run spawn: {e}")))?;
 
         // running を待つ（失敗時は run_child を drop で kill）。
-        Self::wait_running(&self.runsc, &root_dir, netns_pid, network, &id).await?;
+        if let Err(e) = Self::wait_running(&self.runsc, &root_dir, netns_pid, network, &id).await {
+            return Err(with_runsc_stderr(e, &stderr_path).await);
+        }
 
         // メモリ watchdog（超過 kill・destroy 時に abort・#346）。
         let watchdog = match (self.watchdog_interval, spec.limits.memory_mb) {
@@ -238,5 +254,96 @@ impl Backend for GvisorBackend {
             &spec.limits,
             watchdog,
         )))
+    }
+}
+
+/// runsc の stderr の末尾を、create の失敗に添える（host 側 runsc の出力で、ゲスト由来ではない）。
+async fn with_runsc_stderr(err: SandboxError, stderr_path: &Path) -> SandboxError {
+    /// 添える最大文字数（エラーがログ・ツール結果を埋めないように）。
+    const TAIL_CHARS: usize = 400;
+    let Ok(text) = tokio::fs::read_to_string(stderr_path).await else {
+        return err;
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return err;
+    }
+    let tail: String = {
+        let n = text.chars().count();
+        text.chars().skip(n.saturating_sub(TAIL_CHARS)).collect()
+    };
+    match err {
+        SandboxError::Unavailable(msg) => {
+            SandboxError::Unavailable(format!("{msg}: runsc: {tail}"))
+        }
+        other => other,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("gv-test-{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// 0711 の runsc（実行はできるが読めない）は、create のたびに落ちる代わりに起動時に理由つきで弾く。
+    /// root は読み取り権限を無視するので、root で走るときは確かめられない。
+    #[test]
+    fn unreadable_runsc_is_rejected_at_startup() {
+        let d = scratch("unreadable");
+        let bin = d.join("runsc");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o311)).unwrap();
+        if std::fs::File::open(&bin).is_ok() {
+            // root は読める（DAC を無視する）。
+            std::fs::remove_dir_all(&d).unwrap();
+            return;
+        }
+        let rootfs = d.join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let err = GvisorBackend::new(bin.to_str().unwrap(), rootfs, d.join("state"), None, None)
+            .unwrap_err();
+        let SandboxError::Unavailable(msg) = err else {
+            panic!("Unavailable のはず: {err:?}");
+        };
+        assert!(msg.contains("not readable"), "{msg}");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_failure_carries_the_tail_of_runsc_stderr() {
+        let d = scratch("stderr");
+        let p = d.join("runsc-run.stderr");
+        let long = "x".repeat(1000);
+        std::fs::write(
+            &p,
+            format!("{long}\nfork/exec /proc/self/exe: permission denied\n"),
+        )
+        .unwrap();
+        let err = with_runsc_stderr(
+            SandboxError::Unavailable("did not reach running".into()),
+            &p,
+        )
+        .await;
+        let SandboxError::Unavailable(msg) = err else {
+            panic!("Unavailable のまま");
+        };
+        assert!(msg.starts_with("did not reach running: runsc: "), "{msg}");
+        assert!(msg.ends_with("permission denied"), "{msg}");
+        assert!(msg.chars().count() < 500, "末尾だけ添える: {}", msg.len());
+
+        // 空・読めないときは元のエラーのまま。
+        std::fs::write(&p, "  \n").unwrap();
+        let err = with_runsc_stderr(SandboxError::Unavailable("e".into()), &p).await;
+        assert!(matches!(err, SandboxError::Unavailable(m) if m == "e"));
+        let err = with_runsc_stderr(SandboxError::Internal("i".into()), &d.join("none")).await;
+        assert!(matches!(err, SandboxError::Internal(m) if m == "i"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
