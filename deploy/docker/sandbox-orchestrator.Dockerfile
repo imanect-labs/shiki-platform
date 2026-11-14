@@ -60,7 +60,10 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: \
         -r /tmp/rootfs-requirements.txt \
     && rm /tmp/rootfs-requirements.txt \
     && printf 'nameserver 169.254.0.1\n' > /etc/resolv.conf.sandbox \
-    && printf '127.0.0.1 localhost\n' > /etc/hosts.sandbox
+    && printf '127.0.0.1 localhost\n' > /etc/hosts.sandbox \
+    # bind マウント先（bundle.rs の ROOTFS_MOUNTPOINTS）。root は読み取り専用で runsc が作れないため、
+    # 無いと create が毎回 `waiting for sandbox to start: EOF` で落ちる。
+    && mkdir -p /workspace /__exec
 
 FROM debian:bookworm-slim
 # iproute2: egress netns holder が `ip` でゲートウェイ IF を構成する。
