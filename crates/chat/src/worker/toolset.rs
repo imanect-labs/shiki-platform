@@ -390,7 +390,7 @@ impl ChatWorker {
         tools.push(Arc::new(DataRecordWriteTool::new(data.clone(), catalog)));
     }
 
-    /// テーブルを作る・直す道具（data_table_create / data_table_update・D-10 の T05）。
+    /// テーブルと保存ビューを作る・直す道具（data_table_create / data_table_update・T05、data_view_save・T06）。
     ///
     /// DataStore と FsmStore が配線されていれば、見えるテーブルが 0 件でも提示する（作る道具なので）。どちらも
     /// 遅延ロード（tool_search で読み込むまで定義を載せない）。委譲の子には渡らない（`CHILD_TOOLS` は閉じた一覧）。
@@ -412,6 +412,17 @@ impl ChatWorker {
         tools.push(Arc::new(
             crate::data_builder_tool::DataTableUpdateTool::new(deps),
         ));
+        // 保存ビュー（T06）。作成の冪等の照合と作った数は artifact の単一チョークポイントで引く。
+        if let (Some(views), Some(artifacts)) = (&self.data_views, &self.skill_artifacts) {
+            tools.push(Arc::new(crate::data_builder_tool::DataViewSaveTool::new(
+                crate::data_builder_tool::ViewBuilderDeps {
+                    data: data.clone(),
+                    views: Arc::clone(views),
+                    artifacts: Arc::clone(artifacts),
+                },
+                builder_run,
+            )));
+        }
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。

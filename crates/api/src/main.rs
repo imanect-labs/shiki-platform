@@ -277,6 +277,7 @@ async fn run() -> anyhow::Result<()> {
         &skill_installs,
         &data_store,
         &fsms,
+        &data_views,
         egress_proxy.as_ref(),
         // 会話の AI の試運転（try_workflow・T04）。ワークフローの実行時が無効なら提示しない。
         (workflow_launcher.as_ref(), workflow_runs.as_ref()),

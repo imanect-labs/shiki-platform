@@ -79,7 +79,8 @@ pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
 pub use custom_instructions::CustomInstructions;
 pub use data_builder_tool::{
-    BuilderRun, DataBuilderDeps, DataTableCreateTool, DataTableUpdateTool, MAX_TABLES_PER_RUN,
+    BuilderRun, DataBuilderDeps, DataTableCreateTool, DataTableUpdateTool, DataViewSaveTool,
+    ViewBuilderDeps, MAX_TABLES_PER_RUN, MAX_VIEWS_PER_RUN,
 };
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;

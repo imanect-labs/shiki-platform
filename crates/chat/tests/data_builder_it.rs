@@ -26,9 +26,12 @@ use artifact::ArtifactStore;
 use async_trait::async_trait;
 use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Consistency, Principal, Relation};
-use chat::{BuilderRun, DataBuilderDeps, DataTableCreateTool, DataTableUpdateTool};
+use chat::{
+    BuilderRun, DataBuilderDeps, DataTableCreateTool, DataTableUpdateTool, DataViewSaveTool,
+    ViewBuilderDeps,
+};
 use chrono::Utc;
-use data::{DataStore, DataTable, FieldType, FsmStore, RefResolver};
+use data::{DataStore, DataTable, DataViewStore, FieldType, FsmStore, RefResolver};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use uuid::Uuid;
@@ -67,6 +70,7 @@ struct Env {
     fga: Arc<dyn AuthzClient>,
     data: DataStore,
     deps: DataBuilderDeps,
+    views: ViewBuilderDeps,
     tenant: String,
 }
 
@@ -103,7 +107,12 @@ impl Env {
         );
         let data = DataStore::new(pool.clone(), Arc::clone(&fga), Arc::new(AllowRefs));
         let artifacts = Arc::new(ArtifactStore::new(pool.clone(), Arc::clone(&fga)));
-        let fsms = Arc::new(FsmStore::new(artifacts, data.clone()));
+        let fsms = Arc::new(FsmStore::new(Arc::clone(&artifacts), data.clone()));
+        let views = ViewBuilderDeps {
+            data: data.clone(),
+            views: Arc::new(DataViewStore::new(Arc::clone(&artifacts), data.clone())),
+            artifacts,
+        };
         let deps = DataBuilderDeps {
             data: data.clone(),
             fsms,
@@ -114,6 +123,7 @@ impl Env {
             fga,
             data,
             deps,
+            views,
             tenant: format!("t{}", Uuid::new_v4().simple()),
         })
     }
@@ -133,6 +143,15 @@ impl Env {
 
     fn update_tool(&self) -> DataTableUpdateTool {
         DataTableUpdateTool::new(self.deps.clone())
+    }
+
+    fn view_tool(&self) -> DataViewSaveTool {
+        DataViewSaveTool::new(
+            self.views.clone(),
+            BuilderRun {
+                since: Utc::now() - chrono::Duration::seconds(1),
+            },
+        )
     }
 }
 
@@ -603,4 +622,197 @@ async fn fsm_changes_that_would_lock_records_are_not_saved() {
     );
     let after = env.data.get_table(&alice, table.id, None).await.unwrap();
     assert!(after.schema.fsm_ref.is_some());
+}
+
+/// 申請中の経費を金額の大きい順に出すビュー（`table` は名前で指す）。
+fn pending_view(name: &str, table: &str) -> Value {
+    json!({
+        "name": name,
+        "table": table,
+        "query": {
+            "filter": { "cmp": { "field": "status", "op": "eq", "value": "申請中" } },
+            "sort": [{ "field": "amount", "descending": true }]
+        },
+        "display": { "kind": "grid", "columns": [{ "field": "title" }, { "field": "amount" }] }
+    })
+}
+
+#[tokio::test]
+async fn saves_views_idempotently_and_updates_them_with_the_version() {
+    let Some(env) = Env::new().await else { return };
+    let alice = env.user("alice");
+    let bob = env.user("bob");
+    let created = call(&env.create_tool(), &alice, expense_input("交通費")).await;
+    assert!(!created.is_error, "{}", created.content);
+    let table = table_of(&env, &alice, &created).await;
+    let tool = env.view_tool();
+    assert!(
+        !tool.requires_confirmation(),
+        "ビューは確認なし（版で戻せる）"
+    );
+
+    let o = call(&tool, &alice, pending_view("申請中の一覧", "交通費")).await;
+    assert!(!o.is_error, "{}", o.content);
+    let r = ref_of(&o);
+    assert_eq!(r["kind"], "data_view");
+    assert_eq!(r["version"], 1);
+    assert_eq!(o.builder_refs, std::slice::from_ref(&r));
+    let view_id: Uuid = r["id"].as_str().unwrap().parse().unwrap();
+    let (_, stored) = env
+        .views
+        .views
+        .get(&alice, view_id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(stored.table_id, table.id);
+    assert_eq!(stored.query.sort.len(), 1);
+
+    // 同じ名前・同じ本文: 作成済み。違う本文: 直し方。ほかの人の同名: 名前が使えないとだけ言う。
+    let again = call(
+        &tool,
+        &alice,
+        pending_view("申請中の一覧", &table.id.to_string()),
+    )
+    .await;
+    assert!(!again.is_error, "{}", again.content);
+    assert!(
+        again.content.contains("新しい版は作っていません"),
+        "{}",
+        again.content
+    );
+    let mut other_body = pending_view("申請中の一覧", "交通費");
+    other_body["display"] = json!({ "kind": "kanban", "group_field": "kind" });
+    let differs = call(&tool, &alice, other_body.clone()).await;
+    assert!(differs.is_error);
+    assert!(
+        differs.content.contains(&view_id.to_string()),
+        "{}",
+        differs.content
+    );
+    env.fga
+        .write_tuple(
+            &bob.subject(),
+            Relation::Viewer,
+            &bob.ns().data_table(&table.id.to_string()),
+        )
+        .await
+        .unwrap();
+    let taken = call(
+        &tool,
+        &bob,
+        pending_view("申請中の一覧", &table.id.to_string()),
+    )
+    .await;
+    assert!(taken.is_error);
+    assert!(taken.content.contains("作れません"), "{}", taken.content);
+    assert!(!taken.content.contains(&view_id.to_string()));
+
+    // 直す: 版が要る。古い版は直さない。名前でも id でも指せる。
+    other_body.as_object_mut().unwrap().remove("name");
+    other_body["view"] = json!("申請中の一覧");
+    let no_version = call(&tool, &alice, other_body.clone()).await;
+    assert!(no_version.is_error);
+    assert!(
+        no_version.content.contains("expected_version"),
+        "{}",
+        no_version.content
+    );
+    other_body["expected_version"] = json!(1);
+    let updated = call(&tool, &alice, other_body.clone()).await;
+    assert!(!updated.is_error, "{}", updated.content);
+    assert_eq!(ref_of(&updated)["version"], 2);
+    assert_eq!(ref_of(&updated)["id"], view_id.to_string());
+    let stale = call(&tool, &alice, other_body.clone()).await;
+    assert!(stale.is_error);
+    assert!(stale.content.contains("v2"), "{}", stale.content);
+    other_body["view"] = json!(view_id);
+    other_body["expected_version"] = json!(2);
+    let by_id = call(&tool, &alice, other_body).await;
+    assert!(!by_id.is_error, "{}", by_id.content);
+    assert_eq!(ref_of(&by_id)["version"], 3);
+
+    // 閲覧だけの bob は alice のビューを直せない（ビューの編集の権限が無い）。
+    let denied = call(
+        &tool,
+        &bob,
+        json!({ "view": view_id, "expected_version": 3, "table": table.id }),
+    )
+    .await;
+    assert!(denied.is_error);
+    assert!(
+        denied.content.contains("見つからないか"),
+        "{}",
+        denied.content
+    );
+}
+
+#[tokio::test]
+async fn view_inputs_are_checked_and_capped() {
+    let Some(env) = Env::new().await else { return };
+    let alice = env.user("alice");
+    let carol = env.user("carol");
+    let created = call(&env.create_tool(), &alice, expense_input("宿泊費")).await;
+    let table = table_of(&env, &alice, &created).await;
+    let tool = env.view_tool();
+
+    // クエリの最上位の未知のキー・読めない表示の設定・見えないテーブルは保存しない。
+    let bad_query = call(
+        &tool,
+        &alice,
+        json!({ "name": "x", "table": table.id, "query": { "limitt": 5 } }),
+    )
+    .await;
+    assert!(bad_query.is_error, "{}", bad_query.content);
+    let bad_display = call(
+        &tool,
+        &alice,
+        json!({ "name": "x", "table": table.id, "display": { "kind": "pie" } }),
+    )
+    .await;
+    assert!(bad_display.is_error);
+    assert!(
+        bad_display.content.contains("display"),
+        "{}",
+        bad_display.content
+    );
+    let hidden = call(&tool, &carol, json!({ "name": "x", "table": table.id })).await;
+    assert!(hidden.is_error);
+    assert!(
+        hidden.content.contains("見つからないか"),
+        "{}",
+        hidden.content
+    );
+    let unknown = call(
+        &tool,
+        &alice,
+        json!({ "name": "x", "table": table.id, "filter": {} }),
+    )
+    .await;
+    assert!(unknown.is_error);
+    assert!(unknown.content.contains("filter"), "{}", unknown.content);
+
+    // 1 回の run で作れるのは 10 件まで（直すのは数えない）。
+    for i in 0..chat::MAX_VIEWS_PER_RUN {
+        let o = call(
+            &tool,
+            &alice,
+            json!({ "name": format!("一覧{i}"), "table": table.id }),
+        )
+        .await;
+        assert!(!o.is_error, "{}", o.content);
+    }
+    let over = call(
+        &tool,
+        &alice,
+        json!({ "name": "一覧あふれ", "table": table.id }),
+    )
+    .await;
+    assert!(over.is_error);
+    assert!(
+        over.content.contains("これ以上は作りません"),
+        "{}",
+        over.content
+    );
+    let again = call(&tool, &alice, json!({ "name": "一覧0", "table": table.id })).await;
+    assert!(!again.is_error, "{}", again.content);
 }

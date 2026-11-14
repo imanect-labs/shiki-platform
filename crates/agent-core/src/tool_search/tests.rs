@@ -432,7 +432,7 @@ fn trying_a_workflow_loads_the_try_tool_and_making_one_prefers_emit() {
 }
 
 /// アプリ・台帳を作る依頼ではテーブルを作る道具（data_table_create）が上位に入り、作ったテーブルに列を足す依頼では
-/// 直す道具（data_table_update）が上位に入る（D-10 の T05）。どちらも説明文ではなく検索用の短い文で索引に入る（D-41）。
+/// 直す道具（data_table_update）が、一覧を保存する依頼では data_view_save が上位に入る（D-10 の T05・T06）。どちらも説明文ではなく検索用の短い文で索引に入る（D-41）。
 #[test]
 fn building_an_app_loads_the_table_tools() {
     let mut defs = catalog();
@@ -452,6 +452,10 @@ fn building_an_app_loads_the_table_tools() {
         "data_table_update",
         "自分が作ったテーブルを直す。足す列と変える列だけを書く。",
     ));
+    defs.push(def(
+        "data_view_save",
+        "テーブルの保存ビューを作る・直す。表示の設定の書き方は長い。",
+    ));
     let s = prepare(defs, &enabled()).1.expect("有効になる");
     for q in [
         "経費申請のアプリを作って",
@@ -468,6 +472,16 @@ fn building_an_app_loads_the_table_tools() {
         let hits = query(&s, q);
         assert!(
             hits.iter().take(5).any(|h| h == "data_table_update"),
+            "{q}: {hits:?}"
+        );
+    }
+    for q in [
+        "申請中だけの一覧のビューを保存して",
+        "save a filtered view of the table",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "data_view_save"),
             "{q}: {hits:?}"
         );
     }

@@ -17,13 +17,14 @@ use super::AppBuilderConfig;
 pub(super) const EXTEND_ON: &[ToolName] = &[ToolName::EmitWorkflow, ToolName::DataTableCreate];
 
 /// 呼んだステップの終わりからチェックポイントを保存し始める道具。[`EXTEND_ON`] に試運転（`try_workflow`）を
-/// 足したもの（作成をしない試運転も、二重に走らせない）と、テーブルの改訂（T05）。`data_view_save`・
+/// 足したもの（作成をしない試運転も、二重に走らせない）と、テーブルの改訂（T05）・保存ビューの保存（T06）。
 /// `miniapp_update` は後の担当が足す。
 pub(super) const CHECKPOINT_ON: &[ToolName] = &[
     ToolName::EmitWorkflow,
     ToolName::DataTableCreate,
     ToolName::TryWorkflow,
     ToolName::DataTableUpdate,
+    ToolName::DataViewSave,
 ];
 
 /// `name` の道具を呼んだら、チェックポイントの保存を始めるか。
@@ -104,6 +105,7 @@ mod tests {
         assert!(starts_checkpoints("try_workflow"));
         // テーブルの改訂は広げないが、二重に直さないよう境界から保存する（T05）。
         assert!(starts_checkpoints("data_table_update"));
+        assert!(starts_checkpoints("data_view_save"));
         assert!(!EXTEND_ON.contains(&ToolName::DataTableUpdate));
         assert!(EXTEND_ON.contains(&ToolName::DataTableCreate));
         assert!(

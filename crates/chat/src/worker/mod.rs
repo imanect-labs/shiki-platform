@@ -110,6 +110,8 @@ pub struct ChatWorker {
     data: Option<data::DataStore>,
     /// テーブルの状態の進め方（data_table_create / data_table_update・D-10 の T05）。`data` と揃ったときだけ提示する。
     fsms: Option<Arc<data::FsmStore>>,
+    /// 保存ビュー（data_view_save・D-10 の T06）。`data` と artifact のストアと揃ったときだけ提示する。
+    data_views: Option<Arc<data::DataViewStore>>,
     /// 試運転（try_workflow・T04）の起動の入口。`workflow_store` と `try_runs` が揃ったときだけ提示する。
     try_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     /// 試運転の run の要約（try_workflow・T04）。
@@ -163,6 +165,7 @@ impl ChatWorker {
             office_engine,
             data: None,
             fsms: None,
+            data_views: None,
             try_launcher: None,
             try_runs: None,
             help_search: None,
@@ -186,12 +189,18 @@ impl ChatWorker {
         self
     }
 
-    /// テーブルを作る・直す道具（data_table_create / data_table_update・D-10 の T05）の状態の進め方のストアを配線する。
+    /// テーブルと保存ビューを作る・直す道具（data_table_create / data_table_update・T05、data_view_save・T06）の
+    /// 状態の進め方のストアと保存ビューのストアを配線する。
     ///
-    /// [`Self::with_data`] と揃ったときだけ提示する（API と同じ `FsmStore` を共有する）。
+    /// [`Self::with_data`] と揃ったときだけ提示する（API と同じ `FsmStore`・`DataViewStore` を共有する）。
     #[must_use]
-    pub fn with_data_builders(mut self, fsms: Arc<data::FsmStore>) -> Self {
+    pub fn with_data_builders(
+        mut self,
+        fsms: Arc<data::FsmStore>,
+        views: Arc<data::DataViewStore>,
+    ) -> Self {
         self.fsms = Some(fsms);
+        self.data_views = Some(views);
         self
     }
 

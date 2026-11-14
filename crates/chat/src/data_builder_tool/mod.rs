@@ -5,6 +5,7 @@
 //!   足すだけなので、作る前に列と決まりを人が確かめる）。オートの自律では自動で承認する（csv.write と同じ・削除で戻せる）。
 //! - [`DataTableUpdateTool`]（`data_table_update`）: 自分が持ち主のテーブルを直す。承認カードを経る（行の決まり・
 //!   列の見せ方・状態の進め方の進められる人は、権限の意味を変える）。オートでも承認を残す。
+//! - [`DataViewSaveTool`]（`data_view_save`）: 保存ビューを作る・直す（確認なし・版を積む・T06）。
 //!
 //! どれも話した本人の `AuthContext` のまま data のチョークポイント（[`DataStore`]・[`FsmStore`]）を通す
 //! （昇格しない）。テーブルの持ち主は作った本人だけで、共有（権限の付与）はしない（人が画面で行う）。
@@ -21,6 +22,7 @@
 mod spec;
 mod table_create;
 mod table_update;
+mod view_save;
 
 use std::sync::Arc;
 
@@ -32,6 +34,7 @@ use uuid::Uuid;
 
 pub use table_create::DataTableCreateTool;
 pub use table_update::DataTableUpdateTool;
+pub use view_save::{DataViewSaveTool, ViewBuilderDeps, MAX_VIEWS_PER_RUN};
 
 /// 1 回の会話の run で作れるテーブルの数。
 pub const MAX_TABLES_PER_RUN: usize = 5;
