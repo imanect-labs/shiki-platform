@@ -124,6 +124,9 @@ PoC の E は切替時に cookie を引き継がず、「ログインした後�
 
 - jar は `BrowserSession` が持ち、キーは `(tenant_id, principal, run_id, session_id)`。
   **run の終了で破棄**し、v1 では永続化しない（永続化は §9 のプロファイル）。
+  run がチェックポイントから再開されたときもセッションは引き継がない（開いたページ・入力・たどったリンクの出所は消える）。
+  ツールは「まだページを開いていない・以前の ref やリンクは使えない」と返し、モデルはユーザーが書いた URL から開き直す。
+  出所を履歴のスナップショットのテキストから復元はしない（ページ本文に偽のリンク行を書けば出所を偽装できるため）。
 - jar の中身（cookie 名・値）は**モデルにも、ツール結果にも、ログにも出さない**（`crates/secrets` の
   レダクトと同じ扱い）。監査には「どのホストの cookie が何件あったか」だけ残す。
 - Chromium 側の BrowserContext も run の間は保つ（localStorage・sessionStorage は Chromium の中にしか

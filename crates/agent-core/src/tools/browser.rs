@@ -48,6 +48,16 @@ pub const DEFAULT_WINDOW_CHARS: usize = 12_000;
 /// エンジンが持つ本文の長さ（窓の何倍か）。これを超えた分は読めない。
 const ENGINE_WINDOWS: usize = 5;
 
+/// まだページを開いていないときの案内。
+///
+/// run がチェックポイントから再開されると、ツールは作り直され（セッション・cookie・たどったリンクの出所は
+/// 引き継がない・§5.1）、履歴には以前のスナップショットだけが残る。履歴の ref やリンクをそのまま使えると
+/// 誤解させないよう、状態が無いことをはっきり返す。出所を履歴のテキストから復元はしない（ページ本文に
+/// 偽のリンク行を書けば、出所を偽装できてしまうため）。
+const NO_PAGE_YET: &str = "このブラウザではまだページを開いていません。会話の再開（中断からの再開を含む）では\
+     ブラウザの状態（開いたページ・入力した値・たどったリンク）は引き継がれず、以前の結果にある ref やリンクは使えません。\
+     ユーザーが会話で書いた URL を navigate で開き直し、そこからたどり直してください。";
+
 /// 範囲外の操作を拒むときの案内（承認付きの `browser_act` は AB.6 で入る）。
 const NEEDS_APPROVAL: &str = "承認なしに外部へ値を送らないため、browser ではこの操作をしません。\
      必要ならユーザーに、何をどこへ送るかを示して確認してください。";
@@ -81,6 +91,8 @@ struct State {
     session: Option<BrowserSession>,
     /// ホストごとの直前の要求の時刻。
     last_request: HashMap<String, Instant>,
+    /// このツールでページを 1 度でも開いたか（開く前の操作には [`NO_PAGE_YET`] を返す）。
+    opened: bool,
 }
 
 /// `browser` ツール。チャットのワーカーが run ごとに 1 つ作る（セッション・cookie jar は run で捨てる）。
@@ -111,6 +123,7 @@ impl BrowserTool {
             state: tokio::sync::Mutex::new(State {
                 session: None,
                 last_request: HashMap::new(),
+                opened: false,
             }),
             redirect: Arc::new(SyncMutex::new(RedirectScope::Free)),
             politeness: DEFAULT_POLITENESS,
@@ -182,6 +195,9 @@ impl BrowserTool {
             }
             None => state.session.insert(self.new_session(ctx)),
         };
+        if !state.opened && !matches!(op, Op::Navigate(_)) {
+            return ToolOutcome::error(NO_PAGE_YET);
+        }
         let result = match op {
             Op::Snapshot { offset } => {
                 return match session.snapshot().await {
@@ -191,14 +207,18 @@ impl BrowserTool {
             }
             Op::Navigate(url) => {
                 if !session.provenance().allows(&url) {
+                    // 再開でたどったリンクの出所を失った場合もここに来る。開いていなければその旨を添える。
+                    let reset = if state.opened { "" } else { NO_PAGE_YET };
                     return ToolOutcome::error(format!(
                         "この URL は、ユーザーが会話で書いたものでも、開いたページにリンクとして現れたものでもないため開けません。\
-                         {NEEDS_APPROVAL}"
+                         {NEEDS_APPROVAL}{reset}"
                     ));
                 }
                 self.set_redirect(RedirectScope::Free);
                 wait_turn(&mut state.last_request, &url, self.politeness).await;
-                session.navigate(url).await
+                let result = session.navigate(url).await;
+                state.opened |= result.is_ok();
+                result
             }
             Op::Act(action) => match self.admit(session, &action).await {
                 Err(outcome) => return outcome,

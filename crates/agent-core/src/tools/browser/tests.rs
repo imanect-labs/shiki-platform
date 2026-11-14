@@ -361,8 +361,28 @@ async fn invalid_input_and_foreign_principal_are_rejected() {
             "{bad}"
         );
     }
-    let out = f.call(json!({"action": "snapshot"})).await;
-    assert!(out.is_error, "まだ開いていない: {}", out.content);
+    // 再開直後（ページを開く前）は、状態が無いことと開き直し方を返し、通信しない（Codex 指摘）。
+    for op in [
+        json!({"action": "snapshot"}),
+        json!({"action": "click", "ref": "t3.12"}),
+        json!({"action": "back"}),
+    ] {
+        let out = f.call(op.clone()).await;
+        assert!(
+            out.is_error && out.content.contains("引き継がれず"),
+            "{op}: {}",
+            out.content
+        );
+    }
+    let out = f
+        .call(json!({"action": "navigate", "url": f.url("site.example", "/next")}))
+        .await;
+    assert!(
+        out.is_error && out.content.contains("開き直し"),
+        "以前たどったリンクは出所に無い: {}",
+        out.content
+    );
+    assert!(f.requests().is_empty(), "{:?}", f.requests());
 
     let mut other = ctx();
     other.principal_mut().id = "u2".into();
