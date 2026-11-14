@@ -98,6 +98,21 @@ const FIRST_PAGE = 100;
 const NEXT_PAGE = 200;
 /// 読み込み済みの末尾からこの行数以内が見えたら次のページを取る。
 const PREFETCH_ROWS = 120;
+/// ファイルの列の名前を引く範囲: 見えている行の前後に足す行数と、範囲を丸める単位（スクロールのたびに範囲を
+/// 変えない）。名前は見えている範囲の行のものだけを引き、引き直す（読み込んだ全部の行を引き直し続けない・GAP-150）。
+const FILE_NAME_OVERSCAN = 50;
+const FILE_NAME_STEP = 25;
+
+/// 表示行の `window`（表示行の位置の範囲）に出る行（群の見出しは見出しの文字を作った行）。
+function rowsInWindow(display: readonly DisplayRow[], source: readonly DataRecord[], window: { from: number; to: number }): DataRecord[] {
+  const out: DataRecord[] = [];
+  for (let i = Math.max(0, window.from); i < Math.min(display.length, window.to); i++) {
+    const d = display[i];
+    const r = source[d.kind === "row" ? d.index : d.first];
+    if (r) out.push(r);
+  }
+  return out;
+}
 /// 続きがあるときに末尾に置く「読み込み中」の行数。
 const LOADING_ROWS = 20;
 
@@ -124,7 +139,8 @@ function useGuardSyntheticClicks() {
 type DisplayRow =
   /// `open`: 読み込んだ最後の行を含む群（続きのページにまだ同じ群の行があり得る）。並びは群の順なので、
   /// それ以外の群の件数は確定している。
-  | { kind: "group"; level: number; key: string; label: string; count: number; open: boolean }
+  /// `first`: 群の見出しの文字を作った行（群の最初の行・ファイル名を引く対象を決めるのに使う）。
+  | { kind: "group"; level: number; key: string; label: string; count: number; open: boolean; first: number }
   | { kind: "row"; index: number };
 
 export type DataGridHandle = {
@@ -750,8 +766,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, columns, showingStale]);
-  // ファイルの列（file_ref）のファイル名を引く（閲覧者が開けるファイルだけ・引けたら描き直す）。
-  const fileNamesVersion = useFileNames(fileRefIds(source, columns));
+  // ファイルの列（file_ref）のファイル名を引く（閲覧者が開けるファイルだけ・引けたら描き直す）。引くのは見えている
+  // 範囲とその前後の行の分だけ（範囲は下の effect が表示行から決める・GAP-150）。
+  const hasFileColumns = React.useMemo(() => columns.some((c) => c.field?.type === "file_ref"), [columns]);
+  const [fileWindow, setFileWindow] = React.useState({ from: 0, to: 2 * FILE_NAME_OVERSCAN });
+  const [fileIds, setFileIds] = React.useState<readonly string[]>([]);
+  const fileNamesVersion = useFileNames(fileIds);
 
   const display: DisplayRow[] = React.useMemo(() => {
     if (groupKeys.length === 0) return source.map((_, index) => ({ kind: "row", index }));
@@ -787,6 +807,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               label: `${col?.label ?? groupKeys[l]}: ${groupLabel(r, groupKeys[l], col)}`,
               count: counts.get(key) ?? 0,
               open: openKeys.has(key),
+              first: index,
             });
           }
         }
@@ -798,6 +819,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion, fileNamesVersion]);
+
+  // 名前を引くファイルの id（見えている範囲の行の分）。同じ顔ぶれなら前の配列のまま（引き直しを始め直さない）。
+  React.useEffect(() => {
+    const next = hasFileColumns ? fileRefIds(rowsInWindow(display, source, fileWindow), columns) : [];
+    setFileIds((prev) => (prev.length === next.length && prev.every((id, i) => id === next[i]) ? prev : next));
+  }, [display, source, fileWindow, columns, hasFileColumns]);
 
   // 見えている範囲が表示行の末尾に届いていれば続きを読む。グループを畳むと読み込んだ行が表示行に現れない
   // ので、行数ではなく表示行で見る（7,500 行の群を畳むと 1 ページで止まっていた・A P3）。ページを読むたび
@@ -1294,8 +1321,13 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     (r: Rectangle) => {
       visibleRegion.current = r;
       if (r.y + r.height + PREFETCH_ROWS >= display.length) void fetchNext();
+      if (hasFileColumns) {
+        const from = Math.max(0, Math.floor((r.y - FILE_NAME_OVERSCAN) / FILE_NAME_STEP) * FILE_NAME_STEP);
+        const to = Math.ceil((r.y + r.height + FILE_NAME_OVERSCAN) / FILE_NAME_STEP) * FILE_NAME_STEP;
+        setFileWindow((w) => (w.from === from && w.to === to ? w : { from, to }));
+      }
     },
-    [display.length, fetchNext],
+    [display.length, fetchNext, hasFileColumns],
   );
 
   /// 直前のクリック（mouseup）のセルと時刻。glide は「前のクリックから 500ms 以内」をセルに関係なくダブルクリック
