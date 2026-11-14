@@ -73,7 +73,10 @@ test("アプリの画面の AI に依頼: AI が保存した下書きをその�
 
   // 保存した下書き（v2）をその場で開き直す。
   await expect(page.getByText("AI が v2 を保存しました").first()).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByText("来客の受付は 2 階に移りました。")).toBeVisible({ timeout: 15_000 });
+  // 会話にも同じ文（依頼の本文）が出るので、アプリの本文で確かめる。
+  await expect(page.getByTestId("assistant-body").getByText("来客の受付は 2 階に移りました。")).toBeVisible({
+    timeout: 15_000,
+  });
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-ai-panel-saved.png` });
 
   // パネルから作った会話は、このアプリを対象に持つ。
