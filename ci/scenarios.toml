@@ -62,6 +62,7 @@ e2e = [
     "agent-full-stack.spec.ts",
     "agent-tools.spec.ts",
     "ai-insights.spec.ts",
+    "ai-miniapp-builder.spec.ts",
     "ai-table-builder.spec.ts",
     "ai-workflow-try.spec.ts",
     "ai-workflow.spec.ts",
@@ -378,6 +379,7 @@ e2e = [
 pages = ["web/src/app/(auth)/apps/**"]
 crates = ["shiki-app-platform", "shiki-app-gateway", "shiki-chat"]
 e2e = [
+    "ai-miniapp-builder.spec.ts",
     "artifacts-owned-paging.spec.ts",
     "artifacts-shared-paging.spec.ts",
     "list-load-failed.spec.ts",

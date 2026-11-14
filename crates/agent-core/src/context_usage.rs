@@ -218,6 +218,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::Grep
         | ToolName::ReadWorkflow
         | ToolName::ListWorkflows
+        | ToolName::MiniappRead
         | ToolName::SearchWorkflows
         | ToolName::DocumentRead
         | ToolName::SlideRead
@@ -264,6 +265,9 @@ fn reads_material(name: &str) -> bool {
         | ToolName::DataTableCreate
         | ToolName::DataTableUpdate
         | ToolName::DataViewSave
+        // ミニアプリを作る・直す道具（D-10 の T08）。観測は保存の結果で、資料ではない。
+        | ToolName::MiniappCreate
+        | ToolName::MiniappUpdate
         | ToolName::DriveMove
         | ToolName::DriveCopy => false,
     }

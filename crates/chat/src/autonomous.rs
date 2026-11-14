@@ -303,6 +303,8 @@ mod tests {
             "drive.move",
             "try_workflow",
             "data_table_update",
+            // アプリの改訂は、共同編集者の下書きと公開の前提を変えるので承認を残す（D-10 の T08・HD-1）。
+            "miniapp_update",
         ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は不可逆のため承認維持");
         }

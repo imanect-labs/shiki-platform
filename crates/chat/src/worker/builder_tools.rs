@@ -13,18 +13,24 @@ use agent_core::{AgentOptions, BudgetExtension, Tool, ToolName};
 
 use super::AppBuilderConfig;
 
-/// 初めて呼んだら予算を 1 回だけ広げる道具。`miniapp_create` は T08 が足す。
-pub(super) const EXTEND_ON: &[ToolName] = &[ToolName::EmitWorkflow, ToolName::DataTableCreate];
+/// 初めて呼んだら予算を 1 回だけ広げる道具（アプリを作る道具・T08 で miniapp_create を足した）。
+pub(super) const EXTEND_ON: &[ToolName] = &[
+    ToolName::EmitWorkflow,
+    ToolName::DataTableCreate,
+    ToolName::MiniappCreate,
+];
 
 /// 呼んだステップの終わりからチェックポイントを保存し始める道具。[`EXTEND_ON`] に試運転（`try_workflow`）を
-/// 足したもの（作成をしない試運転も、二重に走らせない）と、テーブルの改訂（T05）・保存ビューの保存（T06）。
-/// `miniapp_update` は後の担当が足す。
+/// 足したもの（作成をしない試運転も、二重に走らせない）と、テーブルの改訂（T05）・保存ビューの保存（T06）・
+/// アプリの改訂（T08）。
 pub(super) const CHECKPOINT_ON: &[ToolName] = &[
     ToolName::EmitWorkflow,
     ToolName::DataTableCreate,
+    ToolName::MiniappCreate,
     ToolName::TryWorkflow,
     ToolName::DataTableUpdate,
     ToolName::DataViewSave,
+    ToolName::MiniappUpdate,
 ];
 
 /// `name` の道具を呼んだら、チェックポイントの保存を始めるか。
@@ -106,6 +112,11 @@ mod tests {
         // テーブルの改訂は広げないが、二重に直さないよう境界から保存する（T05）。
         assert!(starts_checkpoints("data_table_update"));
         assert!(starts_checkpoints("data_view_save"));
+        // アプリの作成は広げ、改訂は境界から保存するだけ（T08）。読むだけでは保存しない。
+        assert!(EXTEND_ON.contains(&ToolName::MiniappCreate));
+        assert!(!EXTEND_ON.contains(&ToolName::MiniappUpdate));
+        assert!(starts_checkpoints("miniapp_update"));
+        assert!(!starts_checkpoints("miniapp_read"));
         assert!(!EXTEND_ON.contains(&ToolName::DataTableUpdate));
         assert!(EXTEND_ON.contains(&ToolName::DataTableCreate));
         assert!(

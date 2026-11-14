@@ -157,6 +157,13 @@ vocab_enum! {
         /// 保存ビュー（テーブルへの絞り込み・並べ替え・表示の設定）を作る・直す（確認なし・版を積む・
         /// 会話の 1 回の run あたり 10 件まで作れる・D-10 の T06）。
         DataViewSave => "data_view_save",
+        /// ミニアプリの本文（画面・束ねた部品の固定版と最新版）を読む（読み取りのみ・D-10 の T08）。
+        MiniappRead => "miniapp_read",
+        /// ミニアプリを作る（画面＋束ねるワークフロー・保存ビュー・確認なし・下書きの版・会話の 1 回の run あたり
+        /// 3 件まで・D-10 の T08）。
+        MiniappCreate => "miniapp_create",
+        /// 自分が編集できるミニアプリを直す（下書きの新しい版・承認カード・版で楽観ロック・D-10 の T08）。
+        MiniappUpdate => "miniapp_update",
         /// ドライブのファイル・フォルダを名前で探す（本人に見える範囲・読み取りのみ・#942）。
         /// 保存先・移動先のフォルダ id を解決する入口。
         DriveFind => "drive.find",
@@ -271,6 +278,9 @@ impl ToolName {
             | Self::DataTableCreate
             | Self::DataTableUpdate
             | Self::DataViewSave
+            | Self::MiniappRead
+            | Self::MiniappCreate
+            | Self::MiniappUpdate
             | Self::DriveFind
             | Self::DriveMove
             | Self::DriveCopy
@@ -309,6 +319,16 @@ impl ToolName {
             }
             Self::DataViewSave => {
                 "テーブルの保存ビュー（絞り込み・並べ替え・表示する列の一覧）を作る・直す。アプリの画面の一覧に使う。"
+            }
+            // 説明文は画面（Yui の app・data_grid）の書き方を載せて長い（D-10 の T08）。
+            Self::MiniappRead => {
+                "ミニアプリ（業務アプリ）の画面と、束ねたワークフロー・保存ビューの版を読む。直す前に使う。"
+            }
+            Self::MiniappCreate => {
+                "ミニアプリ（入力フォームとボタン・一覧の画面を持つ業務アプリ）を新しく作る。ワークフローと保存ビューを束ねる。"
+            }
+            Self::MiniappUpdate => {
+                "自分が編集できるミニアプリの画面・説明・束ねたワークフローと保存ビューを直す。"
             }
             _ => "",
         }
@@ -389,6 +409,18 @@ impl ToolName {
             Self::DataViewSave => {
                 "data view saved filter sort list display app screen \
                  ビュー 保存ビュー 一覧 絞り込み 並べ替え 表示 アプリ 画面 申請の一覧"
+            }
+            Self::MiniappRead => {
+                "mini app application read inspect screen form buttons pinned version \
+                 ミニアプリ アプリ 読む 確認 画面 フォーム ボタン 版 固定"
+            }
+            Self::MiniappCreate => {
+                "mini app application create new screen form ui buttons workflow \
+                 ミニアプリ アプリ 作る 作成 新規 画面 フォーム 申請 入力 ボタン 業務アプリ"
+            }
+            Self::MiniappUpdate => {
+                "mini app application update edit fix screen form buttons version \
+                 ミニアプリ アプリ 直す 修正 変更 画面 フォーム ボタン 版を上げる"
             }
             Self::DriveFind => {
                 "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"

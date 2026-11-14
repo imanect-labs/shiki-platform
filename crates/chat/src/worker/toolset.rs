@@ -36,6 +36,8 @@ impl ChatWorker {
         self.push_data_tools(&mut tools, ctx).await;
         // テーブルを作る・直す（見えるテーブルが 0 件でも出す・D-10 の T05）。
         self.push_data_builder_tools(&mut tools, run);
+        // ミニアプリを読む・作る・直す（D-10 の T08）。
+        self.push_miniapp_builder_tools(&mut tools, run);
         Ok(tools)
     }
 
@@ -423,6 +425,39 @@ impl ChatWorker {
                 builder_run,
             )));
         }
+    }
+
+    /// ミニアプリを読む・作る・直す道具（miniapp_read / miniapp_create / miniapp_update・D-10 の T08）。
+    ///
+    /// artifact のストアが配線されていれば提示する（MiniAppStore は API と同じ artifact のストアと DB の上に組む）。
+    /// どれも遅延ロードで、委譲の子には渡らない（`CHILD_TOOLS` は閉じた一覧）。
+    pub(super) fn push_miniapp_builder_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+    ) {
+        let Some(artifacts) = &self.skill_artifacts else {
+            return;
+        };
+        let deps = crate::miniapp_builder_tool::MiniappBuilderDeps {
+            apps: Arc::new(gui::MiniAppStore::new(
+                Arc::clone(artifacts),
+                self.db.clone(),
+            )),
+            artifacts: Arc::clone(artifacts),
+        };
+        let builder_run = crate::data_builder_tool::BuilderRun {
+            since: run.created_at,
+        };
+        tools.push(Arc::new(crate::miniapp_builder_tool::MiniappReadTool::new(
+            deps.clone(),
+        )));
+        tools.push(Arc::new(
+            crate::miniapp_builder_tool::MiniappCreateTool::new(deps.clone(), builder_run),
+        ));
+        tools.push(Arc::new(
+            crate::miniapp_builder_tool::MiniappUpdateTool::new(deps),
+        ));
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。

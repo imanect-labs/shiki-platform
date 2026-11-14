@@ -43,6 +43,7 @@ pub mod drive_tool;
 pub mod error;
 pub(crate) mod file_reader;
 pub mod gui_actions;
+pub mod miniapp_builder_tool;
 pub mod model;
 pub mod office_create_tool;
 pub mod office_engine_tool;
@@ -85,6 +86,9 @@ pub use data_builder_tool::{
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
+pub use miniapp_builder_tool::{
+    MiniappBuilderDeps, MiniappCreateTool, MiniappReadTool, MiniappUpdateTool, MAX_APPS_PER_RUN,
+};
 pub use model::{
     Attachment, Citation, ContentBlock, LastModelChoice, Message, PendingApproval, PlanSubtask,
     Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StopReason, StreamEvent,

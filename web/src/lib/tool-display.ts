@@ -13,6 +13,7 @@
 /// `suru` で切り替える — 一律に「〜しました」を付けると「読み込みしました」になる。
 
 import {
+  AppWindow,
   Blocks,
   Braces,
   Check,
@@ -559,6 +560,29 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: (input) => (input.view ? "更新" : "保存"),
     suru: true,
     target: named("name"),
+  },
+  // ミニアプリを読む・作る・直す（D-10 の T08）。直すときの入力は id（UUID）なので対象に出さない（承認カードが出す）。
+  miniapp_read: {
+    icon: AppWindow,
+    category: "read",
+    lead: () => "ミニアプリを",
+    verb: "読み込み",
+    failed: "読み込めませんでした",
+  },
+  miniapp_create: {
+    icon: AppWindow,
+    category: "write",
+    lead: (t) => (t ? `ミニアプリ「${t}」を` : "ミニアプリを"),
+    verb: "作成",
+    suru: true,
+    target: named("name"),
+  },
+  miniapp_update: {
+    icon: AppWindow,
+    category: "write",
+    lead: () => "ミニアプリを",
+    verb: "変更",
+    suru: true,
   },
   // ドライブのファイル・フォルダ（種別を問わない・#942）。
   "drive.find": {

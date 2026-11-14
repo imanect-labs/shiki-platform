@@ -408,6 +408,12 @@ impl Tool for EmitWorkflowTool {
                         );
                     }
                 }
+                // 次の一手（試す → 画面にする・D-10 の T08）。道具が提示されていなければ tool_search で見つからないだけ。
+                let _ = write!(
+                    text,
+                    "\n次の一手: 動きを確かめるなら try_workflow（version: {version}）。入力フォームとボタンの画面にするなら \
+                     miniapp_create の workflows に {{\"alias\": …, \"workflow\": \"{id}\"}} を渡す。"
+                );
                 // 末尾に参照の行（こちらが作った値だけ・T02）。
                 text.push('\n');
                 text.push_str(&ref_line(BuilderKind::Workflow, id, &ir.name, version));

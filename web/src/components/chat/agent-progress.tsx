@@ -16,6 +16,7 @@ import type { ToolName } from "@/generated/gui-spec";
 
 import { DataWriteSummary } from "./data-approval-summary";
 import { DriveMoveSummary } from "./drive-move-approval-summary";
+import { MiniappUpdateSummary } from "./miniapp-approval-summary";
 import { TableCreateSummary, TableUpdateSummary } from "./table-approval-summary";
 import type { ApprovalRequest } from "@/lib/chat-api";
 
@@ -42,6 +43,7 @@ const SUMMARIZED_TOOLS = [
   "try_workflow",
   "data_table_create",
   "data_table_update",
+  "miniapp_update",
 ] as const satisfies readonly ToolName[];
 type SummarizedTool = (typeof SUMMARIZED_TOOLS)[number];
 
@@ -63,6 +65,8 @@ function ApprovalSummary({ name, input }: { name: SummarizedTool; input: unknown
       return <TableCreateSummary input={input} />;
     case "data_table_update":
       return <TableUpdateSummary input={input} />;
+    case "miniapp_update":
+      return <MiniappUpdateSummary input={input} />;
   }
 }
 
