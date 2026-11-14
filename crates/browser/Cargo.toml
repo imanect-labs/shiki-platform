@@ -19,6 +19,7 @@ shiki-web-access.workspace = true
 async-trait.workspace = true
 cookie.workspace = true
 dom_query.workspace = true
+encoding_rs.workspace = true
 psl.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true

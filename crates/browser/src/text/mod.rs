@@ -122,6 +122,10 @@ struct HistoryEntry {
     /// 描画し直すたびに複製しないよう共有する。
     html: Arc<str>,
     body_truncated: bool,
+    /// 文書の文字コード（フォームの送信に使う・HTML 標準の form submission）。
+    encoding: &'static encoding_rs::Encoding,
+    /// ページを離れたときの入力（戻ったときに復元する・bfcache 相当）。
+    state: HashMap<usize, FieldState>,
 }
 
 /// 現在表示しているページ。
@@ -130,6 +134,7 @@ struct Current {
     forms: Vec<Form>,
     fields: Vec<Field>,
     state: HashMap<usize, FieldState>,
+    encoding: &'static encoding_rs::Encoding,
 }
 
 /// テキストエンジンの 1 セッション。
@@ -225,6 +230,12 @@ impl TextPage {
         let url = entry.url.clone();
         let status = entry.status;
         let body_truncated = entry.body_truncated;
+        let encoding = entry.encoding;
+        // 戻るときは、そのページを離れたときの入力を復元する。
+        let state = match change {
+            Change::Back => entry.state.clone(),
+            Change::Rerender | Change::Push(_) => state,
+        };
         let generation = match change {
             Change::Rerender => self.generation,
             Change::Push(_) | Change::Back => self.generation + 1,
@@ -249,7 +260,13 @@ impl TextPage {
         };
         match change {
             Change::Rerender => {}
-            Change::Push(entry) => self.push_history(entry),
+            Change::Push(entry) => {
+                // 離れるページの入力を履歴に残す。
+                if let (Some(cur), Some(last)) = (&self.current, self.history.last_mut()) {
+                    last.state.clone_from(&cur.state);
+                }
+                self.push_history(entry);
+            }
             Change::Back => {
                 self.history.pop();
             }
@@ -260,6 +277,7 @@ impl TextPage {
             forms: rendered.forms,
             fields: rendered.fields,
             state,
+            encoding,
         });
         Ok(snapshot)
     }
@@ -332,7 +350,14 @@ impl TextPage {
             Some(s) => Some(s),
             None => submit::default_submitter(&cur.fields, form)?,
         };
-        submit::build(&cur.forms, &cur.fields, &cur.snapshot.url, form, submitter)
+        submit::build(
+            &cur.forms,
+            &cur.fields,
+            &cur.snapshot.url,
+            form,
+            submitter,
+            cur.encoding,
+        )
     }
 
     /// 送信の要求と、承認ダイアログで伏せる項目（同じフォームのパスワード欄）。
@@ -418,6 +443,9 @@ impl EnginePage for TextPage {
             status: fetched.status,
             html: Arc::from(html),
             body_truncated: fetched.truncated,
+            encoding: encoding_rs::Encoding::for_label(decoded.encoding.as_bytes())
+                .unwrap_or(encoding_rs::UTF_8),
+            state: HashMap::new(),
         };
         self.show(Change::Push(entry), HashMap::new()).await
     }
@@ -596,6 +624,8 @@ mod cancel_tests {
             status: 200,
             html: Arc::from(html),
             body_truncated: false,
+            encoding: encoding_rs::UTF_8,
+            state: HashMap::new(),
         }
     }
 

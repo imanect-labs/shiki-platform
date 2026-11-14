@@ -407,3 +407,24 @@ fn radio_groups_keep_only_the_last_checked_and_list_boxes_start_empty() {
         }
     );
 }
+
+#[test]
+fn required_select_value_missing_follows_placeholder_rules() {
+    let out = r(r#"<form>
+        <select name="a" required><option value="">選んでください</option><option value="x">X</option></select>
+        <select name="b" required size="3"><option value="" selected>すべて</option><option value="x">X</option></select>
+        <select name="c" required size="3"><option value="x">X</option></select>
+        <select name="d" required><optgroup label="g"><option value="">空</option></optgroup><option value="x">X</option></select>
+        </form>"#);
+    let missing: Vec<_> = out
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.value_missing))
+        .collect();
+    // a: placeholder だけが選ばれている。b: 表示行数 3 のリストで空文字の選択肢を選ぶのは正当。
+    // c: 何も選ばれていない。d: 親が optgroup の選択肢は placeholder ではない。
+    assert_eq!(
+        missing,
+        [("a", true), ("b", false), ("c", true), ("d", false)]
+    );
+}

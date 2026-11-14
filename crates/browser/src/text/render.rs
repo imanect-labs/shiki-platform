@@ -33,11 +33,15 @@ pub(crate) struct Form {
     pub dialog: bool,
     /// `novalidate`（送信前の制約検証＝`required` の確認をしない）。
     pub novalidate: bool,
+    /// `accept-charset` の最初の対応する文字コード（無ければ文書の文字コードで送る）。
+    pub accept_charset: Option<&'static encoding_rs::Encoding>,
     pub enctype: String,
     id: Option<String>,
 }
 
 /// 送信に載る項目（文書順）。CSS で隠れた項目も持つ（ブラウザは見た目によらず送る）。
+// HTML の部品の属性（disabled / readonly / required）と検証状態をそのまま写す。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Field {
     pub form: Option<usize>,
@@ -51,6 +55,8 @@ pub(crate) struct Field {
     pub readonly: bool,
     /// `required`（未入力なら送信しない）。
     pub required: bool,
+    /// セレクトの未入力（何も選ばれていない・placeholder だけが選ばれている）。他の部品では使わない。
+    pub value_missing: bool,
     form_attr: Option<String>,
 }
 
@@ -562,6 +568,10 @@ impl Walker<'_> {
                     .attr("method")
                     .is_some_and(|m| m.eq_ignore_ascii_case("dialog")),
                 novalidate: node.has_attr("novalidate"),
+                accept_charset: node.attr("accept-charset").and_then(|a| {
+                    a.split_ascii_whitespace()
+                        .find_map(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+                }),
                 enctype: node.attr("enctype").map_or_else(
                     || "application/x-www-form-urlencoded".to_string(),
                     |e| e.to_ascii_lowercase(),

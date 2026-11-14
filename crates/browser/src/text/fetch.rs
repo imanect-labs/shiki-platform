@@ -85,11 +85,7 @@ impl Fetcher {
                 Method::Post => client
                     .post(target.url.clone())
                     .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .body(
-                        url::form_urlencoded::Serializer::new(String::new())
-                            .extend_pairs(&form)
-                            .finish(),
-                    ),
+                    .body(super::submit::urlencoded(&form, req.charset)),
             }
             .header(ACCEPT, "text/html,application/xhtml+xml;q=0.9,text/*;q=0.5");
             // フォームの POST には要求元の Origin を付ける（付けないと Django 等の CSRF 保護に弾かれる）。

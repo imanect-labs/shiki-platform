@@ -611,3 +611,57 @@ async fn required_fields_block_submission_unless_novalidate() {
         .unwrap();
     assert_eq!(last(&log, "/loose").body, "x=");
 }
+
+#[tokio::test]
+async fn forms_use_the_document_charset_and_back_restores_inputs() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/sj" => http(
+            "200 OK",
+            &[("Content-Type", "text/html; charset=Shift_JIS")],
+            r#"<form action="/s"><input name="q" aria-label="get"><button>GET</button></form>
+               <form method="post" action="/p"><input name="q" aria-label="post"><button>POST</button></form>
+               <form action="/u" accept-charset="bogus UTF-8"><input name="q" aria-label="utf8"><button>UTF8</button></form>
+               <a href="/other">help</a>"#,
+        ),
+        _ => http("200 OK", &[], "<p>ok</p>"),
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s.navigate(u(port, "app.example.com", "/sj")).await.unwrap();
+    // Shift_JIS の文書のフォームは Shift_JIS で送る（GET・POST とも）。表せない文字は &#NNNN; になる。
+    let snap = s
+        .act(Action::Fill(find(&snap, "get"), "日本語😀".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "GET"))).await.unwrap();
+    assert_eq!(
+        last(&log, "/s").target,
+        "/s?q=%93%FA%96%7B%8C%EA%26%23128512%3B"
+    );
+    let snap = s.navigate(u(port, "app.example.com", "/sj")).await.unwrap();
+    let snap = s
+        .act(Action::Fill(find(&snap, "post"), "日本語".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "POST"))).await.unwrap();
+    assert_eq!(last(&log, "/p").body, "q=%93%FA%96%7B%8C%EA");
+    // accept-charset の最初の対応する文字コード（ここでは UTF-8）を優先する。
+    let snap = s.navigate(u(port, "app.example.com", "/sj")).await.unwrap();
+    let snap = s
+        .act(Action::Fill(find(&snap, "utf8"), "日本語".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "UTF8"))).await.unwrap();
+    assert_eq!(last(&log, "/u").target, "/u?q=%E6%97%A5%E6%9C%AC%E8%AA%9E");
+
+    // 入力してから別ページへ行き、戻ると入力が復元される（bfcache 相当）。
+    let snap = s.navigate(u(port, "app.example.com", "/sj")).await.unwrap();
+    let snap = s
+        .act(Action::Fill(find(&snap, "post"), "draft".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "help"))).await.unwrap();
+    let back = s.act(Action::Back).await.unwrap();
+    assert!(back.text.contains(r#"value="draft""#), "{}", back.text);
+    s.act(Action::Click(find(&back, "POST"))).await.unwrap();
+    assert_eq!(last(&log, "/p").body, "q=draft");
+}

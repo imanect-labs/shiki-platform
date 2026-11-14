@@ -7,6 +7,7 @@
 //! - Enter による送信（[`default_submitter`]）は、フォームの最初の送信ボタンを submitter にする。
 //!   それが無効なら送信しない。
 
+use encoding_rs::Encoding;
 use url::Url;
 
 use super::render::{Field, FieldKind, Form};
@@ -46,7 +47,7 @@ fn validate(fields: &[Field], form_index: usize) -> Result<(), BrowserError> {
     for f in mine().filter(|f| f.required) {
         let missing = match &f.kind {
             FieldKind::Text { value, .. } => !f.readonly && value.is_empty(),
-            FieldKind::Select { values } => values.iter().all(String::is_empty),
+            FieldKind::Select { .. } => f.value_missing,
             FieldKind::Check {
                 radio: false,
                 checked,
@@ -72,6 +73,22 @@ fn validate(fields: &[Field], form_index: usize) -> Result<(), BrowserError> {
     Ok(())
 }
 
+/// `application/x-www-form-urlencoded` に直列化する（値は `charset` で符号化してから URL エンコード）。
+///
+/// HTML 標準と同じく、UTF-16 系は UTF-8 で送り、その文字コードで表せない文字は `&#NNNN;` にする
+/// （`Encoding::encode` の挙動）。
+pub(crate) fn urlencoded(pairs: &[(String, String)], charset: &'static Encoding) -> String {
+    let part = |s: &str| -> String {
+        let (bytes, _, _) = charset.encode(s);
+        url::form_urlencoded::byte_serialize(&bytes).collect()
+    };
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", part(k), part(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// フォームを送信する要求。`submitter` は押したボタンの項目の位置（`rendered.fields` の添字）。
 ///
 /// # Errors
@@ -82,6 +99,7 @@ pub(crate) fn build(
     page_url: &Url,
     form_index: usize,
     submitter: Option<usize>,
+    doc_charset: &'static Encoding,
 ) -> Result<LoadRequest, BrowserError> {
     let form = forms
         .get(form_index)
@@ -112,6 +130,7 @@ pub(crate) fn build(
         validate(fields, form_index)?;
     }
     let post = overrides.and_then(|o| o.post).unwrap_or(form.post);
+    let charset = form.accept_charset.unwrap_or(doc_charset);
     let enctype = overrides
         .and_then(|o| o.enctype.clone())
         .unwrap_or_else(|| form.enctype.clone());
@@ -166,17 +185,19 @@ pub(crate) fn build(
             method: Method::Post,
             form: pairs,
             initiator,
+            charset,
         })
     } else {
         let mut url = action;
         url.set_fragment(None);
-        url.query_pairs_mut().clear().extend_pairs(&pairs);
+        url.set_query(Some(&urlencoded(&pairs, charset)));
         Ok(LoadRequest {
             url,
             method: Method::Get,
             form: Vec::new(),
             initiator,
             approved_origin: None,
+            charset,
         })
     }
 }

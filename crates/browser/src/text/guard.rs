@@ -189,8 +189,21 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
         i = end;
         if ns == Ns::Html && RAW_TEXT.contains(&lower.as_str()) {
             // 生テキストの中の `<` はタグではない。対応する終了タグまで飛ばす。
+            // 終了タグ名の直後が区切り（空白・`/`・`>`）のときだけ（`</stylex>` は style を閉じない）。
             let close_tag = format!("</{lower}");
-            i = find_ci(b, i, close_tag.as_bytes()).unwrap_or(b.len());
+            let mut from = i;
+            i = loop {
+                match find_ci(b, from, close_tag.as_bytes()) {
+                    Some(p) => {
+                        let after = b.get(p + close_tag.len()).copied();
+                        if after.is_none_or(|c| c.is_ascii_whitespace() || c == b'/' || c == b'>') {
+                            break p;
+                        }
+                        from = p + 1;
+                    }
+                    None => break b.len(),
+                }
+            };
         }
     }
     (html, false)
@@ -487,6 +500,12 @@ mod tests {
             let s = format!("{opener}{}", "<div>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{opener}");
         }
+        // 生テキストの終了タグは名前全体で照合する（`</stylex>` で style を抜けない）。
+        let rawtext = format!(
+            "<style></stylex><script></style>{}",
+            "<div>".repeat(100_000)
+        );
+        assert!(clip_depth(&rawtext, MAX_PARSE_DEPTH).1);
         // 引用符の無い値の中の引用符は値の一部（後続のタグを引用として飛ばさない）。
         let quote_in_value = format!("<div x=a'>{}", "<div>".repeat(100_000));
         assert!(clip_depth(&quote_in_value, MAX_PARSE_DEPTH).1);

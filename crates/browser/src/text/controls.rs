@@ -78,6 +78,7 @@ impl Walker<'_> {
             disabled,
             readonly: node.has_attr("readonly"),
             required: node.has_attr("required"),
+            value_missing: false,
             form_attr: node.attr("form").map(|f| f.to_string()),
         });
     }
@@ -283,6 +284,8 @@ impl Walker<'_> {
         let mut all: Vec<(String, String, bool)> = Vec::new();
         // 選ばれている選択肢は値ではなく**選択肢の位置**で持つ（無効と有効の選択肢が同じ値を持ち得る）。
         let mut selected: Vec<usize> = Vec::new();
+        // 最初の選択肢が placeholder label option になり得るか（値が空で、親が select そのもの）。
+        let mut first_is_placeholder = false;
         for d in node.descendants_it() {
             if d.node_name().is_some_and(|n| &*n == "option") {
                 let text = collapse(&d.text());
@@ -299,6 +302,10 @@ impl Walker<'_> {
                         selected.clear();
                     }
                     selected.push(all.len());
+                }
+                if all.is_empty() {
+                    first_is_placeholder =
+                        value.is_empty() && d.parent().is_some_and(|p| p.id == node.id);
                 }
                 all.push((value, text, disabled));
             }
@@ -327,18 +334,30 @@ impl Walker<'_> {
             .join(", ");
         // 送るのは選ばれていて無効でない選択肢だけ。利用者が選び直した値は有効な選択肢から選んだもの
         // （Action::Select は有効な選択肢しか受け付けない）なので、そのまま送る。
-        let (values, submitted): (Vec<String>, Vec<String>) =
-            match self.pending_state().and_then(|s| s.selected.clone()) {
-                Some(chosen) => (chosen.clone(), chosen),
-                None => (
-                    selected.iter().map(|&i| all[i].0.clone()).collect(),
-                    selected
-                        .iter()
-                        .filter(|&&i| !all[i].2)
-                        .map(|&i| all[i].0.clone())
-                        .collect(),
-                ),
-            };
+        // 利用者が選び直した値は、その値を持つ最初の有効な選択肢を選んだものとして扱う。
+        let chosen_state = self.pending_state().and_then(|s| s.selected.clone());
+        let selected_idx: Vec<usize> = match &chosen_state {
+            Some(chosen) => chosen
+                .iter()
+                .filter_map(|v| all.iter().position(|(ov, _, d)| ov == v && !d))
+                .collect(),
+            None => selected.clone(),
+        };
+        // required の未入力（HTML 標準の valueMissing）: 何も選ばれていないか、placeholder だけが選ばれている。
+        // placeholder を考えるのは単一選択で表示行数が 1 のときだけ。
+        let placeholder = !multiple && size <= 1 && first_is_placeholder;
+        let value_missing = selected_idx.is_empty() || (placeholder && selected_idx == [0]);
+        let (values, submitted): (Vec<String>, Vec<String>) = match chosen_state {
+            Some(chosen) => (chosen.clone(), chosen),
+            None => (
+                selected.iter().map(|&i| all[i].0.clone()).collect(),
+                selected
+                    .iter()
+                    .filter(|&&i| !all[i].2)
+                    .map(|&i| all[i].0.clone())
+                    .collect(),
+            ),
+        };
         let options: Vec<(String, String)> = all
             .into_iter()
             .filter(|(_, _, d)| !d)
@@ -346,6 +365,9 @@ impl Walker<'_> {
             .collect();
         let id = self.push_element(ElementKind::Select { options, multiple }, &label);
         self.push_field(node, form, FieldKind::Select { values: submitted }, id);
+        if let Some(f) = self.fields.last_mut() {
+            f.value_missing = value_missing;
+        }
         if let Some(id) = id {
             let shown = if multiple {
                 format!("{values:?}")

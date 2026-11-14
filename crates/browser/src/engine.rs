@@ -60,6 +60,8 @@ pub struct LoadRequest {
     pub initiator: Option<Url>,
     /// 承認した送り先のオリジン。POST が 307 / 308 でこれ以外へ転送されたら止める（§8）。
     pub approved_origin: Option<Origin>,
+    /// フォームの値を URL エンコードする文字コード（`accept-charset`、無ければ文書の文字コード）。
+    pub charset: &'static encoding_rs::Encoding,
 }
 
 impl LoadRequest {
@@ -72,6 +74,7 @@ impl LoadRequest {
             form: Vec::new(),
             initiator: None,
             approved_origin: None,
+            charset: encoding_rs::UTF_8,
         }
     }
 }
