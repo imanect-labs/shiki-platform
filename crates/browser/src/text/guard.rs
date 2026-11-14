@@ -9,6 +9,10 @@
 //! - 終了タグを省略できる要素（`<p>` `<li>` `<td>` 等）は、解析器と同じく同種の要素を開いたときに閉じる。
 //! - コメントと、中身を生テキストとして扱う要素（`<script>` `<style>` 等）の中は読み飛ばす。
 
+mod end_tag;
+
+use end_tag::close;
+
 /// 解析器へ渡す入れ子の深さの上限。
 pub(crate) const MAX_PARSE_DEPTH: usize = 1024;
 
@@ -234,19 +238,6 @@ fn namespace(open: &[Open], name: &str) -> Ns {
     }
 }
 
-/// 終了タグで閉じる（同じ名前が開いていて、間に境界が無いときだけ）。
-fn close(open: &mut Vec<Open>, name: &str) {
-    for p in (0..open.len()).rev() {
-        if open[p].name == name {
-            open.truncate(p);
-            return;
-        }
-        if SCOPE_BOUNDARY.contains(&open[p].name.as_str()) {
-            return;
-        }
-    }
-}
-
 /// `i` から始まるタグ名。HTML の tokenizer と同じく、空白・`/`・`>` までをすべて名前とする
 /// （`<div:x>` は `div` ではなく `div:x`。途中で切ると `</div>` で閉じたと誤認する）。
 fn name_at(b: &[u8], i: usize) -> &str {
@@ -417,6 +408,18 @@ mod tests {
             let s = format!("<body>{}", format!("<{tag}>").repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
         }
+        // form の終了タグは form だけを取り除き、中の要素は開いたまま。
+        let form = "<form><div></form>".repeat(100_000);
+        assert!(clip_depth(&form, MAX_PARSE_DEPTH).1);
+        // li の終了タグは ul・ol を越えない（list item スコープ）。
+        let list = "<li><ul></li>".repeat(100_000);
+        assert!(clip_depth(&list, MAX_PARSE_DEPTH).1);
+        // formatting 要素の終了タグは、間に特別な要素があると閉じない（adoption agency）。
+        let formatting = "<b><div></b>".repeat(100_000);
+        assert!(clip_depth(&formatting, MAX_PARSE_DEPTH).1);
+        // p の終了タグは button を越えない（button スコープ）。
+        let button = "<p><button></p>".repeat(100_000);
+        assert!(clip_depth(&button, MAX_PARSE_DEPTH).1);
         // ruby が開いていても、間に table・td があるとスコープの外（閉じない）。
         let cell = format!("<ruby><table><tbody><tr><td>{}", "<rb>".repeat(100_000));
         assert!(clip_depth(&cell, MAX_PARSE_DEPTH).1);

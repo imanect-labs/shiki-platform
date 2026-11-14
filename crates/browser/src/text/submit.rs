@@ -30,6 +30,48 @@ pub(crate) fn default_submitter(
     }
 }
 
+/// 送信前の制約検証（`required` の未入力だけを見る・HTML 標準の constraint validation の一部）。
+///
+/// 無効な項目と読み取り専用の入力欄は検証の対象外。ラジオはグループ（同じフォーム・同じ名前）の
+/// どれかが選ばれていればよい。
+///
+/// # Errors
+/// 未入力の必須項目があれば、その名前を返す（ブラウザもこの場合は送信しない）。
+fn validate(fields: &[Field], form_index: usize) -> Result<(), BrowserError> {
+    let mine = || {
+        fields
+            .iter()
+            .filter(move |f| f.form == Some(form_index) && !f.disabled)
+    };
+    for f in mine().filter(|f| f.required) {
+        let missing = match &f.kind {
+            FieldKind::Text { value, .. } => !f.readonly && value.is_empty(),
+            FieldKind::Select { values } => values.iter().all(String::is_empty),
+            FieldKind::Check {
+                radio: false,
+                checked,
+                ..
+            } => !checked,
+            FieldKind::Check { radio: true, .. } => !mine().any(|o| {
+                o.name == f.name
+                    && matches!(
+                        o.kind,
+                        FieldKind::Check {
+                            radio: true,
+                            checked: true,
+                            ..
+                        }
+                    )
+            }),
+            FieldKind::Hidden { .. } | FieldKind::Button { .. } => false,
+        };
+        if missing {
+            return Err(BrowserError::Required(f.name.clone()));
+        }
+    }
+    Ok(())
+}
+
 /// フォームを送信する要求。`submitter` は押したボタンの項目の位置（`rendered.fields` の添字）。
 ///
 /// # Errors
@@ -65,6 +107,9 @@ pub(crate) fn build(
     };
     if overrides.and_then(|o| o.dialog).unwrap_or(form.dialog) {
         return Err(BrowserError::Unsupported("method=dialog".into()));
+    }
+    if !(form.novalidate || overrides.is_some_and(|o| o.novalidate)) {
+        validate(fields, form_index)?;
     }
     let post = overrides.and_then(|o| o.post).unwrap_or(form.post);
     let enctype = overrides

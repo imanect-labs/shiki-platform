@@ -546,3 +546,68 @@ async fn empty_formaction_dialog_readonly_and_no_content() {
     assert_eq!(after.url.path(), "/edit");
     assert!(after.text.contains("注文番号"), "{}", after.text);
 }
+
+#[tokio::test]
+async fn required_fields_block_submission_unless_novalidate() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/apply" => http(
+            "200 OK",
+            &[],
+            r#"<form method="post" action="/send"><input name="item" required aria-label="品目">
+               <input type="radio" name="kind" value="a" required aria-label="種別A"><input type="radio" name="kind" value="b" aria-label="種別B">
+               <input type="checkbox" name="agree" required aria-label="同意">
+               <input name="code" value="" readonly required aria-label="読み取り専用">
+               <input name="off" disabled required aria-label="無効">
+               <button>申請</button><button formnovalidate name="draft" value="1">下書き保存</button></form>
+               <form method="post" action="/loose" novalidate><input name="x" required aria-label="検証なし"><button>そのまま送る</button></form>"#,
+        ),
+        _ => http("200 OK", &[], "<p>受信</p>"),
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s
+        .navigate(u(port, "app.example.com", "/apply"))
+        .await
+        .unwrap();
+    let before = log.lock().unwrap().len();
+    // 未入力の必須項目があると、plan も実行も送らない。
+    let submit = Action::Click(find(&snap, "申請"));
+    assert!(matches!(s.plan(&submit), Err(BrowserError::Required(n)) if n == "item"));
+    assert!(matches!(s.act(submit).await, Err(BrowserError::Required(n)) if n == "item"));
+    assert_eq!(log.lock().unwrap().len(), before, "1 度も送らない");
+
+    let snap = s
+        .act(Action::Fill(find(&snap, "品目"), "ドリル".into()))
+        .await
+        .unwrap();
+    // ラジオはグループのどれか（必須でない側の b でもよい）、チェックボックスは自身が選ばれていればよい。
+    let snap = s.act(Action::Click(find(&snap, "種別B"))).await.unwrap();
+    assert!(matches!(
+        s.plan(&Action::Click(find(&snap, "申請"))),
+        Err(BrowserError::Required(n)) if n == "agree"
+    ));
+    let snap = s.act(Action::Click(find(&snap, "同意"))).await.unwrap();
+    // 読み取り専用・無効の必須項目は検証しない。
+    s.act(Action::Click(find(&snap, "申請"))).await.unwrap();
+    assert_eq!(
+        last(&log, "/send").body,
+        "item=%E3%83%89%E3%83%AA%E3%83%AB&kind=b&agree=on&code="
+    );
+
+    // formnovalidate のボタン・novalidate のフォームは検証しない。
+    let snap = s
+        .navigate(u(port, "app.example.com", "/apply"))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "下書き保存")))
+        .await
+        .unwrap();
+    assert_eq!(last(&log, "/send").body, "item=&code=&draft=1");
+    let snap = s
+        .navigate(u(port, "app.example.com", "/apply"))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "そのまま送る")))
+        .await
+        .unwrap();
+    assert_eq!(last(&log, "/loose").body, "x=");
+}

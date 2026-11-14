@@ -112,6 +112,8 @@ pub enum BrowserError {
     NeedsJs { label: String },
     #[error("その選択肢はありません")]
     NoSuchOption,
+    #[error("必須の項目「{0}」が未入力のため送信しません")]
+    Required(String),
     #[error("この送信方式（{0}）には対応していません")]
     Unsupported(String),
     #[error("リダイレクトの転送先（{to}）はこの操作では開けません")]

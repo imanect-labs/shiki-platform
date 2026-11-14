@@ -77,6 +77,7 @@ impl Walker<'_> {
             element: element.map(|e| e.index),
             disabled,
             readonly: node.has_attr("readonly"),
+            required: node.has_attr("required"),
             form_attr: node.attr("form").map(|f| f.to_string()),
         });
     }
@@ -128,6 +129,7 @@ impl Walker<'_> {
             dialog: node
                 .attr("formmethod")
                 .map(|m| m.eq_ignore_ascii_case("dialog")),
+            novalidate: node.has_attr("formnovalidate"),
             enctype: node.attr("formenctype").map(|e| e.to_ascii_lowercase()),
         };
         (o != SubmitOverrides::default()).then(|| Box::new(o))

@@ -31,6 +31,8 @@ pub(crate) struct Form {
     pub post: bool,
     /// `method="dialog"`（ダイアログを閉じるだけで HTTP 要求を送らない）。テキストエンジンでは送信しない。
     pub dialog: bool,
+    /// `novalidate`（送信前の制約検証＝`required` の確認をしない）。
+    pub novalidate: bool,
     pub enctype: String,
     id: Option<String>,
 }
@@ -47,6 +49,8 @@ pub(crate) struct Field {
     pub disabled: bool,
     /// `readonly`。値は送るが、利用者（モデル）は書き換えられない。
     pub readonly: bool,
+    /// `required`（未入力なら送信しない）。
+    pub required: bool,
     form_attr: Option<String>,
 }
 
@@ -88,6 +92,8 @@ pub(crate) struct SubmitOverrides {
     pub post: Option<bool>,
     /// `formmethod="dialog"`。
     pub dialog: Option<bool>,
+    /// `formnovalidate`（このボタンで送るときは制約検証をしない）。
+    pub novalidate: bool,
     pub enctype: Option<String>,
 }
 
@@ -555,6 +561,7 @@ impl Walker<'_> {
                 dialog: node
                     .attr("method")
                     .is_some_and(|m| m.eq_ignore_ascii_case("dialog")),
+                novalidate: node.has_attr("novalidate"),
                 enctype: node.attr("enctype").map_or_else(
                     || "application/x-www-form-urlencoded".to_string(),
                     |e| e.to_ascii_lowercase(),
