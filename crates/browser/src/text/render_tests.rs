@@ -334,3 +334,22 @@ fn no_selected_option_defaults_to_first_enabled() {
         }
     );
 }
+
+#[test]
+fn disabled_and_enabled_options_with_the_same_value_are_told_apart() {
+    // 無効な選択肢と同じ値の有効な選択肢が selected なら、その値は送る。
+    let out = r(
+        r#"<form><select name="s"><option value="x" disabled>無効</option><option value="x" selected>有効</option></select></form>"#,
+    );
+    assert_eq!(
+        out.fields[0].kind,
+        FieldKind::Select {
+            values: vec!["x".into()]
+        }
+    );
+    // 逆に無効な側が selected なら送らない。
+    let out = r(
+        r#"<form><select name="s"><option value="x" disabled selected>無効</option><option value="x">有効</option></select></form>"#,
+    );
+    assert_eq!(out.fields[0].kind, FieldKind::Select { values: vec![] });
+}

@@ -254,7 +254,8 @@ impl Walker<'_> {
         let multiple = node.has_attr("multiple");
         // (value, 表示名, 無効か)。`<option disabled>` と `<optgroup disabled>` の中の選択肢は選べず、送らない。
         let mut all: Vec<(String, String, bool)> = Vec::new();
-        let mut selected = Vec::new();
+        // 選ばれている選択肢は値ではなく**選択肢の位置**で持つ（無効と有効の選択肢が同じ値を持ち得る）。
+        let mut selected: Vec<usize> = Vec::new();
         for d in node.descendants_it() {
             if d.node_name().is_some_and(|n| &*n == "option") {
                 let text = collapse(&d.text());
@@ -270,15 +271,15 @@ impl Walker<'_> {
                     if !multiple {
                         selected.clear();
                     }
-                    selected.push(value.clone());
+                    selected.push(all.len());
                 }
                 all.push((value, text, disabled));
             }
         }
         // 単一選択で何も選ばれていなければ、最初の有効な選択肢が選ばれる。複数選択・選択肢なしは何も選ばない。
         if !multiple && selected.is_empty() {
-            if let Some((v, _, _)) = all.iter().find(|(_, _, d)| !d) {
-                selected.push(v.clone());
+            if let Some(i) = all.iter().position(|(_, _, d)| !d) {
+                selected.push(i);
             }
         }
         let listed = all
@@ -292,27 +293,26 @@ impl Walker<'_> {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let disabled_values: Vec<String> = all
-            .iter()
-            .filter(|(_, _, d)| *d)
-            .map(|(v, _, _)| v.clone())
-            .collect();
+        // 送るのは選ばれていて無効でない選択肢だけ。利用者が選び直した値は有効な選択肢から選んだもの
+        // （Action::Select は有効な選択肢しか受け付けない）なので、そのまま送る。
+        let (values, submitted): (Vec<String>, Vec<String>) =
+            match self.pending_state().and_then(|s| s.selected.clone()) {
+                Some(chosen) => (chosen.clone(), chosen),
+                None => (
+                    selected.iter().map(|&i| all[i].0.clone()).collect(),
+                    selected
+                        .iter()
+                        .filter(|&&i| !all[i].2)
+                        .map(|&i| all[i].0.clone())
+                        .collect(),
+                ),
+            };
         let options: Vec<(String, String)> = all
             .into_iter()
             .filter(|(_, _, d)| !d)
             .map(|(v, t, _)| (v, t))
             .collect();
         let id = self.push_element(ElementKind::Select { options, multiple }, &label);
-        let values = self
-            .pending_state()
-            .and_then(|s| s.selected.clone())
-            .unwrap_or(selected);
-        // 送るのは選ばれていて無効でないものだけ。
-        let submitted = values
-            .iter()
-            .filter(|v| !disabled_values.contains(v))
-            .cloned()
-            .collect();
         self.push_field(node, form, FieldKind::Select { values: submitted }, id);
         if let Some(id) = id {
             let shown = if multiple {
