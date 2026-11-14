@@ -431,3 +431,60 @@ async fn fragment_links_stay_in_the_same_document() {
     assert_eq!(log.lock().unwrap().len(), before, "再取得しない");
     assert!(after.text.contains(r#"value="入力済み""#), "{}", after.text);
 }
+
+#[tokio::test]
+async fn origin_header_follows_redirect_taint() {
+    let route: support::Route = Arc::new(|req: &Req| {
+        match (req.host.as_str(), req.target.as_str()) {
+            ("a.example.com", "/form") => http(
+                "200 OK",
+                &[],
+                &format!(
+                    r#"<form method="post" action="http://b.example.org:{p}/same"><button>同一オリジン内</button></form>
+                   <form method="post" action="http://b.example.org:{p}/cross"><button>別オリジンへ</button></form>"#,
+                    p = req.port
+                ),
+            ),
+            // B → B（同じオリジンの中の 307）: Origin は A のまま。
+            ("b.example.org", "/same") => {
+                http("307 Temporary Redirect", &[("Location", "/same-done")], "")
+            }
+            // B → C（別オリジンへの 307）: 転送元 B が要求元 A と別なので null。
+            ("b.example.org", "/cross") => http(
+                "307 Temporary Redirect",
+                &[(
+                    "Location",
+                    &format!("http://c.example.net:{}/cross-done", req.port),
+                )],
+                "",
+            ),
+            _ => http("200 OK", &[], "<p>受信</p>"),
+        }
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let a_origin = format!("http://a.example.com:{port}");
+
+    let snap = s.navigate(u(port, "a.example.com", "/form")).await.unwrap();
+    s.act(Action::Click(find(&snap, "同一オリジン内")))
+        .await
+        .unwrap();
+    assert_eq!(
+        last(&log, "/same-done").origin.as_deref(),
+        Some(a_origin.as_str())
+    );
+
+    let snap = s.navigate(u(port, "a.example.com", "/form")).await.unwrap();
+    // 承認した送り先（B）から別オリジン（C）への 307 は止まる。照合なしの送信で Origin の規則だけを確かめる。
+    let err = s
+        .act(Action::Click(find(&snap, "別オリジンへ")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, BrowserError::RedirectBlocked { .. }),
+        "{err:?}"
+    );
+    assert_eq!(
+        last(&log, "/cross").origin.as_deref(),
+        Some(a_origin.as_str())
+    );
+}

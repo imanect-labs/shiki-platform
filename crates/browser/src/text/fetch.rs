@@ -166,8 +166,12 @@ impl Fetcher {
                         form.clear();
                     }
                 }
+                // Fetch 標準の redirect-taint: 転送の前後でオリジンが変わり、かつ転送元が要求元と別の
+                // オリジンのときだけ汚れる（A → B → B の同一オリジン内の転送では A のまま）。
                 if let Some(initiator) = &req.initiator {
-                    if target.url.origin() != initiator.origin() {
+                    if next.origin() != target.url.origin()
+                        && initiator.origin() != target.url.origin()
+                    {
                         origin_tainted = true;
                     }
                 }
