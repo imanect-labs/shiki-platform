@@ -176,7 +176,7 @@ impl RunOutcomeReader {
         // map の要素の失敗で map が落ちたときは、要素の側の最初の失敗の code で分類する。
         let rows: Vec<OwnRow> = sqlx::query_as(&format!(
             "SELECT r.run_id, r.status, r.fail_reason, {FAILURE_CODE_COLUMNS}, {REPLY_TONE_RANK} \
-             FROM workflow_run r WHERE r.run_id = ANY($2) AND {OWN_RUN}"
+             FROM workflow_run r WHERE r.tenant_id = $1 AND r.run_id = ANY($2) AND {OWN_RUN}"
         ))
         .bind(ctx.tenant_id())
         .bind(run_ids)
