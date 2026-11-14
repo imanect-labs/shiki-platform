@@ -179,6 +179,10 @@ pub(crate) fn build(
             continue;
         }
         match &f.kind {
+            // 名前が `_charset_` の hidden は、送信に使う文字コードの名前を送る（HTML 標準）。
+            FieldKind::Hidden { .. } if f.name.eq_ignore_ascii_case("_charset_") => {
+                pairs.push((f.name.clone(), charset.output_encoding().name().to_string()));
+            }
             FieldKind::Text { value, .. } | FieldKind::Hidden { value } => {
                 pairs.push((f.name.clone(), value.clone()));
             }

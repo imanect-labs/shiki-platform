@@ -115,6 +115,14 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
     while let Some(off) = b[i..].iter().position(|&c| c == b'<') {
         i += off;
         let rest = &b[i..];
+        // 外部コンテンツの中の CDATA は `]]>` までが文字（中の `<` はタグではない）。
+        if in_foreign(&open) && rest.starts_with(b"<![CDATA[") {
+            match find(b, i + 9, b"]]>") {
+                Some(end) => i = end + 3,
+                None => return (html, false),
+            }
+            continue;
+        }
         if rest.starts_with(b"<!--") {
             match comment_end(b, i + 4) {
                 Some(end) => i = end,
@@ -512,6 +520,12 @@ mod tests {
             let s = format!("{opener}{}", "<div>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{opener}");
         }
+        // 外部コンテンツの中の CDATA の中の偽のタグで状態をずらさせない。
+        let cdata = format!(
+            "<svg><![CDATA[</svg><script>]]></svg>{}",
+            "<div>".repeat(100_000)
+        );
+        assert!(clip_depth(&cdata, MAX_PARSE_DEPTH).1);
         // 外部コンテンツの中の `</p>` / `</br>` は外部コンテンツを抜ける（以降の自己終了は効かない）。
         for end in ["</p>", "</br>"] {
             let s = format!("<svg>{end}{}", "<x-node/>".repeat(100_000));

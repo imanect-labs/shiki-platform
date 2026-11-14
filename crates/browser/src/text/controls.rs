@@ -355,16 +355,25 @@ impl Walker<'_> {
         // 有効な選択肢の並び（スナップショットに出す順）での位置 → 全選択肢での位置。
         let enabled_pos: Vec<usize> = (0..all.len()).filter(|&i| !all[i].2).collect();
         // 利用者が選び直した選択肢は位置で持つ（値が重複しても取り違えない）。
-        let selected_idx: Vec<usize> = match self.pending_state().and_then(|s| s.selected.clone()) {
-            Some(chosen) => chosen
-                .iter()
-                .filter_map(|k| enabled_pos.get(*k).copied())
-                .collect(),
-            None => selected,
-        };
+        let mut selected_idx: Vec<usize> =
+            match self.pending_state().and_then(|s| s.selected.clone()) {
+                Some(chosen) => chosen
+                    .iter()
+                    .filter_map(|k| enabled_pos.get(*k).copied())
+                    .collect(),
+                None => selected,
+            };
+        // 送る順は選んだ順ではなく選択肢の文書順（HTML 標準の entry list）。
+        selected_idx.sort_unstable();
+        selected_idx.dedup();
+        // 全選択肢での位置 → 有効な選択肢の並びでの位置（一度だけ作り、選択肢の数の二乗にしない）。
+        let mut enabled_rank = vec![None; all.len()];
+        for (rank, &p) in enabled_pos.iter().enumerate() {
+            enabled_rank[p] = Some(rank);
+        }
         let selected_options: Vec<usize> = selected_idx
             .iter()
-            .filter_map(|i| enabled_pos.iter().position(|p| p == i))
+            .filter_map(|&i| enabled_rank[i])
             .collect();
         // required の未入力（HTML 標準の valueMissing）: 何も選ばれていないか、placeholder だけが選ばれている。
         // placeholder を考えるのは単一選択で表示行数が 1 のときだけ。

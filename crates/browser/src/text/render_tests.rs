@@ -456,3 +456,19 @@ fn radio_groups_required_by_a_disabled_member_and_charset_fallback() {
         "a%0D%0Ab=x%0D%0Ay%0D%0Az"
     );
 }
+
+#[test]
+fn many_selected_options_render_in_linear_time() {
+    let html = format!(
+        "<form><select multiple name=\"m\">{}</select></form>",
+        "<option selected>x".repeat(50_000)
+    );
+    let started = std::time::Instant::now();
+    let out = r(&html);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(matches!(&out.fields[0].kind, FieldKind::Select { values } if values.len() == 50_000));
+}

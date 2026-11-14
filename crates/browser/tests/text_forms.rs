@@ -711,3 +711,30 @@ async fn options_are_chosen_by_position_and_implicit_submission_rules() {
     s.act(Action::Submit(find(&snap, "単独"))).await.unwrap();
     assert_eq!(last(&log, "/one").body, "a=&t=");
 }
+
+#[tokio::test]
+async fn multi_select_sends_document_order_and_charset_field() {
+    let route: support::Route = Arc::new(|req: &Req| match req.target.as_str() {
+        "/f" => http(
+            "200 OK",
+            &[("Content-Type", "text/html; charset=Shift_JIS")],
+            r#"<form method="post" action="/t"><input type="hidden" name="_CHARSET_" value="x">
+               <select multiple name="tags" aria-label="tags"><option value="a">A</option><option value="b">B</option></select>
+               <button>go</button></form>"#,
+        ),
+        _ => http("200 OK", &[], "<p>ok</p>"),
+    });
+    let (mut s, port, log) = start(route, TextLimits::default()).await;
+    let snap = s.navigate(u(port, "app.example.com", "/f")).await.unwrap();
+    // B → A の順に選んでも、送るのは選択肢の文書順。_charset_ は送信に使う文字コードの名前。
+    let snap = s
+        .act(Action::Select(find(&snap, "tags"), "B".into()))
+        .await
+        .unwrap();
+    let snap = s
+        .act(Action::Select(find(&snap, "tags"), "A".into()))
+        .await
+        .unwrap();
+    s.act(Action::Click(find(&snap, "go"))).await.unwrap();
+    assert_eq!(last(&log, "/t").body, "_CHARSET_=Shift_JIS&tags=a&tags=b");
+}
