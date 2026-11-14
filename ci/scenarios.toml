@@ -426,7 +426,7 @@ e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.
 [scenario.campaign]
 paths = ["web/e2e/campaign/**"]
 crates = ["shiki-data", "shiki-rag", "shiki-tabular", "shiki-yui"]
-e2e = ["campaign-app11.spec.ts"]
+e2e = ["campaign-app01a.spec.ts", "campaign-app01b.spec.ts", "campaign-app02-rag.spec.ts", "campaign-app02.spec.ts", "campaign-app03.spec.ts", "campaign-app04-rag.spec.ts", "campaign-app04.spec.ts", "campaign-app05-rag.spec.ts", "campaign-app05.spec.ts", "campaign-app06.spec.ts", "campaign-app07-rag.spec.ts", "campaign-app07.spec.ts", "campaign-app08.spec.ts", "campaign-app09.spec.ts", "campaign-app10.spec.ts", "campaign-app11.spec.ts", "campaign-app12-rag.spec.ts", "campaign-app12.spec.ts"]
 
 [scenario.bug_reports]
 pages = ["web/src/app/(auth)/bug-reports/**", "web/src/app/(admin)/admin/bug-reports/**"]
