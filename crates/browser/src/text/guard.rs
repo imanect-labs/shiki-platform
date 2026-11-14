@@ -186,6 +186,8 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
             // body の中の html / head / body / frameset / frame と、表の外の表の部品。
             Ns::Html => {
                 VOID.contains(&lower.as_str())
+                    // `image` は解析器が `img` に読み替える。`keygen` も空要素として扱われる。
+                    || matches!(lower.as_str(), "image" | "keygen")
                     || matches!(
                         lower.as_str(),
                         "html" | "head" | "body" | "frameset" | "frame"
@@ -659,6 +661,11 @@ mod tests {
         ] {
             let s = format!("<body>{}", format!("{open}<div>{close}").repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
+        }
+        // `image`（img に読み替え）と `keygen` は空要素（その終了タグで中の要素を取り除かない）。
+        for tag in ["image", "keygen"] {
+            let s = format!("<body>{}", format!("<{tag}><x></{tag}>").repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{tag}");
         }
         // 表の中の行・セルは従来どおり同種で閉じる。
         let table = format!("<table>{}</table>", "<tr><td>1</td></tr>".repeat(10_000));

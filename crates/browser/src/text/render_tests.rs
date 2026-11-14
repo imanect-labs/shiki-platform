@@ -596,3 +596,21 @@ fn fields_inside_buttons_are_collected() {
     assert_eq!(names, ["", "csrf"]);
     assert!(out.text.contains(r#"button "保存""#), "{}", out.text);
 }
+
+#[test]
+fn form_opened_inside_a_table_owns_the_following_controls() {
+    let out = r(
+        r#"<table><form method="post" action="/save"><tr><td><input name="q" value="abc" aria-label="検索">
+        <button>保存</button></td></tr></form></table><input name="outside" aria-label="外">"#,
+    );
+    let owners: Vec<_> = out
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.form))
+        .collect();
+    assert_eq!(owners, [("q", Some(0)), ("", Some(0)), ("outside", None)]);
+    assert!(matches!(
+        out.elements[1].kind,
+        ElementKind::Button { submits: true }
+    ));
+}

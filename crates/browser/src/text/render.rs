@@ -158,6 +158,8 @@ struct Walker<'a> {
     invisible: u32,
     /// 同じグループの後のラジオに外される `checked`（[`superseded_radios`]）。
     superseded_radios: HashSet<NodeId>,
+    /// 開いている表ごとの、表の中で開いたフォーム（form element pointer の代わり）。
+    table_forms: Vec<Option<usize>>,
     /// `<pre>` の中にいる深さ（改行と字下げを保つ）。
     pre: u32,
     /// `<fieldset disabled>` の中にいる深さ。
@@ -253,6 +255,7 @@ pub(crate) fn render(
         lines: Vec::new(),
         cur: String::new(),
         pre: 0,
+        table_forms: Vec::new(),
         visible_chars: 0,
         link_chars: 0,
         visited: 0,
@@ -617,6 +620,21 @@ impl Walker<'_> {
                 id: node.attr("id").map(|i| i.to_string()),
             });
             form = Some(self.forms.len() - 1);
+            // 表の中（table・行グループ・行の直下）で開いたフォームは、解析器がすぐ閉じるが form element
+            // pointer として残り、同じ表の後続の部品がそのフォームに属する（HTML 標準の "form" in table）。
+            let in_table_part = node.parent().is_some_and(|p| {
+                p.node_name()
+                    .is_some_and(|n| matches!(&*n, "table" | "tbody" | "thead" | "tfoot" | "tr"))
+            });
+            if in_table_part {
+                if let Some(slot) = self.table_forms.last_mut() {
+                    *slot = form;
+                }
+            }
+        }
+        let is_table = name == "table";
+        if is_table {
+            self.table_forms.push(None);
         }
         let label = (name == "label").then(|| label_text(node));
         let wrap = label.as_deref().or(wrap);
@@ -630,6 +648,8 @@ impl Walker<'_> {
         }
         let mut legend_seen = false;
         for c in node.children_it(false) {
+            // 表の中で開いたフォームがあれば、所有者の無い後続の部品はそのフォームに属する。
+            let form = form.or_else(|| self.table_forms.last().copied().flatten());
             // `<fieldset disabled>` の最初の `<legend>` の中は、その fieldset による無効化を受けない（HTML 標準）。
             let first_legend = fieldset_disabled
                 && !legend_seen
@@ -646,6 +666,9 @@ impl Walker<'_> {
         }
         if fieldset_disabled {
             self.disabled -= 1;
+        }
+        if is_table {
+            self.table_forms.pop();
         }
         if block {
             self.flush(line_prefix(name));
