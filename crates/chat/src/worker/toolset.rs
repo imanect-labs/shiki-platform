@@ -41,9 +41,13 @@ impl ChatWorker {
             let bounds = self.search_bounds(run, skills).await?;
             let folder = bounds.folder.clone().unwrap_or_default();
             // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
-            let doc_search = DocSearchTool::with_scope(search.clone(), bounds.skill.clone())
+            let mut doc_search = DocSearchTool::with_scope(search.clone(), bounds.skill.clone())
                 .within(folder.clone())
                 .for_answer(run.thread_id, run.message_id);
+            // 集計の元ファイルへ誘導する（drive.find は storage・csv.query は tabular の配線時だけ在る）。
+            if self.storage.is_some() && self.tabular.is_some() {
+                doc_search = doc_search.with_data_files();
+            }
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
             if let Some(storage) = &self.storage {
