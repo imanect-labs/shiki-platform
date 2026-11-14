@@ -136,7 +136,8 @@ pub(super) fn not_ready(errors: &[workflow_engine::ValidationError]) -> ApiError
     }))
 }
 
-/// ワークフロー閲覧権限＋kind を検証する（履歴系ハンドラ共通・存在秘匿）。
+/// ワークフロー閲覧権限＋kind を検証する（履歴系ハンドラ共通）。見る権限が無ければ 403（アーティファクトは権限を先に
+/// 問うので、存在しない id でも同じ 403・存在は区別しない）、見えるがワークフローでなければ 404。
 pub(super) async fn require_workflow_viewer(
     state: &AppState,
     ctx: &authz::AuthContext,
@@ -220,7 +221,8 @@ pub struct RunListResponse {
     params(("id" = Uuid, Path, description = "ワークフロー ID"), ListRunsQuery),
     responses(
         (status = 200, description = "run 一覧", body = RunListResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない（見えるアーティファクトが別の種類）"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -346,7 +348,8 @@ pub struct RunDetailResponse {
     ),
     responses(
         (status = 200, description = "run 詳細", body = RunDetailResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・この run が無い（別のワークフローの run を含む）"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -437,7 +440,8 @@ pub struct StepDetailResponse {
     ),
     responses(
         (status = 200, description = "step 詳細", body = StepDetailResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・run か step が無い"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -504,7 +508,8 @@ pub struct RunEventsResponse {
     ),
     responses(
         (status = 200, description = "イベント列", body = RunEventsResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"

@@ -140,7 +140,8 @@ pub struct LayoutBody {
     params(("id" = Uuid, Path, description = "ワークフロー ID")),
     responses(
         (status = 200, description = "レイアウト", body = LayoutBody),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない"),
     ),
     tag = "workflows"
 )]
@@ -168,7 +169,8 @@ pub async fn get_workflow_layout(
     responses(
         (status = 200, description = "保存した"),
         (status = 400, description = "レイアウトが大きすぎる"),
-        (status = 404, description = "存在しない/editor でない"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・editor でない"),
     ),
     tag = "workflows"
 )]

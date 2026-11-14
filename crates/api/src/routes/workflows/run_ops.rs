@@ -83,7 +83,8 @@ pub struct CancelResponse {
     ),
     responses(
         (status = 200, description = "受理（または既に terminal）", body = CancelResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・run が無い・editor でも起動した本人でもない"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -147,7 +148,8 @@ pub struct RetryResponse {
     request_body = RetryRequest,
     responses(
         (status = 202, description = "再実行を受理", body = RetryResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・run が無い・editor でも起動した本人でもない"),
         (status = 409, description = "failed でない run の resume（code=not_failed）・再開しても同じ結果になる失敗（code=same_result）・実行の期限を過ぎた run（code=past_deadline）・委譲が無効（code=delegation_invalid）"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
@@ -284,7 +286,8 @@ pub struct StreamQuery {
     ),
     responses(
         (status = 200, description = "SSE ストリーム"),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない"),
     ),
     tag = "workflows"
 )]

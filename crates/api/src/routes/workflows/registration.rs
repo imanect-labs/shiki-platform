@@ -210,7 +210,8 @@ async fn require_editor(
     params(("id" = Uuid, Path, description = "ワークフロー id")),
     responses(
         (status = 200, description = "現況", body = RegistrationResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない"),
     ),
     tag = "workflows"
 )]
@@ -220,7 +221,7 @@ pub async fn get_registration(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<RegistrationResponse>, ApiError> {
-    // viewer ＋ kind=workflow ゲート（存在秘匿 404）。
+    // viewer ＋ kind=workflow ゲート（見る権限が無ければ存在しない id と同じ 403・ワークフローでなければ 404）。
     let meta = state.artifacts.get(&ctx, id, trace.as_deref()).await?;
     if meta.kind != artifact::ArtifactKind::Workflow {
         return Err(ApiError::NotFound);
@@ -281,7 +282,8 @@ pub async fn get_registration(
     ),
     responses(
         (status = 200, description = "同意計画", body = ConsentPlanResponse),
-        (status = 404, description = "存在しない/権限なし"),
+        (status = 403, description = "ワークフローを見る権限がない（存在しない id でも同じ 403・存在を区別しない）"),
+        (status = 404, description = "ワークフローでない・その版が無い"),
     ),
     tag = "workflows"
 )]
