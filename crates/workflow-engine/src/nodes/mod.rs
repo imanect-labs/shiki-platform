@@ -14,6 +14,7 @@ pub mod capability_data;
 mod capability_data_keyed;
 mod csv_compose;
 mod csv_encoding;
+mod data_bulk_match;
 mod data_upsert;
 mod date;
 pub mod decide;

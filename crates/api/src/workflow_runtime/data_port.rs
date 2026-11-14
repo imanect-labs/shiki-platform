@@ -103,6 +103,20 @@ fn import_id_for(tenant_id: &str, idempotency_key: &str) -> Uuid {
     uuid::Builder::from_random_bytes(b).into_uuid()
 }
 
+/// 行が 0 件の一括 upsert の結果（行がある取込の結果と同じ形・件数はどれも 0・取込の記録は作らない）。
+fn empty_bulk_output(import_id: Uuid) -> Value {
+    json!({
+        "import_id": import_id,
+        "status": "done",
+        "rows_total": 0,
+        "rows_applied": 0,
+        "rows_invalid": 0,
+        "rows_rejected": 0,
+        "errors": [],
+        "last_error": null,
+    })
+}
+
 /// data のポート（`ProdNodePorts` の data 部分）。
 pub(super) struct DataPort<'a> {
     pub data: &'a DataStore,
@@ -396,6 +410,22 @@ impl DataPort<'_> {
         idempotency_key: &str,
     ) -> Result<Value, PortError> {
         let import_id = import_id_for(&ec.tenant_id, idempotency_key);
+        if rows.is_empty() {
+            // 取り込む行が無い（毎日の処理で、今日は書くものが無い日）: 取込を作らず、0 件で成功にする。設定の
+            // 誤りとして止めない（画面の取込は data の入口が「取り込む行がありません」で止めたまま）。権限は行がある
+            // ときと同じ入口で問う（書けない・見えないテーブルは同じ誤りで止まる・テーブルを消した後も同じ）。
+            a.data
+                .authorize_table(
+                    &a.ctx,
+                    table_id,
+                    Relation::Editor,
+                    storage::audit::AuditAction::DataRecordBulkImport,
+                    ec.trace_id.as_deref(),
+                )
+                .await
+                .map_err(map_data)?;
+            return Ok(empty_bulk_output(import_id));
+        }
         let opts = BulkImportOptions {
             abort_on_invalid,
             ..BulkImportOptions::default()

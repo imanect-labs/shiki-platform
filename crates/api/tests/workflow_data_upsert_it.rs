@@ -622,3 +622,144 @@ async fn bulk_upsert_matched_on_a_key_does_not_duplicate_on_reimport() {
     };
     finish(&env, &tenant, body).await;
 }
+
+/// まとめて登録に渡す行が 0 件（毎日の処理で、今日は書くものが無い日）: 取込を作らずに 0 件で成功し、結果の形は
+/// 行があるときと同じ。権限は行があるときと同じに問う（見るだけの人は forbidden・見えない人は not_found）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_upsert_with_no_rows_succeeds_with_zero_counts() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let vic = user(&tenant, "vic");
+    let body = async {
+        let table = items_table(&env, &alice).await;
+        env.grant(&vic, Relation::Viewer, table).await;
+        let bulk = |rows: Value| json!({ "table": table.to_string(), "rows": rows });
+        let matched =
+            |rows: Value| json!({ "table": table.to_string(), "match_on": "sku", "rows": rows });
+
+        let out = env
+            .run(&tenant, "alice", "data.bulk_upsert", bulk(json!([])))
+            .await;
+        assert!(out.ok, "{out:?}");
+        let import_id = out.output["import_id"].as_str().unwrap().to_string();
+        assert_eq!(
+            out.output,
+            json!({
+                "import_id": import_id,
+                "status": "done",
+                "rows_total": 0,
+                "rows_applied": 0,
+                "rows_invalid": 0,
+                "rows_rejected": 0,
+                "errors": [],
+                "last_error": null,
+            })
+        );
+        // 取込は作らない（取込の画面・状態の口には現れない）。
+        let status = env
+            .data
+            .bulk_import_status(&alice, table, Uuid::parse_str(&import_id).unwrap())
+            .await;
+        assert!(
+            matches!(status, Err(data::DataError::NotFound)),
+            "{status:?}"
+        );
+        let imports: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM data_bulk_import WHERE id = $1")
+                .bind(Uuid::parse_str(&import_id).unwrap())
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+        assert_eq!(imports, 0);
+        // 同じレコードを探す列つきでも同じ（当てた件数も 0）。
+        let out = env
+            .run(&tenant, "alice", "data.bulk_upsert", matched(json!([])))
+            .await;
+        assert!(out.ok, "{out:?}");
+        assert_eq!(out.output["rows_total"], 0);
+        assert_eq!(out.output["rows_matched"], 0);
+        assert!(env.records(&alice, table).await.is_empty());
+
+        // 権限は行があるときと同じ答え（0 件だからといって書けないテーブルで成功にしない）。
+        for rows in [json!([]), json!([{ "data": { "sku": "V-1" } }])] {
+            let out = env
+                .run(&tenant, "vic", "data.bulk_upsert", bulk(rows.clone()))
+                .await;
+            assert_eq!(out.code.as_deref(), Some("forbidden"), "{rows} {out:?}");
+            let out = env
+                .run(&tenant, "nobody", "data.bulk_upsert", bulk(rows.clone()))
+                .await;
+            assert_eq!(out.code.as_deref(), Some("not_found"), "{rows} {out:?}");
+        }
+        // 消したテーブルも、行があるときと同じく見つからない。
+        env.data.delete_table(&alice, table, None).await.unwrap();
+        let out = env
+            .run(&tenant, "alice", "data.bulk_upsert", bulk(json!([])))
+            .await;
+        assert_eq!(out.code.as_deref(), Some("not_found"), "{out:?}");
+    };
+    finish(&env, &tenant, body).await;
+}
+
+/// まとめて登録の同じレコードを探す列: まだ無い同じ値を同時に取り込んでも、どの実行もすべての行を書いた結果で終わり
+/// （後から追加した側は、断られた行を探し直して更新として取り込み直す）、同じ値の行は 1 件。何も取り込まない設定
+/// （`abort_on_invalid`）でも同じ。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_bulk_upserts_of_new_keys_all_write_every_row() {
+    let Some(env) = setup().await else { return };
+    let env = Arc::new(env);
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let table = items_table(&env, &alice).await;
+        for (abort_on_invalid, prefix) in [(false, "S"), (true, "T")] {
+            let barrier = Arc::new(tokio::sync::Barrier::new(4));
+            let mut tasks = Vec::new();
+            for n in 0..4 {
+                let rows: Vec<Value> = (1..=5)
+                    .map(|k| json!({ "data": { "sku": format!("{prefix}-{k}"), "stock": n } }))
+                    .collect();
+                let params = json!({ "table": table.to_string(), "match_on": "sku",
+                                     "abort_on_invalid": abort_on_invalid, "rows": rows });
+                let (env, tenant, barrier) =
+                    (Arc::clone(&env), tenant.clone(), Arc::clone(&barrier));
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    env.run(&tenant, "alice", "data.bulk_upsert", params).await
+                }));
+            }
+            let mut created = 0;
+            for t in tasks {
+                let out = t.await.unwrap();
+                assert!(out.ok, "{out:?}");
+                let o = &out.output;
+                created += 5 - o["rows_matched"].as_i64().unwrap();
+                assert_eq!(
+                    (
+                        &o["status"],
+                        &o["rows_applied"],
+                        &o["rows_invalid"],
+                        &o["rows_rejected"]
+                    ),
+                    (&json!("done"), &json!(5), &json!(0), &json!(0)),
+                    "{abort_on_invalid}: {out:?}"
+                );
+                assert_eq!(o["errors"], json!([]), "{out:?}");
+            }
+            // どの値も追加したのは 1 本だけ（ほかは当てた行・取り込み直した行として更新に数える）。
+            assert_eq!(created, 5, "{abort_on_invalid}");
+            let rows = env.records(&alice, table).await;
+            let mut skus: Vec<String> = rows
+                .iter()
+                .filter_map(|r| r.data["sku"].as_str())
+                .filter(|s| s.starts_with(prefix))
+                .map(str::to_string)
+                .collect();
+            skus.sort();
+            let want: Vec<String> = (1..=5).map(|k| format!("{prefix}-{k}")).collect();
+            assert_eq!(skus, want, "同じ値は 1 件ずつ");
+        }
+    };
+    finish(&env, &tenant, body).await;
+}

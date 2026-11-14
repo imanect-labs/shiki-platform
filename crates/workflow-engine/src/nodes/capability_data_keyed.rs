@@ -1,5 +1,5 @@
 //! 探してから書く data のブロック（GAP-16）の node の経路: キーで追加か更新・足す数・まとめて登録の同じレコードを
-//! 探す列。組み立ての中身は [`super::data_upsert`]、予約と監査は 1 回の書込と同じ
+//! 探す列。組み立ての中身は [`super::data_upsert`] と [`super::data_bulk_match`]、予約と監査は 1 回の書込と同じ
 //! （[`super::capability_data::journaled_data_effect`]）。
 
 use data::BulkUpsertRow;
@@ -11,9 +11,10 @@ use crate::run::NodeContext;
 
 use super::capability::parse_params;
 use super::capability_data::{journaled_data_effect, DataEffect};
+use super::data_bulk_match;
 use super::data_upsert;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, PortError};
+use super::ports::{ExecCtx, PortError};
 use super::resolver::{as_uuid, opt_param, param, typed, ParamResolver};
 
 /// 足す数つきのレコードの更新（解決した値）。
@@ -117,9 +118,10 @@ impl CapabilityNodeExecutor {
             .await
     }
 
-    /// `data.bulk_upsert` の同じレコードを探す列: id の無い行を同じ値のレコードに当ててから取り込む。照合は予約の
-    /// 内側で行う（記録済みの step は探し直さない・取込 ID は冪等キーから決まるので、やり直しても二重に取り込まない）。
-    /// 結果に当てた行の数（`rows_matched`）を足す。
+    /// `data.bulk_upsert` の同じレコードを探す列: id の無い行を同じ値のレコードに当ててから取り込み、照合の後に
+    /// 同じ値で先に追加された行を更新として取り込み直す（[`data_bulk_match`]）。照合は予約の内側で行う（記録済みの
+    /// step は探し直さない・取込 ID は冪等キーから決まるので、やり直しても二重に取り込まない）。結果に当てた行の数
+    /// （`rows_matched`）を足す。
     pub(super) async fn node_data_bulk_matched(
         &self,
         api: &str,
@@ -131,29 +133,18 @@ impl CapabilityNodeExecutor {
         let MatchedBulk {
             table,
             match_on,
-            mut rows,
+            rows,
             abort_on_invalid,
         } = bulk;
-        let ports = self.ports.as_ref();
         let key = ctx.idempotency_key.clone();
-        let apply = async move {
-            let matched =
-                data_upsert::match_bulk_rows(ports, ec, table, match_on, &mut rows).await?;
-            let op = DataWriteOp::BulkUpsert {
-                rows,
-                abort_on_invalid,
-            };
-            let req = DataWriteReq {
-                table_id: table,
-                op,
-                idempotency_key: key,
-            };
-            let mut out = ports.data_write(ec, req).await?;
-            if let Value::Object(m) = &mut out {
-                m.insert("rows_matched".into(), json!(matched));
-            }
-            Ok(out)
+        let req = data_bulk_match::MatchedBulkReq {
+            table_id: table,
+            match_on,
+            rows,
+            abort_on_invalid,
+            idempotency_key: &key,
         };
+        let apply = data_bulk_match::bulk_matched(self.ports.as_ref(), ec, req);
         self.journaled_effect(api, table, ctx, ec, digest, apply)
             .await
     }
