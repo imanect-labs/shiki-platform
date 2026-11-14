@@ -172,10 +172,8 @@ pub(crate) fn clip_depth(html: &str, max_depth: usize) -> (&str, bool) {
                 Ns::Svg => !SVG_INTEGRATION.contains(&lower.as_str()),
                 // annotation-xml が統合点になるのは encoding が HTML のときだけ。
                 Ns::Math if lower == "annotation-xml" => {
-                    !tag.attr(b, "encoding").is_some_and(|e| {
-                        e.eq_ignore_ascii_case(b"text/html")
-                            || e.eq_ignore_ascii_case(b"application/xhtml+xml")
-                    })
+                    let name_end = i + 1 + lower.len();
+                    !annotation_is_html(html, name_end, &tag)
                 }
                 Ns::Math => !MATH_INTEGRATION.contains(&lower.as_str()),
             };
@@ -294,6 +292,28 @@ enum TagState {
 /// タグの `>` の直後の位置。`i` はタグ名の先頭。
 fn tag_end(b: &[u8], i: usize) -> Option<usize> {
     scan_tag(b, i).map(|t| t.end)
+}
+
+/// `annotation-xml` が HTML 統合点か（`encoding` が `text/html` / `application/xhtml+xml`）。
+///
+/// 値は文字参照（`text&#47;html` 等）をデコードしてから比べる。文字参照を含むときだけ、
+/// 解析器と同じ規則でデコードするため、そのタグの属性部分だけを解析器に読ませる（タグの長さに比例する）。
+fn annotation_is_html(html: &str, name_end: usize, tag: &Tag) -> bool {
+    let b = html.as_bytes();
+    let Some(raw) = tag.attr(b, "encoding") else {
+        return false;
+    };
+    let is_html = |e: &[u8]| {
+        e.eq_ignore_ascii_case(b"text/html") || e.eq_ignore_ascii_case(b"application/xhtml+xml")
+    };
+    if !raw.contains(&b'&') {
+        return is_html(raw);
+    }
+    let attrs = html.get(name_end..tag.end).unwrap_or(">");
+    let doc = dom_query::Document::from(format!("<div{attrs}"));
+    doc.select("div")
+        .attr("encoding")
+        .is_some_and(|e| is_html(e.as_bytes()))
 }
 
 /// 属性の名前と値のバイト範囲。
@@ -496,6 +516,17 @@ mod tests {
             let s = format!("{open}{}", "<input>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{open}");
         }
+        // 文字参照で書いた encoding もデコードしてから比べる（統合点になり、中の自己終了は効かない）。
+        let entity = format!(
+            "<math><annotation-xml encoding=\"text&#47;html\">{}",
+            "<x-node/>".repeat(100_000)
+        );
+        assert!(clip_depth(&entity, MAX_PARSE_DEPTH).1);
+        let named = format!(
+            "<math><annotation-xml encoding=\"text&sol;html\">{}",
+            "<x-node/>".repeat(100_000)
+        );
+        assert!(clip_depth(&named, MAX_PARSE_DEPTH).1);
         let html_xml = format!(
             "<math><annotation-xml encoding=\"Text/HTML\">{}",
             "<input>".repeat(100_000)
