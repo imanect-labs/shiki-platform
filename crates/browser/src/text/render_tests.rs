@@ -529,3 +529,17 @@ fn long_base_href_and_huge_text_do_not_blow_up_memory() {
     assert!(out.truncated);
     assert!(out.text.chars().count() <= 1_000 + 20, "{}", out.text.len());
 }
+
+#[test]
+fn buttons_with_empty_or_invalid_type_submit() {
+    let out = r(
+        r#"<form action="/s"><button type="">空</button><button type="bogus">不正</button>
+        <button type="RESET">戻す</button><button type="Button">押す</button></form>"#,
+    );
+    let submits: Vec<_> = out
+        .elements
+        .iter()
+        .map(|e| matches!(e.kind, ElementKind::Button { submits: true }))
+        .collect();
+    assert_eq!(submits, [true, true, false, false]);
+}

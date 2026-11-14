@@ -453,8 +453,9 @@ fn script_end(b: &[u8], mut i: usize) -> usize {
     while i < b.len() {
         if b[i] == b'<' {
             if st == St::Data && at(i, b"<!--") {
+                // `<!` の直後から読み直す（`<!-->` / `<!--->` の `-->` で通常にすぐ戻れるように）。
                 st = St::Escaped;
-                i += 4;
+                i += 2;
                 continue;
             }
             if at(i, b"</script") && delim(i + 8) {
@@ -600,6 +601,9 @@ mod tests {
             "<div>".repeat(100_000)
         );
         assert!(clip_depth(&double, MAX_PARSE_DEPTH).1);
+        // `<!-->` は escaped に入ってすぐ通常に戻る（次の `<script>` で double-escaped にならない）。
+        let quick = format!("<script><!--><script></script>{}", "<div>".repeat(100_000));
+        assert!(clip_depth(&quick, MAX_PARSE_DEPTH).1);
         // `-->` で通常に戻れば、次の `</script>` で閉じる（普通のインラインスクリプト）。
         let normal = "<script><!-- if (a<b) {} --></script><p>a".repeat(1_000);
         assert!(!clip_depth(&normal, 16).1);

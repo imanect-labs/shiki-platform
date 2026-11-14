@@ -171,9 +171,10 @@ impl Walker<'_> {
     }
 
     pub(super) fn button(&mut self, node: &NodeRef<'_>, form: Option<usize>) {
+        // type が無い・空・不正な値なら送信ボタン（button / reset だけが送信しない）。
         let submit_type = node
             .attr("type")
-            .is_none_or(|t| t.eq_ignore_ascii_case("submit"));
+            .is_none_or(|t| !t.eq_ignore_ascii_case("button") && !t.eq_ignore_ascii_case("reset"));
         let mut label = label_text(node);
         if label.is_empty() {
             label = self.label_for(node, None);
