@@ -360,3 +360,65 @@ async fn draft_waiting_for_thread_deletion_does_not_hold_run_lock() {
         "削除後の下書きは拒否: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn retention_physically_deletes_only_expired_cases() {
+    let Some((db, fga, service, ctx)) = setup().await else {
+        return;
+    };
+    let thread = Uuid::new_v4();
+    sqlx::query("INSERT INTO thread (id,tenant_id,org,owner,title) VALUES ($1,$2,$3,$4,'dummy')")
+        .bind(thread)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
+        .execute(&db)
+        .await
+        .unwrap();
+    fga.write_tuple(
+        &ctx.subject(),
+        Relation::Owner,
+        &ctx.ns().thread(&thread.to_string()),
+    )
+    .await
+    .unwrap();
+    let (source, _) = run(&db, &ctx, thread, None).await;
+    let mut cases = vec![];
+    for call in ["expired", "fresh"] {
+        cases.push(
+            service
+                .record_help_receipt(
+                    &ctx,
+                    &source,
+                    call,
+                    HelpReceipt {
+                        hit_count: 0,
+                        corpus_versions: vec![],
+                        chunk_ids: vec![],
+                    },
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    sqlx::query(
+        "UPDATE help_resolution_case SET expires_at=now() WHERE tenant_id=$1 AND org=$2 AND id=$3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(cases[0])
+    .execute(&db)
+    .await
+    .unwrap();
+    let retention = shiki_bug_report::retention::Retention::new(db.clone());
+    retention.sweep(ctx.tenant(), "other-org").await.unwrap();
+    assert_eq!(retention.sweep(ctx.tenant(), ctx.org()).await.unwrap(), 1);
+    let remaining: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM help_resolution_case WHERE tenant_id=$1 AND org=$2")
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .fetch_all(&db)
+            .await
+            .unwrap();
+    assert_eq!(remaining, vec![cases[1]]);
+}

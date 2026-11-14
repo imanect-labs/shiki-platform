@@ -7,6 +7,7 @@ mod help_case;
 mod model;
 pub use help_case::*;
 mod queries;
+pub mod retention;
 mod service;
 pub mod sink;
 mod store;

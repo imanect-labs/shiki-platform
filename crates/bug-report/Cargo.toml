@@ -22,6 +22,7 @@ reqwest.workspace = true
 jsonwebtoken.workspace = true
 chrono.workspace = true
 rand.workspace = true
+tracing.workspace = true
 shiki-sandbox-client.workspace = true
 
 [dev-dependencies]
