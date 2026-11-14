@@ -356,3 +356,86 @@ async fn shift_jis_pages_are_decoded_and_spa_is_flagged() {
         .unwrap();
     assert_eq!(spa.needs_js, Some(browser::NeedsJs::ScriptRendered));
 }
+
+#[tokio::test]
+async fn radios_checkboxes_textarea_and_unsupported_forms() {
+    let route: support::Route = Arc::new(|req: &Req| {
+        match (req.method.as_str(), req.target.as_str()) {
+            ("GET", "/survey") => http(
+                "200 OK",
+                &[],
+                r#"<form method="post" action="/answer">
+                 <label><input type="radio" name="size" value="s" checked> 小</label>
+                 <label><input type="radio" name="size" value="l"> 大</label>
+                 <label><input type="checkbox" name="agree" value="1"> 同意</label>
+                 <label>意見 <textarea name="note">初期値</textarea></label>
+                 <button name="action" value="send">送信</button><button name="action" value="draft">下書き</button>
+               </form>
+               <form method="post" action="/upload" enctype="multipart/form-data"><input name="t" aria-label="題名"><button>添付</button></form>"#,
+            ),
+            ("POST", "/answer") => http("200 OK", &[], &format!("<p>受信: {}</p>", req.body)),
+            _ => http("404 Not Found", &[], ""),
+        }
+    });
+    let (mut s, port, log) = session(route).await;
+    let snap = s
+        .navigate(u(port, "forms.example.com", "/survey"))
+        .await
+        .unwrap();
+    // ラジオは同じ名前の中で 1 つだけ、チェックボックスは切り替え。
+    let snap = s.act(Action::Click(find(&snap, "大"))).await.unwrap();
+    assert!(
+        snap.text.contains(r#"radio "小" checked=false"#),
+        "{}",
+        snap.text
+    );
+    assert!(
+        snap.text.contains(r#"radio "大" checked=true"#),
+        "{}",
+        snap.text
+    );
+    let snap = s.act(Action::Click(find(&snap, "同意"))).await.unwrap();
+    let snap = s.act(Action::Click(find(&snap, "同意"))).await.unwrap();
+    let snap = s.act(Action::Click(find(&snap, "同意"))).await.unwrap();
+    let snap = s
+        .act(Action::Fill(find(&snap, "意見"), "とても良い".into()))
+        .await
+        .unwrap();
+    assert!(snap.text.contains(r#"value="とても良い""#), "{}", snap.text);
+    // 入力欄でないものへの入力・クリックできない要素・無い選択肢は拒否する。
+    assert!(matches!(
+        s.act(Action::Fill(find(&snap, "同意"), "x".into())).await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    assert!(matches!(
+        s.act(Action::Click(find(&snap, "意見"))).await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    assert!(matches!(
+        s.act(Action::Select(find(&snap, "意見"), "x".into())).await,
+        Err(BrowserError::NotInteractive(_))
+    ));
+    // 押したボタンの name=value だけが載る。
+    let done = s.act(Action::Click(find(&snap, "下書き"))).await.unwrap();
+    assert!(done.text.contains("受信"), "{}", done.text);
+    let sent = log
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r.target == "/answer")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        sent.body,
+        "size=l&agree=1&note=%E3%81%A8%E3%81%A6%E3%82%82%E8%89%AF%E3%81%84&action=draft"
+    );
+    // multipart（ファイル送信）は v1 では扱わない。
+    let snap = s
+        .navigate(u(port, "forms.example.com", "/survey"))
+        .await
+        .unwrap();
+    let err = s.act(Action::Click(find(&snap, "添付"))).await.unwrap_err();
+    assert!(matches!(err, BrowserError::Unsupported(_)), "{err:?}");
+    assert!(s.snapshot().await.is_ok());
+}
