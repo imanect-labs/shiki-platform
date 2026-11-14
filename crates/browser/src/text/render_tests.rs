@@ -428,3 +428,31 @@ fn required_select_value_missing_follows_placeholder_rules() {
         [("a", true), ("b", false), ("c", true), ("d", false)]
     );
 }
+
+#[test]
+fn radio_groups_required_by_a_disabled_member_and_charset_fallback() {
+    let out = r(r#"<form method="post" action="/x" accept-charset="bogus">
+        <input type="radio" name="g" value="a" required disabled aria-label="無効">
+        <input type="radio" name="g" value="b" aria-label="有効"><button>送る</button></form>
+        <form action="/y"><input name="q"></form>"#);
+    // 無効なラジオにだけ required があっても、グループは必須（有効な b が未選択なので送らない）。
+    let err = crate::text::submit::build(
+        &out.forms,
+        &out.fields,
+        &base(),
+        0,
+        None,
+        encoding_rs::SHIFT_JIS,
+    )
+    .unwrap_err();
+    assert!(matches!(err, crate::engine::BrowserError::Required(n) if n == "g"));
+    // accept-charset があるのに対応する候補が無ければ UTF-8。属性が無ければ文書の文字コード（None）。
+    assert_eq!(out.forms[0].accept_charset, Some(encoding_rs::UTF_8));
+    assert_eq!(out.forms[1].accept_charset, None);
+    // 名前と値の改行は CRLF にそろえる。
+    let pairs = vec![("a\nb".to_string(), "x\ry\r\nz".to_string())];
+    assert_eq!(
+        crate::text::submit::urlencoded(&pairs, encoding_rs::UTF_8),
+        "a%0D%0Ab=x%0D%0Ay%0D%0Az"
+    );
+}

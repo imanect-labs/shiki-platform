@@ -573,9 +573,11 @@ impl Walker<'_> {
                     .attr("method")
                     .is_some_and(|m| m.eq_ignore_ascii_case("dialog")),
                 novalidate: node.has_attr("novalidate"),
-                accept_charset: node.attr("accept-charset").and_then(|a| {
+                // 属性が無ければ文書の文字コード。あるのに対応する候補が無ければ UTF-8（HTML 標準）。
+                accept_charset: node.attr("accept-charset").map(|a| {
                     a.split_ascii_whitespace()
                         .find_map(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+                        .unwrap_or(encoding_rs::UTF_8)
                 }),
                 enctype: node.attr("enctype").map_or_else(
                     || "application/x-www-form-urlencoded".to_string(),

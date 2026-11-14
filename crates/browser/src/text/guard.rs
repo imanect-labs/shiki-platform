@@ -512,6 +512,11 @@ mod tests {
             let s = format!("{opener}{}", "<div>".repeat(100_000));
             assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{opener}");
         }
+        // 外部コンテンツの中の `</p>` / `</br>` は外部コンテンツを抜ける（以降の自己終了は効かない）。
+        for end in ["</p>", "</br>"] {
+            let s = format!("<svg>{end}{}", "<x-node/>".repeat(100_000));
+            assert!(clip_depth(&s, MAX_PARSE_DEPTH).1, "{end}");
+        }
         // 生テキストの終了タグは名前全体で照合する（`</stylex>` で style を抜けない）。
         let rawtext = format!(
             "<style></stylex><script></style>{}",

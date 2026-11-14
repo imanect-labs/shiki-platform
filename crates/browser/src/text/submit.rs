@@ -7,6 +7,8 @@
 //! - Enter による送信（[`default_submitter`]）は、フォームの最初の送信ボタンを submitter にする。
 //!   それが無効なら送信しない。
 
+use std::collections::HashSet;
+
 use encoding_rs::Encoding;
 use url::Url;
 
@@ -51,31 +53,31 @@ pub(crate) fn default_submitter(
 /// # Errors
 /// 未入力の必須項目があれば、その名前を返す（ブラウザもこの場合は送信しない）。
 fn validate(fields: &[Field], form_index: usize) -> Result<(), BrowserError> {
-    let mine = || {
-        fields
-            .iter()
-            .filter(move |f| f.form == Some(form_index) && !f.disabled)
-    };
-    for f in mine().filter(|f| f.required) {
+    let in_form = || fields.iter().filter(move |f| f.form == Some(form_index));
+    let radios = || in_form().filter(|f| matches!(f.kind, FieldKind::Check { radio: true, .. }));
+    // ラジオのグループは無効なものも含む: どれかが required ならグループが必須、どれかが選ばれていれば入力済み。
+    // 名前ごとに 1 度だけ数える（ラジオの数の二乗にしない）。
+    let required_groups: HashSet<&str> = radios()
+        .filter(|f| f.required)
+        .map(|f| f.name.as_str())
+        .collect();
+    let checked_groups: HashSet<&str> = radios()
+        .filter(|f| matches!(f.kind, FieldKind::Check { checked: true, .. }))
+        .map(|f| f.name.as_str())
+        .collect();
+    for f in in_form().filter(|f| !f.disabled) {
         let missing = match &f.kind {
-            FieldKind::Text { value, .. } => !f.readonly && value.is_empty(),
-            FieldKind::Select { .. } => f.value_missing,
+            FieldKind::Text { value, .. } => f.required && !f.readonly && value.is_empty(),
+            FieldKind::Select { .. } => f.required && f.value_missing,
             FieldKind::Check {
                 radio: false,
                 checked,
                 ..
-            } => !checked,
-            FieldKind::Check { radio: true, .. } => !mine().any(|o| {
-                o.name == f.name
-                    && matches!(
-                        o.kind,
-                        FieldKind::Check {
-                            radio: true,
-                            checked: true,
-                            ..
-                        }
-                    )
-            }),
+            } => f.required && !checked,
+            FieldKind::Check { radio: true, .. } => {
+                required_groups.contains(f.name.as_str())
+                    && !checked_groups.contains(f.name.as_str())
+            }
             FieldKind::Hidden { .. } | FieldKind::Button { .. } => false,
         };
         if missing {
@@ -91,7 +93,12 @@ fn validate(fields: &[Field], form_index: usize) -> Result<(), BrowserError> {
 /// （`Encoding::encode` の挙動）。
 pub(crate) fn urlencoded(pairs: &[(String, String)], charset: &'static Encoding) -> String {
     let part = |s: &str| -> String {
-        let (bytes, _, _) = charset.encode(s);
+        // 改行は CRLF にそろえる（単独の CR・LF を CRLF に。HTML 標準の entry list の正規化）。
+        let normalized = s
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', "\r\n");
+        let (bytes, _, _) = charset.encode(&normalized);
         url::form_urlencoded::byte_serialize(&bytes).collect()
     };
     pairs

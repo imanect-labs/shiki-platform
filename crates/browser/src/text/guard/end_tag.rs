@@ -154,8 +154,13 @@ fn in_table_scope(open: &[Open], name: &str) -> Option<usize> {
 
 /// 終了タグ `</name>` で閉じる。
 pub(super) fn close(open: &mut Vec<Open>, name: &str) {
-    // 外部コンテンツの中: HTML の要素に着くまでに同名の外部の要素があればそこまで閉じる。
-    if open.last().is_some_and(|o| o.ns != Ns::Html) {
+    // `</p>` と `</br>` は外部コンテンツを抜けてから HTML の規則で処理する（HTML の要素か統合点まで閉じる）。
+    if matches!(name, "p" | "br") {
+        while open.last().is_some_and(|o| o.content_foreign) {
+            open.pop();
+        }
+    } else if open.last().is_some_and(|o| o.ns != Ns::Html) {
+        // 外部コンテンツの中: HTML の要素に着くまでに同名の外部の要素があればそこまで閉じる。
         for p in (0..open.len()).rev() {
             if open[p].ns == Ns::Html {
                 break;
