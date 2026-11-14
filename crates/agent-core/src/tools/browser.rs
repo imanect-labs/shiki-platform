@@ -257,15 +257,13 @@ impl BrowserTool {
         // フォームの送信。
         if request.method != Method::Get {
             return Err(ToolOutcome::error(format!(
-                "POST で送るフォームは browser では送信できません（送り先: {}）。{NEEDS_APPROVAL}",
-                request.url.origin().ascii_serialization()
+                "POST で送るフォームは browser では送信できません。{NEEDS_APPROVAL}"
             )));
         }
         let page_origin = current.url.origin();
         if request.url.origin() != page_origin {
             return Err(ToolOutcome::error(format!(
-                "このフォームの送り先（{}）は表示中のページと別のサイトのため、browser では送信できません。{NEEDS_APPROVAL}",
-                request.url.origin().ascii_serialization()
+                "このフォームの送り先は表示中のページと別のサイトのため、browser では送信できません。{NEEDS_APPROVAL}"
             )));
         }
         self.set_redirect(RedirectScope::Carrying {

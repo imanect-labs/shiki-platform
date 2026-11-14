@@ -87,7 +87,7 @@ impl ChatWorker {
         .await;
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
-        let user_urls = super::history::user_urls(&msgs, assistant_message_id);
+        let user_urls = super::user_urls::user_urls(&msgs, assistant_message_id);
         // 直近の assistant ターンだけ、ツールの作業記録を次の user 発話の前に添える
         // （前のターンで見つけた id・値を次のターンで使えるように・history_work_log.rs）。
         let logged_from = msgs
