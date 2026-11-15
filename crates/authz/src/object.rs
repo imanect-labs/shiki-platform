@@ -89,6 +89,11 @@ impl FgaObject {
         Self::new(ObjectType::DataRecord, id)
     }
 
+    /// チャンネルオブジェクト `channel:<id>`（職員間メッセージ・Task 14.2）。
+    pub(crate) fn channel(id: &str) -> Self {
+        Self::new(ObjectType::Channel, id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -212,6 +217,16 @@ impl<'a> Namespace<'a> {
     /// 個別共有された行オブジェクト `data_record:<tenant>|<id>`（Task 9.3）。
     pub fn data_record(&self, id: &str) -> FgaObject {
         FgaObject::data_record(&self.qualify(id))
+    }
+
+    /// チャンネルオブジェクト `channel:<tenant>|<id>`（職員間メッセージ・Task 14.2）。
+    pub fn channel(&self, id: &str) -> FgaObject {
+        FgaObject::channel(&self.qualify(id))
+    }
+
+    /// チャンネル参加者 userset `channel:<tenant>|<id>#member`（`poster` の既定付与先・Task 14.2）。
+    pub fn channel_member(&self, id: &str) -> Subject {
+        Subject::userset(&self.channel(id), Relation::Member)
     }
 
     /// ユーザー subject `user:<tenant>|<id>`。
