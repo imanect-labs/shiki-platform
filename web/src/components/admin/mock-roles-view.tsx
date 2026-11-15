@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -18,17 +19,8 @@ import {
 import { AdminPage, Panel, SettingRow } from "./admin-page";
 import { MockBanner } from "./mock-banner";
 
-type Role = { id: string; label: string; parent: string | null; members: number };
-
-/// サンプルのロール階層（親ロールは配下ロールのメンバーを含む）。
-const ROLES: Role[] = [
-  { id: "all", label: "全社", parent: null, members: 48 },
-  { id: "planning", label: "経営企画", parent: "all", members: 3 },
-  { id: "sales", label: "営業部", parent: "all", members: 24 },
-  { id: "sales-1", label: "営業1課", parent: "sales", members: 11 },
-  { id: "sales-2", label: "営業2課", parent: "sales", members: 9 },
-  { id: "dev", label: "開発部", parent: "all", members: 14 },
-];
+// AD連携Mockと同じロール・親子関係を表示する。
+import { MOCK_ROLES as ROLES } from "./mock-directory-model";
 
 function depth(id: string): number {
   const r = ROLES.find((x) => x.id === id);
@@ -70,7 +62,7 @@ export function MockRolesView() {
   const children = ROLES.filter((r) => r.parent === role.id);
 
   return (
-    <AdminPage title="ロール" description="テナント内の階層付きメンバーシップ。親ロールは配下ロールのメンバーを含みます。" wide>
+    <AdminPage title="ロール" description="テナント内の階層付きメンバーシップ。親ロールは配下ロールのメンバーを含みます。" wide actions={<Button variant="outline" size="sm" asChild><Link href="/admin/directory">ADグループとの対応付け</Link></Button>}>
       <MockBanner what="ロール管理の API は Task 8.4 で実装予定" />
       <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
         <Panel>

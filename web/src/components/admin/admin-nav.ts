@@ -94,7 +94,7 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     label: "アクセス管理",
     icon: Users,
     href: "/admin/members",
-    prefix: "/admin/(members|roles)",
+    prefix: "/admin/(members|roles|directory)",
     access: "admin",
     menu: [
       {
@@ -102,6 +102,7 @@ export const ADMIN_SECTIONS: AdminSection[] = [
         items: [
           { label: "メンバー", href: "/admin/members", mock: true },
           { label: "ロール", href: "/admin/roles", mock: true },
+          { label: "AD連携", href: "/admin/directory", mock: true },
         ],
       },
     ],
