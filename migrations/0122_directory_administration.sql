@@ -66,10 +66,22 @@ CREATE TABLE directory_admin_operation (
 );
 CREATE INDEX directory_admin_operation_history ON directory_admin_operation (tenant_id, org, created_at DESC);
 CREATE INDEX directory_admin_operation_pending ON directory_admin_operation (state, updated_at) WHERE state IN ('pending', 'running');
+-- 外部設定変更の結果が不明な場合、確認済みの復旧まで後続書込みを止める。
+CREATE TABLE directory_connection_guard (
+    tenant_id text NOT NULL,
+    org text NOT NULL,
+    attempt_id uuid NOT NULL,
+    verified boolean NOT NULL DEFAULT false,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, org)
+);
+CREATE INDEX directory_admin_operation_uncertain ON directory_admin_operation (tenant_id)
+    WHERE state = 'running' OR error_code = 'execution_interrupted';
+CREATE INDEX directory_connection_guard_uncertain ON directory_connection_guard (tenant_id) WHERE NOT verified;
 DO $$
 DECLARE table_name text;
 BEGIN
-  FOREACH table_name IN ARRAY ARRAY['directory_managed_role', 'directory_ad_group', 'directory_ad_mapping', 'directory_admin_operation'] LOOP
+  FOREACH table_name IN ARRAY ARRAY['directory_managed_role', 'directory_ad_group', 'directory_ad_mapping', 'directory_admin_operation', 'directory_connection_guard'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', table_name);
     EXECUTE format('CREATE POLICY shiki_tenant_isolation ON %I USING ((SELECT shiki_rls_tenant()) IS NULL OR tenant_id = (SELECT shiki_rls_tenant())) WITH CHECK ((SELECT shiki_rls_tenant()) IS NULL OR tenant_id = (SELECT shiki_rls_tenant()))', table_name);

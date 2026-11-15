@@ -20,6 +20,7 @@ import {
   type RoleEdit,
   type Plan,
   type Operation,
+  type RetryInput,
   type Role,
 } from "./api";
 import { Source } from "./source";
@@ -47,9 +48,28 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
   const [operation, setOperation] = React.useState<Operation>();
   const [history, setHistory] = React.useState<Operation[]>([]);
   const [busy, setBusy] = React.useState(false);
+  const [recovering, setRecovering] = React.useState(false);
+  const [recoveryConfirmed, setRecoveryConfirmed] = React.useState(false);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState("");
   const [reviewGroup, setReviewGroup] = React.useState<Group>();
+  const retryOperation = async (confirmed: boolean) => {
+    if (!operation) return;
+    setBusy(true);
+    setError("");
+    try {
+      setOperation(
+        await post<Operation>(`/operations/${operation.id}/retry`, {
+          recovery_confirmed: confirmed,
+        } satisfies RetryInput),
+      );
+      setRecovering(false);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const dirty = hasChanges(changes);
   const pending = !!operation && operation.state !== "succeeded";
   const disabled = busy || pending || !info?.keycloak_available;
@@ -324,7 +344,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 {operation.processed} / {operation.total}件
                 {operation.state === "failed"
-                  ? ` · ${operation.error_code === "authorization_revoked" ? "操作した管理者の権限を確認してください" : operation.error_code === "version_conflict" ? "保存内容との競合が発生しました" : "Keycloak・AD・認可サービスへの接続を確認して再実行してください"}`
+                  ? ` · ${operation.error_code === "execution_interrupted" ? "実行が中断されています。運用者に以前の実行と外部反映の状態を確認してもらってください" : operation.error_code === "authorization_revoked" ? "操作した管理者の権限を確認してください" : operation.error_code === "version_conflict" ? "保存内容との競合が発生しました" : "Keycloak・AD・認可サービスへの接続を確認して再実行してください"}`
                   : operation.state !== "succeeded"
                     ? " · 画面を閉じても処理は継続します"
                     : ""}
@@ -334,21 +354,12 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
               <Button
                 size="sm"
                 disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    setOperation(
-                      await post<Operation>(
-                        `/operations/${operation.id}/retry`,
-                        {},
-                      ),
-                    );
+                onClick={() => {
+                  if (operation.error_code === "execution_interrupted") {
+                    setRecoveryConfirmed(false);
                     setError("");
-                  } catch (e) {
-                    setError((e as Error).message);
-                  } finally {
-                    setBusy(false);
-                  }
+                    setRecovering(true);
+                  } else void retryOperation(false);
                 }}
               >
                 続きから再実行
@@ -490,6 +501,54 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
             ))}
           </ul>
         </details>
+      )}
+      {recovering && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !busy) setRecovering(false);
+          }}
+        >
+          <DialogContent>
+            <DialogTitle>中断した反映の再実行</DialogTitle>
+            <DialogDescription>
+              外部サービスで受付済みの変更が残っている可能性があります。運用者が以前の実行を停止し、反映状態を確認してから続きに進んでください。
+            </DialogDescription>
+            <p className="break-all rounded-md bg-muted px-3 py-2 font-mono text-[11px] text-muted-foreground">
+              操作ID: {operation?.id}
+            </p>
+            <label className="flex items-start gap-2 text-xs leading-6">
+              <input
+                type="checkbox"
+                checked={recoveryConfirmed}
+                onChange={(e) => setRecoveryConfirmed(e.target.checked)}
+                disabled={busy}
+                className="mt-1.5 size-3.5 shrink-0 accent-primary"
+              />
+              運用者が以前の実行の停止と、Keycloak・認可サービスの反映状態を確認済みです
+            </label>
+            {error && (
+              <p role="alert" className="text-xs text-destructive">
+                {error}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => setRecovering(false)}
+              >
+                戻る
+              </Button>
+              <Button
+                disabled={!recoveryConfirmed || busy}
+                onClick={() => void retryOperation(true)}
+              >
+                確認して再実行
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
       {dialog === "connection" && (
         <ConnectionDialog

@@ -16,6 +16,8 @@ pub struct LdapConnectionInput {
     pub bind_password: Option<String>,
     #[serde(default)]
     pub preserve_group_inheritance: bool,
+    #[serde(default)]
+    pub recovery_confirmed: bool,
 }
 
 // Keycloakの接続状態とLDAPの独立した設定フラグをそのまま返す公開DTO。
@@ -29,6 +31,7 @@ pub struct LdapConnectionStatus {
     pub groups_dn: Option<String>,
     pub bind_dn: Option<String>,
     pub credential_saved: bool,
+    pub recovery_required: bool,
     pub preserve_group_inheritance: bool,
 }
 
@@ -101,6 +104,7 @@ impl KeycloakAdmin<'_> {
         let component = self.owned_ldap(ctx).await?;
         Ok(LdapConnectionStatus {
             configured: component.is_some(),
+            recovery_required: false,
             enabled: component
                 .as_ref()
                 .and_then(|c| first(c, "enabled"))

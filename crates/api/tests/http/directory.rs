@@ -413,7 +413,7 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
         &app,
         "POST",
         &format!("{base}/operations/{id}/retry"),
-        json!({}),
+        json!({"recovery_confirmed":true}),
     )
     .await;
     assert_eq!(op["state"], "pending");
@@ -565,6 +565,223 @@ async fn failed_initial_sync_can_be_repaired_by_configuring_ad() {
             .state,
         "succeeded"
     );
+}
+
+#[tokio::test]
+async fn interrupted_running_operation_requires_confirmed_manual_recovery() {
+    let Some((state, ctx, fixture)) = fixture().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let base = "/org-admin/directory";
+    let prefix = storage::directory::admin::role_id_prefix(&ctx);
+    let request = json!({"idempotency_key":uuid::Uuid::new_v4(),"roles":[{"id":format!("{prefix}interrupted"),"label":"Interrupted","parent_id":null,"expected_version":0}],"mappings":[]});
+    let (_, op) = call(&app, "POST", &format!("{base}/apply"), request).await;
+    let id = op["id"].as_str().unwrap().parse().unwrap();
+    state
+        .directory
+        .admin()
+        .start_operation(&ctx, id)
+        .await
+        .unwrap()
+        .unwrap();
+    api::directory_admin::process(&state, &ctx, id)
+        .await
+        .unwrap();
+    let stopped = state.directory.admin().operation(&ctx, id).await.unwrap();
+    assert_eq!(stopped.state, "failed");
+    assert_eq!(stopped.error_code.as_deref(), Some("execution_interrupted"));
+    assert!(fixture.lock().unwrap().writes.is_empty());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/operations/{id}/retry"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/operations/{id}/retry"),
+            json!({"recovery_confirmed":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    api::directory_admin::process(&state, &ctx, id)
+        .await
+        .unwrap();
+    let finished = state.directory.admin().operation(&ctx, id).await.unwrap();
+    assert_eq!(finished.state, "succeeded");
+    assert_eq!(finished.attempts, 2);
+}
+
+#[tokio::test]
+async fn preview_batches_more_than_twenty_thousand_candidate_ids() {
+    let Some((state, ctx, _fixture)) = fixture().await else {
+        return;
+    };
+    let owner = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let prefix = storage::directory::admin::role_id_prefix(&ctx);
+    let mut tx = owner.begin().await.unwrap();
+    sqlx::query("INSERT INTO directory_role (tenant_id,org,role_id,display_name) SELECT $1,$2,$3 || 'p-' || lpad(n::text,5,'0'),'Parent ' || n FROM generate_series(0,10000) n").bind(ctx.tenant_id()).bind(ctx.org()).bind(&prefix).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO directory_managed_role (tenant_id,org,role_id,label,keycloak_group_id) SELECT tenant_id,org,role_id,display_name,'fixture-group' FROM directory_role WHERE tenant_id=$1 AND org=$2").bind(ctx.tenant_id()).bind(ctx.org()).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let changes = DirectoryChangeSet {
+        idempotency_key: uuid::Uuid::new_v4(),
+        roles: (0..10001)
+            .map(|n| storage::directory::admin::RoleEdit {
+                id: format!("{prefix}c-{n:05}"),
+                label: "Child".into(),
+                parent_id: Some(format!("{prefix}p-{n:05}")),
+                expected_version: 0,
+            })
+            .collect(),
+        mappings: vec![],
+    };
+    let plan = api::directory_admin::preview::create(&state, &ctx, &changes)
+        .await
+        .unwrap();
+    assert_eq!(plan.nodes.len(), 20002);
+    assert_eq!(plan.changes.roles.len(), 10001);
+    assert!(plan.before_roles.is_empty());
+}
+
+#[tokio::test]
+async fn unknown_role_write_result_requires_confirmation_even_with_live_lease() {
+    let Some((state, ctx, fixture)) = fixture().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let base = "/org-admin/directory";
+    let prefix = storage::directory::admin::role_id_prefix(&ctx);
+    let request = json!({"idempotency_key":uuid::Uuid::new_v4(),"roles":[{"id":format!("{prefix}uncertain"),"label":"Uncertain","parent_id":null,"expected_version":0}],"mappings":[]});
+    let (status, op) = call(&app, "POST", &format!("{base}/apply"), request).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = op["id"].as_str().unwrap().parse().unwrap();
+    fixture.lock().unwrap().fail_role_write = true;
+    assert!(api::directory_admin::process(&state, &ctx, id)
+        .await
+        .is_err());
+    let stopped = state.directory.admin().operation(&ctx, id).await.unwrap();
+    assert_eq!(stopped.error_code.as_deref(), Some("execution_interrupted"));
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/operations/{id}/retry"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    fixture.lock().unwrap().fail_role_write = false;
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/operations/{id}/retry"),
+            json!({"recovery_confirmed":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    api::directory_admin::process(&state, &ctx, id)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .directory
+            .admin()
+            .operation(&ctx, id)
+            .await
+            .unwrap()
+            .state,
+        "succeeded"
+    );
+}
+
+#[tokio::test]
+async fn uncertain_connection_blocks_following_writes_until_confirmed_repair() {
+    let Some((state, ctx, fixture)) = fixture().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let base = "/org-admin/directory";
+    let mut input = json!({"connection_url":"ldaps://ad.example.test:636","users_dn":"OU=Users,DC=example","groups_dn":"OU=Groups,DC=example","bind_dn":"CN=reader,DC=example","bind_password":"repair-test-secret"});
+    fixture.lock().unwrap().fail_component_write = true;
+    assert_eq!(
+        call(&app, "PUT", &format!("{base}/connection"), input.clone())
+            .await
+            .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(state
+        .directory
+        .admin()
+        .connection_recovery_required(&ctx)
+        .await
+        .unwrap());
+    let (status, connection) = call(&app, "GET", &format!("{base}/connection"), Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(connection["recovery_required"], true);
+    let writes = fixture.lock().unwrap().writes.len();
+    assert_eq!(
+        call(&app, "PUT", &format!("{base}/connection"), input.clone())
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(fixture.lock().unwrap().writes.len(), writes);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/sync"),
+            json!({"idempotency_key":uuid::Uuid::new_v4()})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    fixture.lock().unwrap().fail_component_write = false;
+    input["recovery_confirmed"] = json!(true);
+    assert_eq!(
+        call(&app, "PUT", &format!("{base}/connection"), input)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(!state
+        .directory
+        .admin()
+        .connection_recovery_required(&ctx)
+        .await
+        .unwrap());
+    let (status, op) = call(
+        &app,
+        "POST",
+        &format!("{base}/sync"),
+        json!({"idempotency_key":uuid::Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = op["id"].as_str().unwrap().parse().unwrap();
+    api::directory_admin::process(&state, &ctx, id)
+        .await
+        .unwrap();
 }
 
 #[derive(Default)]

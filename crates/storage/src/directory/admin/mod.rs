@@ -7,6 +7,7 @@ use utoipa::ToSchema;
 use crate::{db_tenant::begin_tenant_tx, error::StorageError};
 
 mod catalog;
+mod configuration;
 mod groups;
 mod lease;
 mod members;

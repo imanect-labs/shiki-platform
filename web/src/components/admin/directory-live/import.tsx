@@ -18,6 +18,13 @@ export function ImportDialog({
   const [csv, setCsv] = React.useState("");
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const readVersion = React.useRef(0);
+  React.useEffect(
+    () => () => {
+      readVersion.current += 1;
+    },
+    [],
+  );
   return (
     <Dialog
       open
@@ -42,6 +49,7 @@ export function ImportDialog({
             disabled={busy}
             className="block w-full rounded-md border p-2 text-xs"
             onChange={async (e) => {
+              const version = ++readVersion.current;
               const file = e.target.files?.[0];
               setError("");
               setCsv("");
@@ -51,9 +59,11 @@ export function ImportDialog({
                 return;
               }
               try {
-                setCsv(await file.text());
+                const contents = await file.text();
+                if (version === readVersion.current) setCsv(contents);
               } catch {
-                setError("ファイルを読み込めませんでした。");
+                if (version === readVersion.current)
+                  setError("ファイルを読み込めませんでした。");
               }
             }}
           />
@@ -63,8 +73,12 @@ export function ImportDialog({
           <textarea
             aria-label="CSVの内容"
             rows={7}
+            disabled={busy}
             value={csv}
-            onChange={(e) => setCsv(e.target.value)}
+            onChange={(e) => {
+              readVersion.current += 1;
+              setCsv(e.target.value);
+            }}
             className="w-full rounded-md border bg-background p-3 font-mono text-xs"
             placeholder={"group_id,role_id\nグループID,ロールID"}
           />
@@ -82,6 +96,7 @@ export function ImportDialog({
             disabled={busy || !csv.trim()}
             onClick={async () => {
               setBusy(true);
+              readVersion.current += 1;
               setError("");
               try {
                 onAccept(await post<Plan>("/import-plan", { csv }));

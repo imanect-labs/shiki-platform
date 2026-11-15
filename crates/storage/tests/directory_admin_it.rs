@@ -341,13 +341,23 @@ async fn interrupted_operation_is_durable_and_org_lock_is_exclusive() {
     assert_eq!(store.operation(&ctx, op.id).await.unwrap().processed, 1);
     assert_eq!(
         store
-            .retry_operation(&ctx, op.id, None)
+            .retry_operation(&ctx, op.id, None, false)
             .await
             .unwrap()
             .state,
         "pending"
     );
+    store
+        .fail_owned_operation(&ctx, op.id, 1, "obsolete-worker")
+        .await
+        .unwrap();
+    assert_eq!(store.operation(&ctx, op.id).await.unwrap().state, "pending");
     let (changes, processed) = store.start_operation(&ctx, op.id).await.unwrap().unwrap();
+    store
+        .fail_owned_operation(&ctx, op.id, 1, "obsolete-worker")
+        .await
+        .unwrap();
+    assert_eq!(store.operation(&ctx, op.id).await.unwrap().state, "running");
     assert_eq!(processed, 1);
     store
         .save_role(&ctx, &changes.roles[1], "kc", op.id, 1)
@@ -525,4 +535,210 @@ async fn only_owned_role_definitions_can_be_edited_and_ids_are_reserved_before_w
         mappings: vec![],
     };
     assert!(store.validate(&ctx, &bad).await.is_err());
+}
+
+#[tokio::test]
+async fn database_name_keys_reject_unicode_duplicates_and_order_renames() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let store = directory.admin();
+    let owner = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let normalized: String = sqlx::query_scalar("SELECT lower('ΟΣ')")
+        .fetch_one(&owner)
+        .await
+        .unwrap();
+    let mut old = edit(&ctx, "z-old-greek", None);
+    old.label = "ΟΣ".into();
+    let mut new = edit(&ctx, "a-new-greek", None);
+    new.label = normalized;
+    let input = |roles| DirectoryChangeSet {
+        idempotency_key: Uuid::new_v4(),
+        roles,
+        mappings: vec![],
+    };
+    assert!(store
+        .validate(&ctx, &input(vec![old.clone(), new.clone()]))
+        .await
+        .is_err());
+    apply(&store, &ctx, &input(vec![old.clone()])).await;
+    old.expected_version = 1;
+    old.label = "Renamed Greek".into();
+    let changes = input(vec![new.clone(), old.clone()]);
+    assert_eq!(
+        store.validate(&ctx, &changes).await.unwrap().roles[0].id,
+        old.id
+    );
+    apply(&store, &ctx, &changes).await;
+    assert_eq!(
+        store
+            .role_definitions(&ctx, &[old.id, new.id])
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn losing_the_lock_session_cancels_the_running_future() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let lease = directory.admin().lease(&ctx).await.unwrap().unwrap();
+    let owner = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let name: String = format!("shiki-dir-{}", role_id_prefix(&ctx))
+        .chars()
+        .take(63)
+        .collect();
+    let completed = Arc::new(AtomicBool::new(false));
+    let flag = completed.clone();
+    let result = lease.while_live(async {
+        let killed: Vec<bool> = sqlx::query_scalar("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1").bind(name).fetch_all(&owner).await.unwrap();
+        assert_eq!(killed, vec![true]);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        flag.store(true, Ordering::SeqCst);
+    }).await;
+    assert!(result.is_err());
+    assert!(!completed.load(Ordering::SeqCst));
+    assert!(lease.verify().await.is_err());
+    assert!(directory
+        .admin()
+        .begin_connection_change(&ctx, &lease, false, None)
+        .await
+        .is_err());
+    assert!(!directory
+        .admin()
+        .connection_recovery_required(&ctx)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn configuration_recovery_is_scoped_and_stale_completion_cannot_clear_new_attempt() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let store = directory.admin();
+    let lease = store.lease(&ctx).await.unwrap().unwrap();
+    let old = store
+        .begin_connection_change(&ctx, &lease, false, None)
+        .await
+        .unwrap();
+    assert!(store.connection_recovery_required(&ctx).await.unwrap());
+    assert!(!store
+        .connection_recovery_required(&context(ctx.tenant_id(), "other"))
+        .await
+        .unwrap());
+    assert!(store
+        .begin_connection_change(&ctx, &lease, false, None)
+        .await
+        .is_err());
+    let recovery = store
+        .begin_connection_change(&ctx, &lease, true, None)
+        .await
+        .unwrap();
+    assert!(store.finish_connection_change(&ctx, old).await.is_err());
+    assert!(store.connection_recovery_required(&ctx).await.unwrap());
+    let request = DirectoryChangeSet {
+        idempotency_key: Uuid::new_v4(),
+        roles: vec![],
+        mappings: vec![],
+    };
+    assert!(store
+        .enqueue(&ctx, &request, &request_hash(&request).unwrap(), None)
+        .await
+        .is_err());
+    store
+        .finish_connection_change(&ctx, recovery)
+        .await
+        .unwrap();
+    let op = store
+        .enqueue(&ctx, &request, &request_hash(&request).unwrap(), None)
+        .await
+        .unwrap();
+    store.fail_operation(&ctx, op.id, "test").await.unwrap();
+    let another = store
+        .begin_connection_change(&ctx, &lease, false, None)
+        .await
+        .unwrap();
+    assert!(store
+        .retry_operation(&ctx, op.id, None, true)
+        .await
+        .is_err());
+    store.finish_connection_change(&ctx, another).await.unwrap();
+    store
+        .retry_operation(&ctx, op.id, None, false)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn tenant_deletion_waits_for_uncertain_external_writes_to_be_recovered() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let store = directory.admin();
+    let lease = store.lease(&ctx).await.unwrap().unwrap();
+    let attempt = store
+        .begin_connection_change(&ctx, &lease, false, None)
+        .await
+        .unwrap();
+    drop(lease);
+    assert!(store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .is_none());
+    store.finish_connection_change(&ctx, attempt).await.unwrap();
+    assert!(store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .is_some());
+    let request = DirectoryChangeSet {
+        idempotency_key: Uuid::new_v4(),
+        roles: vec![],
+        mappings: vec![],
+    };
+    let op = store
+        .enqueue(&ctx, &request, &request_hash(&request).unwrap(), None)
+        .await
+        .unwrap();
+    store.start_operation(&ctx, op.id).await.unwrap().unwrap();
+    assert!(store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .is_none());
+    store
+        .fail_owned_operation(&ctx, op.id, 1, "execution_interrupted")
+        .await
+        .unwrap();
+    assert!(store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .is_none());
+    store
+        .retry_operation(&ctx, op.id, None, true)
+        .await
+        .unwrap();
+    assert!(store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .is_some());
 }

@@ -27,12 +27,12 @@ pub async fn create(
         .collect();
     let mut before_roles = Vec::new();
     let mut ancestors = BTreeSet::new();
-    for role in store
-        .roles_for_preview(ctx, &seed.into_iter().collect::<Vec<_>>())
-        .await?
-    {
-        ancestors.extend(role.path_ids.clone());
-        before_roles.push(role);
+    let seed: Vec<_> = seed.into_iter().collect();
+    for chunk in seed.chunks(20_000) {
+        for role in store.roles_for_preview(ctx, chunk).await? {
+            ancestors.extend(role.path_ids.clone());
+            before_roles.push(role);
+        }
     }
     let ancestors: Vec<_> = ancestors.into_iter().collect();
     let definitions = store.role_definitions(ctx, &ancestors).await?;

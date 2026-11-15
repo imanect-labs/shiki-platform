@@ -233,3 +233,177 @@ test.describe("AD連携とロール管理", () => {
     expect(status).toBe(403);
   });
 });
+
+test("CSVは最後に選択したファイルを使い、検証中の本文を保護する", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await page.goto("/admin/directory");
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    File.prototype.text = async function () {
+      const result = await original.call(this);
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.name === "slow-a.csv" ? 300 : 10),
+      );
+      if (this.name === "slow-a.csv")
+        (window as unknown as { csvReadAComplete: boolean }).csvReadAComplete =
+          true;
+      return result;
+    };
+  });
+  await page
+    .getByRole("button", { name: "CSVインポート", exact: true })
+    .click();
+  const file = page.getByLabel("CSVファイル", { exact: true });
+  await file.setInputFiles({
+    name: "slow-a.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("group_id,role_id\ngroup-a,role-a\n"),
+  });
+  await file.setInputFiles({
+    name: "fast-b.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("group_id,role_id\ngroup-b,role-b\n"),
+  });
+  const csv = page.getByLabel("CSVの内容", { exact: true });
+  await expect(csv).toHaveValue("group_id,role_id\ngroup-b,role-b\n");
+  await page.waitForFunction(
+    () =>
+      (window as unknown as { csvReadAComplete?: boolean }).csvReadAComplete,
+  );
+  await expect(csv).toHaveValue("group_id,role_id\ngroup-b,role-b\n");
+  let acceptRequest!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    acceptRequest = resolve;
+  });
+  await page.route("**/api/org-admin/directory/import-plan", async (route) => {
+    expect(route.request().postDataJSON().csv).toBe(
+      "group_id,role_id\ngroup-b,role-b\n",
+    );
+    await gate;
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "検証テストの応答" }),
+    });
+  });
+  await page
+    .getByRole("button", { name: "検証して確認へ", exact: true })
+    .click();
+  await expect(csv).toBeDisabled();
+  await expect(file).toBeDisabled();
+  acceptRequest();
+  await expect(page.getByRole("alert")).toContainText("検証テストの応答");
+  await expect(csv).toBeEnabled();
+  await expect(csv).toHaveValue("group_id,role_id\ngroup-b,role-b\n");
+});
+
+test("中断した反映は確認してから再実行する", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const id = "10000000-0000-4000-8000-000000000001";
+  const stopped = {
+    id,
+    state: "failed",
+    error_code: "execution_interrupted",
+    attempts: 1,
+    processed: 1,
+    total: 3,
+  };
+  await page.route("**/api/org-admin/directory/operations", (route) =>
+    route.fulfill({ json: [stopped] }),
+  );
+  let retries = 0;
+  await page.route(
+    `**/api/org-admin/directory/operations/${id}/retry`,
+    (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        recovery_confirmed: true,
+      });
+      retries++;
+      return route.fulfill({
+        json: {
+          ...stopped,
+          state: "succeeded",
+          error_code: null,
+          processed: 3,
+          attempts: 2,
+        },
+      });
+    },
+  );
+  await page.goto("/admin/directory");
+  await page
+    .getByRole("button", { name: "続きから再実行", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "中断した反映の再実行" });
+  await expect(dialog).toContainText(id);
+  await expect(
+    dialog.getByRole("button", { name: "確認して再実行" }),
+  ).toBeDisabled();
+  await dialog.getByRole("button", { name: "戻る", exact: true }).click();
+  expect(retries).toBe(0);
+  await page
+    .getByRole("button", { name: "続きから再実行", exact: true })
+    .click();
+  await dialog.getByRole("checkbox").check();
+  await dialog.getByRole("button", { name: "確認して再実行" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(retries).toBe(1);
+});
+
+test("接続の保存結果が不明な場合は復旧確認してから保存する", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await page.route("**/api/org-admin/directory", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      json: {
+        ...(await response.json()),
+        ldap_allowed_hosts: ["ad.example.test"],
+      },
+    });
+  });
+  const connection = {
+    configured: true,
+    enabled: true,
+    connection_url: "ldaps://ad.example.test:636",
+    users_dn: "OU=Users,DC=example",
+    groups_dn: "OU=Groups,DC=example",
+    bind_dn: "CN=Reader,DC=example",
+    credential_saved: true,
+    preserve_group_inheritance: false,
+    recovery_required: true,
+  };
+  let saved = false;
+  await page.route("**/api/org-admin/directory/connection", async (route) => {
+    if (route.request().method() === "PUT") {
+      expect(route.request().postDataJSON().recovery_confirmed).toBe(true);
+      expect(route.request().postDataJSON().bind_password).toBeNull();
+      saved = true;
+    }
+    await route.fulfill({ json: { ...connection, recovery_required: !saved } });
+  });
+  await page.goto("/admin/directory");
+  await page.getByRole("button", { name: "接続設定", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "AD接続設定" });
+  await expect(dialog).toContainText("前回の保存結果を確認してください");
+  const save = dialog.getByRole("button", {
+    name: "テストして保存",
+    exact: true,
+  });
+  await expect(save).toBeDisabled();
+  await dialog
+    .getByRole("checkbox", {
+      name: "旧処理の停止とKeycloakの処理完了を確認しました",
+    })
+    .check();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect(dialog).toContainText("接続設定を保存しました。");
+  await expect(
+    dialog.getByText("前回の保存結果を確認してください", { exact: true }),
+  ).toHaveCount(0);
+  expect(saved).toBe(true);
+});

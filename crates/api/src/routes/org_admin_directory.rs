@@ -142,6 +142,12 @@ pub struct DirectoryQuery {
 pub struct DirectorySyncInput {
     pub idempotency_key: Uuid,
 }
+#[derive(Deserialize, ToSchema)]
+pub struct DirectoryRetryInput {
+    /// 中断した旧実行の停止と、外部サービスの反映状態を運用者が確認した。
+    #[serde(default)]
+    pub recovery_confirmed: bool,
+}
 
 #[utoipa::path(get, path = "/org-admin/directory", responses((status = 200, body = DirectoryInfo)), security(("session" = [])))]
 pub async fn info(
@@ -225,17 +231,27 @@ pub async fn operation(
 ) -> Result<Json<DirectoryOperation>, ApiError> {
     Ok(Json(state.directory.admin().operation(&ctx, id).await?))
 }
-#[utoipa::path(post, path = "/org-admin/directory/operations/{id}/retry", params(("id" = Uuid, Path)), responses((status = 200, body = DirectoryOperation)), security(("session" = [])))]
+#[utoipa::path(post, path = "/org-admin/directory/operations/{id}/retry", request_body = DirectoryRetryInput, params(("id" = Uuid, Path)), responses((status = 200, body = DirectoryOperation)), security(("session" = [])))]
 pub async fn retry(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
+    Json(input): Json<DirectoryRetryInput>,
 ) -> Result<Json<DirectoryOperation>, ApiError> {
     let store = state.directory.admin();
     let _lease = store.lease(&ctx).await?.ok_or(ApiError::Conflict)?;
+    if store.operation(&ctx, id).await?.error_code.as_deref() == Some("execution_interrupted")
+        && !input.recovery_confirmed
+    {
+        return Err(ApiError::invalid_input(
+            "運用者が以前の実行を停止し、外部サービスの反映状態を確認してから再実行してください",
+        ));
+    }
     Ok(Json(
-        store.retry_operation(&ctx, id, trace.as_deref()).await?,
+        store
+            .retry_operation(&ctx, id, trace.as_deref(), input.recovery_confirmed)
+            .await?,
     ))
 }
 #[utoipa::path(get, path = "/org-admin/directory/connection", responses((status = 200, body = LdapConnectionStatus)), security(("session" = [])))]
@@ -244,9 +260,13 @@ pub async fn connection(
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<LdapConnectionStatus>, ApiError> {
     let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth).map_err(keycloak_error)?;
-    Ok(Json(
-        kc.ldap_connection(&ctx).await.map_err(keycloak_error)?,
-    ))
+    let mut status = kc.ldap_connection(&ctx).await.map_err(keycloak_error)?;
+    status.recovery_required = state
+        .directory
+        .admin()
+        .connection_recovery_required(&ctx)
+        .await?;
+    Ok(Json(status))
 }
 #[utoipa::path(put, path = "/org-admin/directory/connection", request_body = LdapConnectionInput, responses((status = 200, body = LdapConnectionStatus)), security(("session" = [])))]
 pub async fn save_connection(
@@ -256,43 +276,9 @@ pub async fn save_connection(
     Json(input): Json<LdapConnectionInput>,
 ) -> Result<Json<LdapConnectionStatus>, ApiError> {
     validate(&state.config.auth, &input)?;
-    let store = state.directory.admin();
-    let _lease = store.lease(&ctx).await?.ok_or(ApiError::Conflict)?;
-    if store.has_active_operation(&ctx).await? {
-        return Err(ApiError::Conflict);
-    }
-    let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth).map_err(keycloak_error)?;
-    let previous = kc.ldap_connection(&ctx).await.map_err(keycloak_error)?;
-    if previous.connection_url.as_deref() != Some(input.connection_url.as_str())
-        || previous.users_dn.as_deref() != Some(input.users_dn.as_str())
-        || previous.groups_dn.as_deref() != Some(input.groups_dn.as_str())
-        || previous.preserve_group_inheritance != input.preserve_group_inheritance
-    {
-        if store.has_unfinished_mappings(&ctx).await? {
-            return Err(ApiError::invalid_input("停止中の反映を再実行して完了してから、接続先・検索DN・階層設定を変更してください。バインドDNとパスワードは変更できます。"));
-        }
-        // Invalid credentials must not deactivate the currently working snapshot.
-        kc.test_ldap(&ctx, &input).await.map_err(keycloak_error)?;
-        store
-            .configuration_event(&ctx, "snapshot_invalidated", trace.as_deref())
-            .await?;
-    }
-    store
-        .configuration_event(&ctx, "requested", trace.as_deref())
-        .await?;
-    let result = kc.save_ldap(&ctx, &input).await;
-    store
-        .configuration_event(
-            &ctx,
-            if result.is_ok() {
-                "succeeded"
-            } else {
-                "failed"
-            },
-            trace.as_deref(),
-        )
-        .await?;
-    Ok(Json(result.map_err(keycloak_error)?))
+    Ok(Json(
+        crate::directory_admin::connection::save(&state, &ctx, &input, trace.as_deref()).await?,
+    ))
 }
 #[utoipa::path(post, path = "/org-admin/directory/connection/test", request_body = LdapConnectionInput, responses((status = 200, body = bool)), security(("session" = [])))]
 pub async fn test_connection(

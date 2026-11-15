@@ -30,6 +30,7 @@ export function ConnectionDialog({
     url: string;
     dn: string;
   }>();
+  const [recovery, setRecovery] = React.useState(false);
   const [stored, setStored] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -40,6 +41,7 @@ export function ConnectionDialog({
     request<Connection>("/connection", { signal: controller.signal })
       .then((status) => {
         setStored(status.credential_saved);
+        setRecovery(status.recovery_required);
         setSavedBinding({
           url: status.connection_url ?? "",
           dn: status.bind_dn ?? "",
@@ -73,8 +75,13 @@ export function ConnectionDialog({
           body: JSON.stringify(input),
         });
         setStored(true);
+        setRecovery(false);
         setSavedBinding({ url: input.connection_url, dn: input.bind_dn });
-        setInput((old) => ({ ...old, bind_password: null }));
+        setInput((old) => ({
+          ...old,
+          bind_password: null,
+          recovery_confirmed: false,
+        }));
         setMessage(
           "接続設定を保存しました。ADを同期するとグループを取得できます。",
         );
@@ -85,6 +92,15 @@ export function ConnectionDialog({
       }
     } catch (e) {
       setError((e as Error).message);
+      if (save) {
+        try {
+          const status = await request<Connection>("/connection");
+          setRecovery(status.recovery_required);
+          setInput((old) => ({ ...old, recovery_confirmed: false }));
+        } catch {
+          /* 次回開いた時にも状態を取得する。 */
+        }
+      }
     } finally {
       setBusy(false);
     }
@@ -142,6 +158,28 @@ export function ConnectionDialog({
           </p>
         ) : (
           <fieldset disabled={busy} className="space-y-3">
+            {recovery && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-xs leading-5">
+                <p className="font-medium">前回の保存結果を確認してください</p>
+                <p className="text-muted-foreground">
+                  前回の接続設定の保存が完了したか確認できません。運用担当者が旧処理を停止し、Keycloakで受付済みの処理が完了したことを確認してから保存し直してください。
+                </p>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 accent-primary"
+                    checked={input.recovery_confirmed ?? false}
+                    onChange={(e) =>
+                      setInput({
+                        ...input,
+                        recovery_confirmed: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>旧処理の停止とKeycloakの処理完了を確認しました</span>
+                </label>
+              </div>
+            )}
             {fields.map((field) => (
               <label
                 key={field.key}
@@ -217,7 +255,12 @@ export function ConnectionDialog({
             接続をテスト
           </Button>
           <Button
-            disabled={busy || loading || !valid}
+            disabled={
+              busy ||
+              loading ||
+              !valid ||
+              (recovery && !input.recovery_confirmed)
+            }
             onClick={() => run(true)}
           >
             テストして保存

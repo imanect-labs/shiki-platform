@@ -7,6 +7,7 @@ pub mod plan;
 pub mod preview;
 
 use authz::{AuthContext, Consistency, Principal, PrincipalKind, Relation, TenantId};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use storage::directory::admin::{DirectoryChangeSet, DirectoryOperation};
 use uuid::Uuid;
 
@@ -65,7 +66,7 @@ pub async fn submit_sync(
     }
     Ok(store.enqueue(ctx, &request, &hash, trace).await?)
 }
-/// 再起動してもpending/runningの操作を回収する。並行実行は最大4組織。
+/// pendingを実行し、所有セッションのないrunningは確認待ちにする。並行実行は最大4組織。
 pub async fn run(state: AppState) {
     if KeycloakAdmin::from_config(&state.http, &state.config.auth).is_err() {
         return;
@@ -105,20 +106,6 @@ pub async fn run(state: AppState) {
                 let _permit = permit;
                 if let Err(error) = process(&state, &ctx, job.id).await {
                     tracing::error!(operation_id = %job.id, %error, "directory operation failed");
-                    let code = match error {
-                        ApiError::Forbidden => "authorization_revoked",
-                        ApiError::Conflict => "version_conflict",
-                        ApiError::NotFound => "reference_missing",
-                        _ => "synchronization_failed",
-                    };
-                    if let Err(error) = state
-                        .directory
-                        .admin()
-                        .fail_operation(&ctx, job.id, code)
-                        .await
-                    {
-                        tracing::error!(%error, "directory operation failure could not be recorded");
-                    }
                 }
             });
         }
@@ -127,17 +114,77 @@ pub async fn run(state: AppState) {
 
 pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<(), ApiError> {
     let store = state.directory.admin();
-    let Some(_lease) = store.lease(ctx).await? else {
+    let Some(lease) = store.lease(ctx).await? else {
         return Ok(());
     };
+    let operation = store.operation(ctx, id).await?;
+    if operation.state == "running" {
+        // 所有セッションを失った実行は自動継承しない。外部の受付済み書込みを確認してから手動再開する。
+        lease.verify().await?;
+        store
+            .fail_owned_operation(ctx, id, operation.attempts, "execution_interrupted")
+            .await?;
+        return Ok(());
+    }
+    let ownership = AtomicI32::new(0);
+    let uncertain = AtomicBool::new(false);
+    match lease
+        .while_live(process_steps(
+            state, ctx, id, &lease, &ownership, &uncertain,
+        ))
+        .await
+    {
+        Ok(result) => {
+            if let Err(error) = &result {
+                let live = lease.verify().await.is_ok();
+                let code = if live && !uncertain.load(Ordering::SeqCst) {
+                    match error {
+                        ApiError::Forbidden => "authorization_revoked",
+                        ApiError::Conflict => "version_conflict",
+                        ApiError::NotFound => "reference_missing",
+                        _ => "synchronization_failed",
+                    }
+                } else {
+                    "execution_interrupted"
+                };
+                let attempt = ownership.load(Ordering::SeqCst);
+                if attempt > 0 {
+                    store.fail_owned_operation(ctx, id, attempt, code).await?;
+                }
+            }
+            result
+        }
+        Err(error) => {
+            let attempt = ownership.load(Ordering::SeqCst);
+            if attempt > 0 {
+                store
+                    .fail_owned_operation(ctx, id, attempt, "execution_interrupted")
+                    .await?;
+            }
+            Err(error.into())
+        }
+    }
+}
+
+async fn process_steps(
+    state: &AppState,
+    ctx: &AuthContext,
+    id: Uuid,
+    lease: &storage::directory::admin::DirectoryLease,
+    ownership: &AtomicI32,
+    uncertain: &AtomicBool,
+) -> Result<(), ApiError> {
+    let store = state.directory.admin();
+    let Some((request, processed, attempt)) = store.start_owned_operation(ctx, id).await? else {
+        return Ok(());
+    };
+    ownership.store(attempt, Ordering::SeqCst);
     if !authz::is_org_admin(state.authz.as_ref(), ctx, Consistency::HigherConsistency).await? {
         return Err(ApiError::Forbidden);
     }
-    let Some((request, processed)) = store.start_operation(ctx, id).await? else {
-        return Ok(());
-    };
+    tracing::info!(operation_id = %id, "directory operation started");
     if request.roles.is_empty() && request.mappings.is_empty() {
-        connection::sync(state, ctx, id).await?;
+        connection::sync(state, ctx, id, lease, uncertain).await?;
         return Ok(());
     }
     store
@@ -148,15 +195,17 @@ pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<()
     let role_container = if request.roles.is_empty() {
         None
     } else {
-        Some(
-            keycloak
-                .directory_role_container(ctx.tenant_id(), ctx.org())
-                .await
-                .map_err(|error| {
-                    tracing::error!(%error, "Keycloak role container unavailable");
-                    ApiError::ServiceUnavailable("管理ロールの保存先を確認してください".into())
-                })?,
-        )
+        lease.verify().await?;
+        uncertain.store(true, Ordering::SeqCst);
+        let container = keycloak
+            .directory_role_container(ctx.tenant_id(), ctx.org())
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "Keycloak role container unavailable");
+                ApiError::ServiceUnavailable("管理ロールの保存先を確認してください".into())
+            })?;
+        uncertain.store(false, Ordering::SeqCst);
+        Some(container)
     };
     let remaining: Vec<_> = request
         .roles
@@ -175,6 +224,8 @@ pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<()
         if current.map_or(0, |role| role.version) != edit.expected_version {
             return Err(ApiError::Conflict);
         }
+        lease.verify().await?;
+        uncertain.store(true, Ordering::SeqCst);
         let keycloak_id = keycloak
             .save_directory_role(
                 role_container
@@ -191,18 +242,21 @@ pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<()
         if previous != edit.parent_id.as_deref() {
             let subject = ctx.ns().role_member(&edit.id);
             if let Some(parent) = previous {
+                lease.verify().await?;
                 state
                     .authz
                     .delete_tuple(&subject, Relation::Member, &ctx.ns().role(parent))
                     .await?;
             }
             if let Some(parent) = &edit.parent_id {
+                lease.verify().await?;
                 state
                     .authz
                     .write_tuple(&subject, Relation::Member, &ctx.ns().role(parent))
                     .await?;
             }
         }
+        lease.verify().await?;
         store
             .save_role(
                 ctx,
@@ -213,6 +267,7 @@ pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<()
                     .map_err(|_| ApiError::BadRequest("変更件数が多すぎます".into()))?,
             )
             .await?;
+        uncertain.store(false, Ordering::SeqCst);
     }
     let offset = request.roles.len();
     for (index, mapping) in request
@@ -221,6 +276,7 @@ pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<()
         .enumerate()
         .skip(processed.saturating_sub(offset))
     {
+        lease.verify().await?;
         store
             .save_mapping(
                 ctx,

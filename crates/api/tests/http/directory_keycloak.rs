@@ -13,6 +13,8 @@ pub(super) struct KeycloakFixture {
     pub groups: Vec<Value>,
     pub writes: Vec<Value>,
     pub fail: bool,
+    pub fail_role_write: bool,
+    pub fail_component_write: bool,
 }
 impl KeycloakFixture {
     fn path(&self, parent: Option<&str>, name: &str) -> String {
@@ -76,6 +78,11 @@ async fn handle(
     }
     let root = "/admin/realms/shiki";
     let path = path.strip_prefix(root).unwrap_or(&path);
+    if (state.fail_role_write && method == "PUT" && path.starts_with("/groups/"))
+        || (state.fail_component_write && method != "GET" && path.starts_with("/components"))
+    {
+        return StatusCode::BAD_GATEWAY.into_response();
+    }
     if path.is_empty() {
         return Json(json!({"id":"realm-id"})).into_response();
     }

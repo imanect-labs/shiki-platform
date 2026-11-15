@@ -8,6 +8,7 @@ export type FolderPage = components["schemas"]["AdFolderPage"];
 export type Changes = components["schemas"]["DirectoryChangeSet"];
 export type RoleEdit = components["schemas"]["RoleEdit"];
 export type Mapping = components["schemas"]["GroupRoleMapping"];
+export type RetryInput = components["schemas"]["DirectoryRetryInput"];
 export type Operation = components["schemas"]["DirectoryOperation"];
 export type Plan = components["schemas"]["DirectoryPlan"];
 export type Info = components["schemas"]["DirectoryInfo"];

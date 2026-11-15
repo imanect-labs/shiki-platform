@@ -3,6 +3,8 @@ use crate::{db_tenant::begin_tenant_tx, error::StorageError};
 use authz::AuthContext;
 use std::collections::{BTreeMap, BTreeSet};
 
+type NameSlots = BTreeMap<(Option<String>, String), String>;
+
 impl DirectoryAdminStore {
     /// 関連IDと祖先だけをまとめて取得し、外部システムへ書く前に全体を検証する。
     pub async fn validate(
@@ -34,11 +36,8 @@ impl DirectoryAdminStore {
                 "変更の影響範囲は20,000ロール以内にしてください".into(),
             ));
         }
-        let slots: BTreeMap<_, _> = known
-            .iter()
-            .filter(|r| edits.contains_key(&r.id))
-            .map(|r| ((r.parent_id.clone(), r.label.to_lowercase()), r.id.clone()))
-            .collect();
+        let labels = name_keys(&mut tx, &known, changes).await?;
+        let slots = existing_slots(&known, &edits, &labels)?;
         let mut graph: BTreeMap<String, ManagedRole> =
             known.into_iter().map(|r| (r.id.clone(), r)).collect();
         for role in &changes.roles {
@@ -129,16 +128,37 @@ impl DirectoryAdminStore {
         tx.commit().await?;
         Ok(DirectoryChangeSet {
             idempotency_key: changes.idempotency_key,
-            roles: order_edits(&graph, &edits, &slots)?,
+            roles: order_edits(&graph, &edits, &slots, &labels)?,
             mappings: changes.mappings.clone(),
         })
     }
+}
+
+fn existing_slots(
+    known: &[ManagedRole],
+    edits: &BTreeMap<String, RoleEdit>,
+    labels: &BTreeMap<String, String>,
+) -> Result<NameSlots, StorageError> {
+    known
+        .iter()
+        .filter(|r| edits.contains_key(&r.id))
+        .map(|r| {
+            Ok((
+                (
+                    r.parent_id.clone(),
+                    normalized_label(labels, &r.label)?.to_string(),
+                ),
+                r.id.clone(),
+            ))
+        })
+        .collect()
 }
 
 fn order_edits(
     graph: &BTreeMap<String, ManagedRole>,
     edits: &BTreeMap<String, RoleEdit>,
     slots: &BTreeMap<(Option<String>, String), String>,
+    labels: &BTreeMap<String, String>,
 ) -> Result<Vec<RoleEdit>, StorageError> {
     let mut done = BTreeMap::new();
     let mut ordered = Vec::new();
@@ -152,7 +172,7 @@ fn order_edits(
             &mut ordered,
         )?;
     }
-    order_by_slots(ordered, graph, slots)
+    order_by_slots(ordered, graph, slots, labels)
 }
 
 fn visit(
@@ -195,6 +215,7 @@ fn order_by_slots(
     roles: Vec<RoleEdit>,
     graph: &BTreeMap<String, ManagedRole>,
     slots: &BTreeMap<(Option<String>, String), String>,
+    labels: &BTreeMap<String, String>,
 ) -> Result<Vec<RoleEdit>, StorageError> {
     let edits: BTreeMap<_, _> = roles.into_iter().map(|r| (r.id.clone(), r)).collect();
     let mut dependencies: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -208,7 +229,10 @@ fn order_by_slots(
             }
             parent = graph.get(id).and_then(|r| r.parent_id.as_deref());
         }
-        if let Some(occupant) = slots.get(&(role.parent_id.clone(), role.label.to_lowercase())) {
+        if let Some(occupant) = slots.get(&(
+            role.parent_id.clone(),
+            normalized_label(labels, &role.label)?.to_string(),
+        )) {
             if occupant != &role.id {
                 deps.insert(occupant.clone());
             }
@@ -278,7 +302,6 @@ fn index_changes(
     }
     let mut seed = BTreeSet::new();
     let mut edits = BTreeMap::new();
-    let mut names = BTreeSet::new();
     for role in &changes.roles {
         authz::validate_local_id(&role.id)
             .map_err(|_| StorageError::Invalid("ロールIDが不正です".into()))?;
@@ -292,9 +315,7 @@ fn index_changes(
                 "ロールID・名前・版を確認してください".into(),
             ));
         }
-        if edits.insert(role.id.clone(), role.clone()).is_some()
-            || !names.insert((role.parent_id.clone(), role.label.to_lowercase()))
-        {
+        if edits.insert(role.id.clone(), role.clone()).is_some() {
             return Err(StorageError::Conflict);
         }
         seed.insert(role.id.clone());
@@ -330,4 +351,41 @@ fn index_changes(
         edits,
         groups,
     })
+}
+
+/// DBの照合規則と同じ値を、要求内の重複と名前の解放順に共用する。
+async fn name_keys(
+    connection: &mut sqlx::PgConnection,
+    known: &[ManagedRole],
+    changes: &DirectoryChangeSet,
+) -> Result<BTreeMap<String, String>, StorageError> {
+    let names: Vec<_> = known
+        .iter()
+        .map(|r| &r.label)
+        .chain(changes.roles.iter().map(|r| &r.label))
+        .collect();
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT label, lower(label) FROM unnest($1::text[]) AS labels(label)")
+            .bind(names)
+            .fetch_all(connection)
+            .await?;
+    let keys: BTreeMap<_, _> = rows.into_iter().collect();
+    let mut slots = BTreeSet::new();
+    for role in &changes.roles {
+        if !slots.insert((
+            role.parent_id.clone(),
+            normalized_label(&keys, &role.label)?.to_string(),
+        )) {
+            return Err(StorageError::Conflict);
+        }
+    }
+    Ok(keys)
+}
+fn normalized_label<'a>(
+    keys: &'a BTreeMap<String, String>,
+    label: &str,
+) -> Result<&'a str, StorageError> {
+    keys.get(label)
+        .map(String::as_str)
+        .ok_or_else(|| StorageError::Invalid("ロール名の照合に失敗しました".into()))
 }

@@ -43,7 +43,7 @@ impl DirectoryAdminStore {
         let json =
             serde_json::to_value(changes).map_err(|e| StorageError::Invalid(e.to_string()))?;
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM directory_admin_operation WHERE tenant_id = $1 AND org = $2 AND state <> 'succeeded')").bind(ctx.tenant_id()).bind(ctx.org()).fetch_one(&mut *tx).await?;
+        let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM directory_admin_operation WHERE tenant_id = $1 AND org = $2 AND state <> 'succeeded') OR EXISTS (SELECT 1 FROM directory_connection_guard WHERE tenant_id = $1 AND org = $2 AND NOT verified)").bind(ctx.tenant_id()).bind(ctx.org()).fetch_one(&mut *tx).await?;
         if active {
             return Err(StorageError::Conflict);
         }
@@ -179,12 +179,13 @@ impl DirectoryAdminStore {
         ctx: &AuthContext,
         id: Uuid,
         trace: Option<&str>,
+        recovery_confirmed: bool,
     ) -> Result<DirectoryOperation, StorageError> {
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
         let updated = sqlx::query(
             "UPDATE directory_admin_operation SET state = 'pending', actor_id = $4, trace_id = $5, error_code = NULL, updated_at = now() \
-             WHERE tenant_id = $1 AND org = $2 AND operation_id = $3 AND state = 'failed'",
-        ).bind(ctx.tenant_id()).bind(ctx.org()).bind(id).bind(&ctx.principal().id).bind(trace).execute(&mut *tx).await?;
+             WHERE tenant_id = $1 AND org = $2 AND operation_id = $3 AND state = 'failed' AND (error_code IS DISTINCT FROM 'execution_interrupted' OR $6) AND NOT EXISTS (SELECT 1 FROM directory_connection_guard WHERE tenant_id = $1 AND org = $2 AND NOT verified)",
+        ).bind(ctx.tenant_id()).bind(ctx.org()).bind(id).bind(&ctx.principal().id).bind(trace).bind(recovery_confirmed).execute(&mut *tx).await?;
         if updated.rows_affected() != 1 {
             return Err(StorageError::Conflict);
         }
@@ -197,7 +198,7 @@ impl DirectoryAdminStore {
                 object_id: &id.to_string(),
                 decision: Decision::Allow,
                 trace_id: trace,
-                metadata: serde_json::json!({ "retry": true }),
+                metadata: serde_json::json!({ "retry": true, "recovery_confirmed": recovery_confirmed }),
             },
             Chain::Yes,
         )

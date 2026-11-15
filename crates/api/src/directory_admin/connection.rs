@@ -49,14 +49,86 @@ pub fn keycloak_error(_error: KeycloakAdminError) -> ApiError {
     ApiError::ServiceUnavailable("Keycloak / ADの設定・接続・証明書を確認してください".into())
 }
 
+/// 開始記録を保持したまま外部設定を変更する。不確定な結果は確認済み復旧まで隔離する。
+pub async fn save(
+    state: &AppState,
+    ctx: &AuthContext,
+    input: &LdapConnectionInput,
+    trace: Option<&str>,
+) -> Result<crate::keycloak_admin::ldap::LdapConnectionStatus, ApiError> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let store = state.directory.admin();
+    let lease = store.lease(ctx).await?.ok_or(ApiError::Conflict)?;
+    if store.has_active_operation(ctx).await? {
+        return Err(ApiError::Conflict);
+    }
+    if store.connection_recovery_required(ctx).await? && !input.recovery_confirmed {
+        return Err(ApiError::invalid_input("前回の接続設定の保存結果が不明です。運用担当者が旧処理の停止とKeycloakの処理完了を確認してから、復旧確認にチェックしてください。"));
+    }
+    let attempt = store
+        .begin_connection_change(ctx, &lease, input.recovery_confirmed, trace)
+        .await?;
+    let mutating = AtomicBool::new(false);
+    let result = lease.while_live(async {
+        let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth).map_err(keycloak_error)?;
+        let previous = kc.ldap_connection(ctx).await.map_err(keycloak_error)?;
+        let changed = previous.connection_url.as_deref() != Some(input.connection_url.as_str())
+            || previous.users_dn.as_deref() != Some(input.users_dn.as_str())
+            || previous.groups_dn.as_deref() != Some(input.groups_dn.as_str())
+            || previous.preserve_group_inheritance != input.preserve_group_inheritance;
+        if changed && store.has_unfinished_mappings(ctx).await? {
+            return Err(ApiError::invalid_input("停止中の反映を再実行して完了してから、接続先・検索DN・階層設定を変更してください。バインドDNとパスワードは変更できます。"));
+        }
+        // 間違ったcredentialで現在の有効なスナップショットを無効化しない。
+        kc.test_ldap(ctx, input).await.map_err(keycloak_error)?;
+        lease.verify().await?;
+        if changed {
+            store.configuration_event(ctx, "snapshot_invalidated", trace).await?;
+        }
+        mutating.store(true, Ordering::SeqCst);
+        let status = kc.save_ldap(ctx, input).await.map_err(keycloak_error)?;
+        lease.verify().await?;
+        Ok::<_, ApiError>(status)
+    }).await;
+    let result = result
+        .map_err(ApiError::from)
+        .and_then(std::convert::identity);
+    // エラー前に書込みを送っていた場合や接続断の場合は開始記録を残す。
+    if result.is_ok() || (!mutating.load(Ordering::SeqCst) && lease.verify().await.is_ok()) {
+        store.finish_connection_change(ctx, attempt).await?;
+    }
+    store
+        .configuration_event(
+            ctx,
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            trace,
+        )
+        .await?;
+    result
+}
+
 /// 専用同期先のみを辿り、完全に取得できたスナップショットだけを確定する。
 pub async fn sync(
     state: &AppState,
     ctx: &AuthContext,
     operation: uuid::Uuid,
+    lease: &storage::directory::admin::DirectoryLease,
+    uncertain: &std::sync::atomic::AtomicBool,
 ) -> Result<usize, ApiError> {
     let store = state.directory.admin();
     let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth).map_err(keycloak_error)?;
+    lease.verify().await?;
+    let status = kc.ldap_connection(ctx).await.map_err(keycloak_error)?;
+    if !status.configured || !status.enabled {
+        return Err(super::input_error(
+            "AD接続を設定してから同期してください".into(),
+        ));
+    }
+    uncertain.store(true, std::sync::atomic::Ordering::SeqCst);
     kc.sync_ldap_groups(ctx).await.map_err(keycloak_error)?;
     let root = kc
         .find_group_path(&["tenants", ctx.tenant_id(), ctx.org(), "ad"])
@@ -147,7 +219,9 @@ pub async fn sync(
             }
         }
     }
+    lease.verify().await?;
     store.replace_groups(ctx, &groups, Some(operation)).await?;
+    uncertain.store(false, std::sync::atomic::Ordering::SeqCst);
     Ok(groups.len())
 }
 
@@ -168,6 +242,7 @@ mod tests {
             bind_dn: "CN=reader,DC=example".into(),
             bind_password: None,
             preserve_group_inheritance: false,
+            recovery_confirmed: false,
         };
         assert!(validate(&config, &input).is_ok());
         for url in [
