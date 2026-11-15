@@ -203,6 +203,7 @@ export function AutoDialog({
                   group={active}
                   changes={plan.changes}
                   nodes={plan.nodes}
+                  beforeRoles={plan.before_roles}
                 />
               </>
             ) : (

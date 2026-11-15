@@ -13,6 +13,7 @@ import { IconInput } from "@/components/ui/icon-input";
 import {
   request,
   params,
+  type Role,
   type RoleEdit,
   type Changes,
   type Group,
@@ -205,10 +206,12 @@ export function MappingDiff({
   group,
   changes,
   nodes,
+  beforeRoles,
 }: {
   group?: Group;
   changes: Changes;
   nodes: RoleEdit[];
+  beforeRoles: Role[];
 }) {
   const [labelError, setLabelError] = React.useState(false);
   const [labels, setLabels] = React.useState<Record<string, string>>({});
@@ -216,9 +219,16 @@ export function MappingDiff({
   const ids = [
     ...new Set([...(group?.role_ids ?? []), ...(mapping?.role_ids ?? [])]),
   ];
+  const savedLabels = new Map(
+    beforeRoles.map((r) => [r.id, r.path_labels.join(" / ") || r.label]),
+  );
   const nodeIds = new Set(nodes.map((r) => r.id));
   const key = ids
-    .filter((id) => !nodeIds.has(id))
+    .filter(
+      (id) =>
+        !savedLabels.has(id) &&
+        (!nodeIds.has(id) || group?.role_ids.includes(id)),
+    )
     .sort()
     .join(",");
   React.useEffect(() => {
@@ -283,7 +293,7 @@ export function MappingDiff({
               {before.length ? (
                 before.map((id) => (
                   <li key={id} className="break-words">
-                    {name(id)}
+                    {savedLabels.get(id) ?? labels[id] ?? id}
                   </li>
                 ))
               ) : (

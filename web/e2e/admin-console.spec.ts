@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 import { loginAs, loginViaKeycloak } from "./helpers";
 
@@ -463,4 +463,310 @@ test("旧AD形式の更新では対応付けの解除を確認してから保存
     dialog.getByText("連携形式の更新が必要です", { exact: true }),
   ).toHaveCount(0);
   expect(saved).toBe(true);
+});
+
+// 異常応答と応答順序は、ブラウザの通信境界で再現する。保存操作は行わない。
+const reviewPrefix = "shiki_ui_test_";
+const reviewRole = {
+  id: `${reviewPrefix}sales`,
+  label: "営業",
+  parent_id: null,
+  version: 1,
+  path_ids: [`${reviewPrefix}sales`],
+  path_labels: ["営業"],
+  child_count: 0,
+};
+const reviewGroup = {
+  id: "source-sales",
+  name: "AD営業",
+  role_ids: [reviewRole.id],
+  mapping_version: 1,
+  ou_path: [],
+  parent_ids: [],
+  claim_path: "/test-guid/sales",
+  distinguished_name: null,
+};
+async function directoryUiFixture(page: Page) {
+  await page.route("**/api/org-admin/directory", (route) =>
+    route.fulfill({
+      json: {
+        role_id_prefix: reviewPrefix,
+        keycloak_available: true,
+        ldap_allowed_hosts: [],
+      },
+    }),
+  );
+  await page.route("**/api/org-admin/directory/operations", (route) =>
+    route.fulfill({ json: [] }),
+  );
+  await page.route("**/api/org-admin/directory/folders?**", (route) =>
+    route.fulfill({ json: { items: [], next_cursor: null } }),
+  );
+  await page.route("**/api/org-admin/directory/groups?**", (route) =>
+    route.fulfill({
+      json: { items: [reviewGroup], total: 1, next_cursor: null },
+    }),
+  );
+  await page.route("**/api/org-admin/directory/roles?**", (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    return route.fulfill({
+      json: {
+        items: query.get("parent") ? [] : [reviewRole],
+        total: query.get("parent") ? 0 : 1,
+        next_cursor: null,
+      },
+    });
+  });
+}
+
+test("保存済み末端ロールに追加した未反映の子を階層から開ける", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await directoryUiFixture(page);
+  await page.goto("/admin/roles");
+  await expect(
+    page.getByRole("button", { name: "営業の配下を開く", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "ロールを作成", exact: true }).click();
+  await page.getByLabel("ロール名", { exact: true }).fill("営業の子");
+  await page.getByRole("button", { name: "親を選ぶ", exact: true }).click();
+  await page
+    .getByRole("radio", { name: "営業を親にする", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "編集内容に追加", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "営業の配下を開く", exact: true })
+    .click();
+  await expect(
+    page.getByText("営業の子", { exact: true }).first(),
+  ).toBeVisible();
+});
+
+test.describe("対応付けの比較画像", () => {
+  test.use({ deviceScaleFactor: 2 });
+  test("対応付けの現在欄は改名前、反映後欄は改名後を表示する", async ({
+    page,
+  }) => {
+    await loginViaKeycloak(page);
+    await directoryUiFixture(page);
+    await page.route("**/api/org-admin/directory/preview", async (route) => {
+      const changes = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          changes,
+          nodes: changes.roles,
+          before_roles: [reviewRole],
+          sources: [reviewGroup],
+          group_count: 1,
+          existing_roles: 0,
+        },
+      });
+    });
+    await page.goto("/admin/directory");
+    await page.getByRole("button", { name: "AD営業", exact: false }).click();
+    await page.getByRole("button", { name: "営業を編集", exact: true }).click();
+    await page.getByLabel("ロール名", { exact: true }).fill("法人営業");
+    await page
+      .getByRole("button", { name: "編集内容に追加", exact: true })
+      .click();
+    await page
+      .getByRole("checkbox", { name: "法人営業を対応付ける", exact: true })
+      .uncheck();
+    await page
+      .getByRole("checkbox", { name: "法人営業を対応付ける", exact: true })
+      .check();
+    await page.getByRole("button", { name: "変更を確認", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByText("現在", { exact: true }).locator(".."),
+    ).toContainText("営業");
+    await expect(
+      dialog.getByText("現在", { exact: true }).locator(".."),
+    ).not.toContainText("法人営業");
+    await expect(
+      dialog.getByText("反映後", { exact: true }).locator(".."),
+    ).toContainText("法人営業");
+    await page.screenshot({
+      path: test.info().outputPath("mapping-light.png"),
+      animations: "disabled",
+    });
+    await page.evaluate(() => document.documentElement.classList.add("dark"));
+    await page.waitForTimeout(400);
+    await page.screenshot({
+      path: test.info().outputPath("mapping-dark.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 768, height: 900 });
+    await page.screenshot({
+      path: test.info().outputPath("mapping-narrow.png"),
+      animations: "disabled",
+    });
+  });
+});
+
+test("再読込で古いグループの選択と対応を解除する", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await directoryUiFixture(page);
+  await page.goto("/admin/directory");
+  await page.getByRole("button", { name: "AD営業", exact: false }).click();
+  await expect(
+    page.getByRole("checkbox", { name: "営業を対応付ける", exact: true }),
+  ).toBeChecked();
+  await page.getByRole("button", { name: "再読込", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "ADグループを選択", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", { name: "営業を対応付ける", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("OUの取得に失敗したら移動前の子OUを操作できない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await directoryUiFixture(page);
+  await page.route("**/api/org-admin/directory/folders?**", (route) => {
+    const parent = JSON.parse(
+      new URL(route.request().url()).searchParams.get("parent") ?? "[]",
+    );
+    if (parent[0] === "B")
+      return route.fulfill({ status: 503, json: { message: "Bの取得失敗" } });
+    return route.fulfill({
+      json: {
+        items: (parent.length ? ["Aの子"] : ["A", "B"]).map((name) => ({
+          name,
+          group_count: 1,
+        })),
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto("/admin/directory");
+  await page.getByRole("button", { name: "A 1", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Aの子 1", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "ADのOU階層" })
+    .getByRole("button", { name: "すべて", exact: true })
+    .click();
+  await page.getByRole("button", { name: "B 1", exact: true }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Bの取得失敗" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Aの子 1", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("古い操作一覧の応答で受付済みの進捗を消さない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await directoryUiFixture(page);
+  let calls = 0;
+  let polling = 0;
+  let release = () => {};
+  const delayed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/org-admin/directory/operations", async (route) => {
+    calls += 1;
+    if (calls > 1) await delayed;
+    await route.fulfill({ json: [] });
+  });
+  const operation = {
+    id: "10000000-0000-4000-8000-000000000001",
+    state: "running",
+    processed: 0,
+    total: 1,
+    attempts: 1,
+    error_code: null,
+  };
+  await page.route("**/api/org-admin/directory/sync", (route) =>
+    route.fulfill({ json: operation }),
+  );
+  await page.route(
+    `**/api/org-admin/directory/operations/${operation.id}`,
+    (route) => {
+      polling += 1;
+      return route.fulfill({ json: operation });
+    },
+  );
+  await page.goto("/admin/directory");
+  await expect(
+    page.getByRole("button", { name: "ADを同期", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "再読込", exact: true }).click();
+  await expect.poll(() => calls).toBe(2);
+  await page.getByRole("button", { name: "ADを同期", exact: true }).click();
+  await expect(page.getByText("サーバで反映中", { exact: true })).toBeVisible();
+  release();
+  await expect.poll(() => polling).toBeGreaterThan(0);
+  await expect(page.getByText("サーバで反映中", { exact: true })).toBeVisible();
+});
+
+test("既存の子の親変更を未反映の階層一覧にも反映する", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await directoryUiFixture(page);
+  const a = {
+    ...reviewRole,
+    id: `${reviewPrefix}a`,
+    label: "親A",
+    path_ids: [`${reviewPrefix}a`],
+    path_labels: ["親A"],
+    child_count: 1,
+  };
+  const b = {
+    ...reviewRole,
+    id: `${reviewPrefix}b`,
+    label: "親B",
+    path_ids: [`${reviewPrefix}b`],
+    path_labels: ["親B"],
+  };
+  const c = {
+    ...reviewRole,
+    id: `${reviewPrefix}c`,
+    label: "子C",
+    parent_id: a.id,
+    path_ids: [a.id, `${reviewPrefix}c`],
+    path_labels: ["親A", "子C"],
+  };
+  await page.route("**/api/org-admin/directory/roles?**", (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    const ids = query.get("ids")?.split(",");
+    const items = ids
+      ? [a, b, c].filter((r) => ids.includes(r.id))
+      : query.get("parent") === a.id
+        ? [c]
+        : query.get("parent") === b.id
+          ? []
+          : [a, b];
+    return route.fulfill({
+      json: { items, total: items.length, next_cursor: null },
+    });
+  });
+  await page.goto("/admin/roles");
+  await page
+    .getByRole("button", { name: "親Aの配下を開く", exact: true })
+    .click();
+  await page.getByRole("button", { name: "子Cを編集", exact: true }).click();
+  await page.getByRole("button", { name: "親を選ぶ", exact: true }).click();
+  await page.getByRole("radio", { name: "親Bを親にする", exact: true }).click();
+  await page
+    .getByRole("button", { name: "編集内容に追加", exact: true })
+    .click();
+  await page
+    .getByRole("navigation", { name: "ロール階層" })
+    .getByRole("button", { name: "最上位", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "親Aの配下を開く", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "親Bの配下を開く", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "子Cを編集", exact: true }),
+  ).toBeVisible();
 });

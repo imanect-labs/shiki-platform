@@ -59,6 +59,9 @@ public class GuidGroupMapper extends GroupLDAPStorageMapper {
     }
     @Override public UserModel proxy(LDAPObject ldapUser, UserModel delegate, RealmModel realm) {
         return new LDAPGroupMappingsUserDelegate(realm, delegate, ldapUser) {
+            @Override public boolean isMemberOf(GroupModel group) {
+                return isGroupInGroupPath(realm, group) ? super.isMemberOf(group) : delegate.isMemberOf(group);
+            }
             @Override public void joinGroup(GroupModel group) {
                 if (isGroupInGroupPath(realm, group)) throw readOnly();
                 delegate.joinGroup(group);

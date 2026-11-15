@@ -47,6 +47,11 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
   >();
   const [operation, setOperation] = React.useState<Operation>();
   const [history, setHistory] = React.useState<Operation[]>([]);
+  const operationRevision = React.useRef(0);
+  const updateOperation = React.useCallback((next?: Operation) => {
+    operationRevision.current += 1;
+    setOperation(next);
+  }, []);
   const [busy, setBusy] = React.useState(false);
   const [recovering, setRecovering] = React.useState(false);
   const [recoveryConfirmed, setRecoveryConfirmed] = React.useState(false);
@@ -58,7 +63,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
     setBusy(true);
     setError("");
     try {
-      setOperation(
+      updateOperation(
         await post<Operation>(`/operations/${operation.id}/retry`, {
           recovery_confirmed: confirmed,
         } satisfies RetryInput),
@@ -75,20 +80,24 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
   const disabled = busy || pending || !info?.keycloak_available;
   React.useEffect(() => {
     const controller = new AbortController();
+    const started = operationRevision.current;
     Promise.all([
       request<Info>("", { signal: controller.signal }),
       request<Operation[]>("/operations", { signal: controller.signal }),
     ])
       .then(([info, operations]) => {
+        if (controller.signal.aborted) return;
         setInfo(info);
-        setHistory(operations);
-        setOperation(operations.find((op) => op.state !== "succeeded"));
+        if (started === operationRevision.current) {
+          setHistory(operations);
+          updateOperation(operations.find((op) => op.state !== "succeeded"));
+        }
       })
       .catch((e) => {
         if (!controller.signal.aborted) setError(e.message);
       });
     return () => controller.abort();
-  }, [revision]);
+  }, [revision, updateOperation]);
   React.useEffect(() => {
     if (
       !operation ||
@@ -102,7 +111,8 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
         signal: controller.signal,
       })
         .then((next) => {
-          setOperation(next);
+          if (controller.signal.aborted) return;
+          updateOperation(next);
           setError("");
           if (next.state === "succeeded") {
             setChanges(newChanges());
@@ -126,7 +136,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
       clearInterval(timer);
       controller.abort();
     };
-  }, [operation]);
+  }, [operation, updateOperation]);
   const mutate = (next: Changes) => {
     setChanges({ ...next, idempotency_key: crypto.randomUUID() });
     setError("");
@@ -215,7 +225,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
     setError("");
     try {
       const op = await post<Operation>("/apply", changes);
-      setOperation(op);
+      updateOperation(op);
       setDialog(undefined);
       if (op.state === "succeeded") {
         setChanges(newChanges());
@@ -237,7 +247,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
       const op = await post<Operation>("/sync", {
         idempotency_key: crypto.randomUUID(),
       });
-      setOperation(op);
+      updateOperation(op);
     } catch (e) {
       setError((e as Error).message);
       setRevision((old) => old + 1);
@@ -303,7 +313,11 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
             size="sm"
             variant="ghost"
             disabled={busy || dirty}
-            onClick={() => setRevision((old) => old + 1)}
+            onClick={() => {
+              setSelected(undefined);
+              setSources({});
+              setRevision((old) => old + 1);
+            }}
           >
             <RefreshCw aria-hidden />
             再読込
@@ -607,6 +621,7 @@ export function DirectoryView({ rolesOnly = false }: { rolesOnly?: boolean }) {
                   group={reviewGroup}
                   changes={changes}
                   nodes={nodes}
+                  beforeRoles={beforeRoles}
                 />
               </section>
             </div>

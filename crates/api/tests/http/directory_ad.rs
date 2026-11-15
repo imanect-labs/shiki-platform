@@ -243,3 +243,29 @@ async fn old_identity_format_requires_confirmation_and_does_not_transfer_binding
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn role_container_rejects_ldap_mappers_below_a_provider() {
+    let Some((state, ctx, fixture)) = fixture().await else {
+        return;
+    };
+    let sdk =
+        api::keycloak_admin::KeycloakAdmin::from_config(&state.http, &state.config.auth).unwrap();
+    let path = format!("/__shiki_roles/{}/{}", ctx.tenant_id(), ctx.org());
+    {
+        let mut kc = fixture.lock().unwrap();
+        kc.components.push(json!({"id":"external-ldap", "parentId":"realm-id", "providerId":"ldap", "providerType":"org.keycloak.storage.UserStorageProvider"}));
+        kc.components.push(json!({"id":"external-groups", "parentId":"external-ldap", "providerId":"group-ldap-mapper", "providerType":"org.keycloak.storage.ldap.mappers.LDAPStorageMapper", "name":"external-groups", "config":{"groups.path":[path]}}));
+    }
+    assert!(sdk
+        .directory_role_container(ctx.tenant_id(), ctx.org())
+        .await
+        .is_err());
+    assert!(fixture.lock().unwrap().groups.is_empty());
+    fixture.lock().unwrap().components.last_mut().unwrap()["config"]["groups.path"] =
+        json!(["/unrelated"]);
+    assert!(sdk
+        .directory_role_container(ctx.tenant_id(), ctx.org())
+        .await
+        .is_ok());
+}

@@ -375,12 +375,25 @@ async fn spawn_mock(st: St) -> String {
         )
         .route(
             "/admin/realms/shiki/components",
-            get(|| async {
-                Json(json!([
-                    { "name": "ad-groups", "config": { "groups.path": ["/acme/eng"] } },
-                    { "name": "other", "config": { "groups.path": ["/acme2"] } },
-                ]))
-            }),
+            get(
+                |Query(query): Query<std::collections::HashMap<String, String>>| async move {
+                    if query
+                        .get("type")
+                        .is_some_and(|s| s == "org.keycloak.storage.UserStorageProvider")
+                    {
+                        Json(json!([{ "id":"ldap-provider", "providerId":"ldap" }]))
+                    } else {
+                        assert_eq!(
+                            query.get("parent").map(String::as_str),
+                            Some("ldap-provider")
+                        );
+                        Json(json!([
+                            { "name": "ad-groups", "config": { "groups.path": ["/acme/eng"] } },
+                            { "name": "other", "config": { "groups.path": ["/acme2"] } },
+                        ]))
+                    }
+                },
+            ),
         )
         .route("/admin/realms/shiki/default-groups", empty());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

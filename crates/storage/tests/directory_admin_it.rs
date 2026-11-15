@@ -818,3 +818,109 @@ async fn deleting_tenant_cannot_acquire_directory_lease_after_deletion_lock_is_l
         ctx.tenant_id()
     );
 }
+
+#[tokio::test]
+async fn group_totals_follow_ou_filter_and_global_search() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let store = directory.admin();
+    store
+        .replace_groups(
+            &ctx,
+            &[
+                group(&ctx, "a", &["East"]),
+                group(&ctx, "b", &["East"]),
+                group(&ctx, "c", &["West"]),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    let local = store
+        .groups(&ctx, "", None, 1, &["East".into()])
+        .await
+        .unwrap();
+    assert_eq!(local.total, 2);
+    assert_eq!(local.items.len(), 1);
+    assert!(local.next_cursor.is_some());
+    let global = store
+        .groups(&ctx, "c", None, 40, &["East".into()])
+        .await
+        .unwrap();
+    assert_eq!(global.total, 1);
+    assert_eq!(global.items[0].id, "c");
+}
+
+#[tokio::test]
+async fn login_upsert_waiting_on_rename_keeps_the_committed_display_name() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let mut role = edit(&ctx, "sales", None);
+    role.label = "営業".into();
+    apply(
+        &directory.admin(),
+        &ctx,
+        &DirectoryChangeSet {
+            idempotency_key: Uuid::new_v4(),
+            roles: vec![role.clone()],
+            mappings: vec![],
+        },
+    )
+    .await;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let owner = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .unwrap();
+    let mut rename = owner.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE directory_role SET display_name = '法人営業' WHERE tenant_id = $1 AND role_id = $2",
+    )
+    .bind(ctx.tenant_id())
+    .bind(&role.id)
+    .execute(&mut *rename)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE directory_managed_role SET label = '法人営業' WHERE tenant_id = $1 AND org = $2 AND role_id = $3").bind(ctx.tenant_id()).bind(ctx.org()).bind(&role.id).execute(&mut *rename).await.unwrap();
+    let name = format!("upsert-{}", Uuid::new_v4().simple());
+    let options = url
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .unwrap()
+        .application_name(&name);
+    let waiter = DirectoryStore::new(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap(),
+    );
+    let (tenant, org, id) = (
+        ctx.tenant_id().to_string(),
+        ctx.org().to_string(),
+        role.id.clone(),
+    );
+    let task =
+        tokio::spawn(async move { waiter.upsert_role(&id, &tenant, &org, "stale-claim").await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock')").bind(&name).fetch_one(&owner).await.unwrap();
+            if waiting { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    rename.commit().await.unwrap();
+    task.await.unwrap().unwrap();
+    let found = directory.search_roles(&ctx, "", None, 40).await.unwrap();
+    assert_eq!(
+        found
+            .items
+            .iter()
+            .find(|r| r.id == role.id)
+            .unwrap()
+            .display_name,
+        "法人営業"
+    );
+}

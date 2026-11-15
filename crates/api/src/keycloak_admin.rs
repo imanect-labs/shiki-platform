@@ -138,11 +138,10 @@ impl<'a> KeycloakAdmin<'a> {
         &self,
         username: &str,
     ) -> Result<Option<KcUser>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .get(format!("{}/users", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[("username", username), ("exact", "true")])
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -180,7 +179,6 @@ impl<'a> KeycloakAdmin<'a> {
                 .resolve_existing_admin(existing, tenant_id, username, temp_password)
                 .await;
         }
-        let token = self.admin_token().await?;
         let body = json!({
             "username": username,
             "email": email,
@@ -194,7 +192,7 @@ impl<'a> KeycloakAdmin<'a> {
         let resp = self
             .http
             .post(format!("{}/users", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&body)
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -264,11 +262,10 @@ impl<'a> KeycloakAdmin<'a> {
         user_id: &str,
         temp_password: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .put(format!("{}/users/{}/reset-password", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&json!({ "type": "password", "value": temp_password, "temporary": true }))
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -285,7 +282,6 @@ impl<'a> KeycloakAdmin<'a> {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<KcUser>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         // Keycloak の属性検索（`q=key:value`）。ページングして全件集める。
         let mut out = Vec::new();
         let mut first: u32 = 0;
@@ -294,7 +290,7 @@ impl<'a> KeycloakAdmin<'a> {
             let resp = self
                 .http
                 .get(format!("{}/users", self.base))
-                .bearer_auth(&token)
+                .bearer_auth(self.admin_token().await?)
                 .query(&[
                     ("q", format!("tenant:{tenant_id}").as_str()),
                     ("first", first.to_string().as_str()),
@@ -327,11 +323,10 @@ impl<'a> KeycloakAdmin<'a> {
         user_id: &str,
         tenant_id: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .get(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
@@ -356,7 +351,7 @@ impl<'a> KeycloakAdmin<'a> {
         let resp = self
             .http
             .put(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&user)
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -370,11 +365,10 @@ impl<'a> KeycloakAdmin<'a> {
 
     /// ユーザーを削除する（不在 404 は成功に倒す＝冪等）。
     pub async fn delete_user(&self, user_id: &str) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .delete(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await

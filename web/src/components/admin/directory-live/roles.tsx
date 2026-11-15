@@ -53,6 +53,7 @@ export function Roles({
     const controller = new AbortController();
     setLoading(true);
     setError("");
+    setPage(undefined);
     const timer = setTimeout(
       () => {
         request<RolePage>(
@@ -118,13 +119,18 @@ export function Roles({
     setQuery("");
   };
   const draftIndex = new Map(drafts?.map((r) => [r.id, r]));
-  const draftChildren = new Map<string, number>();
+  const childDelta = new Map<string, number>();
   for (const row of drafts ?? []) {
-    if (row.parent_id)
-      draftChildren.set(
-        row.parent_id,
-        (draftChildren.get(row.parent_id) ?? 0) + 1,
+    const previous = known[row.id];
+    if (row.expected_version !== 0 && !previous) continue;
+    if ((previous?.parent_id ?? null) === (row.parent_id ?? null)) continue;
+    if (previous?.parent_id)
+      childDelta.set(
+        previous.parent_id,
+        (childDelta.get(previous.parent_id) ?? 0) - 1,
       );
+    if (row.parent_id)
+      childDelta.set(row.parent_id, (childDelta.get(row.parent_id) ?? 0) + 1);
   }
   const draftView = (row: RoleEdit): Role => {
     const ids: string[] = [];
@@ -151,13 +157,15 @@ export function Roles({
       version: row.expected_version,
       path_ids: ids,
       path_labels: labels,
-      child_count: draftChildren.get(row.id) ?? 0,
+      child_count: Math.max(
+        0,
+        (known[row.id]?.child_count ?? 0) + (childDelta.get(row.id) ?? 0),
+      ),
     };
   };
   const pendingRows =
     drafts?.filter(
       (r) =>
-        !known[r.id] &&
         r.id !== exclude &&
         (!exclude || !draftView(r).path_ids.includes(exclude)) &&
         (query
@@ -165,12 +173,21 @@ export function Roles({
           : (r.parent_id ?? null) === (parent?.id ?? null)),
     ) ?? [];
   const visible =
-    page?.items.filter(
-      (role) =>
-        (!picker || (role.version > 0 && role.id.startsWith(prefix))) &&
-        role.id !== exclude &&
-        !role.path_ids.includes(exclude ?? ""),
-    ) ?? [];
+    page?.items
+      .map((role) => ({
+        ...role,
+        child_count: Math.max(
+          0,
+          role.child_count + (childDelta.get(role.id) ?? 0),
+        ),
+      }))
+      .filter(
+        (role) =>
+          !draftIndex.has(role.id) &&
+          (!picker || (role.version > 0 && role.id.startsWith(prefix))) &&
+          role.id !== exclude &&
+          !role.path_ids.includes(exclude ?? ""),
+      ) ?? [];
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="space-y-3 border-b px-4 py-3">

@@ -15,11 +15,10 @@ impl KeycloakAdmin<'_> {
         first: u32,
         limit: u32,
     ) -> Result<Vec<KcGroup>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/groups/{}/children", self.base, segment(parent)))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[
                 ("first", first.to_string()),
                 ("max", limit.clamp(1, 100).to_string()),
@@ -37,11 +36,10 @@ impl KeycloakAdmin<'_> {
     }
 
     pub async fn directory_group(&self, id: &str) -> Result<KcGroup, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/groups/{}", self.base, segment(id)))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .timeout(std::time::Duration::from_mins(2))
             .send()
             .await
@@ -91,11 +89,10 @@ impl KeycloakAdmin<'_> {
             "shiki.parent",
             role.parent_id.iter().cloned().collect::<Vec<_>>(),
         );
-        let token = self.admin_token().await?;
         let response = self
             .http
             .put(format!("{}/groups/{}", self.base, segment(&id)))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .json(&json!({ "name": role.id, "attributes": attributes }))
             .timeout(std::time::Duration::from_mins(2))
             .send()

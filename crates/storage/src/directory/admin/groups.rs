@@ -14,8 +14,8 @@ impl DirectoryAdminStore {
         let limit = limit.clamp(1, 100);
         let pattern = format!("%{}%", crate::directory::escape_like(query.trim()));
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        let total = sqlx::query_scalar("SELECT count(*) FROM directory_ad_group WHERE tenant_id = $1 AND org = $2 AND active AND (name ILIKE $3 ESCAPE '\\' OR array_to_string(ou_path, '/') ILIKE $3 ESCAPE '\\')")
-            .bind(ctx.tenant_id()).bind(ctx.org()).bind(&pattern).fetch_one(&mut *tx).await?;
+        let total = sqlx::query_scalar("SELECT count(*) FROM directory_ad_group WHERE tenant_id = $1 AND org = $2 AND active AND (name ILIKE $3 ESCAPE '\\' OR array_to_string(ou_path, '/') ILIKE $3 ESCAPE '\\') AND ($4 <> '' OR ou_path = $5)")
+            .bind(ctx.tenant_id()).bind(ctx.org()).bind(&pattern).bind(query.trim()).bind(ou).fetch_one(&mut *tx).await?;
         let mut items: Vec<AdGroup> = sqlx::query_as(
             "SELECT g.group_id AS id, g.name, g.claim_path, g.distinguished_name, g.ou_path, g.parent_ids, g.mapping_version, \
              ARRAY(SELECT m.role_id FROM directory_ad_mapping m WHERE m.tenant_id = $1 AND m.org = $2 AND m.group_id = g.group_id ORDER BY m.role_id) AS role_ids \

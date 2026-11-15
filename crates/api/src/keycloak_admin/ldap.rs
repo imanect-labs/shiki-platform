@@ -65,11 +65,10 @@ fn id_segment(value: &str) -> String {
 
 impl KeycloakAdmin<'_> {
     async fn owned_ldap(&self, ctx: &AuthContext) -> Result<Option<Component>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/components", self.base))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[
                 ("type", "org.keycloak.storage.UserStorageProvider"),
                 ("name", component_name(ctx).as_str()),
@@ -165,8 +164,7 @@ impl KeycloakAdmin<'_> {
                 ))
             }
         };
-        let token = self.admin_token().await?;
-        let response = self.http.post(format!("{}/testLDAPConnection", self.base)).bearer_auth(token)
+        let response = self.http.post(format!("{}/testLDAPConnection", self.base)).bearer_auth(self.admin_token().await?)
             .json(&json!({ "action": "testAuthentication", "connectionUrl": input.connection_url,
                 "bindDn": input.bind_dn, "bindCredential": secret, "componentId": stored.as_ref().map(|c| &c.id),
                 "authType": "simple", "useTruststoreSpi": "always", "connectionTimeout": "10000", "startTls": "false" }))
@@ -186,7 +184,6 @@ impl KeycloakAdmin<'_> {
         id: Option<&str>,
         body: &Value,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let builder = match id {
             Some(id) => self
                 .http
@@ -194,7 +191,7 @@ impl KeycloakAdmin<'_> {
             None => self.http.post(format!("{}/components", self.base)),
         };
         let response = builder
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .json(body)
             .timeout(std::time::Duration::from_mins(2))
             .send()
@@ -215,11 +212,10 @@ impl KeycloakAdmin<'_> {
         kind: &str,
         config: Value,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/components", self.base))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[
                 ("parent", provider),
                 (
@@ -244,7 +240,6 @@ impl KeycloakAdmin<'_> {
         }
         let existing = existing.first();
         let id = if let Some(component) = existing.filter(|c| c.provider_id != kind) {
-            let token = self.admin_token().await?;
             let response = self
                 .http
                 .delete(format!(
@@ -252,7 +247,7 @@ impl KeycloakAdmin<'_> {
                     self.base,
                     id_segment(&component.id)
                 ))
-                .bearer_auth(token)
+                .bearer_auth(self.admin_token().await?)
                 .timeout(std::time::Duration::from_mins(2))
                 .send()
                 .await
@@ -280,11 +275,10 @@ impl KeycloakAdmin<'_> {
     ) -> Result<LdapConnectionStatus, KeycloakAdminError> {
         self.test_ldap(ctx, input).await?;
         let existing = self.owned_ldap(ctx).await?;
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(&self.base)
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .timeout(std::time::Duration::from_mins(2))
             .send()
             .await
@@ -376,11 +370,10 @@ impl KeycloakAdmin<'_> {
         if first(&provider, "enabled").as_deref() != Some("true") {
             return Err(KeycloakAdminError::NotConfigured("AD接続が無効です".into()));
         }
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/components", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[
                 ("parent", provider.id.as_str()),
                 (
@@ -430,7 +423,7 @@ impl KeycloakAdmin<'_> {
                 id_segment(&provider.id),
                 id_segment(&mapper.id)
             ))
-            .bearer_auth(token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[("direction", "fedToKeycloak")])
             .timeout(std::time::Duration::from_mins(2))
             .send()
@@ -457,11 +450,10 @@ impl KeycloakAdmin<'_> {
         &self,
         tenant: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let response = self
             .http
             .get(format!("{}/components", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[("type", "org.keycloak.storage.UserStorageProvider")])
             .timeout(std::time::Duration::from_secs(30))
             .send()
@@ -483,7 +475,7 @@ impl KeycloakAdmin<'_> {
                         self.base,
                         id_segment(&component.id)
                     ))
-                    .bearer_auth(&token)
+                    .bearer_auth(self.admin_token().await?)
                     .timeout(std::time::Duration::from_secs(30))
                     .send()
                     .await

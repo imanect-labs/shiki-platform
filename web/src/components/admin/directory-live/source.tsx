@@ -41,6 +41,8 @@ export function Source({
     const controller = new AbortController();
     setLoading(true);
     setError("");
+    setGroups(undefined);
+    setFolders(undefined);
     const timer = setTimeout(
       () => {
         Promise.all([

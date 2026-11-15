@@ -99,8 +99,11 @@ class GuidGroupMapperTest {
         UserModel delegate = mock(UserModel.class);
         GroupModel nativeGroup = mock(GroupModel.class);
         UserModel user = mapper.proxy(new LDAPObject(), delegate, mock(RealmModel.class));
+        when(delegate.isMemberOf(nativeGroup)).thenReturn(true);
+        assertTrue(user.isMemberOf(nativeGroup));
         user.joinGroup(nativeGroup);
         user.leaveGroup(nativeGroup);
+        verify(delegate).isMemberOf(nativeGroup);
         verify(delegate).joinGroup(nativeGroup);
         verify(delegate).leaveGroup(nativeGroup);
     }

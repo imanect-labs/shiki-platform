@@ -107,7 +107,11 @@ async fn handle(
                 .filter(|c| {
                     query.get("type").is_none_or(|v| c["providerType"] == *v)
                         && query.get("name").is_none_or(|v| c["name"] == *v)
-                        && query.get("parent").is_none_or(|v| c["parentId"] == *v)
+                        && c["parentId"]
+                            == query
+                                .get("parent")
+                                .map(String::as_str)
+                                .unwrap_or("realm-id")
                 })
                 .cloned()
                 .collect();

@@ -47,6 +47,12 @@ CSVはUTF-8、ヘッダー`group_id,role_id`。1グループに複数ロール�
 
 [ダークテーマ](../images/admin-directory/auto-dark.png) · [幅768px](../images/admin-directory/auto-narrow.png)
 
+改名時は保存済みの名称を「現在」、変更後の名称を「反映後」に表示する。次の画像はブラウザ回帰テストの応答データで記録した例。
+
+![改名前後の比較](../images/admin-directory/mapping-light.png)
+
+[ダークテーマ](../images/admin-directory/mapping-dark.png) · [幅768px](../images/admin-directory/mapping-narrow.png)
+
 ## 所属への反映と再試行
 
 既存のIdP管理ロールは参照専用で、改名・親変更・所属の追加はIdP側で行う。Shiki管理のロールは組織ごとの専用ID領域で作成し、この管理画面で編集・対応付けできる。
