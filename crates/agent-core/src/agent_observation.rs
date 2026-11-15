@@ -293,10 +293,17 @@ fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
 /// 出力上限で切れた呼び出しは、アダプタが解釈できない引数を `{}` にして渡す。逆に、中身のある
 /// 引数は最後まで届いている（実測: 完結した SQL の csv.query 2 件が「切れた」扱いで捨てられ、
 /// 同じ呼び出しを 4 ステップ繰り返した）。1 件でも `{}` があれば従来どおり切れた経路で扱う。
+///
+/// 自然終了・その他でも同じ条件を課す。OpenAI 互換のストリームが終端理由なしで切れたとき、
+/// アダプタは未完の引数を `{}` にして呼び出しを渡す（`providers/openai.rs` の `drain_stops`）。
+/// 中身のある JSON オブジェクトとして解析できた引数は閉じ括弧まで届いている（#1301 のレビュー）。
 pub(crate) fn settle_stop(stop: StopReason, has_calls: bool, all_args_present: bool) -> StopReason {
     match stop {
-        StopReason::EndTurn | StopReason::Other if has_calls => StopReason::ToolUse,
-        StopReason::MaxTokens if has_calls && all_args_present => StopReason::ToolUse,
+        StopReason::EndTurn | StopReason::Other | StopReason::MaxTokens
+            if has_calls && all_args_present =>
+        {
+            StopReason::ToolUse
+        }
         other => other,
     }
 }
@@ -316,7 +323,10 @@ mod tests {
     fn complete_calls_with_a_non_tool_stop_are_run() {
         use StopReason::{EndTurn, MaxTokens, Other, ToolUse};
         assert_eq!(settle_stop(EndTurn, true, true), ToolUse);
-        assert_eq!(settle_stop(Other, true, false), ToolUse);
+        assert_eq!(settle_stop(Other, true, true), ToolUse);
+        // 終端理由なしで切れた OpenAI 互換のストリーム（`{}` が混じる）は実行しない。
+        assert_eq!(settle_stop(EndTurn, true, false), EndTurn);
+        assert_eq!(settle_stop(Other, true, false), Other);
         // 呼び出しが無ければ、そのまま（完了・その他・出力上限）。
         assert_eq!(settle_stop(EndTurn, false, true), EndTurn);
         assert_eq!(settle_stop(Other, false, true), Other);
