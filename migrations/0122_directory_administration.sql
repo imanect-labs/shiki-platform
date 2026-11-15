@@ -6,6 +6,9 @@ CREATE TABLE directory_managed_role (
     role_id text NOT NULL,
     label text NOT NULL CHECK (char_length(label) BETWEEN 1 AND 80),
     parent_id text,
+    -- RLS 下でも通常の btree 条件で使えるよう、正規化値は生成列にする。
+    parent_key text GENERATED ALWAYS AS (coalesce(parent_id, '')) STORED,
+    label_key text GENERATED ALWAYS AS (lower(label)) STORED,
     keycloak_group_id text,
     version bigint NOT NULL DEFAULT 1,
     updated_at timestamptz NOT NULL DEFAULT now(),
@@ -15,7 +18,7 @@ CREATE TABLE directory_managed_role (
     CHECK (parent_id IS NULL OR parent_id <> role_id)
 );
 CREATE UNIQUE INDEX directory_managed_role_sibling_name
-    ON directory_managed_role (tenant_id, org, coalesce(parent_id, ''), lower(label));
+    ON directory_managed_role (tenant_id, org, parent_key, label_key);
 CREATE INDEX directory_managed_role_children ON directory_managed_role (tenant_id, org, parent_id, label, role_id);
 CREATE TABLE directory_ad_group (
     tenant_id text NOT NULL,

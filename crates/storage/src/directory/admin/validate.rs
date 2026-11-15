@@ -87,7 +87,7 @@ impl DirectoryAdminStore {
         let collisions: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM directory_managed_role m \
              JOIN jsonb_to_recordset($3) AS r(id text, label text, parent_id text) \
-             ON m.parent_id IS NOT DISTINCT FROM r.parent_id AND lower(m.label) = lower(r.label) AND m.role_id <> r.id \
+             ON m.parent_key = coalesce(r.parent_id, '') AND m.label_key = lower(r.label) AND m.role_id <> r.id \
              WHERE m.tenant_id = $1 AND m.org = $2 AND NOT (m.role_id = ANY($4)))",
         ).bind(ctx.tenant_id()).bind(ctx.org()).bind(serde_json::to_value(&changes.roles).map_err(|e| StorageError::Invalid(e.to_string()))?).bind(edits.keys().cloned().collect::<Vec<_>>()).fetch_one(&mut *tx).await?;
         if collisions {
