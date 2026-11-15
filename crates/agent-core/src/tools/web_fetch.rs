@@ -333,19 +333,37 @@ impl WebFetchTool {
         url_input: &str,
         text_cap: usize,
     ) -> Result<Fetched, ToolError> {
-        let target = validate_url(url_input)?;
+        let mut target = validate_url(url_input)?;
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
         // （関門は public_fetch に一本化・画像プロキシと共有する・#1044）。
-        let client = public_fetch::pinned_client(
+        let mut pinned = public_fetch::pinned_client(
             self.resolver.as_ref(),
             &target,
             |addrs| self.guard(addrs),
             FETCH_TIMEOUT,
             USER_AGENT,
         )
-        .await
-        .map_err(|e| match e {
+        .await;
+        // `www.` 抜きの名前が引けないサイト（soumu.go.jp 等）は `www.` 付きで取り直す。
+        // 候補も同じ関門（解決後 IP の検証・アドレス固定）を通る。取れた URL は結果の見出しに出る。
+        if matches!(pinned, Err(PinError::Resolve(_))) {
+            if let Some(alt) = public_fetch::www_variant(&target) {
+                let retried = public_fetch::pinned_client(
+                    self.resolver.as_ref(),
+                    &alt,
+                    |addrs| self.guard(addrs),
+                    FETCH_TIMEOUT,
+                    USER_AGENT,
+                )
+                .await;
+                if retried.is_ok() {
+                    target = alt;
+                    pinned = retried;
+                }
+            }
+        }
+        let client = pinned.map_err(|e| match e {
             PinError::ResolveTimeout => {
                 ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into())
             }

@@ -354,3 +354,46 @@ fn cited_page_excerpt_is_plain_and_placeholders_are_defused() {
     ledger.number(&mut cs, &mut text);
     assert_eq!(text, "[1] HTTP 200 | 本文 〚cite:0⟧");
 }
+
+/// `www.` 付きだけが引けるリゾルバ（官公庁サイトのように `www.` 無しを DNS に載せていない状態）。
+struct WwwOnlyResolver(SocketAddr);
+
+#[async_trait::async_trait]
+impl HostResolver for WwwOnlyResolver {
+    async fn lookup(&self, host: &str, _port: u16) -> Result<Vec<SocketAddr>, &'static str> {
+        if host.starts_with("www.") {
+            Ok(vec![self.0])
+        } else {
+            Err("ホストを解決できませんでした")
+        }
+    }
+}
+
+/// `www.` 抜きで引けないホストは `www.` 付きで取り直す（プレビュー検証で soumu.go.jp・npa.go.jp を
+/// 落とし続けた）。取れた URL を出典に出し、Host ヘッダも `www.` 付きにする。
+#[tokio::test]
+async fn retries_with_www_when_bare_host_does_not_resolve() {
+    let (addr, seen) = stub_server(http_response(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8",
+        "<html>www ok</html>",
+    ))
+    .await;
+    let mut tool = WebFetchTool::with_resolver(Arc::new(WwwOnlyResolver(addr)));
+    tool.skip_addr_guard = true; // ループバックのスタブへ繋ぐためだけの緩和（テスト専用）
+    let out = tool
+        .call(
+            &ctx(),
+            serde_json::json!({"url": format!("http://gov.example.invalid:{}/p", addr.port())}),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("www ok"));
+    let web = out.citations[0].web.as_ref().unwrap();
+    assert_eq!(
+        web.url,
+        format!("http://www.gov.example.invalid:{}/p", addr.port())
+    );
+    assert!(seen.lock().await.contains("www.gov.example.invalid"));
+}
