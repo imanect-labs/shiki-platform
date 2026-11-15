@@ -1,4 +1,4 @@
-use super::{AdGroup, AdGroupPage, DirectoryAdminStore};
+use super::{AdGroup, AdGroupPage, DirectoryAdminStore, AD_GROUP_ROOT};
 use crate::{db_tenant::begin_tenant_tx, error::StorageError};
 use authz::AuthContext;
 
@@ -81,7 +81,11 @@ impl DirectoryAdminStore {
         groups: &[AdGroup],
         operation: Option<uuid::Uuid>,
     ) -> Result<(), StorageError> {
-        let prefix = format!("/tenants/{}/{}/ad/", ctx.tenant_id(), ctx.org());
+        let prefix = format!(
+            "/tenants/{}/{}/{AD_GROUP_ROOT}/",
+            ctx.tenant_id(),
+            ctx.org()
+        );
         if groups.len() > 10_000 || groups.iter().any(|g| !g.claim_path.starts_with(&prefix)) {
             return Err(StorageError::Forbidden);
         }

@@ -61,6 +61,7 @@ fn parse(input: &str) -> Result<BTreeMap<String, BTreeSet<String>>, ApiError> {
     if input.len() > 1_000_000 {
         return Err(super::input_error("CSVは1MB以内にしてください".into()));
     }
+    validate_quotes(input.trim_start_matches('\u{feff}'))?;
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .from_reader(input.trim_start_matches('\u{feff}').as_bytes());
@@ -113,6 +114,32 @@ fn parse(input: &str) -> Result<BTreeMap<String, BTreeSet<String>>, ApiError> {
     }
     Ok(result)
 }
+/// csvクレートは未閉鎖の引用符をEOFで受理するため、構文を先に厳密に検証する。
+fn validate_quotes(input: &str) -> Result<(), ApiError> {
+    #[derive(Clone, Copy)]
+    enum Field {
+        Start,
+        Plain,
+        Quoted,
+        Closed,
+    }
+    let mut field = Field::Start;
+    for byte in input.bytes() {
+        field = match (field, byte) {
+            (Field::Quoted, b'"') => Field::Closed,
+            (Field::Quoted, _) | (Field::Start | Field::Closed, b'"') => Field::Quoted,
+            (_, b',' | b'\n' | b'\r') => Field::Start,
+            (Field::Closed, _) | (Field::Plain, b'"') => {
+                return Err(super::input_error("CSVの引用符が不正です".into()))
+            }
+            (Field::Start | Field::Plain, _) => Field::Plain,
+        };
+    }
+    if matches!(field, Field::Quoted) {
+        return Err(super::input_error("CSVの引用符が閉じられていません".into()));
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -126,7 +153,12 @@ mod tests {
             2
         );
         assert!(parse("group_id,role_id\n\"a,b\",\"r\"\"1\"\n").is_ok());
+        assert!(parse("group_id,role_id\ng1,\"\"\n").unwrap()["g1"].is_empty());
+        assert!(parse("group_id,role_id\ng1,\n").unwrap()["g1"].is_empty());
         for bad in [
+            "group_id,role_id\ng1,\"",
+            "group_id,role_id\ng1,r\"bad",
+            "group_id,role_id\ng1,\"r\"bad",
             "wrong,header\ng,r",
             "group_id,role_id\n",
             "group_id,role_id\n,r",

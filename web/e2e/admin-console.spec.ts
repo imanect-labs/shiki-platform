@@ -375,6 +375,7 @@ test("接続の保存結果が不明な場合は復旧確認してから保存�
     credential_saved: true,
     preserve_group_inheritance: false,
     recovery_required: true,
+    identity_current: true,
   };
   let saved = false;
   await page.route("**/api/org-admin/directory/connection", async (route) => {
@@ -404,6 +405,62 @@ test("接続の保存結果が不明な場合は復旧確認してから保存�
   await expect(dialog).toContainText("接続設定を保存しました。");
   await expect(
     dialog.getByText("前回の保存結果を確認してください", { exact: true }),
+  ).toHaveCount(0);
+  expect(saved).toBe(true);
+});
+
+test("旧AD形式の更新では対応付けの解除を確認してから保存する", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  await page.route("**/api/org-admin/directory", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      json: {
+        ...(await response.json()),
+        ldap_allowed_hosts: ["ad.example.test"],
+      },
+    });
+  });
+  const connection = {
+    configured: true,
+    enabled: true,
+    connection_url: "ldaps://ad.example.test:636",
+    users_dn: "OU=Users,DC=example",
+    groups_dn: "OU=Groups,DC=example",
+    bind_dn: "CN=reader,DC=example",
+    credential_saved: true,
+    preserve_group_inheritance: false,
+    recovery_required: false,
+    identity_current: false,
+  };
+  let saved = false;
+  await page.route("**/api/org-admin/directory/connection", async (route) => {
+    if (route.request().method() === "PUT") {
+      expect(route.request().postDataJSON().identity_reset_confirmed).toBe(
+        true,
+      );
+      saved = true;
+    }
+    await route.fulfill({ json: { ...connection, identity_current: saved } });
+  });
+  await page.goto("/admin/directory");
+  await page.getByRole("button", { name: "接続設定", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "AD接続設定" });
+  await expect(dialog).toContainText("連携形式の更新が必要です");
+  const save = dialog.getByRole("button", {
+    name: "テストして保存",
+    exact: true,
+  });
+  await expect(save).toBeDisabled();
+  await dialog
+    .getByRole("checkbox", {
+      name: "旧対応付けを解除し、同期後に設定し直すことを確認しました",
+    })
+    .check();
+  await save.click();
+  await expect(
+    dialog.getByText("連携形式の更新が必要です", { exact: true }),
   ).toHaveCount(0);
   expect(saved).toBe(true);
 });

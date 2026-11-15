@@ -2,11 +2,12 @@
 use crate::{error::ApiError, keycloak_admin::KeycloakAdmin, AppState};
 pub mod connection;
 pub mod dn;
+mod hierarchy;
 pub mod import;
 pub mod plan;
 pub mod preview;
 
-use authz::{AuthContext, Consistency, Principal, PrincipalKind, Relation, TenantId};
+use authz::{AuthContext, Consistency, Relation};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use storage::directory::admin::{DirectoryChangeSet, DirectoryOperation};
 use uuid::Uuid;
@@ -66,51 +67,8 @@ pub async fn submit_sync(
     }
     Ok(store.enqueue(ctx, &request, &hash, trace).await?)
 }
-/// pendingを実行し、所有セッションのないrunningは確認待ちにする。並行実行は最大4組織。
-pub async fn run(state: AppState) {
-    if KeycloakAdmin::from_config(&state.http, &state.config.auth).is_err() {
-        return;
-    }
-    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-    loop {
-        interval.tick().await;
-        let pending = match state.directory.admin().pending_operations().await {
-            Ok(pending) => pending,
-            Err(error) => {
-                tracing::error!(%error, "directory operation queue unavailable");
-                continue;
-            }
-        };
-        for job in pending {
-            let Ok(permit) = permits.clone().try_acquire_owned() else {
-                break;
-            };
-            let Ok(tenant) = TenantId::parse(job.tenant_id) else {
-                continue;
-            };
-            let ctx = AuthContext::new(
-                Principal {
-                    kind: PrincipalKind::User,
-                    id: job.actor_id,
-                    email: None,
-                    groups: vec![],
-                    roles: vec![],
-                    tenant_id: Some(tenant.to_string()),
-                },
-                job.org,
-                tenant,
-            );
-            let state = state.clone();
-            tokio::spawn(async move {
-                let _permit = permit;
-                if let Err(error) = process(&state, &ctx, job.id).await {
-                    tracing::error!(operation_id = %job.id, %error, "directory operation failed");
-                }
-            });
-        }
-    }
-}
+mod worker;
+pub use worker::run;
 
 pub async fn process(state: &AppState, ctx: &AuthContext, id: Uuid) -> Result<(), ApiError> {
     let store = state.directory.admin();

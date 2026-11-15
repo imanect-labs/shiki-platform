@@ -98,6 +98,7 @@ impl<'a> KeycloakAdmin<'a> {
         let (id, secret) = self.auth.provisioner_credentials().ok_or_else(|| {
             KeycloakAdminError::NotConfigured("auth.provisioner（client_id/secret）".into())
         })?;
+        let requested_at = tokio::time::Instant::now();
         let resp = self
             .http
             .post(self.auth.token_endpoint())
@@ -121,13 +122,14 @@ impl<'a> KeycloakAdmin<'a> {
             .json()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
-        if t.expires_in > 10 {
-            *cached = Some((
-                t.access_token.clone(),
-                tokio::time::Instant::now()
-                    + std::time::Duration::from_secs(t.expires_in.min(3600) - 5),
+        let Some(until) = token_deadline(requested_at, t.expires_in, tokio::time::Instant::now())
+        else {
+            *cached = None;
+            return Err(KeycloakAdminError::Transport(
+                "管理トークンの応答が有効期限に間に合いませんでした".into(),
             ));
-        }
+        };
+        *cached = (t.expires_in > 10).then(|| (t.access_token.clone(), until));
         Ok(t.access_token)
     }
 
@@ -395,4 +397,35 @@ async fn status_error(resp: reqwest::Response) -> KeycloakAdminError {
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     KeycloakAdminError::Status { status, body }
+}
+
+fn token_deadline(
+    requested: tokio::time::Instant,
+    expires: u64,
+    received: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    let until = requested + std::time::Duration::from_secs(expires.min(3600).saturating_sub(5));
+    (until > received).then_some(until)
+}
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    #[test]
+    fn response_latency_does_not_extend_token_validity() {
+        use std::time::Duration;
+        let requested = tokio::time::Instant::now();
+        assert_eq!(
+            token_deadline(requested, 20, requested + Duration::from_secs(10)),
+            Some(requested + Duration::from_secs(15))
+        );
+        assert_eq!(
+            token_deadline(requested, 20, requested + Duration::from_secs(21)),
+            None
+        );
+        assert_eq!(token_deadline(requested, 0, requested), None);
+        assert_eq!(
+            token_deadline(requested, u64::MAX, requested),
+            Some(requested + Duration::from_secs(3595))
+        );
+    }
 }

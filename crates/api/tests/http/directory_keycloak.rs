@@ -15,6 +15,8 @@ pub(super) struct KeycloakFixture {
     pub fail: bool,
     pub fail_role_write: bool,
     pub fail_component_write: bool,
+    next_group_id: usize,
+    next_component_id: usize,
 }
 impl KeycloakFixture {
     fn path(&self, parent: Option<&str>, name: &str) -> String {
@@ -33,7 +35,8 @@ impl KeycloakFixture {
         name: &str,
         attributes: Value,
     ) -> String {
-        let id = format!("group-{}", self.groups.len());
+        let id = format!("group-{}", self.next_group_id);
+        self.next_group_id += 1;
         self.groups.push(json!({"id":id,"name":name,"parent":parent,"path":self.path(parent, name),"subGroupCount":0,"attributes":attributes}));
         id
     }
@@ -110,7 +113,8 @@ async fn handle(
                 .collect();
             return Json(matches).into_response();
         }
-        body["id"] = json!(format!("component-{}", state.components.len()));
+        body["id"] = json!(format!("component-{}", state.next_component_id));
+        state.next_component_id += 1;
         state.components.push(body);
         return StatusCode::CREATED.into_response();
     }

@@ -6,6 +6,9 @@ use utoipa::ToSchema;
 
 use crate::{db_tenant::begin_tenant_tx, error::StorageError};
 
+/// 旧CN/SAM名前空間のclaimsをGUID方式へ誤対応させない専用root。
+pub const AD_GROUP_ROOT: &str = "ad-guid-v1";
+
 mod catalog;
 mod configuration;
 mod groups;
@@ -107,12 +110,25 @@ impl DirectoryAdminStore {
         ctx: &AuthContext,
         claim_paths: &[String],
     ) -> Result<Vec<String>, StorageError> {
+        let prefix = format!(
+            "/tenants/{}/{}/{AD_GROUP_ROOT}/",
+            ctx.tenant_id(),
+            ctx.org()
+        );
+        let paths: Vec<_> = claim_paths
+            .iter()
+            .map(String::as_str)
+            .filter(|path| path.starts_with(&prefix))
+            .collect();
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
         let ids = sqlx::query_scalar(
             "SELECT DISTINCT m.role_id FROM directory_ad_mapping m \
              JOIN directory_ad_group g ON g.tenant_id = m.tenant_id AND g.org = m.org AND g.group_id = m.group_id \
              WHERE m.tenant_id = $1 AND m.org = $2 AND g.active AND g.claim_path = ANY($3) ORDER BY m.role_id",
-        ).bind(ctx.tenant_id()).bind(ctx.org()).bind(claim_paths).fetch_all(&mut *tx).await?;
+        ).bind(ctx.tenant_id()).bind(ctx.org()).bind(paths).fetch_all(&mut *tx).await?;
         tx.commit().await?;
         Ok(ids)
     }

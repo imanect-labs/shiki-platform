@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::{json, Value};
 use storage::directory::admin::{DirectoryChangeSet, DirectoryOperation};
+#[path = "directory_ad.rs"]
+mod ad;
 #[path = "directory_keycloak.rs"]
 mod keycloak;
 async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
@@ -128,14 +130,14 @@ async fn directory_http_connection_sync_plan_apply_replay_and_preview() {
         let root = kc
             .groups
             .iter()
-            .find(|g| g["path"] == format!("/tenants/default/{}/ad", ctx.org()))
+            .find(|g| g["path"] == format!("/tenants/default/{}/ad-guid-v1", ctx.org()))
             .unwrap()["id"]
             .as_str()
             .unwrap()
             .to_string();
         kc.add_group(
             Some(&root),
-            "営業グループ",
+            &uuid::Uuid::new_v4().to_string(),
             json!({"distinguishedName":["CN=営業グループ,OU=営業,OU=本社,DC=example"]}),
         )
     };
@@ -367,7 +369,7 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
         .0,
         StatusCode::OK
     );
-    let source: storage::directory::admin::AdGroup = serde_json::from_value(json!({"id":"retry-source","name":"Retry source","claim_path":format!("/tenants/{}/{}/ad/Retry",ctx.tenant_id(),ctx.org()),"distinguished_name":"CN=Retry,OU=Groups,DC=example","ou_path":[],"parent_ids":[],"role_ids":[],"mapping_version":0})).unwrap();
+    let source: storage::directory::admin::AdGroup = serde_json::from_value(json!({"id":"retry-source","name":"Retry source","claim_path":format!("/tenants/{}/{}/ad-guid-v1/Retry",ctx.tenant_id(),ctx.org()),"distinguished_name":"CN=Retry,OU=Groups,DC=example","ou_path":[],"parent_ids":[],"role_ids":[],"mapping_version":0})).unwrap();
     state
         .directory
         .admin()
@@ -880,7 +882,7 @@ async fn directory_mapping_follows_authenticated_claims_and_revokes_on_refresh()
     let source = storage::directory::admin::AdGroup {
         id: "claims-group".into(),
         name: "Claims group".into(),
-        claim_path: format!("/tenants/default/{}/ad/claims-group", ctx.org()),
+        claim_path: format!("/tenants/default/{}/ad-guid-v1/claims-group", ctx.org()),
         distinguished_name: Some("CN=Claims,OU=Groups,DC=example".into()),
         ou_path: vec!["Groups".into()],
         parent_ids: vec![],

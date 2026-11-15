@@ -94,3 +94,7 @@ BFF はユーザー本人のアクセストークンで `/realms/shiki/account/*
 トークンに `aud=account` と `manage-account` ロールが載っている必要があるため、ユーザーには
 `default-roles-shiki`（`account` client の `view-profile` / `manage-account` を含む）を付ける。
 本番 realm でも同じ前提を満たすこと。
+
+## AD連携のGUIDマッパー
+
+管理画面からのAD連携は、[GUIDマッパー](guid-mapper/README.md)を組み込んだKeycloak 26.2.5を使用する。Composeでは専用Dockerfileでビルドする。外部Keycloakではjarの配置・再ビルドが必要。表示名を認可の識別子に使わず、ADの同名グループや名前再利用で対応先が入れ替わることを防ぐ。

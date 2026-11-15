@@ -4,6 +4,7 @@ use authz::AuthContext;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use storage::directory::admin::AD_GROUP_ROOT;
 use utoipa::ToSchema;
 
 #[derive(Deserialize, ToSchema)]
@@ -18,6 +19,8 @@ pub struct LdapConnectionInput {
     pub preserve_group_inheritance: bool,
     #[serde(default)]
     pub recovery_confirmed: bool,
+    #[serde(default)]
+    pub identity_reset_confirmed: bool,
 }
 
 // Keycloakの接続状態とLDAPの独立した設定フラグをそのまま返す公開DTO。
@@ -32,6 +35,7 @@ pub struct LdapConnectionStatus {
     pub bind_dn: Option<String>,
     pub credential_saved: bool,
     pub recovery_required: bool,
+    pub identity_current: bool,
     pub preserve_group_inheritance: bool,
 }
 
@@ -105,6 +109,9 @@ impl KeycloakAdmin<'_> {
         Ok(LdapConnectionStatus {
             configured: component.is_some(),
             recovery_required: false,
+            identity_current: component
+                .as_ref()
+                .is_some_and(|c| first(c, "shiki.groupIdentity").as_deref() == Some("guid-v1")),
             enabled: component
                 .as_ref()
                 .and_then(|c| first(c, "enabled"))
@@ -235,7 +242,33 @@ impl KeycloakAdmin<'_> {
                 "LDAPマッパーが重複しています".into(),
             ));
         }
-        self.put_component(existing.first().map(|c| c.id.as_str()), &json!({
+        let existing = existing.first();
+        let id = if let Some(component) = existing.filter(|c| c.provider_id != kind) {
+            let token = self.admin_token().await?;
+            let response = self
+                .http
+                .delete(format!(
+                    "{}/components/{}",
+                    self.base,
+                    id_segment(&component.id)
+                ))
+                .bearer_auth(token)
+                .timeout(std::time::Duration::from_mins(2))
+                .send()
+                .await
+                .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+            if !response.status().is_success()
+                && response.status() != reqwest::StatusCode::NOT_FOUND
+            {
+                return Err(KeycloakAdminError::NotConfigured(
+                    "旧LDAPマッパーを更新できませんでした".into(),
+                ));
+            }
+            None
+        } else {
+            existing.map(|c| c.id.as_str())
+        };
+        self.put_component(id, &json!({
             "name": name, "parentId": provider, "providerType": "org.keycloak.storage.ldap.mappers.LDAPStorageMapper", "providerId": kind, "config": config,
         })).await
     }
@@ -265,8 +298,9 @@ impl KeycloakAdmin<'_> {
             .get("id")
             .and_then(Value::as_str)
             .ok_or_else(|| KeycloakAdminError::NotConfigured("realm IDがありません".into()))?;
-        self.ensure_group_path(&["tenants", ctx.tenant_id(), ctx.org(), "ad"])
-            .await?;
+        let reset_groups = existing
+            .as_ref()
+            .is_some_and(|c| first(c, "shiki.groupIdentity").as_deref() != Some("guid-v1"));
         let org_path = format!("/tenants/{}/{}", ctx.tenant_id(), ctx.org());
         let mut config = json!({
             "enabled": ["false"], "vendor": ["ad"], "editMode": ["READ_ONLY"], "importEnabled": ["true"], "syncRegistrations": ["false"],
@@ -276,7 +310,7 @@ impl KeycloakAdmin<'_> {
             "usernameLDAPAttribute": ["sAMAccountName"], "rdnLDAPAttribute": ["cn"], "uuidLDAPAttribute": ["objectGUID"],
             "userObjectClasses": ["person,organizationalPerson,user"], "searchScope": ["2"], "pagination": ["true"], "batchSizeForSync": ["100"],
             "fullSyncPeriod": ["-1"], "changedSyncPeriod": ["-1"], "cachePolicy": ["DEFAULT"], "priority": ["0"],
-            "shiki.tenant": [ctx.tenant_id()], "shiki.org": [ctx.org()], "shiki.groupsDn": [input.groups_dn], "shiki.preserveGroups": [input.preserve_group_inheritance.to_string()]
+            "shiki.groupIdentity": [existing.as_ref().and_then(|c|first(c,"shiki.groupIdentity")).unwrap_or_else(||"pending-guid-v1".into())], "shiki.tenant": [ctx.tenant_id()], "shiki.org": [ctx.org()], "shiki.groupsDn": [input.groups_dn], "shiki.preserveGroups": [input.preserve_group_inheritance.to_string()]
         });
         if let Some(existing) = &existing {
             for (key, value) in &existing.config {
@@ -292,6 +326,19 @@ impl KeycloakAdmin<'_> {
             .owned_ldap(ctx)
             .await?
             .ok_or_else(|| KeycloakAdminError::NotConfigured("LDAP設定が見つかりません".into()))?;
+        // 形式更新で旧ネイティブIDが別のGUID群へ再利用されることも防ぐ。providerはまだ無効。
+        if reset_groups {
+            for root_name in ["ad", AD_GROUP_ROOT] {
+                if let Some(root) = self
+                    .find_group_path(&["tenants", ctx.tenant_id(), ctx.org(), root_name])
+                    .await?
+                {
+                    self.delete_group(&root.id).await?;
+                }
+            }
+        }
+        self.ensure_group_path(&["tenants", ctx.tenant_id(), ctx.org(), AD_GROUP_ROOT])
+            .await?;
         // 固定テナント・固定組織のマッパーが揃うまでproviderは有効化しない。
         self.ensure_ldap_mapper(
             &provider.id,
@@ -307,14 +354,15 @@ impl KeycloakAdmin<'_> {
             json!({ "group": [org_path] }),
         )
         .await?;
-        self.ensure_ldap_mapper(&provider.id, "shiki-ad-groups", "group-ldap-mapper", json!({
-            "groups.dn": [input.groups_dn], "groups.path": [format!("{org_path}/ad")], "group.name.ldap.attribute": ["cn"], "group.object.classes": ["group"],
+        self.ensure_ldap_mapper(&provider.id, "shiki-ad-groups", "shiki-ad-guid-group-mapper", json!({
+            "groups.dn": [input.groups_dn], "groups.path": [format!("{org_path}/{AD_GROUP_ROOT}")], "group.name.ldap.attribute": ["objectGUID"], "group.object.classes": ["group"],
             "membership.ldap.attribute": ["member"], "membership.attribute.type": ["DN"], "member.of.ldap.attribute": ["memberOf"],
-            "mode": ["READ_ONLY"], "preserve.group.inheritance": [input.preserve_group_inheritance.to_string()], "ignore.missing.groups": ["false"],
-            "drop.non.existing.groups.during.sync": ["true"], "mapped.group.attributes": ["distinguishedName"],
+            "mode": ["READ_ONLY"], "preserve.group.inheritance": ["false"], "ignore.missing.groups": ["false"],
+            "drop.non.existing.groups.during.sync": ["true"], "mapped.group.attributes": ["cn,distinguishedName,memberOf"],
             "user.roles.retrieve.strategy": ["LOAD_GROUPS_BY_MEMBER_ATTRIBUTE_RECURSIVELY"]
         })).await?;
         config["enabled"] = json!(["true"]);
+        config["shiki.groupIdentity"] = json!(["guid-v1"]);
         body["config"] = config;
         self.put_component(Some(&provider.id), &body).await?;
         self.ldap_connection(ctx).await
@@ -355,10 +403,20 @@ impl KeycloakAdmin<'_> {
                 "管理グループmapperがありません".into(),
             ));
         };
-        if mapper.provider_id != "group-ldap-mapper"
+        if mapper.provider_id != "shiki-ad-guid-group-mapper"
             || first(mapper, "groups.path").as_deref()
-                != Some(&format!("/tenants/{}/{}/ad", ctx.tenant_id(), ctx.org()))
+                != Some(&format!(
+                    "/tenants/{}/{}/{AD_GROUP_ROOT}",
+                    ctx.tenant_id(),
+                    ctx.org()
+                ))
             || first(mapper, "mode").as_deref() != Some("READ_ONLY")
+            || first(mapper, "group.name.ldap.attribute").as_deref() != Some("objectGUID")
+            || first(mapper, "preserve.group.inheritance").as_deref() != Some("false")
+            || first(mapper, "mapped.group.attributes").as_deref()
+                != Some("cn,distinguishedName,memberOf")
+            || first(mapper, "user.roles.retrieve.strategy").as_deref()
+                != Some("LOAD_GROUPS_BY_MEMBER_ATTRIBUTE_RECURSIVELY")
         {
             return Err(KeycloakAdminError::NotConfigured(
                 "管理グループmapperの所有範囲が不正です".into(),

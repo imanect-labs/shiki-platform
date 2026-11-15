@@ -30,6 +30,7 @@ export function ConnectionDialog({
     url: string;
     dn: string;
   }>();
+  const [legacy, setLegacy] = React.useState(false);
   const [recovery, setRecovery] = React.useState(false);
   const [stored, setStored] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
@@ -42,6 +43,7 @@ export function ConnectionDialog({
       .then((status) => {
         setStored(status.credential_saved);
         setRecovery(status.recovery_required);
+        setLegacy(status.configured && !status.identity_current);
         setSavedBinding({
           url: status.connection_url ?? "",
           dn: status.bind_dn ?? "",
@@ -76,11 +78,13 @@ export function ConnectionDialog({
         });
         setStored(true);
         setRecovery(false);
+        setLegacy(false);
         setSavedBinding({ url: input.connection_url, dn: input.bind_dn });
         setInput((old) => ({
           ...old,
           bind_password: null,
           recovery_confirmed: false,
+          identity_reset_confirmed: false,
         }));
         setMessage(
           "接続設定を保存しました。ADを同期するとグループを取得できます。",
@@ -96,6 +100,7 @@ export function ConnectionDialog({
         try {
           const status = await request<Connection>("/connection");
           setRecovery(status.recovery_required);
+          setLegacy(status.configured && !status.identity_current);
           setInput((old) => ({ ...old, recovery_confirmed: false }));
         } catch {
           /* 次回開いた時にも状態を取得する。 */
@@ -158,6 +163,30 @@ export function ConnectionDialog({
           </p>
         ) : (
           <fieldset disabled={busy} className="space-y-3">
+            {legacy && (
+              <div className="space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-xs leading-5">
+                <p className="font-medium">連携形式の更新が必要です</p>
+                <p className="text-muted-foreground">
+                  別のADグループへロールが引き継がれないよう、保存時にKeycloak上の同期グループを再作成し、現在の対応付けを解除します。同期後に対応を設定し直してください。ロール自体は保持します。
+                </p>
+                <label className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    className="mt-1 accent-primary"
+                    checked={input.identity_reset_confirmed ?? false}
+                    onChange={(e) =>
+                      setInput({
+                        ...input,
+                        identity_reset_confirmed: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>
+                    旧対応付けを解除し、同期後に設定し直すことを確認しました
+                  </span>
+                </label>
+              </div>
+            )}
             {recovery && (
               <div className="space-y-3 rounded-lg border border-border bg-muted/50 p-4 text-xs leading-5">
                 <p className="font-medium">前回の保存結果を確認してください</p>
@@ -231,7 +260,7 @@ export function ConnectionDialog({
               ADグループの入れ子を保持する
             </label>
             <p className="text-[11px] leading-5 text-muted-foreground">
-              複数の親や循環があるADでは、階層保持の同期が失敗します。その場合は保持を解除し、OUの配置からロールを作成できます。
+              複数の親がある場合はOUの配置からロールを作成してください。入れ子の循環や128階層超は同期を停止します。
             </p>
           </fieldset>
         )}
@@ -259,7 +288,8 @@ export function ConnectionDialog({
               busy ||
               loading ||
               !valid ||
-              (recovery && !input.recovery_confirmed)
+              (recovery && !input.recovery_confirmed) ||
+              (legacy && !input.identity_reset_confirmed)
             }
             onClick={() => run(true)}
           >

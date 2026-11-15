@@ -11,6 +11,7 @@ use uuid::Uuid;
 /// DBセッション内の組織ロック。生の接続をAPIへ公開しない。dropで解放する。
 pub struct DirectoryLease {
     pub(super) connection: tokio::sync::Mutex<sqlx::PgConnection>,
+    deletion_tenant: Option<authz::TenantId>,
 }
 
 impl DirectoryLease {
@@ -22,6 +23,23 @@ impl DirectoryLease {
         .await
         .map_err(|_| StorageError::Locked)??;
         Ok(())
+    }
+
+    /// 撤去開始と排他の生存を同じセッションで確定する。登録済みtenantは再開を拒否する。
+    pub async fn mark_tenant_deleting(
+        &self,
+        tenant: &authz::TenantId,
+    ) -> Result<String, StorageError> {
+        if self.deletion_tenant.as_ref() != Some(tenant) {
+            return Err(StorageError::Forbidden);
+        }
+        let mut connection = self.connection.lock().await;
+        let mut tx = connection.begin().await?;
+        crate::db_tenant::set_tenant(&mut tx, tenant).await?;
+        let org = sqlx::query_scalar("INSERT INTO tenant (tenant_id, org, display_name, status) VALUES ($1, $1, $1, 'deleting') ON CONFLICT (tenant_id) DO UPDATE SET status = CASE WHEN tenant.status = 'deleted' THEN tenant.status ELSE 'deleting' END, updated_at = now() RETURNING org")
+            .bind(tenant.as_str()).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(org)
     }
 
     /// 接続が失われたら進行中のfutureを破棄する。外部で受付済みの処理は取り消せない。
@@ -84,6 +102,18 @@ impl DirectoryAdminStore {
         if !tenant_locked {
             return Ok(None);
         }
+        let mut tx = connection.begin().await?;
+        crate::db_tenant::set_tenant(&mut tx, ctx.tenant()).await?;
+        let deleting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM tenant WHERE tenant_id = $1 AND status <> 'active')",
+        )
+        .bind(ctx.tenant_id())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        if deleting {
+            return Ok(None);
+        }
         let key = format!("directory-admin:{}:{}", ctx.tenant_id(), ctx.org());
         let locked: bool =
             sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtextextended($1, 0))")
@@ -92,6 +122,7 @@ impl DirectoryAdminStore {
                 .await?;
         Ok(locked.then_some(DirectoryLease {
             connection: tokio::sync::Mutex::new(connection),
+            deletion_tenant: None,
         }))
     }
 
@@ -100,7 +131,16 @@ impl DirectoryAdminStore {
         &self,
         tenant: &authz::TenantId,
     ) -> Result<Option<DirectoryLease>, StorageError> {
-        let options = self.db.connect_options();
+        let name: String = format!("shiki-dir-delete:{tenant}")
+            .chars()
+            .take(63)
+            .collect();
+        let options = self
+            .db
+            .connect_options()
+            .as_ref()
+            .clone()
+            .application_name(&name);
         let mut connection = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             sqlx::PgConnection::connect_with(&options),
@@ -122,6 +162,7 @@ impl DirectoryAdminStore {
         tx.commit().await?;
         Ok((!uncertain).then_some(DirectoryLease {
             connection: tokio::sync::Mutex::new(connection),
+            deletion_tenant: Some(tenant.clone()),
         }))
     }
     /// 運用ワーカーのテナント横断入口。詳細の操作は返したtenant/orgのAuthContextで行う。

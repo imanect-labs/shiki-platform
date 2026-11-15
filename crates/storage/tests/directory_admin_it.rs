@@ -49,7 +49,7 @@ fn group(ctx: &AuthContext, id: &str, ou: &[&str]) -> AdGroup {
     AdGroup {
         id: id.into(),
         name: id.into(),
-        claim_path: format!("/tenants/{}/{}/ad/{id}", ctx.tenant_id(), ctx.org()),
+        claim_path: format!("/tenants/{}/{}/ad-guid-v1/{id}", ctx.tenant_id(), ctx.org()),
         distinguished_name: Some(format!("CN={id},OU=Sales,DC=example")),
         mapping_version: 0,
         role_ids: vec![],
@@ -741,4 +741,80 @@ async fn tenant_deletion_waits_for_uncertain_external_writes_to_be_recovered() {
         .await
         .unwrap()
         .is_some());
+}
+
+#[tokio::test]
+async fn empty_group_claims_do_not_need_the_database_to_revoke_membership() {
+    let pool = PgPoolOptions::new()
+        .connect_lazy("postgres://postgres:postgres@localhost:1/unavailable")
+        .unwrap();
+    let store = DirectoryStore::new(pool).admin();
+    assert!(store
+        .mapped_roles(&context("empty-claims", "org"), &[])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .mapped_roles(
+            &context("empty-claims", "org"),
+            &[
+                "/tenants/empty-claims/org".into(),
+                "/tenants/empty-claims/org/ad/00112233-4455-6677-8899-aabbccddeeff".into(),
+            ]
+        )
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn deleting_tenant_cannot_acquire_directory_lease_after_deletion_lock_is_lost() {
+    let Some((directory, ctx)) = setup().await else {
+        return;
+    };
+    let store = directory.admin();
+    let guard = store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        guard.mark_tenant_deleting(ctx.tenant()).await.unwrap(),
+        ctx.tenant_id()
+    );
+    let owner = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let name: String = format!("shiki-dir-delete:{}", ctx.tenant_id())
+        .chars()
+        .take(63)
+        .collect();
+    let killed: Vec<bool> = sqlx::query_scalar(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+    )
+    .bind(name)
+    .fetch_all(&owner)
+    .await
+    .unwrap();
+    assert_eq!(killed, vec![true]);
+    assert!(guard.while_live(async {}).await.is_err());
+    assert!(guard.mark_tenant_deleting(ctx.tenant()).await.is_err());
+    drop(guard);
+    assert!(store.lease(&ctx).await.unwrap().is_none());
+    assert!(store
+        .lease(&context(ctx.tenant_id(), "other"))
+        .await
+        .unwrap()
+        .is_none());
+    let resumed = store
+        .tenant_deletion_lease(ctx.tenant())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.mark_tenant_deleting(ctx.tenant()).await.unwrap(),
+        ctx.tenant_id()
+    );
 }

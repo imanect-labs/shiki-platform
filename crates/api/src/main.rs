@@ -382,18 +382,31 @@ async fn run() -> anyhow::Result<()> {
         .await
         .context("bind に失敗")?;
     tracing::info!(%bind, "listening");
-    let _directory_worker = tokio::spawn(api::directory_admin::run(state.clone()));
+    let mut directory_worker = tokio::spawn(api::directory_admin::run(
+        state.clone(),
+        shutdown.clone().wait(),
+        shutdown::SHUTDOWN_GRACE,
+    ));
     // 合図で全リスナが同時に受付を止め、処理中の要求は猶予まで待つ（SSE が残っても戻る・B-OPS-1）。
     // SSE は合図で本文を終える（猶予を待たない・クライアントは Last-Event-ID から再接続する）。
     let router = shutdown::end_streams_on_shutdown(build_router(state), &shutdown);
     let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.clone().wait());
-    shutdown::serve_until_shutdown(
+    let http_outcome = shutdown::serve_until_shutdown(
         std::future::IntoFuture::into_future(server),
         shutdown,
         shutdown::SHUTDOWN_GRACE,
     )
-    .await
-    .context("サーバ実行中のエラー")?;
+    .await;
+    if http_outcome.is_err() {
+        directory_worker.abort();
+    }
+    if tokio::time::timeout(shutdown::SHUTDOWN_GRACE, &mut directory_worker)
+        .await
+        .is_err()
+    {
+        directory_worker.abort();
+    }
+    http_outcome.context("サーバ実行中のエラー")?;
     tracing::info!("shiki-server を停止しました");
     Ok(())
 }

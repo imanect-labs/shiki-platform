@@ -44,7 +44,12 @@ impl DirectoryAdminStore {
         ctx: &AuthContext,
         group: &AdGroup,
     ) -> Result<(), StorageError> {
-        let expected = format!("/tenants/{}/{}/", ctx.tenant_id(), ctx.org());
+        let expected = format!(
+            "/tenants/{}/{}/{}/",
+            ctx.tenant_id(),
+            ctx.org(),
+            super::AD_GROUP_ROOT
+        );
         if !group.claim_path.starts_with(&expected) {
             return Err(StorageError::Forbidden);
         }

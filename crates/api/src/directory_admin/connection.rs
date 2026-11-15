@@ -6,7 +6,7 @@ use crate::{
     AppState,
 };
 use authz::AuthContext;
-use storage::directory::admin::AdGroup;
+use storage::directory::admin::{AdGroup, AD_GROUP_ROOT};
 
 pub fn validate(config: &AuthConfig, input: &LdapConnectionInput) -> Result<(), ApiError> {
     let url = reqwest::Url::parse(&input.connection_url)
@@ -72,10 +72,15 @@ pub async fn save(
     let result = lease.while_live(async {
         let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth).map_err(keycloak_error)?;
         let previous = kc.ldap_connection(ctx).await.map_err(keycloak_error)?;
+        let identity_changed = !previous.identity_current;
+        if previous.configured && identity_changed && !input.identity_reset_confirmed {
+            return Err(ApiError::invalid_input("旧形式のAD連携をGUID方式へ更新するには、既存の対応付けを解除して再設定する確認が必要です"));
+        }
         let changed = previous.connection_url.as_deref() != Some(input.connection_url.as_str())
             || previous.users_dn.as_deref() != Some(input.users_dn.as_str())
             || previous.groups_dn.as_deref() != Some(input.groups_dn.as_str())
-            || previous.preserve_group_inheritance != input.preserve_group_inheritance;
+            || previous.preserve_group_inheritance != input.preserve_group_inheritance
+            || identity_changed;
         if changed && store.has_unfinished_mappings(ctx).await? {
             return Err(ApiError::invalid_input("停止中の反映を再実行して完了してから、接続先・検索DN・階層設定を変更してください。バインドDNとパスワードは変更できます。"));
         }
@@ -83,7 +88,7 @@ pub async fn save(
         kc.test_ldap(ctx, input).await.map_err(keycloak_error)?;
         lease.verify().await?;
         if changed {
-            store.configuration_event(ctx, "snapshot_invalidated", trace).await?;
+            store.configuration_event(ctx, if identity_changed { "identity_invalidated" } else { "snapshot_invalidated" }, trace).await?;
         }
         mutating.store(true, Ordering::SeqCst);
         let status = kc.save_ldap(ctx, input).await.map_err(keycloak_error)?;
@@ -130,14 +135,20 @@ pub async fn sync(
     }
     uncertain.store(true, std::sync::atomic::Ordering::SeqCst);
     kc.sync_ldap_groups(ctx).await.map_err(keycloak_error)?;
+    uncertain.store(false, std::sync::atomic::Ordering::SeqCst);
     let root = kc
-        .find_group_path(&["tenants", ctx.tenant_id(), ctx.org(), "ad"])
+        .find_group_path(&["tenants", ctx.tenant_id(), ctx.org(), AD_GROUP_ROOT])
         .await
         .map_err(keycloak_error)?
         .ok_or(ApiError::NotFound)?;
-    let prefix = format!("/tenants/{}/{}/ad/", ctx.tenant_id(), ctx.org());
+    let prefix = format!(
+        "/tenants/{}/{}/{AD_GROUP_ROOT}/",
+        ctx.tenant_id(),
+        ctx.org()
+    );
     let mut pending = vec![(root.id, None, 0usize)];
     let mut groups = Vec::new();
+    let mut memberships = std::collections::BTreeMap::new();
     let mut seen = std::collections::BTreeSet::new();
     use futures::{stream::FuturesUnordered, StreamExt};
     let fetch = |parent: String, parent_group: Option<String>, depth: usize| {
@@ -181,37 +192,30 @@ pub async fn sync(
         let Some(result) = running.next().await else {
             break;
         };
-        let (parent_group, depth, page) = result?;
+        let (_parent_group, depth, page) = result?;
         for group in page {
+            if depth >= 128 {
+                return Err(super::input_error(
+                    "ADグループが128階層を超えています".into(),
+                ));
+            }
             if !seen.insert(group.id.clone()) || !group.path.starts_with(&prefix) {
                 return Err(super::input_error(
                     "ADグループの階層または同期先を確認してください".into(),
                 ));
             }
-            let dn = group
-                .attributes
-                .get("distinguishedName")
-                .and_then(|v| v.first())
-                .cloned();
-            let ou_path = dn
-                .as_deref()
-                .map(super::dn::ou_path)
-                .transpose()
-                .map_err(|error| super::input_error(error.to_string()))?
-                .unwrap_or_default();
+            memberships.insert(
+                group.id.clone(),
+                group
+                    .attributes
+                    .get("memberOf")
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             if group.sub_group_count != Some(0) {
                 pending.push((group.id.clone(), Some(group.id.clone()), depth + 1));
             }
-            groups.push(AdGroup {
-                id: group.id,
-                name: group.name,
-                claim_path: group.path,
-                distinguished_name: dn,
-                mapping_version: 0,
-                role_ids: vec![],
-                ou_path,
-                parent_ids: parent_group.iter().cloned().collect(),
-            });
+            groups.push(snapshot_group(group)?);
             if groups.len() > 10_000 {
                 return Err(super::input_error(
                     "一度に同期できるグループは10,000件です。検索ベースを絞ってください".into(),
@@ -219,10 +223,54 @@ pub async fn sync(
             }
         }
     }
+    super::hierarchy::restore(
+        &mut groups,
+        &memberships,
+        status
+            .groups_dn
+            .as_deref()
+            .ok_or_else(|| super::input_error("ADグループ検索DNが未設定です".into()))?,
+        status.preserve_group_inheritance,
+    )?;
     lease.verify().await?;
     store.replace_groups(ctx, &groups, Some(operation)).await?;
     uncertain.store(false, std::sync::atomic::Ordering::SeqCst);
     Ok(groups.len())
+}
+
+fn snapshot_group(group: crate::keycloak_admin::KcGroup) -> Result<AdGroup, ApiError> {
+    if !uuid::Uuid::parse_str(&group.name).is_ok_and(|id| id.to_string() == group.name) {
+        return Err(super::input_error(
+            "ADグループの不変GUIDを取得できませんでした".into(),
+        ));
+    }
+    let dn = group
+        .attributes
+        .get("distinguishedName")
+        .and_then(|v| v.first())
+        .cloned()
+        .ok_or_else(|| super::input_error("ADグループのDNを取得できませんでした".into()))?;
+    let ou_path = super::dn::ou_path(&dn).map_err(|error| super::input_error(error.to_string()))?;
+    if ou_path.len() > 128 {
+        return Err(super::input_error("OUが128階層を超えています".into()));
+    }
+    let name = group
+        .attributes
+        .get("cn")
+        .and_then(|v| v.first())
+        .cloned()
+        .map_or_else(|| super::dn::common_name(&dn), Ok)
+        .map_err(|error| super::input_error(error.to_string()))?;
+    Ok(AdGroup {
+        id: group.id,
+        name,
+        claim_path: group.path,
+        distinguished_name: Some(dn),
+        mapping_version: 0,
+        role_ids: vec![],
+        ou_path,
+        parent_ids: vec![],
+    })
 }
 
 #[cfg(test)]
@@ -243,6 +291,7 @@ mod tests {
             bind_password: None,
             preserve_group_inheritance: false,
             recovery_confirmed: false,
+            identity_reset_confirmed: false,
         };
         assert!(validate(&config, &input).is_ok());
         for url in [

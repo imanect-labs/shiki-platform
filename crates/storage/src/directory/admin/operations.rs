@@ -217,8 +217,15 @@ impl DirectoryAdminStore {
         trace: Option<&str>,
     ) -> Result<(), StorageError> {
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        if outcome == "snapshot_invalidated" {
+        if matches!(outcome, "snapshot_invalidated" | "identity_invalidated") {
             sqlx::query("UPDATE directory_ad_group SET active = false, mapping_version = mapping_version + 1 WHERE tenant_id = $1 AND org = $2 AND active").bind(ctx.tenant_id()).bind(ctx.org()).execute(&mut *tx).await?;
+        }
+        if outcome == "identity_invalidated" {
+            sqlx::query("DELETE FROM directory_ad_mapping WHERE tenant_id = $1 AND org = $2")
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
+                .execute(&mut *tx)
+                .await?;
         }
         record_on(
             &mut tx,

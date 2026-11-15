@@ -72,6 +72,44 @@ pub fn ou_path(dn: &str) -> Result<Vec<String>, &'static str> {
     Ok(result)
 }
 
+/// ADのcase-ignore DNをRDN単位で比較する。表記の異なるエスケープも同じキーにする。
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Key(Vec<Vec<(String, String)>>);
+impl Key {
+    pub fn within(&self, base: &Self) -> bool {
+        self.0.ends_with(&base.0)
+    }
+}
+pub fn key(dn: &str) -> Result<Key, &'static str> {
+    let mut rdns = Vec::new();
+    for rdn in split_unescaped(dn, ',') {
+        let mut attributes = Vec::new();
+        for attribute in split_unescaped(rdn.trim_start(), '+') {
+            let (kind, value) = attribute.split_once('=').ok_or("DNの属性が不正です")?;
+            let kind = kind.trim().to_ascii_lowercase();
+            if kind.is_empty() {
+                return Err("DNの属性が不正です");
+            }
+            attributes.push((kind, decode(value)?.to_lowercase()));
+        }
+        attributes.sort();
+        rdns.push(attributes);
+    }
+    Ok(Key(rdns))
+}
+pub fn common_name(dn: &str) -> Result<String, &'static str> {
+    let rdn = split_unescaped(dn, ',')
+        .into_iter()
+        .next()
+        .ok_or("DNが空です")?;
+    for attribute in split_unescaped(rdn, '+') {
+        let (kind, value) = attribute.split_once('=').ok_or("DNの属性が不正です")?;
+        if kind.trim().eq_ignore_ascii_case("cn") {
+            return decode(value);
+        }
+    }
+    Err("ADグループのCNがありません")
+}
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -89,6 +127,15 @@ mod tests {
             ou_path(r"CN=A,OU=\ Leading\ ,DC=example").unwrap(),
             vec![" Leading "]
         );
+        assert_eq!(
+            key(r"CN=Smith\,Jeff,OU=East,DC=example").unwrap(),
+            key(r"cn=smith\2Cjeff,ou=east,dc=EXAMPLE").unwrap()
+        );
+        assert_eq!(
+            common_name(r"CN=Smith\,Jeff,OU=East").unwrap(),
+            "Smith,Jeff"
+        );
+        assert!(key("broken").is_err());
         assert!(ou_path(r"CN=A,OU=bad\").is_err());
         assert!(ou_path("CN=A,OU=one+OU=two,DC=example").is_err());
     }

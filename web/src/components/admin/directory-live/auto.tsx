@@ -67,6 +67,19 @@ export function AutoDialog({
       clearTimeout(timer);
     };
   }, [scope, mode, ids]);
+  const ouPaths = React.useMemo(() => {
+    if (mode !== "ou" || !plan) return undefined;
+    const paths = new Set(
+      plan.sources.map((group) => group.ou_path.join("\0")),
+    );
+    const prefixes = new Set<string>();
+    for (const path of paths) {
+      const segments = path ? path.split("\0") : [];
+      for (let i = 1; i <= segments.length; i++)
+        prefixes.add(segments.slice(0, i).join("\0"));
+    }
+    return prefixes;
+  }, [plan, mode]);
   return (
     <Dialog
       open
@@ -184,17 +197,7 @@ export function AutoDialog({
                   key={plan.changes.idempotency_key}
                   nodes={plan.nodes}
                   changes={plan.changes}
-                  ouPaths={
-                    mode === "ou"
-                      ? new Set(
-                          plan.sources.flatMap((g) =>
-                            g.ou_path.map((_, i) =>
-                              g.ou_path.slice(0, i + 1).join("\0"),
-                            ),
-                          ),
-                        )
-                      : undefined
-                  }
+                  ouPaths={ouPaths}
                 />
                 <MappingDiff
                   group={active}

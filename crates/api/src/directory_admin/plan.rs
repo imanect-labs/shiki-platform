@@ -245,7 +245,7 @@ mod tests {
         AdGroup {
             id: id.into(),
             name: id.into(),
-            claim_path: format!("/tenants/tenant/org/ad/{id}"),
+            claim_path: format!("/tenants/tenant/org/ad-guid-v1/{id}"),
             distinguished_name: Some(format!("CN={id},OU=営業,OU=本社,DC=example")),
             ou_path: vec!["本社".into(), "営業".into()],
             parent_ids: parent.iter().map(|s| (*s).to_string()).collect(),
