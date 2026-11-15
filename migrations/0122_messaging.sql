@@ -12,6 +12,8 @@ CREATE TABLE channel (
     kind text NOT NULL CHECK (kind IN ('public', 'private', 'dm')),
     -- DM は名前を持たない（表示名は相手から組む）。
     name text CHECK (name IS NULL OR char_length(name) BETWEEN 1 AND 80),
+    -- 名前の一意判定の鍵（大文字小文字を区別しない）。RLS の表では式インデックスが効かないため生成列に持つ。
+    name_key text GENERATED ALWAYS AS (lower(name)) STORED,
     topic text NOT NULL DEFAULT '' CHECK (char_length(topic) <= 250),
     -- アナウンス専用（投稿者を個別に指定する）。DM では持たない。
     announcement boolean NOT NULL DEFAULT false,
@@ -27,7 +29,7 @@ CREATE TABLE channel (
 );
 CREATE UNIQUE INDEX channel_dm_key ON channel (tenant_id, org, dm_key) WHERE kind = 'dm';
 -- チャンネル名は org 内で一意（公開・非公開とも・大文字小文字を区別しない）。
-CREATE UNIQUE INDEX channel_name ON channel (tenant_id, org, lower(name)) WHERE kind <> 'dm';
+CREATE UNIQUE INDEX channel_name ON channel (tenant_id, org, name_key) WHERE kind <> 'dm';
 CREATE INDEX channel_public ON channel (tenant_id, org, created_at DESC) WHERE kind = 'public';
 
 CREATE TABLE channel_member (
