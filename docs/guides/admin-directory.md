@@ -37,6 +37,14 @@ directory_ldap_allowed_hosts = ["ad.example.co.jp"]
 
 CSVはUTF-8、ヘッダー`group_id,role_id`。1グループに複数ロールを指定する場合は複数行にする。`role_id`が空の行は対応解除、ファイルにないグループは変更しない。group_idはKeycloakのグループIDで、ADのobjectGUIDとは別である。Keycloakでグループを再作成した場合は対応を再設定する。IDはグループの識別情報とロール編集画面で確認する。全行を検証してから確認案を作り、不明IDや重複、解除と付与の混在を拒否する。
 
+### 確認画面の例
+
+実APIとローカル検証DBの同期済みスナップショットを使った例。OU由来とグループ由来のロール、新規作成と既存利用を区別して表示する。実際の企業ADのデータではない。
+
+![自動作成の確認画面](../images/admin-directory/auto-light.png)
+
+[ダークテーマ](../images/admin-directory/auto-dark.png) · [幅768px](../images/admin-directory/auto-narrow.png)
+
 ## 所属への反映と再試行
 
 既存のIdP管理ロールは参照専用で、改名・親変更・所属の追加はIdP側で行う。Shiki管理のロールは組織ごとの専用ID領域で作成し、この管理画面で編集・対応付けできる。
