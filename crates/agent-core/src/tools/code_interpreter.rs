@@ -80,7 +80,9 @@ fn describe(backend: SandboxBackend) -> String {
          計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは \
          /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に\
          注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。\
-         グラフ描画は行わず、結果の数値/表を返すこと。"
+         **呼び出しごとに新しい環境で動く**: 前の呼び出しの変数・import・/workspace に書いた\
+         ファイルは残らない。毎回 import から書き、読み込み→加工→書き出し→確認は 1 回のコードに\
+         まとめる。グラフ描画は行わず、結果の数値/表を返すこと。"
     )
 }
 
@@ -253,6 +255,17 @@ mod tests {
     use std::sync::Mutex;
 
     /// #384: openpyxl を宣伝するのは rootfs に同梱している native ティアだけ。
+    /// 呼び出しをまたいで状態が残らないことを説明に書く（前の変数・ファイルを当てにして NameError・
+    /// FileNotFoundError を繰り返していた・プレビューの検証で 1 run に 3〜4 回）。
+    #[test]
+    fn description_says_each_call_starts_fresh() {
+        for backend in [SandboxBackend::Gvisor, SandboxBackend::Wasm] {
+            let text = describe(backend);
+            assert!(text.contains("新しい環境"), "{backend:?}: {text}");
+            assert!(text.contains("import から"), "{backend:?}: {text}");
+        }
+    }
+
     #[test]
     fn description_advertises_openpyxl_only_on_native_tiers() {
         for native in [SandboxBackend::Gvisor, SandboxBackend::Firecracker] {

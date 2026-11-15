@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use llm_gateway::{Block, Message as LlmMessage};
+use llm_gateway::{Block, Message as LlmMessage, StopReason};
 
 use crate::budget::{Budget, Spent};
 
@@ -282,11 +282,40 @@ fn last_tool_result(messages: &mut [LlmMessage]) -> Option<&mut String> {
         })
 }
 
+/// 揃ったツール呼び出しがあるのに停止理由が `ToolUse` 以外なら、ツール呼び出しとして扱う。
+///
+/// 実測（プレビュー・委譲 6 件を一度に出した応答）: 呼び出しは全部届いたのに停止理由が
+/// 「自然終了」で、ループは呼び出しを実行せずに完了扱いで畳んだ（10 秒・本文 1 行で run が終わり、
+/// 委譲カードが出たまま止まる）。プロバイダ・中継（OpenAI 互換のゲートウェイ等）によって
+/// 停止理由の付け方が揃わないので、ここで正規化する。出力上限（`MaxTokens`）は引数が切れている
+/// かもしれないので昇格させない（切れた呼び出しの経路で扱う）。
+pub(crate) fn settle_stop(stop: StopReason, has_calls: bool) -> StopReason {
+    match stop {
+        StopReason::EndTurn | StopReason::Other if has_calls => StopReason::ToolUse,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use llm_gateway::Role as LlmRole;
+
+    #[test]
+    fn complete_calls_with_a_non_tool_stop_are_run() {
+        assert_eq!(settle_stop(StopReason::EndTurn, true), StopReason::ToolUse);
+        assert_eq!(settle_stop(StopReason::Other, true), StopReason::ToolUse);
+        // 呼び出しが無ければ、そのまま（完了・その他）。
+        assert_eq!(settle_stop(StopReason::EndTurn, false), StopReason::EndTurn);
+        assert_eq!(settle_stop(StopReason::Other, false), StopReason::Other);
+        // 出力上限は引数が切れているかもしれないので昇格させない。
+        assert_eq!(
+            settle_stop(StopReason::MaxTokens, true),
+            StopReason::MaxTokens
+        );
+        assert_eq!(settle_stop(StopReason::ToolUse, true), StopReason::ToolUse);
+    }
 
     /// 思考だけの応答への催促は、最後のメッセージ（ツール結果か user 発話）へ添え、上限回数で打ち切る。
     #[test]
