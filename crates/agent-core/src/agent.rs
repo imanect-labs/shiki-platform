@@ -489,6 +489,16 @@ async fn run_step(
         }
     }
 
+    // 揃った呼び出しがあるのに「自然終了」で届いた応答は、呼び出しを実行する（黙って畳まない）。
+    // 出力上限で止まっても、引数が全部揃っている呼び出しは実行する（切れたのは `{}` で届く）。
+    final_stop = crate::agent_observation::settle_stop(
+        final_stop,
+        !calls.is_empty(),
+        calls
+            .iter()
+            .all(|c| crate::agent_observation::has_args(&c.input)),
+    );
+
     // 会計＋Langfuse 計装（attempt/ステップ単位）＋予算の累積更新（Task 5.7）。
     let cost = gateway.estimate_cost_usd_micros(
         opts.model
