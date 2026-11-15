@@ -1065,8 +1065,15 @@ async fn review_regressions_stay_fixed() {
         .await
         .unwrap();
     env.svc.join(&bob, pubch.id, None).await.unwrap();
-    let mine = env.svc.post(&bob, pubch.id, msg("退出前の発言"), None).await.unwrap();
-    env.svc.remove_member(&bob, pubch.id, "bob", None).await.unwrap();
+    let mine = env
+        .svc
+        .post(&bob, pubch.id, msg("退出前の発言"), None)
+        .await
+        .unwrap();
+    env.svc
+        .remove_member(&bob, pubch.id, "bob", None)
+        .await
+        .unwrap();
     let hits = env
         .svc
         .search_in(&bob, "退出前", &[pubch.id], 20, None)
@@ -1093,8 +1100,15 @@ async fn review_regressions_stay_fixed() {
     let members = env.svc.members(&alice, pubch.id).await.unwrap();
     assert!(!members.iter().any(|m| m.user_id == "carol" && m.is_admin));
     // アーカイブ中は削除もできない（読み取り専用）。
-    let keep = env.svc.post(&alice, pubch.id, msg("残す"), None).await.unwrap();
-    env.svc.set_archived(&alice, pubch.id, true, None).await.unwrap();
+    let keep = env
+        .svc
+        .post(&alice, pubch.id, msg("残す"), None)
+        .await
+        .unwrap();
+    env.svc
+        .set_archived(&alice, pubch.id, true, None)
+        .await
+        .unwrap();
     assert!(matches!(
         env.svc.delete(&alice, keep.id, None).await,
         Err(Error::Forbidden(_))
@@ -1106,9 +1120,15 @@ async fn review_regressions_stay_fixed() {
         .create_channel(&alice, create("経営会議", ChannelKind::Private), None)
         .await
         .unwrap();
-    env.svc.post(&alice, ch.id, msg("昔の機密の議論"), None).await.unwrap();
+    env.svc
+        .post(&alice, ch.id, msg("昔の機密の議論"), None)
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    env.svc.invite(&alice, ch.id, vec!["bob".into()], None).await.unwrap();
+    env.svc
+        .invite(&alice, ch.id, vec!["bob".into()], None)
+        .await
+        .unwrap();
     let rt = Arc::new(FakeRuntime::default());
     let runtime: Arc<dyn AgentRuntime> = rt.clone();
     let trigger = env
@@ -1138,7 +1158,10 @@ async fn review_regressions_stay_fixed() {
         .unwrap();
     let seen = rt.seen.lock().unwrap().clone();
     assert!(
-        seen[0].transcript().iter().all(|l| !l.text.contains("機密")),
+        seen[0]
+            .transcript()
+            .iter()
+            .all(|l| !l.text.contains("機密")),
         "公開返信の文脈に、参加者の一部が読めない発言を入れない"
     );
     // 自分だけに表示なら、照会者が読める発言を使ってよい。

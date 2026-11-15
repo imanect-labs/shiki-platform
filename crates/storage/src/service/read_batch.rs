@@ -42,7 +42,8 @@ impl StorageService {
         .fetch_all(&self.db)
         .await?;
         for id in expiring {
-            self.enforce_share_link_expiry(ctx, id, NodeKind::File).await?;
+            self.enforce_share_link_expiry(ctx, id, NodeKind::File)
+                .await?;
         }
         let items: Vec<CheckTuple> = ids
             .iter()
