@@ -83,7 +83,10 @@ fn describe(backend: SandboxBackend) -> String {
          **呼び出しごとに新しい環境で動く**: 前の呼び出しの変数・import・/workspace に書いた\
          ファイルは残らない。毎回 import から書き、要るデータはその呼び出しの中で読み直す\
          （1 回のコードは短く保つ。分けるのは互いに独立した工程だけで、前の呼び出しで作った\
-         ファイルは次の呼び出しに渡らない）。グラフ描画は行わず、結果の数値/表を返すこと。"
+         ファイルは次の呼び出しに渡らない。保存済みの .xlsx / .docx を確かめるなら office.read で\
+         読む）。matplotlib は無いのでグラフ描画は行わず、結果の数値/表を返すこと。図が要るときは\
+         集計値を office.excel_edit の add_chart（Excel）や office.word_edit の insert_chart（Word）\
+         でグラフにする。"
     )
 }
 
@@ -449,6 +452,20 @@ mod tests {
         assert!(!out.is_error);
         assert!(out.artifacts.is_empty());
         assert!(out.content.contains("保存に失敗"));
+    }
+
+    /// 図は Office のグラフで作るよう案内する（matplotlib で描こうとして手描きの図にしない）。
+    #[test]
+    fn description_points_charts_to_office_tools() {
+        for backend in [SandboxBackend::Gvisor, SandboxBackend::Wasm] {
+            let text = describe(backend);
+            assert!(text.contains("matplotlib は無い"), "{text}");
+            assert!(
+                text.contains("add_chart") && text.contains("insert_chart"),
+                "{text}"
+            );
+            assert!(text.contains("office.read"), "{text}");
+        }
     }
 
     #[tokio::test]
