@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn skipped_backfill_rows_do_not_count_as_progress() {
-    let Some(storage) = storage(2).await else {
+    let Some((storage, admin, database)) = isolated_storage(2).await else {
         return;
     };
     let tenant = TenantId::parse(format!("skip-{}", uuid::Uuid::new_v4().simple())).unwrap();
@@ -32,11 +32,16 @@ async fn skipped_backfill_rows_do_not_count_as_progress() {
         .execute(&storage.pool)
         .await
         .unwrap();
+    storage.pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {database}"))
+        .execute(&admin)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
 async fn held_org_cannot_starve_other_org_gc_candidates() {
-    let Some(storage) = storage(2).await else {
+    let Some((storage, admin, database)) = isolated_storage(2).await else {
         return;
     };
     let tenant = TenantId::parse(format!("gc-fair-{}", uuid::Uuid::new_v4().simple())).unwrap();
@@ -65,6 +70,11 @@ async fn held_org_cannot_starve_other_org_gc_candidates() {
     sqlx::query("DELETE FROM blob WHERE tenant_id = $1")
         .bind(tenant.as_str())
         .execute(&storage.pool)
+        .await
+        .unwrap();
+    storage.pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {database}"))
+        .execute(&admin)
         .await
         .unwrap();
 }
@@ -105,7 +115,7 @@ async fn concurrent_purges_leave_a_connection_for_cleanup() {
 
 #[tokio::test]
 async fn deleting_tenant_does_not_block_other_gc_scopes() {
-    let Some(storage) = storage(2).await else {
+    let Some((storage, admin, database)) = isolated_storage(2).await else {
         return;
     };
     let tenant = TenantId::parse(format!("gc-delete-{}", uuid::Uuid::new_v4().simple())).unwrap();
@@ -130,15 +140,46 @@ async fn deleting_tenant_does_not_block_other_gc_scopes() {
         .execute(&storage.pool)
         .await
         .unwrap();
+    storage.pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {database}"))
+        .execute(&admin)
+        .await
+        .unwrap();
 }
 
-async fn storage(max_connections: u32) -> Option<BlobStorage> {
+async fn isolated_storage(max_connections: u32) -> Option<(BlobStorage, sqlx::PgPool, String)> {
     let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         return None;
     };
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let database = format!("version_unit_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {database}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let storage = storage_in(max_connections, Some(&database)).await.unwrap();
+    Some((storage, admin, database))
+}
+
+async fn storage(max_connections: u32) -> Option<BlobStorage> {
+    storage_in(max_connections, None).await
+}
+
+async fn storage_in(max_connections: u32, database: Option<&str>) -> Option<BlobStorage> {
+    let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        return None;
+    };
+    let mut options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    if let Some(database) = database {
+        options = options.database(database);
+    }
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(max_connections)
-        .connect(&url)
+        .connect_with(options)
         .await
         .unwrap();
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
