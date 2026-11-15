@@ -302,6 +302,8 @@ mod tests {
     struct FakeArtifactStore {
         saved: Mutex<Vec<SavedArtifact>>,
         fail: bool,
+        /// 同名が既にある状態を模す（保存名に ` (2)` を付けて返す）。
+        renamed: bool,
     }
 
     #[async_trait::async_trait]
@@ -317,6 +319,15 @@ mod tests {
             if self.fail {
                 return Err(ToolError::Unavailable("fake save failure".into()));
             }
+            let name = if self.renamed {
+                match name.rsplit_once('.') {
+                    Some((stem, ext)) => format!("{stem} (2).{ext}"),
+                    None => format!("{name} (2)"),
+                }
+            } else {
+                name.to_string()
+            };
+            let name = name.as_str();
             let node_id = format!("node-{}", name);
             self.saved
                 .lock()
@@ -438,6 +449,29 @@ mod tests {
         assert!(!out.is_error);
         assert!(out.artifacts.is_empty());
         assert!(out.content.contains("保存に失敗"));
+    }
+
+    #[tokio::test]
+    async fn renamed_artifact_is_reported_with_its_saved_name() {
+        // 同名があって連番付きで保存されたら、実際の保存名を観測に出す（元の名前で探して見失わない）。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: b"done\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            artifacts: vec![("/workspace/集計.xlsx".into(), b"x".to_vec())],
+        }));
+        let store = Arc::new(FakeArtifactStore {
+            renamed: true,
+            ..Default::default()
+        });
+        let tool = CodeInterpreterTool::new(sandbox, Some(store), SandboxBackend::Wasm);
+        let out = tool
+            .call(&ctx(), serde_json::json!({"code": "write"}), None)
+            .await
+            .expect("ok");
+        assert!(!out.is_error);
+        assert_eq!(out.artifacts[0].name, "集計 (2).xlsx");
+        assert!(out.content.contains("「集計 (2).xlsx」として保存しました"));
     }
 
     #[tokio::test]
