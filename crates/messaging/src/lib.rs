@@ -29,6 +29,7 @@ mod service_member;
 mod service_message;
 pub mod store;
 pub mod store_message;
+pub mod stream;
 
 pub use access::{
     AccessGrant, AccessRequest, AdminChannel, AdminMessage, AdminRevision, MessagingSettings,

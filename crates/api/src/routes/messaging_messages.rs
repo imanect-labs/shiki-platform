@@ -42,7 +42,7 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// 合図が来なくても DB を読み直す間隔（Redis が落ちたときの保険）。
 const POLL: Duration = Duration::from_secs(10);
 /// 購読の権限を引き直す上限 TTL（leave の合図を取りこぼしても、この時間で閉じる・PIT-64）。
-pub const RECHECK: Duration = Duration::from_secs(30);
+pub const RECHECK: Duration = messaging::stream::GRANT_TTL;
 
 pub(crate) fn route_decls() -> Vec<RouteDecl> {
     vec![
@@ -378,7 +378,7 @@ pub struct StreamQuery {
 struct StreamState {
     svc: Arc<MessagingService>,
     ctx: authz::AuthContext,
-    channel: Uuid,
+    grant: messaging::stream::ReadGrant,
     sub: Subscription,
     cursor: DateTime<Utc>,
     pending: std::collections::VecDeque<Event>,
@@ -393,7 +393,7 @@ impl StreamState {
     async fn refresh(&mut self) {
         match self
             .svc
-            .changes_since(&self.ctx, self.channel, self.cursor)
+            .changes_with(&self.ctx, &mut self.grant, self.cursor)
             .await
         {
             Ok(views) => {
@@ -418,10 +418,14 @@ impl StreamState {
 
     /// 権限を引き直す（剥奪の合図・上限 TTL）。
     async fn recheck(&mut self) {
-        if let Err(messaging::Error::NotFound | messaging::Error::Forbidden(_)) =
-            self.svc.channel_view(&self.ctx, self.channel).await
+        match self
+            .svc
+            .authorize_read(&self.ctx, self.grant.channel())
+            .await
         {
-            self.leave();
+            Ok(g) => self.grant = g,
+            Err(messaging::Error::NotFound | messaging::Error::Forbidden(_)) => self.leave(),
+            Err(e) => tracing::warn!(error = %e, "messaging stream: 権限の引き直しに失敗"),
         }
     }
 
@@ -484,8 +488,8 @@ pub async fn stream_channel(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let svc = service(&state)?.clone();
-    // 購読の開始時に読めることを確かめる（読めなければ 404）。
-    svc.channel_view(&ctx, id).await.map_err(error)?;
+    // 購読の開始時に読めることを確かめる（読めなければ 404）。以後は許可を持ち回り、TTL で引き直す。
+    let grant = svc.authorize_read(&ctx, id).await.map_err(error)?;
     let since = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
@@ -498,7 +502,7 @@ pub async fn stream_channel(
     let st = StreamState {
         svc,
         ctx,
-        channel: id,
+        grant,
         sub,
         cursor: since,
         pending: std::collections::VecDeque::from([Event::default().event("ready").data("{}")]),

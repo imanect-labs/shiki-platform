@@ -79,31 +79,6 @@ impl MessagingService {
         Ok(views)
     }
 
-    /// `since` より後に変わった発言（SSE の差分・古い順）。権限は毎回引き直す。
-    pub async fn changes_since(
-        &self,
-        ctx: &AuthContext,
-        channel: Uuid,
-        since: DateTime<Utc>,
-    ) -> Result<Vec<MessageView>, Error> {
-        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
-        self.readable_channel(&mut tx, ctx, channel).await?;
-        let rows = sm::fetch_messages(
-            &mut tx,
-            ctx,
-            &ctx.principal().id,
-            MessageFilter::ChangedSince {
-                channel,
-                since,
-                limit: 200,
-            },
-        )
-        .await?;
-        let views = self.views(&mut tx, ctx, rows).await?;
-        tx.commit().await?;
-        Ok(views)
-    }
-
     /// 1 件（読めなければ NotFound）。
     pub async fn message(&self, ctx: &AuthContext, id: Uuid) -> Result<MessageView, Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
