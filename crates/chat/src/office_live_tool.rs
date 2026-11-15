@@ -163,6 +163,10 @@ impl Tool for OfficeLiveEditTool {
          先頭行を文字列だけにすると見出し行として太字になる）。\
          html は段落・箇条書き・見出し・表・強調など最小の書式のみ（script 等は自動除去）。\
          シート/スライドの追加・削除など構造的なファイル編集は office.edit を使うこと。\
+         **Excel のセル値・Word の本文を直すだけなら office.excel_edit / office.word_edit を優先する**\
+         （どちらも版として保存され、オートモードでは承認なしで進む。このツールは承認が要り、\
+         誰も押さなければ待ったまま却下される）。このツールは、利用者が今開いている画面へ即時に\
+         反映したいときや、PowerPoint の本文を直すときに使う。\
          適用結果（op ごとの適用/不発と保存状態）が返るので、不発時はアンカー指定を見直すこと。"
     }
 
@@ -322,6 +326,19 @@ mod tests {
 
     fn input(ops: serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "node_id": Uuid::new_v4(), "ops": ops })
+    }
+
+    /// 値・本文を直すだけなら承認の要らない Engine ツールへ誘導する（オートで承認待ちのまま
+    /// 30 分止まり、却下されてから excel_edit で直した・プレビュー検証 S2）。
+    #[test]
+    fn description_prefers_engine_tools_for_plain_edits() {
+        let t = tool(Err(LiveEditError::Busy));
+        let d = t.description();
+        assert!(
+            d.contains("office.excel_edit") && d.contains("office.word_edit"),
+            "{d}"
+        );
+        assert!(d.contains("承認が要り"), "{d}");
     }
 
     #[tokio::test]
