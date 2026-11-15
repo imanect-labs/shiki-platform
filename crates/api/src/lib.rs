@@ -19,6 +19,7 @@
 
 pub mod config;
 pub mod data_refs;
+pub mod directory_admin;
 pub mod error;
 pub mod error_body;
 pub mod extract;

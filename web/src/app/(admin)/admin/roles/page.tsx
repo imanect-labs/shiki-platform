@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import { MockRolesView } from "@/components/admin/mock-roles-view";
+import { DirectoryView } from "@/components/admin/directory-live/view";
 
 export const metadata: Metadata = { title: "ロール" };
 
-export default function MockRolesPage() {
-  return <MockRolesView />;
+export default function RolesPage() {
+  return <DirectoryView rolesOnly />;
 }

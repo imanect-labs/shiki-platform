@@ -132,6 +132,7 @@ async fn spawn_mock_kc(state: Arc<KcState>) -> String {
 
 fn auth_config(base: &str) -> AuthConfig {
     AuthConfig {
+        directory_ldap_allowed_hosts: vec![],
         issuer: format!("{base}/realms/shiki"),
         internal_base_url: Some(format!("{base}/realms/shiki")),
         jwks_uri: None,

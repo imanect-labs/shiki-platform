@@ -274,6 +274,8 @@ audit_actions! {
     NodeSharesList = "node.shares.list", "共有先の一覧", Share;
     NodeSystemGet = "node.system.get", "システムフォルダか確認", Folder;
     NodeUnshare = "node.unshare", "ファイル・フォルダの共有を解除", Share;
+    OrgAdminDirectoryApply = "org_admin.directory.apply", "ディレクトリとロールの変更を適用", Admin;
+    OrgAdminDirectoryUpdate = "org_admin.directory.update", "ディレクトリとロールの変更を要求", Admin;
     OrgAdminAccess = "org_admin.access", "管理画面へのアクセス", Admin;
     OrgAdminAiSettingsUpdate = "org_admin.ai_settings.update", "AI 設定を変更", Admin;
     OrgAdminInsightsPeopleView = "org_admin.insights.people.view", "利用者別の AI 活用を閲覧", Admin;

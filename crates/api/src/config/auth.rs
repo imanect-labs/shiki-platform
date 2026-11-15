@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
+    /// 組織管理画面から接続を許可するADホスト。未設定は保存・接続テストを拒否する。
+    #[serde(default)]
+    pub directory_ldap_allowed_hosts: Vec<String>,
     /// OIDC issuer（Keycloak realm URL。必須。トークンの `iss` 検証値であり、
     /// ブラウザがログインで到達する**公開 URL**でもある）。
     pub issuer: String,

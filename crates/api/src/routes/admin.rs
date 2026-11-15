@@ -222,6 +222,14 @@ pub async fn delete_tenant(
     validate_tenant_id(&tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
     // 1. deleting へ（不在なら冪等成功）。org は登録簿から得る（無ければ tenant_id と同値とみなす）。
+    let tenant_scope = authz::TenantId::parse(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_idが不正です".into()))?;
+    let _directory_guard = state
+        .directory
+        .admin()
+        .tenant_deletion_lease(&tenant_scope)
+        .await?
+        .ok_or(ApiError::Conflict)?;
     let tenant = state.tenants.mark_deleting(&tenant_id).await?;
     let org = tenant
         .as_ref()
@@ -234,6 +242,9 @@ pub async fn delete_tenant(
     // 3. Keycloak: tenant 属性一致ユーザーとテナントの group subtree を撤去（冪等）。
     let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth)
         .map_err(|e| ApiError::Internal(format!("keycloak admin: {e}")))?;
+    kc.delete_directory_integrations(&tenant_id)
+        .await
+        .map_err(crate::directory_admin::connection::keycloak_error)?;
     let users = kc
         .find_users_by_tenant(&tenant_id)
         .await

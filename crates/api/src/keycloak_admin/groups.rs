@@ -90,6 +90,7 @@ impl KeycloakAdmin<'_> {
                 ("exact", "true"),
                 ("briefRepresentation", "false"),
             ])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -120,6 +121,7 @@ impl KeycloakAdmin<'_> {
             .post(url)
             .bearer_auth(&token)
             .json(&json!({ "name": name }))
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -211,6 +213,7 @@ impl KeycloakAdmin<'_> {
             .http
             .get(&url)
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -231,6 +234,7 @@ impl KeycloakAdmin<'_> {
             .put(&url)
             .bearer_auth(&token)
             .json(&representation)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -283,6 +287,7 @@ impl KeycloakAdmin<'_> {
             .http
             .put(format!("{}/users/{user_id}/groups/{group_id}", self.base))
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -300,6 +305,7 @@ impl KeycloakAdmin<'_> {
             .http
             .delete(format!("{}/users/{user_id}/groups/{group_id}", self.base))
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -316,6 +322,7 @@ impl KeycloakAdmin<'_> {
             .http
             .delete(format!("{}/groups/{group_id}", self.base))
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -378,7 +385,9 @@ impl KeycloakAdmin<'_> {
     }
 
     /// LDAP group マッパーの（名前, `groups.path`）。
-    async fn ldap_mapper_groups(&self) -> Result<Vec<(String, String)>, KeycloakAdminError> {
+    pub(super) async fn ldap_mapper_groups(
+        &self,
+    ) -> Result<Vec<(String, String)>, KeycloakAdminError> {
         let mappers: Vec<Value> = self
             .get_json(&format!(
                 "{}/components?type=org.keycloak.storage.ldap.mappers.LDAPStorageMapper",
@@ -417,6 +426,7 @@ impl KeycloakAdmin<'_> {
             .http
             .get(url)
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -445,6 +455,7 @@ impl KeycloakAdmin<'_> {
                 .get(url)
                 .bearer_auth(&token)
                 .query(&query)
+                .timeout(std::time::Duration::from_secs(30))
                 .send()
                 .await
                 .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;

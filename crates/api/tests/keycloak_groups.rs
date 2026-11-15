@@ -393,6 +393,7 @@ async fn spawn_mock(st: St) -> String {
 
 fn auth_config(base: &str) -> AuthConfig {
     AuthConfig {
+        directory_ldap_allowed_hosts: vec![],
         issuer: format!("{base}/realms/shiki"),
         internal_base_url: Some(format!("{base}/realms/shiki")),
         jwks_uri: None,

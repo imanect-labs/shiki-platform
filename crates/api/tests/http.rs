@@ -325,6 +325,7 @@ fn base_config() -> AppConfig {
             max_connections: 1,
         },
         auth: AuthConfig {
+            directory_ldap_allowed_hosts: vec![],
             issuer: "http://localhost/realms/shiki".into(),
             internal_base_url: None,
             jwks_uri: None,
@@ -1368,3 +1369,6 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
 
 #[path = "http/bug_reports.rs"]
 mod bug_reports;
+
+#[path = "http/directory.rs"]
+mod directory;

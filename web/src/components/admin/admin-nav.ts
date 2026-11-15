@@ -100,9 +100,9 @@ export const ADMIN_SECTIONS: AdminSection[] = [
       {
         label: "メンバー",
         items: [
-          { label: "メンバー", href: "/admin/members", mock: true },
-          { label: "ロール", href: "/admin/roles", mock: true },
-          { label: "AD連携", href: "/admin/directory", mock: true },
+          { label: "メンバー", href: "/admin/members", mock: false },
+          { label: "ロール", href: "/admin/roles", mock: false },
+          { label: "AD連携", href: "/admin/directory", mock: false },
         ],
       },
     ],

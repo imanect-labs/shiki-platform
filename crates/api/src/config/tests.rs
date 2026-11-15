@@ -74,6 +74,7 @@ fn auth_config(
     jwks_uri: Option<&str>,
 ) -> AuthConfig {
     AuthConfig {
+        directory_ldap_allowed_hosts: vec![],
         issuer: issuer.into(),
         internal_base_url: internal_base_url.map(str::to_string),
         jwks_uri: jwks_uri.map(str::to_string),

@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 
 use crate::config::AuthConfig;
 
+mod directory;
 mod groups;
+pub mod ldap;
 pub mod org_group_migration;
 pub use groups::{GroupPathReferences, KcGroup, RenameOutcome};
 
@@ -54,12 +56,12 @@ impl KcUser {
     }
 }
 
-/// admin REST の薄いクライアント。トークンは呼び出し毎に取得する
-/// （プロビジョニングは低頻度の管理操作でありキャッシュ複雑性に見合わない）。
+/// admin RESTクライアント。一括管理操作ではインスタンス内で短命トークンを共有する。
 pub struct KeycloakAdmin<'a> {
     http: &'a reqwest::Client,
     auth: &'a AuthConfig,
     base: String,
+    token: tokio::sync::Mutex<Option<(String, tokio::time::Instant)>>,
 }
 
 impl<'a> KeycloakAdmin<'a> {
@@ -76,11 +78,22 @@ impl<'a> KeycloakAdmin<'a> {
         let base = auth.admin_base().ok_or_else(|| {
             KeycloakAdminError::NotConfigured("auth.admin_base_url（realm パス導出不能）".into())
         })?;
-        Ok(Self { http, auth, base })
+        Ok(Self {
+            http,
+            auth,
+            base,
+            token: tokio::sync::Mutex::new(None),
+        })
     }
 
     /// service account の access token を client_credentials で取得する。
     async fn admin_token(&self) -> Result<String, KeycloakAdminError> {
+        let mut cached = self.token.lock().await;
+        if let Some((token, until)) = cached.as_ref() {
+            if *until > tokio::time::Instant::now() {
+                return Ok(token.clone());
+            }
+        }
         // from_config で存在検証済みだが、状態不変条件をエラーとして明示的に扱う。
         let (id, secret) = self.auth.provisioner_credentials().ok_or_else(|| {
             KeycloakAdminError::NotConfigured("auth.provisioner（client_id/secret）".into())
@@ -93,6 +106,7 @@ impl<'a> KeycloakAdmin<'a> {
                 ("client_id", id),
                 ("client_secret", secret),
             ])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -100,11 +114,20 @@ impl<'a> KeycloakAdmin<'a> {
         #[derive(Deserialize)]
         struct Token {
             access_token: String,
+            #[serde(default)]
+            expires_in: u64,
         }
         let t: Token = resp
             .json()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        if t.expires_in > 10 {
+            *cached = Some((
+                t.access_token.clone(),
+                tokio::time::Instant::now()
+                    + std::time::Duration::from_secs(t.expires_in.min(3600) - 5),
+            ));
+        }
         Ok(t.access_token)
     }
 
@@ -119,6 +142,7 @@ impl<'a> KeycloakAdmin<'a> {
             .get(format!("{}/users", self.base))
             .bearer_auth(&token)
             .query(&[("username", username), ("exact", "true")])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -170,6 +194,7 @@ impl<'a> KeycloakAdmin<'a> {
             .post(format!("{}/users", self.base))
             .bearer_auth(&token)
             .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -243,6 +268,7 @@ impl<'a> KeycloakAdmin<'a> {
             .put(format!("{}/users/{}/reset-password", self.base, user_id))
             .bearer_auth(&token)
             .json(&json!({ "type": "password", "value": temp_password, "temporary": true }))
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -272,6 +298,7 @@ impl<'a> KeycloakAdmin<'a> {
                     ("first", first.to_string().as_str()),
                     ("max", PAGE.to_string().as_str()),
                 ])
+                .timeout(std::time::Duration::from_secs(30))
                 .send()
                 .await
                 .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -303,6 +330,7 @@ impl<'a> KeycloakAdmin<'a> {
             .http
             .get(format!("{}/users/{}", self.base, user_id))
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -328,6 +356,7 @@ impl<'a> KeycloakAdmin<'a> {
             .put(format!("{}/users/{}", self.base, user_id))
             .bearer_auth(&token)
             .json(&user)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -344,6 +373,7 @@ impl<'a> KeycloakAdmin<'a> {
             .http
             .delete(format!("{}/users/{}", self.base, user_id))
             .bearer_auth(&token)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;

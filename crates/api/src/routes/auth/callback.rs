@@ -231,8 +231,26 @@ pub(crate) async fn provision_roles(
     tenant_id: authz::TenantId,
 ) {
     // あるべき集合（claims 由来・正規化済み）。
-    let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
+    let (org, mut sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
+    match state
+        .directory
+        .admin()
+        .mapped_roles(&ctx, &ctx.principal().groups)
+        .await
+    {
+        Ok(mapped) => {
+            for id in mapped {
+                if !sourced.iter().any(|(existing, _)| existing == &id) {
+                    sourced.push((id, true));
+                }
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "AD対応表が読めないため所属の付与・剥奪を保留しました");
+            return;
+        }
+    }
     let subject = ctx.subject();
     let ns = ctx.ns();
     let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
@@ -461,6 +479,7 @@ mod tests {
 
     fn auth(tenancy: Tenancy) -> AuthConfig {
         AuthConfig {
+            directory_ldap_allowed_hosts: vec![],
             issuer: "http://localhost/realms/shiki".into(),
             internal_base_url: None,
             jwks_uri: None,

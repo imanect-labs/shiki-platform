@@ -12,6 +12,7 @@ use sqlx::PgPool;
 
 use crate::{error::StorageError, model::ShareTarget};
 
+pub mod admin;
 mod share_profiles;
 
 pub(crate) use share_profiles::resolve_share_profiles;
@@ -289,7 +290,9 @@ impl DirectoryStore {
             "INSERT INTO directory_role (role_id, tenant_id, org, display_name) \
              VALUES ($1, $2, $3, $4) \
              ON CONFLICT (tenant_id, role_id) DO UPDATE \
-               SET org = excluded.org, display_name = excluded.display_name, updated_at = now()",
+               SET org = excluded.org, display_name = coalesce( \
+               (SELECT label FROM directory_managed_role m WHERE m.tenant_id = excluded.tenant_id \
+                AND m.org = excluded.org AND m.role_id = excluded.role_id), excluded.display_name), updated_at = now()",
         )
         .bind(role_id)
         .bind(tenant_id)

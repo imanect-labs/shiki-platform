@@ -1,4 +1,4 @@
 import type { Metadata } from "next";
-import { MockDirectoryView } from "@/components/admin/mock-directory-view";
+import { DirectoryView } from "@/components/admin/directory-live/view";
 export const metadata: Metadata = { title: "AD連携" };
-export default function DirectoryPage() { return <MockDirectoryView />; }
+export default function DirectoryPage() { return <DirectoryView />; }
