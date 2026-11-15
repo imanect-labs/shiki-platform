@@ -31,7 +31,7 @@ export const APPROVAL_MODES: {
   {
     mode: "auto",
     label: "オート",
-    description: "版管理で戻せる編集は自動承認。削除・シェルなど不可逆な操作だけ承認します",
+    description: "版管理で戻せる編集と、隔離環境でのコード実行は自動承認。削除など不可逆な操作だけ承認します",
     icon: Zap,
   },
   {
