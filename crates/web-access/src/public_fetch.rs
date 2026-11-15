@@ -70,6 +70,21 @@ pub fn validate_url(input: &str) -> Result<FetchTarget, String> {
     Ok(FetchTarget { url, host, port })
 }
 
+/// 名前解決できなかったホストの `www.` 付きの候補（無ければ `None`）。
+///
+/// 官公庁などには `www.` 無しの名前を DNS に載せていないサイトがあり（`soumu.go.jp`・
+/// `npa.go.jp`）、モデルはよく `www.` を落として書く。候補も [`validate_url`] を通し直すので
+/// 検証は緩まない（接続先の判定は呼び出し側が [`pinned_client`] で改めて行う）。
+#[must_use]
+pub fn www_variant(target: &FetchTarget) -> Option<FetchTarget> {
+    if target.host.starts_with("www.") {
+        return None;
+    }
+    let mut url = target.url.clone();
+    url.set_host(Some(&format!("www.{}", target.host))).ok()?;
+    validate_url(url.as_str()).ok()
+}
+
 /// [`pinned_client`] の失敗。呼び出し側が自分の文言へ写す。
 #[derive(Debug)]
 pub enum PinError {
@@ -181,6 +196,18 @@ mod tests {
         async fn lookup(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, &'static str> {
             Ok(self.0.clone())
         }
+    }
+
+    #[test]
+    fn www_variant_adds_www_only_once() {
+        let t = validate_url("https://soumu.go.jp/main_content/1.pdf?a=1").expect("valid");
+        let w = www_variant(&t).expect("variant");
+        assert_eq!(w.host, "www.soumu.go.jp");
+        assert_eq!(
+            w.url.as_str(),
+            "https://www.soumu.go.jp/main_content/1.pdf?a=1"
+        );
+        assert!(www_variant(&w).is_none());
     }
 
     #[tokio::test]
