@@ -438,7 +438,6 @@ mod tests {
     //! hub 経由の適用・認可は crates/collab/tests/slide_ai_edit_it.rs が担う。
     use super::*;
 
-
     fn slides_in(outcome: &ToolOutcome) -> Vec<(String, String)> {
         let doc =
             collab::slide::SlideDoc::from_json(&outcome.slide_drafts[0].content).expect("json");
