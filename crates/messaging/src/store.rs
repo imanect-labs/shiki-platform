@@ -369,8 +369,12 @@ pub async fn mark_read(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "UPDATE channel_mention SET read_at = now() WHERE tenant_id = $1 AND org = $2 \
-         AND channel_id = $3 AND user_id = $4 AND read_at IS NULL AND created_at <= $5",
+        // チャンネルを開いて見えるのは最上位の発言だけ。スレッドの中のメンションは残す（スレッドを開くか
+        // メンション一覧で既読にする）。
+        "UPDATE channel_mention mm SET read_at = now() WHERE mm.tenant_id = $1 AND mm.org = $2 \
+         AND mm.channel_id = $3 AND mm.user_id = $4 AND mm.read_at IS NULL AND mm.created_at <= $5 \
+         AND EXISTS (SELECT 1 FROM channel_message m WHERE m.tenant_id = mm.tenant_id AND m.org = mm.org \
+           AND m.id = mm.message_id AND m.parent_id IS NULL)",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())

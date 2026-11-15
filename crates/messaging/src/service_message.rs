@@ -629,6 +629,11 @@ impl MessagingService {
                 names.insert(*c, name);
             }
         }
+        let mentioned: Vec<String> = views
+            .values()
+            .flat_map(|v| crate::model::mentioned_users(&v.blocks))
+            .collect();
+        let mention_names = store::display_names(&mut tx, ctx, &mentioned).await?;
         tx.commit().await?;
         Ok(rows
             .into_iter()
@@ -643,7 +648,10 @@ impl MessagingService {
                     channel_name: names.get(&cid).cloned().unwrap_or_default(),
                     parent_id: v.parent_id,
                     author: v.author.clone(),
-                    excerpt: plain_text(&v.blocks).chars().take(140).collect(),
+                    excerpt: crate::model::plain_text_named(&v.blocks, &mention_names)
+                        .chars()
+                        .take(140)
+                        .collect(),
                     via,
                     read: read_at.is_some(),
                     created_at,

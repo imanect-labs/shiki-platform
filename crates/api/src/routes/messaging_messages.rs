@@ -39,6 +39,8 @@ use crate::{
 
 /// `keepalive` イベントの間隔。
 const KEEPALIVE: Duration = Duration::from_secs(15);
+/// 読み直しで遡る幅（コミット順と `updated_at` の前後を吸収する）。
+const OVERLAP: chrono::TimeDelta = chrono::TimeDelta::seconds(10);
 /// 合図が来なくても DB を読み直す間隔（Redis が落ちたときの保険）。
 const POLL: Duration = Duration::from_secs(10);
 /// 購読の権限を引き直す上限 TTL（leave の合図を取りこぼしても、この時間で閉じる・PIT-64）。
@@ -381,6 +383,8 @@ struct StreamState {
     grant: messaging::stream::ReadGrant,
     sub: Subscription,
     cursor: DateTime<Utc>,
+    /// 送った発言の版（`updated_at`）。重なりのある読み直しで同じ版を二度送らない。
+    sent: std::collections::HashMap<Uuid, DateTime<Utc>>,
     pending: std::collections::VecDeque<Event>,
     keepalive: tokio::time::Interval,
     poll: tokio::time::Interval,
@@ -391,13 +395,22 @@ struct StreamState {
 impl StreamState {
     /// 変わった発言を自分の権限で読み直して積む。読めなくなっていたら `leave` を積んで閉じる。
     async fn refresh(&mut self) {
+        // `updated_at` は書いたトランザクションの時刻で、コミット順と前後しうる。カーソルぴったりから
+        // 読むと、後からコミットされた古い時刻の行を取りこぼすので、OVERLAP だけ遡って読み、
+        // 送った版は飛ばす。
+        let since = self.cursor - OVERLAP;
         match self
             .svc
-            .changes_with(&self.ctx, &mut self.grant, self.cursor)
+            .changes_with(&self.ctx, &mut self.grant, since)
             .await
         {
             Ok(views) => {
+                self.sent.retain(|_, at| *at > since);
                 for v in views {
+                    if self.sent.get(&v.id).is_some_and(|at| *at >= v.updated_at) {
+                        continue;
+                    }
+                    self.sent.insert(v.id, v.updated_at);
                     self.cursor = self.cursor.max(v.updated_at);
                     if let Ok(json) = serde_json::to_string(&v) {
                         self.pending.push_back(
@@ -505,6 +518,7 @@ pub async fn stream_channel(
         grant,
         sub,
         cursor: since,
+        sent: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::from([Event::default().event("ready").data("{}")]),
         keepalive: interval(KEEPALIVE),
         poll: interval(POLL),

@@ -205,7 +205,11 @@ impl MessagingService {
         if rows.len() > CONTEXT_MESSAGES as usize {
             rows.drain(..rows.len() - CONTEXT_MESSAGES as usize);
         }
-        let authors: Vec<String> = rows.iter().map(|r| r.author_id.clone()).collect();
+        let mut authors: Vec<String> = rows.iter().map(|r| r.author_id.clone()).collect();
+        authors.extend(
+            rows.iter()
+                .flat_map(|r| crate::model::mentioned_users(&r.blocks.0)),
+        );
         let names = store::display_names(conn, ctx, &authors).await?;
         let agents = profiles(conn, ctx, &authors).await?;
         let agent_name = agent_name(conn, ctx, &me).await?;
@@ -224,7 +228,7 @@ impl MessagingService {
                 };
                 ContextLine {
                     author,
-                    text: plain_text(&r.blocks.0)
+                    text: crate::model::plain_text_named(&r.blocks.0, &names)
                         .chars()
                         .take(CONTEXT_CHARS_PER_MESSAGE)
                         .collect(),

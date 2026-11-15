@@ -390,6 +390,48 @@ pub fn plain_text(blocks: &[ContentBlock]) -> String {
     out
 }
 
+/// 平文に、メンションを名前つきで書き出す（通知の抜粋・AI の文脈）。`users` は利用者 id → 表示名。
+#[must_use]
+pub fn plain_text_named<S: std::hash::BuildHasher>(
+    blocks: &[ContentBlock],
+    users: &std::collections::HashMap<String, String, S>,
+) -> String {
+    let mut out = String::new();
+    for b in blocks {
+        match b {
+            ContentBlock::Text { text } => out.push_str(text),
+            ContentBlock::Mention { mention } => match mention {
+                Mention::User { user_id } => {
+                    out.push('@');
+                    out.push_str(users.get(user_id).map_or("利用者", String::as_str));
+                }
+                Mention::Role { role_id } => {
+                    out.push('@');
+                    out.push_str(role_id);
+                }
+                Mention::Channel => out.push_str("@channel"),
+                Mention::Agent => out.push_str("@エージェント"),
+            },
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 本文のユーザーメンションの宛先 id。
+#[must_use]
+pub fn mentioned_users(blocks: &[ContentBlock]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Mention {
+                mention: Mention::User { user_id },
+            } => Some(user_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// 本文の中の URL（リンクのプレビューの候補・先頭から最大 `max` 件・重複なし）。
 #[must_use]
 pub fn extract_urls(blocks: &[ContentBlock], max: usize) -> Vec<String> {

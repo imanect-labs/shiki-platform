@@ -51,6 +51,10 @@ pub struct MessagingSettings {
 pub struct AccessGrant {
     pub id: Uuid,
     pub channel_id: Uuid,
+    /// 対象チャンネルの名前（DM は 2 人の表示名・承認者が判断するため。一覧でだけ埋める）。
+    #[sqlx(default)]
+    #[serde(default)]
+    pub channel_name: String,
     pub requester: String,
     pub reason: String,
     pub messages_from: DateTime<Utc>,
@@ -358,7 +362,7 @@ impl MessagingService {
         if !approver {
             self.require_auditor(ctx).await?;
         }
-        let rows: Vec<AccessGrant> = sqlx::query_as(&format!(
+        let mut rows: Vec<AccessGrant> = sqlx::query_as(&format!(
             "SELECT {GRANT_COLS} FROM messaging_access_grant WHERE tenant_id = $1 AND org = $2 \
                AND ($3 OR requester = $4) ORDER BY created_at DESC LIMIT 200"
         ))
@@ -368,6 +372,11 @@ impl MessagingService {
         .bind(&me)
         .fetch_all(&mut *tx)
         .await?;
+        for g in &mut rows {
+            if let Some(c) = store::channel(&mut tx, ctx, g.channel_id).await? {
+                g.channel_name = admin_channel_name(&mut tx, ctx, &c).await?;
+            }
+        }
         tx.commit().await?;
         Ok(rows)
     }

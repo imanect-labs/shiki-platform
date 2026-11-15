@@ -39,7 +39,10 @@ pub(crate) fn error(e: messaging::Error) -> ApiError {
         Error::NotFound => ApiError::NotFound,
         Error::Forbidden(m) => ApiError::ForbiddenJson(serde_json::json!({ "message": m })),
         Error::Conflict(m) => ApiError::ConflictJson(serde_json::json!({ "message": m })),
-        Error::Invalid(m) => ApiError::BadRequest(m),
+        // 文言は messaging が利用者向けに書いたもの（上流の詳細を含まない）なので本文に載せる。
+        Error::Invalid(m) => {
+            ApiError::UnprocessableJson(serde_json::json!({ "status": 400, "message": m }))
+        }
         Error::Unavailable(m) => ApiError::ServiceUnavailable(m.into()),
         // 認可基盤の失敗は fail-closed（拒否側）に倒す。
         Error::Authz(e) => ApiError::from(e),
