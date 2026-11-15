@@ -403,6 +403,11 @@ impl AppConfig {
             .version_storage
             .validate()
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        if matches!(self.auth.tenancy, Tenancy::Multi) && self.database.max_connections < 2 {
+            return Err(ConfigError::Invalid(
+                "テナント撤去には database.max_connections が2以上必要です".into(),
+            ));
+        }
         if self.storage.version_storage.enabled && self.database.max_connections < 3 {
             return Err(ConfigError::Invalid(
                 "storage.version_storage の有効化には database.max_connections が3以上必要です"

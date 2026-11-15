@@ -75,6 +75,7 @@ pub const RETENANT_SIDECAR_COMPLETE: &[&str] = &[
     "blob_storage_object",
     "blob_storage_ref",
     "blob_storage_hold",
+    "blob_storage_scope",
     // 共有リンク台帳は node タプルに従属し、独自の FGA オブジェクトを持たない。
     "node_share_link",
     "node_share_link_grant",

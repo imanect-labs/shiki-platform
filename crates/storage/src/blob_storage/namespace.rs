@@ -9,6 +9,7 @@ pub struct NamespaceMove {
     from: TenantId,
     to: TenantId,
     _guard: db_tenant::CrossTenantTx,
+    _slot: tokio::sync::SemaphorePermit<'static>,
 }
 
 impl BlobStorage {
@@ -21,6 +22,12 @@ impl BlobStorage {
         if from == to {
             return Err(StorageError::Invalid("移行元と移行先が同じです".into()));
         }
+        if self.pool.options().get_max_connections() < 2 {
+            return Err(StorageError::Invalid(
+                "テナント移行にはDB接続が2以上必要です".into(),
+            ));
+        }
+        let slot = super::purge::maintenance_slot().await?;
         let mut guard =
             db_tenant::begin_cross_tenant_tx(&self.pool, "blob_storage_namespace_move").await?;
         let mut ids = vec![from.as_str(), to.as_str()];
@@ -43,6 +50,7 @@ impl BlobStorage {
             from,
             to,
             _guard: guard,
+            _slot: slot,
         })
     }
 

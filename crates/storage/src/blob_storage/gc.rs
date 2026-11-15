@@ -81,6 +81,13 @@ impl BlobStorage {
         .await?;
         sqlx::query("DELETE FROM blob_storage_hold WHERE tenant_id = $1 AND org = $2 AND expires_at < now()")
             .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
+        sqlx::query("UPDATE blob_storage_scope SET next_check_at = GREATEST(clock_timestamp() + interval '1 minute', \
+            COALESCE((SELECT min(deadline) FROM ( \
+              (SELECT raw_expires_at AS deadline FROM blob WHERE tenant_id = $1 AND org = $2 AND storage_manifest IS NOT NULL AND raw_available ORDER BY raw_expires_at LIMIT 1) \
+              UNION ALL (SELECT raw_audit_at FROM blob WHERE tenant_id = $1 AND org = $2 AND storage_manifest IS NOT NULL AND NOT raw_available ORDER BY raw_audit_at LIMIT 1) \
+              UNION ALL (SELECT protected_until FROM blob_storage_object WHERE tenant_id = $1 AND org = $2 AND refcount = 0 ORDER BY protected_until LIMIT 1)) deadlines), \
+              clock_timestamp() + interval '1 day')) WHERE tenant_id = $1 AND org = $2")
+            .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(removed)
     }

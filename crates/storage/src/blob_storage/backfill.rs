@@ -18,7 +18,7 @@ impl BlobStorage {
             ORDER BY size_bytes, created_at, tenant_id, org, sha256 LIMIT 64")
             .bind(max_bytes.min(codec::MAX_BYTES) as i64).fetch_all(&mut *scan).await?;
         scan.commit().await?;
-        let checked = rows.len();
+        let mut checked = 0;
         let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for (tenant, org, sha) in rows {
             groups.entry((tenant, org)).or_default().push(sha);
@@ -49,6 +49,7 @@ impl BlobStorage {
                 Self::enqueue(&mut tx, &tenant, &org, node).await?;
             }
             tx.commit().await?;
+            checked += locked.len();
         }
         Ok(checked)
     }

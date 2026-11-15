@@ -14,26 +14,35 @@ struct Payload {
 }
 
 impl BlobStorage {
-    async fn gc_due(&self) -> Result<(), StorageError> {
+    pub(super) async fn gc_scopes_due(&self) -> Result<Vec<(String, String)>, StorageError> {
         let mut tx =
             crate::db_tenant::begin_cross_tenant_tx(&self.pool, "blob_storage_gc_scan").await?;
-        // tenant-sql: allow(横断保守 executor の有界期限走査)
+        // tenant-sql: allow(横断保守 executor の組織単位・有界期限走査)
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT tenant_id, org FROM ( \
-              (SELECT tenant_id, org FROM blob WHERE storage_manifest IS NOT NULL AND raw_available \
-               AND raw_expires_at < now() ORDER BY raw_expires_at LIMIT 16) UNION \
-              (SELECT tenant_id, org FROM blob WHERE storage_manifest IS NOT NULL AND NOT raw_available \
-               AND raw_audit_at < now() ORDER BY raw_audit_at LIMIT 4) UNION \
-              (SELECT tenant_id, org FROM blob_storage_object WHERE protected_until < now() AND refcount = 0 \
-               AND NOT EXISTS (SELECT 1 FROM blob_storage_ref r WHERE r.tenant_id = blob_storage_object.tenant_id \
-                 AND r.org = blob_storage_object.org AND r.object_sha256 = blob_storage_object.sha256) \
-               ORDER BY protected_until LIMIT 16)) due LIMIT 16")
+            "WITH due AS MATERIALIZED (SELECT tenant_id, org FROM blob_storage_scope \
+             WHERE next_check_at < now() ORDER BY next_check_at LIMIT 16 FOR UPDATE SKIP LOCKED), \
+             postponed AS (UPDATE blob_storage_scope s SET next_check_at = GREATEST( \
+               clock_timestamp() + interval '1 minute', \
+               COALESCE((SELECT max(expires_at) FROM blob_storage_hold h WHERE h.tenant_id = s.tenant_id AND h.org = s.org), now()), \
+               CASE WHEN EXISTS (SELECT 1 FROM tenant t WHERE t.tenant_id = s.tenant_id AND t.status IN ('deleting', 'deleted')) \
+                    THEN clock_timestamp() + interval '1 hour' ELSE now() END) \
+             FROM due WHERE s.tenant_id = due.tenant_id AND s.org = due.org RETURNING s.tenant_id, s.org) \
+             SELECT tenant_id, org FROM postponed p \
+             WHERE NOT EXISTS (SELECT 1 FROM blob_storage_hold h WHERE h.tenant_id = p.tenant_id AND h.org = p.org AND h.expires_at > now()) \
+             AND NOT EXISTS (SELECT 1 FROM tenant t WHERE t.tenant_id = p.tenant_id AND t.status IN ('deleting', 'deleted'))")
             .fetch_all(&mut *tx).await?;
         tx.commit().await?;
+        Ok(rows)
+    }
+
+    async fn gc_due(&self) -> Result<(), StorageError> {
+        let rows = self.gc_scopes_due().await?;
         for (tenant, org) in rows {
             let tenant =
                 TenantId::parse(tenant).map_err(|e| StorageError::Integrity(e.to_string()))?;
-            self.collect(&tenant, &org).await?;
+            if let Err(e) = self.collect(&tenant, &org).await {
+                tracing::warn!(error = %e, tenant = %tenant, org, "組織の版実体回収を再試行します");
+            }
         }
         Ok(())
     }

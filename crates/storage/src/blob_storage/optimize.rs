@@ -207,6 +207,8 @@ impl BlobStorage {
                 WHERE tenant_id = $1 AND org = $2 AND sha256 = $3")
                 .bind(tenant.as_str()).bind(org).bind(sha).bind(sqlx::types::Json(plan.manifest))
                 .bind(plan.stored_bytes as i64).bind(Duration::from_secs(options.raw_grace_secs).as_secs_f64()).bind(reads).execute(&mut *tx).await?;
+            sqlx::query("UPDATE blob_storage_scope SET next_check_at = LEAST(next_check_at, clock_timestamp()) WHERE tenant_id = $1 AND org = $2")
+                .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -220,6 +222,8 @@ impl BlobStorage {
     ) -> Result<(), StorageError> {
         let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, tenant).await?;
         let hashes: Vec<String> = plan.objects.keys().cloned().collect();
+        sqlx::query("INSERT INTO blob_storage_scope (tenant_id, org) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
         let sizes: Vec<i64> = plan.objects.values().map(|b| b.len() as i64).collect();
         sqlx::query("INSERT INTO blob_storage_object (tenant_id, org, sha256, size_bytes, protected_until) \
             SELECT $1, $2, p.sha, p.size, clock_timestamp() + interval '1 day' \

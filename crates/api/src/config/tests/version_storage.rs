@@ -28,6 +28,10 @@ fn version_optimization_rejects_invalid_resource_limits_at_startup() {
         .contains("max_connections"));
     cfg.storage.version_storage.enabled = false;
     assert!(cfg.validate().is_ok());
+    cfg.auth.tenancy = Tenancy::Multi;
+    assert!(cfg.validate().is_err());
+    cfg.database.max_connections = 2;
+    assert!(cfg.validate().is_ok());
     for (key, value) in [
         ("raw_grace_secs", 0),
         ("max_optimize_bytes", 67108865),

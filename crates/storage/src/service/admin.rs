@@ -56,6 +56,14 @@ impl StorageService {
         Ok(())
     }
 
+    /// バックアップ保護を確認し、呼出側の全サブシステム撤去が終わるまで保持する。
+    pub async fn begin_tenant_purge(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<crate::blob_storage::TenantPurgeGuard, StorageError> {
+        self.content.begin_tenant_purge(tenant).await
+    }
+
     /// テナントの全データを撤去する（SAAS.2 テナント削除・admin プレーン）。
     ///
     /// 撤去順（fail-safe・全段冪等＝途中失敗は再実行で収束）:
@@ -73,7 +81,6 @@ impl StorageService {
     /// 返り値は `(剥奪タプル数, 削除オブジェクト数)`（ログ/レスポンス用の概数）。
     // テナント配下の全リソース種（node/role/org/artifact/secret＋各テーブル）を順に撤去する
     // admin 削除の単一手続きのため行数が多い。段ごとにコメントで区切っている。
-    #[allow(clippy::too_many_lines)]
     pub async fn purge_tenant(
         &self,
         tenant_id: &str,
@@ -81,24 +88,20 @@ impl StorageService {
         actor: &str,
     ) -> Result<(u64, u64), StorageError> {
         let ctx = system_ctx(tenant_id, org, actor)?;
-        // 最適化・バックアップ開始と同時に prefix を消さない。guard は撤去完了まで保持する。
-        let mut storage_guard = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 118488))")
-            .bind(tenant_id)
-            .execute(&mut *storage_guard)
-            .await?;
-        let held: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM blob_storage_hold \
-            WHERE tenant_id = $1 AND expires_at > now())",
-        )
-        .bind(tenant_id)
-        .fetch_one(&mut *storage_guard)
-        .await?;
-        if held {
-            return Err(StorageError::Invalid(
-                "バックアップ保護中のためテナント撤去を再試行してください".into(),
-            ));
-        }
+        let guard = self.begin_tenant_purge(ctx.tenant()).await?;
+        self.purge_tenant_with_guard(&guard, org, actor).await
+    }
+
+    /// begin_tenant_purgeで取得したguardを保持したままstorageの撤去を行う。
+    #[allow(clippy::too_many_lines)]
+    pub async fn purge_tenant_with_guard(
+        &self,
+        guard: &crate::blob_storage::TenantPurgeGuard,
+        org: &str,
+        actor: &str,
+    ) -> Result<(u64, u64), StorageError> {
+        let tenant_id = guard.tenant().as_str();
+        let ctx = system_ctx(tenant_id, org, actor)?;
         let ns = ctx.ns();
         let mut tuples_deleted: u64 = 0;
 
@@ -260,6 +263,7 @@ impl StorageService {
         //    手で列挙していた頃は 51 テーブル中 13 しか消しておらず、チャット履歴・RAG 本文・
         //    構造化データ・ワークフロー履歴が撤去後も残っていた（SAAS.2「完全削除」の未達）。
         let tables = crate::tenant_scope::tenant_scoped_tables(&self.db).await?;
+        let int_tables = crate::tenant_scope::tenant_int_scoped_tables(&self.db).await?;
         let mut tx = self.db.begin().await?;
         let mut rows_deleted: u64 = 0;
         // 実際に消したテーブル数はループで数える（CodeRabbit）。`tables.len() - RETAINED.len()` は
@@ -283,7 +287,6 @@ impl StorageService {
         }
         // `tenant_id` を持たず内部整数キー `tenant_int` で境界を持つ表（構造化データの索引テーブル・
         // Task 15.2）も同じ Tx で消す。`tenant_placement`（保持）から tenant_int を引く。
-        let int_tables = crate::tenant_scope::tenant_int_scoped_tables(&self.db).await?;
         tables_purged += int_tables.len();
         rows_deleted +=
             crate::tenant_scope::delete_tenant_int_rows(&mut tx, &int_tables, tenant_id).await?;

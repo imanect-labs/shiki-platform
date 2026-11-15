@@ -13,6 +13,7 @@ mod codec;
 mod gc;
 mod namespace;
 mod optimize;
+mod purge;
 mod read;
 mod worker;
 
@@ -22,6 +23,7 @@ mod concurrency_tests;
 
 pub use namespace::NamespaceMove;
 pub use optimize::CompactionBatch;
+pub use purge::TenantPurgeGuard;
 pub use worker::spawn_version_storage_worker;
 
 pub(crate) const QUEUE: &str = "storage_version_optimize";
@@ -340,6 +342,8 @@ impl BlobStorage {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("UPDATE blob_storage_scope SET next_check_at = LEAST(next_check_at, clock_timestamp()) WHERE tenant_id = $1 AND org = $2")
+            .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }

@@ -1,0 +1,58 @@
+BEGIN
+INSERT 0 10000
+INSERT 0 10000
+ANALYZE
+ANALYZE
+SET
+SET
+                                                                                QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop Anti Join  (cost=147.08..170.81 rows=1 width=64) (actual time=0.517..0.519 rows=0 loops=1)
+   Join Filter: (t.tenant_id = p.tenant_id)
+   Buffers: shared hit=346
+   CTE due
+     ->  Limit  (cost=0.29..1.09 rows=16 width=30) (actual time=0.046..0.058 rows=16 loops=1)
+           Buffers: shared hit=27
+           ->  LockRows  (cost=0.29..503.41 rows=10000 width=30) (actual time=0.044..0.054 rows=16 loops=1)
+                 Buffers: shared hit=27
+                 ->  Index Scan using blob_storage_scope_due_idx on blob_storage_scope  (cost=0.29..403.41 rows=10000 width=30) (actual time=0.036..0.039 rows=16 loops=1)
+                       Index Cond: (next_check_at < now())
+                       Buffers: shared hit=11
+   CTE postponed
+     ->  Update on blob_storage_scope s  (cost=0.29..145.70 rows=1 width=102) (actual time=0.143..0.479 rows=16 loops=1)
+           Buffers: shared hit=298
+           ->  Nested Loop  (cost=0.29..145.70 rows=1 width=102) (actual time=0.113..0.268 rows=16 loops=1)
+                 Buffers: shared hit=171
+                 ->  CTE Scan on due  (cost=0.00..0.32 rows=16 width=152) (actual time=0.057..0.074 rows=16 loops=1)
+                       Buffers: shared hit=27
+                 ->  Index Scan using blob_storage_scope_pkey on blob_storage_scope s  (cost=0.29..8.05 rows=1 width=22) (actual time=0.004..0.004 rows=1 loops=16)
+                       Index Cond: ((tenant_id = due.tenant_id) AND (org = due.org))
+                       Buffers: shared hit=48
+                 SubPlan 2
+                   ->  Aggregate  (cost=8.31..8.32 rows=1 width=8) (actual time=0.006..0.006 rows=1 loops=16)
+                         Buffers: shared hit=80
+                         ->  Index Scan using blob_storage_hold_pkey on blob_storage_hold h_1  (cost=0.29..8.30 rows=1 width=8) (actual time=0.005..0.005 rows=1 loops=16)
+                               Index Cond: ((tenant_id = s.tenant_id) AND (org = s.org))
+                               Buffers: shared hit=80
+                 SubPlan 3
+                   ->  Index Scan using tenant_pkey on tenant t_1  (cost=0.15..8.17 rows=1 width=0) (actual time=0.001..0.001 rows=0 loops=16)
+                         Index Cond: (tenant_id = s.tenant_id)
+                         Filter: (status = ANY ('{deleting,deleted}'::text[]))
+                         Buffers: shared hit=16
+   ->  Nested Loop Anti Join  (cost=0.29..8.34 rows=1 width=64) (actual time=0.517..0.517 rows=0 loops=1)
+         Buffers: shared hit=346
+         ->  CTE Scan on postponed p  (cost=0.00..0.02 rows=1 width=64) (actual time=0.144..0.484 rows=16 loops=1)
+               Buffers: shared hit=298
+         ->  Index Scan using blob_storage_hold_pkey on blob_storage_hold h  (cost=0.29..8.31 rows=1 width=16) (actual time=0.002..0.002 rows=1 loops=16)
+               Index Cond: ((tenant_id = p.tenant_id) AND (org = p.org))
+               Filter: (expires_at > now())
+               Buffers: shared hit=48
+   ->  Seq Scan on tenant t  (cost=0.00..15.62 rows=4 width=32) (never executed)
+         Filter: (status = ANY ('{deleting,deleted}'::text[]))
+ Planning:
+   Buffers: shared hit=238
+ Planning Time: 5.154 ms
+ Execution Time: 0.764 ms
+(46 rows)
+
+ROLLBACK

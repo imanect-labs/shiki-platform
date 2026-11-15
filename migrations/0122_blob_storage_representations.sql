@@ -1,4 +1,5 @@
 -- 論理 blob の識別・refcount はそのまま、物理表現とダウンロード用 raw の寿命を分離する。
+SET LOCAL lock_timeout = '5s';
 ALTER TABLE blob
     ADD COLUMN storage_manifest jsonb,
     ADD COLUMN storage_bytes bigint CHECK (storage_bytes >= 0),
@@ -14,9 +15,9 @@ ALTER TABLE blob ALTER COLUMN raw_expires_at SET DEFAULT now();
 
 CREATE INDEX blob_storage_backfill_idx ON blob (size_bytes, created_at, tenant_id, org, sha256)
     WHERE storage_checked_at IS NULL;
-CREATE INDEX blob_storage_raw_gc_idx ON blob (raw_expires_at)
+CREATE INDEX blob_storage_raw_gc_idx ON blob (tenant_id, org, raw_expires_at)
     WHERE storage_manifest IS NOT NULL AND raw_available;
-CREATE INDEX blob_storage_raw_audit_idx ON blob (raw_audit_at)
+CREATE INDEX blob_storage_raw_audit_idx ON blob (tenant_id, org, raw_audit_at)
     WHERE storage_manifest IS NOT NULL AND NOT raw_available;
 CREATE INDEX node_version_blob_lookup_idx
     ON node_version (tenant_id, org, blob_sha256, node_id, version);
@@ -24,8 +25,18 @@ CREATE INDEX node_current_blob_idx ON node (tenant_id, org, blob_sha256)
     WHERE blob_sha256 IS NOT NULL;
 
 -- このキューのpayloadはorg/node_id/after_versionのみ。他キューの大きいJSONは索引に入れない。
-ALTER TABLE job_queue ADD COLUMN storage_coalesce_key text GENERATED ALWAYS AS (
-    CASE WHEN queue = 'storage_version_optimize' THEN md5((payload - 'after_version')::text) END) STORED;
+-- RLSでは式indexを使えない。nullable列を同期し、STORED生成列による全表rewriteを避ける。
+ALTER TABLE job_queue ADD COLUMN storage_coalesce_key text;
+CREATE FUNCTION blob_storage_job_key() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.storage_coalesce_key := CASE WHEN NEW.queue = 'storage_version_optimize'
+        THEN md5((NEW.payload - 'after_version')::text) END;
+    RETURN NEW;
+END $$;
+CREATE TRIGGER blob_storage_job_key_trigger BEFORE INSERT OR UPDATE OF queue, payload ON job_queue
+    FOR EACH ROW EXECUTE FUNCTION blob_storage_job_key();
+-- 導入前にこの専用キューはない。他のキューの既存行には触れない。
+UPDATE job_queue SET payload = payload WHERE queue = 'storage_version_optimize';
 CREATE INDEX job_queue_version_storage_pending_idx ON job_queue (tenant_id, storage_coalesce_key)
     WHERE queue = 'storage_version_optimize' AND attempts = 0;
 
@@ -40,7 +51,16 @@ CREATE TABLE blob_storage_object (
     refcount bigint NOT NULL DEFAULT 0 CHECK (refcount >= 0),
     PRIMARY KEY (tenant_id, org, sha256)
 );
-CREATE INDEX blob_storage_object_gc_idx ON blob_storage_object (protected_until) WHERE refcount = 0;
+CREATE INDEX blob_storage_object_gc_idx ON blob_storage_object (tenant_id, org, protected_until) WHERE refcount = 0;
+
+-- GCは組織ごとに期限を進め、保護中の多数のblobを毎分再走査しない。
+CREATE TABLE blob_storage_scope (
+    tenant_id text NOT NULL,
+    org text NOT NULL,
+    next_check_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, org)
+);
+CREATE INDEX blob_storage_scope_due_idx ON blob_storage_scope (next_check_at);
 
 -- refcount = node_version 行数とは別の、物理実体への参照。基準版も断片も同じ FK で保護する。
 CREATE TABLE blob_storage_ref (
@@ -86,7 +106,7 @@ CREATE TABLE blob_storage_hold (
 DO $$
 DECLARE t text;
 BEGIN
-    FOREACH t IN ARRAY ARRAY['blob_storage_object', 'blob_storage_ref', 'blob_storage_hold'] LOOP
+    FOREACH t IN ARRAY ARRAY['blob_storage_object', 'blob_storage_ref', 'blob_storage_hold', 'blob_storage_scope'] LOOP
         EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format(

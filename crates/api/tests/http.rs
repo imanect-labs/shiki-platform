@@ -1369,3 +1369,6 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
 
 #[path = "http/bug_reports.rs"]
 mod bug_reports;
+
+#[path = "http/version_backup.rs"]
+mod version_backup;

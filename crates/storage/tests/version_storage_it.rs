@@ -24,6 +24,9 @@ use uuid::Uuid;
 #[path = "version_storage/worker.rs"]
 mod worker_tests;
 
+#[path = "version_storage/limits.rs"]
+mod limit_tests;
+
 struct Env {
     pool: PgPool,
     service: StorageService,

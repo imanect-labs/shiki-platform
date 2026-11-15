@@ -209,6 +209,16 @@ def run(case, method, trial, xdelta, workdir, samples, backend="memory", diction
             "latest_materialized_extra_bytes": (0 if method == "full-cas" else len(case.versions[-1]) + OBJECT_BYTES)}
 
 
+RESUME_FIELDS = ("backend", "dictionary_window_log", "object_model_bytes", "version_model_bytes",
+                 "xdelta_binary_sha256", "packages", "python", "trials", "quick", "methods", "instrument_sha256")
+
+
+def validate_resume(previous, current):
+    for field in RESUME_FIELDS:
+        if field not in previous or previous[field] != current[field]:
+            raise ValueError(f"Measurement conditions changed during resume: {field}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -222,6 +232,7 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dictionary-window-log", type=int, default=0)
     args = parser.parse_args()
+    args.methods = list(dict.fromkeys(["full-cas", *args.methods]))
     args.output.mkdir(parents=True, exist_ok=True)
     selected = set(json.loads(args.select_cases.read_text())) if args.select_cases else None
     completed = {}
@@ -243,6 +254,7 @@ def main():
             "memory_limit": Path("/sys/fs/cgroup/memory.max").read_text().strip(),
             "packages": versions, "trials": args.trials, "quick": args.quick, "methods": args.methods,
             "backend": args.backend,
+            "instrument_sha256": {name: digest(Path(__file__).with_name(name).read_bytes()) for name in ("bench.py", "corpus.py")},
             "dictionary_window_log": args.dictionary_window_log,
             "object_model_bytes": OBJECT_BYTES, "version_model_bytes": VERSION_BYTES,
             "baseline_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
@@ -251,6 +263,11 @@ def main():
             "timing_boundary": ("single-process serial codec + " +
                                 ("local object files, warm OS page cache" if args.backend == "files" else "in-memory object index") +
                                 "; xdelta additionally includes subprocess and temp-file I/O; no DB/network/fsync")}
+    if args.resume:
+        previous = json.loads((args.output / "environment.json").read_text())
+        validate_resume(previous, meta)
+        meta["resumed_utc"] = meta["started_utc"]
+        meta["started_utc"] = previous["started_utc"]
     (args.output / "environment.json").write_text(json.dumps(meta, indent=2) + "\n")
     started = time.perf_counter()
     counts = collections.Counter()

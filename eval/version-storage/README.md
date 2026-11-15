@@ -19,7 +19,7 @@ eval/version-storage/.venv/bin/python eval/version-storage/summarize.py \
   eval/version-storage/results/main
 ```
 
-`--quick` は小規模動作確認、`--filter` はケース名の部分一致、`--methods` は方式の選択、`--resume` は同じ出力先での中断再開。再開時は生成データのハッシュを照合し、完了済みの測定を再利用する。中断中の未完了測定が残したサンプルは集計時に最後の成功分を採用する。`--select-cases cases.json` はケース名配列による絞り込み。`--backend files` は一時ディレクトリ内に各実体を別ファイルとして保存する追加測定で、OS ページキャッシュ有効・fsync なし。
+`--quick` は小規模動作確認、`--filter` はケース名の部分一致、`--methods` は方式の選択（集計に必要な `full-cas` は自動追加）、`--resume` は同じ出力先での中断再開。再開時は生成データのハッシュに加えてbackend・辞書window・依存版・測定コードのハッシュ等の条件を照合し、一致した完了済み測定だけを再利用する。条件が違う出力や条件記録がない旧出力は、環境情報を書き換えずに拒否する。中断中の未完了測定が残したサンプルは集計時に最後の成功分を採用する。`--select-cases cases.json` はケース名配列による絞り込み。`--backend files` は一時ディレクトリ内に各実体を別ファイルとして保存する追加測定で、OS ページキャッシュ有効・fsync なし。
 
 この実測で使う xdelta3 は Debian の `xdelta3_3.0.11-dfsg-1.2_amd64.deb` をユーザー所有の一時ディレクトリに展開したもの。システムへのインストールは不要。`environment.json` に実行バージョンと環境を残す。
 
@@ -124,10 +124,12 @@ eval/version-storage/.venv/bin/python eval/version-storage/rustfs_layouts.py \
 
 ## SQL実行計画
 
-`sql_plans.sql` は専用テストDBに10万blob/10万版/1万ジョブの合成メタデータを作り、最後にROLLBACKする。オブジェクトのバイトは書き込まない。[実行計画](results/sql-plans.txt)を保存した。RLSを有効にしたruntimeロールで、重複ジョブの点検索は `job_queue_version_storage_pending_idx` を使用して0.062 ms、履歴末尾の16版取得は版番号のindexとblobの主キーを使用して0.232 ms。64 MiB超の10万blobを置いたbackfillはサイズ先頭のindexを使い、0.111 msだった。
+`sql_plans.sql` は専用テストDBに10万blob/10万版/1万ジョブの合成メタデータを作り、最後にROLLBACKする。オブジェクトのバイトは書き込まない。[実行計画](results/sql-plans.txt)を保存した。RLSを有効にしたruntimeロールで、重複ジョブの点検索は `job_queue_version_storage_pending_idx` を使用して0.137 ms、履歴末尾の16版取得は版番号のindexとblobの主キーを使用して0.229 ms。64 MiB超の10万blobを置いたbackfillはサイズ先頭のindexを使い、0.818 msだった。
 
-2026-11-15のローカルPostgres・warm cache・共有開発VMでの実測。符号化・ネットワークGET・復元を含む性能値ではない。時間を本番のSLOとせず、走査範囲と索引の利用を確認する。RLS用の索引はJSONB式を直接索引にせず、保存生成列のtextキーで絞り、実際のJSON内容も残余条件で照合する。
+2026-11-15のローカルPostgres・warm cache・共有開発VMでの実測。符号化・ネットワークGET・復元を含む性能値ではない。時間を本番のSLOとせず、走査範囲と索引の利用を確認する。RLS用の索引はJSONB式を直接索引にせず、トリガーで同期する通常列のtextキーで絞り、実際のJSON内容も残余条件で照合する。
 
 ```bash
 psql -v ON_ERROR_STOP=1 -f eval/version-storage/sql_plans.sql "$STORAGE_TEST_DATABASE_URL"
 ```
+
+GC予定の走査は、[専用SQL](gc_scopes_plan.sql)で10,000組織すべてにbackup holdを設定して測定した。[実行計画](results/gc-scopes-plan.txt)は0.764 msで、予定索引から16組織だけを固定し、hold台帳の主キーで保護期限を調べる。blob件数に比例した再走査は行わない。`shiki_maintenance`ロールで実行し、合成データはROLLBACKする。

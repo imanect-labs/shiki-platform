@@ -8,7 +8,7 @@ capability: the application's ObjectStore trait is unchanged.
 
 import argparse
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -43,6 +43,18 @@ def histories(size, seed, edit):
                 data[pos:pos + length] = rng.randbytes(length)
             data = bytes(data)
         yield data
+
+
+def upload_all(pool, put, items):
+    futures = []
+    try:
+        for item in items:
+            futures.append(pool.submit(put, item))
+        for future in futures:
+            future.result()
+    finally:
+        # 例外時も、削除より先に遅延PUTを完了させる。
+        wait(futures)
 
 
 def run_case(client, bucket, pool, size, seed, edit, output):
@@ -92,7 +104,7 @@ def run_case(client, bucket, pool, size, seed, edit, output):
         return key, start, payload
 
     try:
-        list(pool.map(put, objects.items()))
+        upload_all(pool, put, objects.items())
         unique = set(sha for sha, _ in current)
         required = set(index[sha][0] for sha in unique)
         intervals = defaultdict(list)

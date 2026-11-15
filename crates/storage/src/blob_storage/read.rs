@@ -20,10 +20,21 @@ impl BlobStorage {
         size: usize,
         manifest: Manifest,
     ) -> Result<Vec<u8>, StorageError> {
-        manifest.validate(size)?;
         // permit の保持中に DB 接続・行ロックを取りに行かない。
         // 全取得/展開が完了してから呼出元の DB 更新へ戻る。
         let _io = Self::io_permit().await?;
+        self.decode_inner(tenant, org, sha, size, manifest).await
+    }
+
+    async fn decode_inner(
+        &self,
+        tenant: &TenantId,
+        org: &str,
+        sha: &str,
+        size: usize,
+        manifest: Manifest,
+    ) -> Result<Vec<u8>, StorageError> {
+        manifest.validate(size)?;
         let refs: BTreeSet<String> = manifest.refs().into_iter().map(str::to_owned).collect();
         let objects: BTreeMap<String, Vec<u8>> =
             stream::iter(refs.into_iter().map(|hash| async move {
@@ -141,11 +152,17 @@ impl BlobStorage {
     ) -> Result<String, StorageError> {
         let row = Self::lock_blob(conn, tenant, org, sha, true).await?;
         let key = blob_object_key(tenant.as_str(), org, sha);
+        let mut recreated = false;
         if let Some(manifest) = row.storage_manifest {
             if !self.store.exists(&key).await? {
+                recreated = true;
                 let size = usize::try_from(row.size_bytes)
                     .map_err(|_| StorageError::Integrity("blob サイズが不正".into()))?;
-                let bytes = self.decode(tenant, org, sha, size, manifest.0).await?;
+                // DB行は固定済み。PUTがバッファを解放するまで同じpermitで保護する。
+                let _io = Self::io_permit().await?;
+                let bytes = self
+                    .decode_inner(tenant, org, sha, size, manifest.0)
+                    .await?;
                 self.store
                     .put_object(&key, bytes, &row.content_type)
                     .await?;
@@ -160,8 +177,12 @@ impl BlobStorage {
         .bind(org)
         .bind(sha)
         .bind(ttl.as_secs_f64() + 60.0)
-        .execute(conn)
+        .execute(&mut *conn)
         .await?;
+        if recreated {
+            sqlx::query("UPDATE blob_storage_scope SET next_check_at = LEAST(next_check_at, clock_timestamp() + $3 * interval '1 second') WHERE tenant_id = $1 AND org = $2")
+                .bind(tenant.as_str()).bind(org).bind(ttl.as_secs_f64() + 60.0).execute(conn).await?;
+        }
         Ok(key)
     }
 
