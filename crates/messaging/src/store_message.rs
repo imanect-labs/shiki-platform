@@ -52,6 +52,8 @@ pub enum MessageFilter<'a> {
         channel: Uuid,
         since: DateTime<Utc>,
         limit: i64,
+        /// 送った発言の版（id・`updated_at`）。同じ版は SQL の段階で除く（上限を送済みで埋めない）。
+        sent: &'a [(Uuid, DateTime<Utc>)],
     },
     /// 指定の発言（チャンネルを問わない・境界は掛かる）。
     Ids { ids: &'a [Uuid] },
@@ -136,11 +138,18 @@ pub async fn fetch_messages(
             channel,
             since,
             limit,
+            sent,
         } => {
+            let (ids, ats): (Vec<Uuid>, Vec<DateTime<Utc>>) = sent.iter().copied().unzip();
             q.push(" AND m.channel_id = ")
                 .push_bind(channel)
                 .push(" AND m.updated_at > ")
                 .push_bind(since)
+                .push(" AND NOT EXISTS (SELECT 1 FROM unnest(")
+                .push_bind(ids)
+                .push("::uuid[], ")
+                .push_bind(ats)
+                .push("::timestamptz[]) AS s(id, at) WHERE s.id = m.id AND s.at >= m.updated_at)")
                 .push(" ORDER BY m.updated_at, m.id LIMIT ")
                 .push_bind(limit.clamp(1, 500));
         }
@@ -187,6 +196,23 @@ pub async fn raw_message(
     Ok(sqlx::query_as(
         "SELECT id, channel_id, parent_id, author_kind, author_id, blocks, created_at, deleted_at, expired_at \
          FROM channel_message WHERE tenant_id = $1 AND org = $2 AND id = $3 FOR UPDATE",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(id)
+    .fetch_optional(conn)
+    .await?)
+}
+
+/// 読むだけの用途の [`raw_message`]（行ロックを取らない・読取の API で書込を待たせない）。
+pub async fn peek_message(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    id: Uuid,
+) -> Result<Option<RawMessage>, Error> {
+    Ok(sqlx::query_as(
+        "SELECT id, channel_id, parent_id, author_kind, author_id, blocks, created_at, deleted_at, expired_at \
+         FROM channel_message WHERE tenant_id = $1 AND org = $2 AND id = $3",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
@@ -328,15 +354,19 @@ pub async fn set_link_previews(
     ctx: &AuthContext,
     id: Uuid,
     previews: &[LinkPreview],
+    expected_text: &str,
 ) -> Result<(), Error> {
+    // 取得の間に編集されていたら書かない（編集で消えた URL のプレビューを残さない）。
     sqlx::query(
         "UPDATE channel_message SET link_previews = $4, updated_at = clock_timestamp() \
-         WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL AND expired_at IS NULL",
+         WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL AND expired_at IS NULL \
+           AND search_text = $5",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
     .bind(id)
     .bind(sqlx::types::Json(previews))
+    .bind(expected_text)
     .execute(conn)
     .await?;
     Ok(())
@@ -414,20 +444,24 @@ pub async fn insert_mentions(
     channel: Uuid,
     targets: &[(String, &'static str)],
 ) -> Result<(), Error> {
-    for (user, via) in targets {
-        sqlx::query(
-            "INSERT INTO channel_mention (tenant_id, org, user_id, message_id, channel_id, via) \
-             VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-        )
-        .bind(ctx.tenant_id())
-        .bind(ctx.org())
-        .bind(user)
-        .bind(message)
-        .bind(channel)
-        .bind(*via)
-        .execute(&mut *conn)
-        .await?;
+    if targets.is_empty() {
+        return Ok(());
     }
+    let users: Vec<&str> = targets.iter().map(|(u, _)| u.as_str()).collect();
+    let vias: Vec<&str> = targets.iter().map(|(_, v)| *v).collect();
+    sqlx::query(
+        "INSERT INTO channel_mention (tenant_id, org, user_id, message_id, channel_id, via) \
+         SELECT $1, $2, u, $3, $4, v FROM unnest($5::text[], $6::text[]) AS t(u, v) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(message)
+    .bind(channel)
+    .bind(&users)
+    .bind(&vias)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 

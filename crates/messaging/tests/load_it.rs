@@ -148,7 +148,15 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
                 if sig != Signal::Changed {
                     continue;
                 }
-                let views = svc.changes_with(&ctx, &mut grant, since).await.unwrap();
+                let views = svc
+                    .changes_with(
+                        &ctx,
+                        &mut grant,
+                        since,
+                        &mut std::collections::HashMap::new(),
+                    )
+                    .await
+                    .unwrap();
                 if !views.is_empty() {
                     seen_tx.send(Instant::now()).unwrap();
                     return;

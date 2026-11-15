@@ -213,6 +213,111 @@ pub async fn upsert_member(
     Ok(())
 }
 
+/// チャンネル単位の操作を直列化する（トランザクションの終わりまで・管理者の数の判定など）。
+pub async fn lock_channel(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+) -> Result<(), Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!(
+            "messaging:{}:{}:{channel}",
+            ctx.tenant_id(),
+            ctx.org()
+        ))
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// いちばん後から参加した人の参加時刻（公開返信の文脈の境界）。
+pub async fn latest_join(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+) -> Result<Option<DateTime<Utc>>, Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT max(visible_from) FROM channel_member WHERE tenant_id = $1 AND org = $2 AND channel_id = $3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(channel)
+    .fetch_one(conn)
+    .await?)
+}
+
+/// 参加者の数（上限なし）。
+pub async fn member_count(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+) -> Result<i64, Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT count(*) FROM channel_member WHERE tenant_id = $1 AND org = $2 AND channel_id = $3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(channel)
+    .fetch_one(conn)
+    .await?)
+}
+
+/// 参加者の通知設定（メンションの宛先解決用・上限なし・id と通知設定だけ）。
+pub async fn member_notify(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+) -> Result<Vec<(String, String)>, Error> {
+    Ok(sqlx::query_as(
+        "SELECT user_id, notify FROM channel_member WHERE tenant_id = $1 AND org = $2 AND channel_id = $3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(channel)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// まとめて参加させ、新しく加わった利用者を返す（既に参加している人は変えない）。
+pub async fn add_members(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+    users: &[String],
+) -> Result<Vec<String>, Error> {
+    if users.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_scalar(
+        "INSERT INTO channel_member (tenant_id, org, channel_id, user_id) \
+         SELECT $1, $2, $3, u FROM unnest($4::text[]) AS u \
+         ON CONFLICT (tenant_id, org, channel_id, user_id) DO NOTHING RETURNING user_id",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(channel)
+    .bind(users)
+    .fetch_all(conn)
+    .await?)
+}
+
+/// 参加しているチャンネルの id（検索の pre-filter・速度のための絞り込みで、権限の正本ではない）。
+pub async fn my_channel_ids(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    user: &str,
+) -> Result<Vec<Uuid>, Error> {
+    Ok(sqlx::query_scalar(
+        "SELECT channel_id FROM channel_member WHERE tenant_id = $1 AND org = $2 AND user_id = $3 \
+         LIMIT 10000",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(user)
+    .fetch_all(conn)
+    .await?)
+}
+
 pub async fn delete_member(
     conn: &mut PgConnection,
     ctx: &AuthContext,

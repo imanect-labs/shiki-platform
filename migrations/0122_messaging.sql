@@ -134,6 +134,8 @@ CREATE TABLE channel_mention (
     FOREIGN KEY (tenant_id, org, message_id) REFERENCES channel_message (tenant_id, org, id) ON DELETE CASCADE
 );
 CREATE INDEX channel_mention_unread ON channel_mention (tenant_id, org, user_id, created_at DESC) WHERE read_at IS NULL;
+-- 発言の削除・保存期間の削除で message_id から引く。
+CREATE INDEX channel_mention_message ON channel_mention (tenant_id, org, message_id);
 
 -- パーソナルエージェントが呼んだ人だけに見せた回答（「自分だけに表示」・design §4.14）。
 -- 照会者が「チャンネルに投稿」したときだけ channel_message に写す。
@@ -152,12 +154,17 @@ CREATE TABLE channel_agent_reply (
     sources jsonb NOT NULL DEFAULT '[]'::jsonb,
     -- 作業を移したチャット（§4.4 のスレッド・Task 14.17）。
     chat_thread_id uuid,
+    chat_title text,
+    -- 照会者へ DM で知らせた承認待ち（run_id:tool_call_id・同じ承認待ちを二度知らせない）。
+    notified_approvals text[] NOT NULL DEFAULT '{}',
     posted_message_id uuid,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, org, id),
     FOREIGN KEY (tenant_id, org, channel_id) REFERENCES channel (tenant_id, org, id) ON DELETE CASCADE
 );
 CREATE INDEX channel_agent_reply_owner ON channel_agent_reply (tenant_id, org, invoked_by, channel_id, created_at DESC);
+CREATE INDEX channel_agent_reply_chat ON channel_agent_reply (created_at) WHERE chat_thread_id IS NOT NULL;
+CREATE INDEX channel_agent_reply_trigger ON channel_agent_reply (tenant_id, org, trigger_message_id);
 
 -- パーソナルエージェントの名前とアイコン（見た目だけ・権限に影響しない）。
 CREATE TABLE messaging_agent_profile (

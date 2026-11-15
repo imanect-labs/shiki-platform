@@ -9,6 +9,7 @@
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use storage::db_tenant::begin_tenant_tx;
 use uuid::Uuid;
@@ -53,11 +54,15 @@ impl MessagingService {
     }
 
     /// 許可を使って、`since` より後に変わった発言を読む（TTL を過ぎていれば FGA を引き直す）。
+    ///
+    /// `sent` は送った発言の版（`updated_at`）。同じ版は閲覧者向けの形（添付の権限評価・書き手の表示）を
+    /// 組む前に落とす（重なりのある読み直しで、送済みの発言の認可と監査をやり直さない）。
     pub async fn changes_with(
         &self,
         ctx: &AuthContext,
         grant: &mut ReadGrant,
         since: DateTime<Utc>,
+        sent: &mut HashMap<Uuid, DateTime<Utc>>,
     ) -> Result<Vec<MessageView>, Error> {
         // 別の利用者・テナントの許可を流用させない。
         if grant.tenant != ctx.tenant_id() || grant.user != ctx.principal().id {
@@ -66,6 +71,8 @@ impl MessagingService {
         if grant.checked_at.elapsed() >= GRANT_TTL {
             *grant = self.authorize_read(ctx, grant.channel).await?;
         }
+        sent.retain(|_, at| *at > since);
+        let sent_pairs: Vec<(Uuid, DateTime<Utc>)> = sent.iter().map(|(k, v)| (*k, *v)).collect();
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let rows = sm::fetch_messages(
             &mut tx,
@@ -75,9 +82,13 @@ impl MessagingService {
                 channel: grant.channel,
                 since,
                 limit: 200,
+                sent: &sent_pairs,
             },
         )
         .await?;
+        for r in &rows {
+            sent.insert(r.id, r.updated_at);
+        }
         let views = self.views(&mut tx, ctx, rows).await?;
         tx.commit().await?;
         Ok(views)

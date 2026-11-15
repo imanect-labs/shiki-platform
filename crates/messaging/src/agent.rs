@@ -202,6 +202,13 @@ impl MessagingService {
             r
         };
         rows.retain(|r| r.deleted_at.is_none() && r.expired_at.is_none());
+        // 公開返信は参加者全員が読む。非公開・DM では、いちばん後から参加した人の境界より前の発言を
+        // 文脈に入れない（照会者だけが読める過去の発言を、要約の形で他の参加者へ漏らさない・PIT-63）。
+        if mode == ReplyMode::Public && c.kind().hides_history_before_join() {
+            if let Some(boundary) = store::latest_join(conn, ctx, channel).await? {
+                rows.retain(|r| r.created_at >= boundary);
+            }
+        }
         if rows.len() > CONTEXT_MESSAGES as usize {
             rows.drain(..rows.len() - CONTEXT_MESSAGES as usize);
         }
@@ -312,10 +319,10 @@ impl MessagingService {
                 trigger_id,
                 vec![ContentBlock::Text { text }],
                 &[],
-                Some(thread),
+                Some((thread, title.as_str())),
             )
             .await?;
-            self.spawn_approval_watch(ctx.clone(), Arc::clone(runtime), thread, title);
+            // 承認待ちの見張りは DB に残した行を周期タスクが拾う（再起動しても止まらない・approval_watch）。
             return Ok(());
         }
         let blocks = vec![ContentBlock::Text {
@@ -404,7 +411,7 @@ impl MessagingService {
         trigger: Uuid,
         blocks: Vec<ContentBlock>,
         sources: &[Uuid],
-        chat: Option<Uuid>,
+        chat: Option<(Uuid, &str)>,
     ) -> Result<(), Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         insert_reply(
@@ -481,9 +488,14 @@ impl MessagingService {
         let c = self.readable_channel(&mut tx, ctx, row.channel_id).await?;
         self.require_post(ctx, &c, trace).await?;
         if !confirmed && !row.sources.0.is_empty() {
-            let members = store::members(&mut tx, ctx, row.channel_id).await?;
+            let members: Vec<String> = store::member_notify(&mut tx, ctx, row.channel_id)
+                .await?
+                .into_iter()
+                .map(|(u, _)| u)
+                .collect();
+            let org_readers = c.kind() == crate::ChannelKind::Public;
             let warning = self
-                .unreadable_sources(ctx, &members, &row.sources.0)
+                .unreadable_sources(ctx, &members, org_readers, &row.sources.0)
                 .await?;
             if warning.unreadable_sources > 0 {
                 return Ok(Some(warning));
@@ -559,34 +571,48 @@ impl MessagingService {
         Ok(())
     }
 
-    /// 参照資料ごとに、参加者のうち読めない人がいるか（誰かは返さない）。
+    /// 参照資料ごとに、読み手のうち読めない人がいるか（誰かは返さない）。
+    ///
+    /// 公開チャンネルは参加していない組織メンバーも読める（org_reader）ので、資料が組織全体に
+    /// 読める状態でなければ「読めない人がいる」と数える（人数は数えられないので参加者の分だけ）。
     async fn unreadable_sources(
         &self,
         ctx: &AuthContext,
-        members: &[store::MemberRow],
+        members: &[String],
+        org_readers: bool,
         sources: &[Uuid],
     ) -> Result<PublishWarning, Error> {
         let mut unreadable = 0usize;
         let mut affected: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let org_members = ctx.ns().organization_member(ctx.org());
         for s in sources {
             let file = ctx.ns().file(&s.to_string());
-            let items: Vec<CheckTuple> = members
+            let mut items: Vec<CheckTuple> = members
                 .iter()
                 .map(|m| CheckTuple {
-                    subject: ctx.ns().user(&m.user_id),
+                    subject: ctx.ns().user(m),
                     relation: Relation::Viewer,
                     object: file.clone(),
                 })
                 .collect();
+            if org_readers {
+                items.push(CheckTuple {
+                    subject: org_members.clone(),
+                    relation: Relation::Viewer,
+                    object: file.clone(),
+                });
+            }
             let ok = self
                 .authz
                 .batch_check(&items, Consistency::HigherConsistency)
                 .await?;
             let mut any = false;
-            for (m, ok) in members.iter().zip(ok) {
+            for (i, ok) in ok.iter().enumerate() {
                 if !ok {
                     any = true;
-                    affected.insert(&m.user_id);
+                    if let Some(m) = members.get(i) {
+                        affected.insert(m);
+                    }
                 }
             }
             unreadable += usize::from(any);
@@ -595,51 +621,6 @@ impl MessagingService {
             unreadable_sources: unreadable,
             affected_members: affected.len(),
         })
-    }
-
-    /// 作ったチャットの承認待ちを見張り、新しい承認待ちを照会者への DM で知らせる（Task 14.17）。
-    ///
-    /// 承認できるのは従来どおり照会者本人だけで、DM は承認カードへの案内だけを運ぶ。
-    fn spawn_approval_watch(
-        self: &Arc<Self>,
-        ctx: AuthContext,
-        runtime: Arc<dyn AgentRuntime>,
-        thread: Uuid,
-        title: String,
-    ) {
-        let svc = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut notified: Vec<String> = Vec::new();
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_hours(6);
-            let mut idle_rounds = 0;
-            while tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                let Ok((pending, active)) = runtime.chat_status(&ctx, thread).await else {
-                    continue;
-                };
-                for p in pending {
-                    if notified.contains(&p.approval_id) {
-                        continue;
-                    }
-                    let text = format!(
-                        "チャット「{title}」で承認が必要です（{}）。内容を確かめてから承認してください: /c/{thread}",
-                        p.tool_name
-                    );
-                    if svc.notify_owner(&ctx, &text).await.is_ok() {
-                        notified.push(p.approval_id);
-                    }
-                }
-                if active {
-                    idle_rounds = 0;
-                } else {
-                    idle_rounds += 1;
-                    // 終わったチャットは少し様子を見てから見張りをやめる（続きの run を拾う）。
-                    if idle_rounds > 24 {
-                        break;
-                    }
-                }
-            }
-        });
     }
 
     /// 自分のエージェントから自分への DM に書く（承認の通知など）。
@@ -710,13 +691,13 @@ async fn insert_reply(
     visibility: &str,
     blocks: &[ContentBlock],
     sources: &[Uuid],
-    chat: Option<Uuid>,
+    chat: Option<(Uuid, &str)>,
     posted: Option<Uuid>,
 ) -> Result<(), Error> {
     sqlx::query(
         "INSERT INTO channel_agent_reply (tenant_id, org, id, channel_id, trigger_message_id, invoked_by, \
-            visibility, blocks, sources, chat_thread_id, posted_message_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            visibility, blocks, sources, chat_thread_id, posted_message_id, chat_title) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
@@ -727,8 +708,9 @@ async fn insert_reply(
     .bind(visibility)
     .bind(sqlx::types::Json(blocks))
     .bind(sqlx::types::Json(sources))
-    .bind(chat)
+    .bind(chat.map(|(id, _)| id))
     .bind(posted)
+    .bind(chat.map(|(_, title)| title))
     .execute(conn)
     .await?;
     Ok(())

@@ -949,23 +949,21 @@ async fn agent_creates_chat_and_notifies_owner_by_dm() {
         .await
         .unwrap()
         .is_empty());
-    // 人の承認が要る操作は、本人とエージェントの DM に通知が届く。
-    let mut found = false;
-    for _ in 0..40 {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let chans = env.svc.list_channels(&alice).await.unwrap();
-        if let Some(dm) = chans.iter().find(|c| c.agent_dm) {
-            let msgs = env
-                .svc
-                .list_messages(&alice, dm.id, None, 10)
-                .await
-                .unwrap();
-            if texts(&msgs).iter().any(|t| t.contains("drive.delete")) {
-                found = true;
-                break;
-            }
-        }
-    }
+    // 人の承認が要る操作は、本人とエージェントの DM に通知が届く（見張りを 1 周回す）。
+    assert_eq!(env.svc.watch_approvals_once(&runtime).await.unwrap(), 1);
+    // 同じ承認待ちを二度知らせない。
+    assert_eq!(env.svc.watch_approvals_once(&runtime).await.unwrap(), 0);
+    let chans = env.svc.list_channels(&alice).await.unwrap();
+    let dm = chans
+        .iter()
+        .find(|c| c.agent_dm)
+        .expect("エージェントとの DM");
+    let msgs = env
+        .svc
+        .list_messages(&alice, dm.id, None, 10)
+        .await
+        .unwrap();
+    let found = texts(&msgs).iter().any(|t| t.contains("drive.delete"));
     assert!(found, "承認の通知が DM に届くこと");
 }
 
@@ -1054,4 +1052,121 @@ async fn same_channel_id_in_another_tenant_never_crosses() {
     assert_eq!(ours.recv().await, Some(Signal::Changed));
     let crossed = tokio::time::timeout(std::time::Duration::from_millis(300), theirs.recv()).await;
     assert!(crossed.is_err(), "別テナントの購読へ合図が届かない");
+}
+
+#[tokio::test]
+async fn review_regressions_stay_fixed() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob, carol) = (env.ctx("alice"), env.ctx("bob"), env.ctx("carol"));
+    // 公開チャンネルを退出した人の検索に、そのチャンネルの発言を出さない（org_reader で読めても）。
+    let pubch = env
+        .svc
+        .create_channel(&alice, create("雑談", ChannelKind::Public), None)
+        .await
+        .unwrap();
+    env.svc.join(&bob, pubch.id, None).await.unwrap();
+    let mine = env.svc.post(&bob, pubch.id, msg("退出前の発言"), None).await.unwrap();
+    env.svc.remove_member(&bob, pubch.id, "bob", None).await.unwrap();
+    let hits = env
+        .svc
+        .search_in(&bob, "退出前", &[pubch.id], 20, None)
+        .await
+        .unwrap();
+    assert!(hits.is_empty(), "退出した公開チャンネルは検索の対象外");
+    // 投稿権を失った人は、自分の過去の発言も書き換えられない。
+    assert!(matches!(
+        env.svc.edit(&bob, mine.id, text("書き換え"), None).await,
+        Err(Error::Forbidden(_))
+    ));
+    // 役割の変更で入力が不正なら、権限は何も変わらない（admin だけ付いて失敗、を作らない）。
+    let r = env
+        .svc
+        .set_member_role(&alice, pubch.id, "alice", Some(true), Some(true), None)
+        .await;
+    assert!(matches!(r, Err(Error::Invalid(_))));
+    env.svc.join(&carol, pubch.id, None).await.unwrap();
+    let r = env
+        .svc
+        .set_member_role(&alice, pubch.id, "carol", Some(true), Some(true), None)
+        .await;
+    assert!(matches!(r, Err(Error::Invalid(_))));
+    let members = env.svc.members(&alice, pubch.id).await.unwrap();
+    assert!(!members.iter().any(|m| m.user_id == "carol" && m.is_admin));
+    // アーカイブ中は削除もできない（読み取り専用）。
+    let keep = env.svc.post(&alice, pubch.id, msg("残す"), None).await.unwrap();
+    env.svc.set_archived(&alice, pubch.id, true, None).await.unwrap();
+    assert!(matches!(
+        env.svc.delete(&alice, keep.id, None).await,
+        Err(Error::Forbidden(_))
+    ));
+
+    // 非公開チャンネルの公開返信は、後から参加した人の境界より前の発言を文脈に入れない。
+    let ch = env
+        .svc
+        .create_channel(&alice, create("経営会議", ChannelKind::Private), None)
+        .await
+        .unwrap();
+    env.svc.post(&alice, ch.id, msg("昔の機密の議論"), None).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    env.svc.invite(&alice, ch.id, vec!["bob".into()], None).await.unwrap();
+    let rt = Arc::new(FakeRuntime::default());
+    let runtime: Arc<dyn AgentRuntime> = rt.clone();
+    let trigger = env
+        .svc
+        .post(
+            &alice,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 今までを要約して".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .invoke_agent(&alice, &runtime, trigger.id, ReplyMode::Public, None)
+        .await
+        .unwrap();
+    let seen = rt.seen.lock().unwrap().clone();
+    assert!(
+        seen[0].transcript().iter().all(|l| !l.text.contains("機密")),
+        "公開返信の文脈に、参加者の一部が読めない発言を入れない"
+    );
+    // 自分だけに表示なら、照会者が読める発言を使ってよい。
+    let trigger2 = env
+        .svc
+        .post(
+            &alice,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 今までを要約して（自分用）".into(),
+                    },
+                ],
+                agent_private: true,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .invoke_agent(&alice, &runtime, trigger2.id, ReplyMode::Private, None)
+        .await
+        .unwrap();
+    let seen = rt.seen.lock().unwrap().clone();
+    assert!(seen[1].transcript().iter().any(|l| l.text.contains("機密")));
 }

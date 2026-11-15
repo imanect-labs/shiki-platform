@@ -31,26 +31,30 @@ pub struct StorageFiles(pub Arc<storage::StorageService>);
 #[async_trait]
 impl FileAccess for StorageFiles {
     async fn readable(&self, ctx: &AuthContext, ids: &[Uuid]) -> HashMap<Uuid, FileMeta> {
-        let mut out = HashMap::new();
-        for id in ids {
-            if out.contains_key(id) {
-                continue;
-            }
-            // 読めない・削除済み・存在しないはすべて「参照できない」（理由を区別して返さない）。
-            if let Ok(node) = self.0.get_metadata(ctx, *id, None).await {
-                if node.deleted_at.is_none() {
-                    out.insert(
-                        *id,
+        // まとめて 1 回で判定する（添付ごとの往復・監査を作らない）。失敗は「読めない」に倒す。
+        match self
+            .0
+            .readable_files_metadata(ctx, ids, "messaging.file_ref")
+            .await
+        {
+            Ok(nodes) => nodes
+                .into_iter()
+                .map(|n| {
+                    (
+                        n.id,
                         FileMeta {
-                            name: node.name,
-                            size_bytes: node.size_bytes,
-                            content_type: node.content_type,
+                            name: n.name,
+                            size_bytes: n.size_bytes,
+                            content_type: n.content_type,
                         },
-                    );
-                }
+                    )
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "messaging: 添付の権限を評価できません（参照できないとして扱う）");
+                HashMap::new()
             }
         }
-        out
     }
 }
 

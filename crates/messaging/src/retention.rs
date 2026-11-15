@@ -35,6 +35,12 @@ pub async fn sweep(pool: &PgPool) -> Result<u64, Error> {
         let Ok(tenant) = TenantId::parse(&tenant) else {
             continue;
         };
+        // 監査ログの保存期間が後から延びても、それより短い期限では消さない（eDiscovery の前提・
+        // design §4.14 保存期間）。設定時の検証に加え、消す時点でも監査の保存期間と比べる。
+        let audit_days = storage::audit_retention::AuditRetention::new(pool.clone())
+            .retention_days(tenant.as_str())
+            .await?;
+        let days = days.max(audit_days);
         loop {
             let n = sweep_org(pool, &tenant, &org, days).await?;
             total += n;

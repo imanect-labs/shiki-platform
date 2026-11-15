@@ -56,6 +56,7 @@ impl LinkPreviewer {
         let pool: PgPool = svc.pool.clone();
         let hub: Hub = svc.hub.clone();
         let ctx = ctx.clone();
+        let expected = crate::model::plain_text(blocks);
         tokio::spawn(async move {
             let mut previews = Vec::new();
             for url in urls {
@@ -69,7 +70,7 @@ impl LinkPreviewer {
             let Ok(mut tx) = begin_tenant_tx(&pool, ctx.tenant()).await else {
                 return;
             };
-            if crate::store_message::set_link_previews(&mut tx, &ctx, message, &previews)
+            if crate::store_message::set_link_previews(&mut tx, &ctx, message, &previews, &expected)
                 .await
                 .is_ok()
                 && tx.commit().await.is_ok()

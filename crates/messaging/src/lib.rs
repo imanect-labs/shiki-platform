@@ -18,6 +18,7 @@
 pub mod access;
 pub mod agent;
 pub mod agent_profile;
+mod approval_watch;
 mod error;
 pub mod files;
 mod model;

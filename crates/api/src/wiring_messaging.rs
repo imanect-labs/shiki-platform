@@ -56,5 +56,9 @@ pub(crate) async fn wire_messaging(
         agent = runtime.is_some(),
         "職員間メッセージを有効化しました"
     );
-    (Arc::new(service), runtime)
+    let service = Arc::new(service);
+    if let Some(rt) = &runtime {
+        service.spawn_approval_watcher(Arc::clone(rt));
+    }
+    (service, runtime)
 }

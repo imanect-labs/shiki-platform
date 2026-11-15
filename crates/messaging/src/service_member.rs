@@ -70,9 +70,7 @@ impl MessagingService {
         if users.len() > 500 {
             return Err(Error::Invalid("一度に招待できるのは 500 人までです".into()));
         }
-        for u in &users {
-            self.require_org_user(ctx, u).await?;
-        }
+        self.require_org_users(ctx, &users).await?;
         self.add_members_on(&mut tx, ctx, &c, &users, trace).await?;
         tx.commit().await?;
         self.members(ctx, id).await
@@ -87,14 +85,12 @@ impl MessagingService {
         trace: Option<&str>,
     ) -> Result<(), Error> {
         let obj = ctx.ns().channel(&c.id.to_string());
-        let mut tuples = Vec::new();
-        for u in users {
-            if store::member(conn, ctx, c.id, u).await?.is_some() {
-                continue;
-            }
-            store::upsert_member(conn, ctx, c.id, u).await?;
-            tuples.push((ctx.ns().user(u), Relation::Member, obj.clone()));
-        }
+        // 新しく加わった人だけ（既に参加している人の境界 visible_from は動かさない）。
+        let added = store::add_members(conn, ctx, c.id, users).await?;
+        let tuples: Vec<_> = added
+            .iter()
+            .map(|u| (ctx.ns().user(u), Relation::Member, obj.clone()))
+            .collect();
         if tuples.is_empty() {
             return Ok(());
         }
@@ -130,6 +126,7 @@ impl MessagingService {
             return Err(Error::Forbidden("ほかの参加者を外せるのは管理者だけです"));
         }
         let obj = ctx.ns().channel(&id.to_string());
+        store::lock_channel(&mut tx, ctx, id).await?;
         let admins = self.admin_ids(&obj).await?;
         let target = ctx.ns().user(user).to_string();
         if admins.contains(&target) && admins.len() <= 1 {
@@ -186,37 +183,21 @@ impl MessagingService {
         if store::member(&mut tx, ctx, id, user).await?.is_none() {
             return Err(Error::Invalid("参加していない利用者です".into()));
         }
+        // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
+        if poster.is_some() && !c.announcement {
+            return Err(Error::Invalid(
+                "投稿者を個別に決めるのはアナウンス専用チャンネルだけです".into(),
+            ));
+        }
         let obj = ctx.ns().channel(&id.to_string());
         let subject = ctx.ns().user(user);
-        if let Some(admin) = admin {
-            if admin {
-                self.authz
-                    .write_tuple(&subject, Relation::Admin, &obj)
-                    .await?;
-            } else {
-                let admins = self.admin_ids(&obj).await?;
-                if admins.len() <= 1 {
-                    return Err(Error::Forbidden("最後の管理者は外せません"));
-                }
-                self.authz
-                    .delete_tuple(&subject, Relation::Admin, &obj)
-                    .await?;
-            }
-        }
-        if let Some(poster) = poster {
-            if !c.announcement {
-                return Err(Error::Invalid(
-                    "投稿者を個別に決めるのはアナウンス専用チャンネルだけです".into(),
-                ));
-            }
-            if poster {
-                self.authz
-                    .write_tuple(&subject, Relation::Poster, &obj)
-                    .await?;
-            } else {
-                self.authz
-                    .delete_tuple(&subject, Relation::Poster, &obj)
-                    .await?;
+        // 管理者の数の判定と剥奪をチャンネル単位で直列化する（同時に外して管理者 0 人にしない）。
+        store::lock_channel(&mut tx, ctx, id).await?;
+        if admin == Some(false) {
+            let target = subject.to_string();
+            let admins = self.admin_ids(&obj).await?;
+            if admins.contains(&target) && admins.len() <= 1 {
+                return Err(Error::Forbidden("最後の管理者は外せません"));
             }
         }
         audit(
@@ -228,6 +209,17 @@ impl MessagingService {
             serde_json::json!({ "user": user, "admin": admin, "poster": poster }),
         )
         .await?;
+        for (flag, rel) in [(admin, Relation::Admin), (poster, Relation::Poster)] {
+            match flag {
+                Some(true) => {
+                    self.authz.write_tuple(&subject, rel, &obj).await?;
+                }
+                Some(false) => {
+                    self.authz.delete_tuple(&subject, rel, &obj).await?;
+                }
+                None => {}
+            }
+        }
         tx.commit().await?;
         self.members(ctx, id).await
     }

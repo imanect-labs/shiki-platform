@@ -82,7 +82,7 @@ impl MessagingService {
     /// 1 件（読めなければ NotFound）。
     pub async fn message(&self, ctx: &AuthContext, id: Uuid) -> Result<MessageView, Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
-        let raw = sm::raw_message(&mut tx, ctx, id)
+        let raw = sm::peek_message(&mut tx, ctx, id)
             .await?
             .ok_or(Error::NotFound)?;
         self.readable_channel(&mut tx, ctx, raw.channel_id).await?;
@@ -225,10 +225,11 @@ impl MessagingService {
             return Ok(Vec::new());
         }
         let me = ctx.principal().id.clone();
-        let members = store::members(conn, ctx, c.id).await?;
+        // 宛先は参加者に限る（上限なしで全員を引く・id と通知設定だけ）。
+        let members: Vec<(String, String)> = store::member_notify(conn, ctx, c.id).await?;
         let notify: HashMap<&str, NotifyLevel> = members
             .iter()
-            .map(|m| (m.user_id.as_str(), NotifyLevel::parse(&m.notify)))
+            .map(|(u, n)| (u.as_str(), NotifyLevel::parse(n)))
             .collect();
         let mut out: Vec<(String, &'static str)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -256,7 +257,7 @@ impl MessagingService {
             let items: Vec<CheckTuple> = members
                 .iter()
                 .map(|u| CheckTuple {
-                    subject: ctx.ns().user(&u.user_id),
+                    subject: ctx.ns().user(&u.0),
                     relation: Relation::Member,
                     object: role.clone(),
                 })
@@ -267,7 +268,7 @@ impl MessagingService {
                 .await?;
             for (u, ok) in members.iter().zip(ok) {
                 if ok {
-                    push(&u.user_id, "role", &mut out);
+                    push(&u.0, "role", &mut out);
                 }
             }
         }
@@ -280,7 +281,7 @@ impl MessagingService {
                 || self.check(ctx, Relation::CanManage, c.id).await?)
         {
             for u in &members {
-                push(&u.user_id, "channel", &mut out);
+                push(&u.0, "channel", &mut out);
             }
         }
         Ok(out)
@@ -309,11 +310,9 @@ impl MessagingService {
         if raw.deleted_at.is_some() || raw.expired_at.is_some() {
             return Err(Error::Forbidden("削除された発言は編集できません"));
         }
-        if c.archived_at.is_some() {
-            return Err(Error::Forbidden(
-                "アーカイブされたチャンネルは読み取り専用です",
-            ));
-        }
+        // 投稿権を失った人（退出・アナウンスの投稿者から外れた）は過去の発言も書き換えられない。
+        // アーカイブ中も require_post が拒否する（読み取り専用）。
+        self.require_post(ctx, &c, trace).await?;
         let text = plain_text(&blocks);
         sm::edit_message(&mut tx, ctx, &raw, &blocks, &text).await?;
         audit_message(
@@ -356,6 +355,11 @@ impl MessagingService {
             self.deny(ctx, "message", id, "delete", trace).await;
             return Err(Error::Forbidden(
                 "削除できるのは本人とチャンネルの管理者だけです",
+            ));
+        }
+        if c.archived_at.is_some() {
+            return Err(Error::Forbidden(
+                "アーカイブされたチャンネルは読み取り専用です",
             ));
         }
         if raw.deleted_at.is_some() || raw.expired_at.is_some() {
@@ -454,19 +458,15 @@ impl MessagingService {
         self.search_in(ctx, q, &channels, limit, trace).await
     }
 
-    /// pre-filter: 検索者が member のチャンネル id（FGA の実効集合）。
+    /// pre-filter: 検索者が参加しているチャンネル（`channel_member` の写し）。
+    ///
+    /// 速度のための絞り込みで権限の正本ではない（正本は post-filter の FGA）。FGA の list_objects は
+    /// 応答件数に上限があり、超えた分が黙って消えるので使わない。
     pub(crate) async fn prefilter_channels(&self, ctx: &AuthContext) -> Result<Vec<Uuid>, Error> {
-        let ids = self
-            .authz
-            .list_objects(&ctx.subject(), Relation::Member, authz::ObjectType::Channel)
-            .await?;
-        Ok(ids
-            .iter()
-            .filter_map(|raw| {
-                let (_, rest) = raw.split_once(':')?;
-                Uuid::parse_str(ctx.ns().strip_object_id(rest)?).ok()
-            })
-            .collect())
+        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+        let ids = store::my_channel_ids(&mut tx, ctx, &ctx.principal().id).await?;
+        tx.commit().await?;
+        Ok(ids)
     }
 
     /// 検索の本体（pre-filter の結果を受け取り、post-filter を掛ける）。
@@ -503,7 +503,9 @@ impl MessagingService {
             .iter()
             .map(|c| CheckTuple {
                 subject: ctx.subject(),
-                relation: Relation::CanRead,
+                // 検索の対象は「参加しているチャンネルと自分の DM」なので member で引き直す
+                // （公開チャンネルを退出した人は org_reader で読めても検索には出さない）。
+                relation: Relation::Member,
                 object: ctx.ns().channel(&c.to_string()),
             })
             .collect();

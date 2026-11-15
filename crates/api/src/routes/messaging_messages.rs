@@ -401,16 +401,11 @@ impl StreamState {
         let since = self.cursor - OVERLAP;
         match self
             .svc
-            .changes_with(&self.ctx, &mut self.grant, since)
+            .changes_with(&self.ctx, &mut self.grant, since, &mut self.sent)
             .await
         {
             Ok(views) => {
-                self.sent.retain(|_, at| *at > since);
                 for v in views {
-                    if self.sent.get(&v.id).is_some_and(|at| *at >= v.updated_at) {
-                        continue;
-                    }
-                    self.sent.insert(v.id, v.updated_at);
                     self.cursor = self.cursor.max(v.updated_at);
                     if let Ok(json) = serde_json::to_string(&v) {
                         self.pending.push_back(

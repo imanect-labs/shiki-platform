@@ -251,7 +251,6 @@ impl MessagingService {
         let rows: Vec<ChannelRow> = sqlx::query_as(
             "SELECT c.id, c.kind, c.name, c.topic, c.announcement, c.dm_key, c.created_by, c.created_at, \
                c.archived_at FROM channel c WHERE c.tenant_id = $1 AND c.org = $2 \
-               AND c.dm_key IS DISTINCT FROM ('agent:' || c.created_by) \
                AND (c.name ILIKE $3 ESCAPE '\\' OR (c.kind = 'dm' AND EXISTS (SELECT 1 FROM channel_member m \
                  JOIN directory_user u ON u.tenant_id = m.tenant_id AND u.org = m.org AND u.user_id = m.user_id \
                  WHERE m.tenant_id = c.tenant_id AND m.org = c.org AND m.channel_id = c.id \
@@ -573,6 +572,14 @@ async fn admin_channel_name(
 ) -> Result<String, Error> {
     if let Some(n) = &c.name {
         return Ok(n.clone());
+    }
+    if let Some(owner) = c.agent_dm_owner() {
+        let names = store::display_names(conn, ctx, &[owner.to_string()]).await?;
+        let who = names
+            .get(owner)
+            .cloned()
+            .unwrap_or_else(|| owner.to_string());
+        return Ok(format!("{who} とエージェントの DM"));
     }
     let users: Vec<String> = c
         .dm_key

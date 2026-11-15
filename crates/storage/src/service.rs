@@ -165,6 +165,7 @@ mod internal_io;
 mod move_rename;
 mod proposal;
 mod read;
+mod read_batch;
 mod restore;
 mod share_link;
 mod share_link_expiry;

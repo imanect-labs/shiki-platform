@@ -25,6 +25,9 @@ pub struct MessagingService {
     pub(crate) previews: Option<Arc<crate::preview::LinkPreviewer>>,
 }
 
+/// タプル書込の並列度。
+const TUPLE_CONCURRENCY: usize = 8;
+
 /// FGA の 1 タプル（書込・補償用）。
 pub(crate) type Tuple = (Subject, Relation, authz::FgaObject);
 
@@ -156,18 +159,37 @@ impl MessagingService {
 
     /// 書込のタプルをまとめて付与する。途中で失敗したら付与済みを剥がして失敗を返す。
     pub(crate) async fn write_tuples(&self, tuples: &[Tuple]) -> Result<(), Error> {
-        let mut done: Vec<&Tuple> = Vec::new();
-        for t in tuples {
-            match self.authz.write_tuple(&t.0, t.1, &t.2).await {
+        use futures::StreamExt as _;
+        // 並列度を絞って書く（招待 500 人で 500 往復を直列にしない・無制限にもしない）。
+        let results: Vec<(Tuple, Result<bool, authz::AuthzError>)> =
+            futures::stream::iter(tuples.iter().cloned())
+                .map(|t| {
+                    let authz = Arc::clone(&self.authz);
+                    async move {
+                        let r = authz.write_tuple(&t.0, t.1, &t.2).await;
+                        (t, r)
+                    }
+                })
+                .buffer_unordered(TUPLE_CONCURRENCY)
+                .collect()
+                .await;
+        let mut failed = None;
+        let mut done: Vec<Tuple> = Vec::new();
+        for (t, r) in results {
+            match r {
                 Ok(true) => done.push(t),
                 Ok(false) => {}
-                Err(e) => {
-                    for (s, r, o) in done {
-                        let _ = self.authz.delete_tuple(s, *r, o).await;
-                    }
-                    return Err(e.into());
+                Err(e) => failed = Some(e),
+            }
+        }
+        if let Some(e) = failed {
+            // 補償: 付与できた分を剥がす（剥がせなかったものは記録して失敗を返す）。
+            for (s, r, o) in &done {
+                if let Err(err) = self.authz.delete_tuple(s, *r, o).await {
+                    tracing::error!(error = %err, "messaging: 補償の剥奪に失敗（タプルが残る）");
                 }
             }
+            return Err(e.into());
         }
         Ok(())
     }
@@ -219,9 +241,7 @@ impl MessagingService {
         if invitees.len() > 500 {
             return Err(Error::Invalid("一度に招待できるのは 500 人までです".into()));
         }
-        for u in &invitees {
-            self.require_org_user(ctx, u).await?;
-        }
+        self.require_org_users(ctx, &invitees).await?;
         let id = Uuid::new_v4();
         let row = ChannelRow {
             id,
@@ -236,9 +256,7 @@ impl MessagingService {
         };
         store::insert_channel(&mut tx, ctx, &row).await?;
         store::upsert_member(&mut tx, ctx, id, &me).await?;
-        for u in &invitees {
-            store::upsert_member(&mut tx, ctx, id, u).await?;
-        }
+        store::add_members(&mut tx, ctx, id, &invitees).await?;
         let ns = ctx.ns();
         let obj = ns.channel(&id.to_string());
         let mut tuples: Vec<Tuple> = vec![
@@ -309,6 +327,37 @@ impl MessagingService {
             )
             .await?;
         if ok {
+            Ok(())
+        } else {
+            Err(Error::Invalid(
+                "組織のメンバーではない利用者が含まれています".into(),
+            ))
+        }
+    }
+
+    /// 複数の利用者がみな組織のメンバーか（1 往復の batch_check・招待の検証）。
+    pub(crate) async fn require_org_users(
+        &self,
+        ctx: &AuthContext,
+        users: &[String],
+    ) -> Result<(), Error> {
+        if users.iter().any(|u| authz::validate_local_id(u).is_err()) {
+            return Err(Error::Invalid("利用者の指定が不正です".into()));
+        }
+        let org = ctx.ns().organization(ctx.org());
+        let items: Vec<CheckTuple> = users
+            .iter()
+            .map(|u| CheckTuple {
+                subject: ctx.ns().user(u),
+                relation: Relation::Member,
+                object: org.clone(),
+            })
+            .collect();
+        let ok = self
+            .authz
+            .batch_check(&items, Consistency::HigherConsistency)
+            .await?;
+        if ok.len() == users.len() && ok.iter().all(|b| *b) {
             Ok(())
         } else {
             Err(Error::Invalid(
@@ -551,7 +600,7 @@ impl MessagingService {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let c = self.readable_channel(&mut tx, ctx, id).await?;
         let member = store::member(&mut tx, ctx, id, &me).await?;
-        let count = store::members(&mut tx, ctx, id).await?.len() as i64;
+        let count = store::member_count(&mut tx, ctx, id).await?;
         let names = self.dm_names(&mut tx, ctx, std::iter::once(&c)).await?;
         tx.commit().await?;
         let is_admin = self.check(ctx, Relation::CanManage, id).await?;
