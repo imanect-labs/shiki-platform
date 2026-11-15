@@ -5,7 +5,8 @@
 //! ドキュメントへ適用されて人間の並行編集と収束する（排他なし）。HTML 入力は
 //! collab 側適用時に必ずサニタイズされる（PIT-40 第1層）。
 
-use std::sync::{Arc, LazyLock};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use agent_core::{SlideDraft, Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
@@ -231,11 +232,19 @@ impl Tool for SlideEditTool {
 /// 別 name なら別の下書きになる。ストレージ書込を伴わないため確認ゲートは不要（確定は UI の
 /// 保存ボタンが担う・fail-closed はそちら）。HTML はこの時点でサニタイズし、「サニタイズ済みが
 /// 正規形」を下書きにも保証する（PIT-40 第1層）。
-pub struct SaveSlideTool;
+///
+/// ツール一式は run ごとに作るので、この run で作った下書きを名前ごとに覚えておける。
+/// `append` はそれに数枚ずつ足す（1 回の呼び出しで全枚数を書くと出力上限を超え、20 枚 ×
+/// 長いノートは作り切れずに利用者へ続きを聞き返していた・プレビュー検証 S5）。
+pub struct SaveSlideTool {
+    drafts: Mutex<HashMap<String, collab::slide::SlideDoc>>,
+}
 
 impl SaveSlideTool {
     pub fn new() -> Self {
-        SaveSlideTool
+        SaveSlideTool {
+            drafts: Mutex::new(HashMap::new()),
+        }
     }
 }
 
@@ -258,6 +267,9 @@ struct SaveSlideInput {
     /// `"root"` はルートへ戻す指定、省略は前回の指定を保つ。
     #[serde(default, deserialize_with = "crate::drive_tool::de_draft_parent")]
     parent_id: Option<String>,
+    /// true なら、この run で同じ name に作った下書きの末尾へ slides を足す。
+    #[serde(default)]
+    append: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,7 +295,10 @@ impl Tool for SaveSlideTool {
                  確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と\
                  同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。\
                  保存先を指定されたら drive.find でフォルダ id を調べて parent_id に渡す\
-                 （保存画面の保存先の初期値になる）。{}",
+                 （保存画面の保存先の初期値になる）。**枚数が多い・ノートが長いときは**、最初の\
+                 呼び出しで数枚作り、続きは同じ name・append=true で数枚ずつ足す（1 回は 5 枚程度\
+                 まで。全枚数を 1 回で書くと出力上限で切れる）。利用者に続きを確認せず、依頼の\
+                 枚数まで足し切る。{}",
                 design_guidance()
             )
         });
@@ -308,7 +323,8 @@ impl Tool for SaveSlideTool {
                     }
                 },
                 "theme_id": { "type": "string", "enum": theme_ids, "description": "テーマ（省略可・カタログの閉集合）" },
-                "parent_id": { "type": "string", "description": "保存先フォルダの id（保存画面の初期値になる）。ルートに戻すときは \"root\"。省略すると前回の指定のまま" }
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（保存画面の初期値になる）。ルートに戻すときは \"root\"。省略すると前回の指定のまま" },
+                "append": { "type": "boolean", "description": "true なら、この会話の実行中に同じ name で作った下書きの末尾へ slides を追加する（数枚ずつ作るとき）" }
             },
             "required": ["name", "slides"]
         })
@@ -348,14 +364,7 @@ impl Tool for SaveSlideTool {
         // 表示名は .slide を落として持つ（下書きカード/画面のタイトル用）。保存時に付与する。
         let display_name = name.strip_suffix(".slide").unwrap_or(name);
         // 下書き本文もサニタイズする（「サニタイズ済みが正規形」を下書きにも保証・PIT-40）。
-        let mut meta = collab::note::NoteMeta {
-            title: Some(display_name.to_string()),
-            ..Default::default()
-        };
-        if let Some(theme) = input.theme_id {
-            meta.extra.insert("theme_id".into(), theme);
-        }
-        let slides: Vec<collab::slide::Slide> = input
+        let new_slides: Vec<collab::slide::Slide> = input
             .slides
             .into_iter()
             .map(|s| collab::slide::Slide {
@@ -365,12 +374,55 @@ impl Tool for SaveSlideTool {
                 bg: None,
             })
             .collect();
-        let count = slides.len();
-        let content = collab::slide::SlideDoc { meta, slides }.to_json();
-        let mut outcome = ToolOutcome::ok(format!(
-            "下書きスライド「{display_name}」を用意しました（{count} 枚）。画面で内容を確認・\
-             編集し、「ドライブに保存」で確定してください。"
-        ));
+        let added = new_slides.len();
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|_| ToolError::Internal("下書きの状態が壊れています".into()))?;
+        let doc = if input.append {
+            // 先に作った下書きが無いのに追記だけ出すと、前半の無い下書きで上書きしてしまう
+            // （run の再開などで状態が消えた場合）。黙って作らず、全枚数での作り直しを促す。
+            let Some(prev) = drafts.get_mut(display_name) else {
+                return Err(ToolError::Invalid(format!(
+                    "この実行で先に作った下書き「{display_name}」が見つからないため追加できません。\
+                     append を付けずに、全スライドを指定して呼び直してください。"
+                )));
+            };
+            prev.slides.extend(new_slides);
+            if let Some(theme) = input.theme_id {
+                prev.meta.extra.insert("theme_id".into(), theme);
+            }
+            prev.clone()
+        } else {
+            let mut meta = collab::note::NoteMeta {
+                title: Some(display_name.to_string()),
+                ..Default::default()
+            };
+            if let Some(theme) = input.theme_id {
+                meta.extra.insert("theme_id".into(), theme);
+            }
+            let doc = collab::slide::SlideDoc {
+                meta,
+                slides: new_slides,
+            };
+            drafts.insert(display_name.to_string(), doc.clone());
+            doc
+        };
+        drop(drafts);
+        let count = doc.slides.len();
+        let content = doc.to_json();
+        let message = if input.append {
+            format!(
+                "下書きスライド「{display_name}」に {added} 枚追加しました（計 {count} 枚）。\
+                 依頼の枚数に届いていなければ、同じ name・append=true で続きを追加してください。"
+            )
+        } else {
+            format!(
+                "下書きスライド「{display_name}」を用意しました（{count} 枚）。画面で内容を確認・\
+                 編集し、「ドライブに保存」で確定してください。"
+            )
+        };
+        let mut outcome = ToolOutcome::ok(message);
         outcome.slide_drafts.push(SlideDraft {
             name: display_name.to_string(),
             content,
@@ -385,6 +437,70 @@ mod tests {
     //! error 写像（`denied_outcome`）と入力デシリアライズの純関数部分を検証する。
     //! hub 経由の適用・認可は crates/collab/tests/slide_ai_edit_it.rs が担う。
     use super::*;
+
+    fn slides_in(outcome: &ToolOutcome) -> Vec<(String, String)> {
+        let doc =
+            collab::slide::SlideDoc::from_json(&outcome.slide_drafts[0].content).expect("json");
+        doc.slides.into_iter().map(|s| (s.html, s.notes)).collect()
+    }
+
+    /// 数枚ずつ作れる: append は同じ run の下書きの末尾へ足し、全枚数の下書きを出す（S5）。
+    #[tokio::test]
+    async fn appendは同じ実行の下書きに足して全枚数を出す() {
+        let tool = SaveSlideTool::new();
+        let first = tool
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "研修", "slides": [{"html": "<h1>1</h1>", "notes": "n1"}]}),
+                None,
+            )
+            .await
+            .expect("first");
+        assert_eq!(slides_in(&first).len(), 1);
+        let more = tool
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "研修", "append": true,
+                    "slides": [{"html": "<h1>2</h1>"}, {"html": "<h1>3</h1>", "notes": "n3"}]}),
+                None,
+            )
+            .await
+            .expect("append");
+        let got = slides_in(&more);
+        assert_eq!(got.len(), 3);
+        assert!(got[0].0.contains('1') && got[0].1 == "n1");
+        assert!(got[2].0.contains('3') && got[2].1 == "n3");
+        assert!(
+            more.content.contains("2 枚追加") && more.content.contains("計 3 枚"),
+            "{}",
+            more.content
+        );
+        // append なしで呼び直すと置き換え（従来どおり）。
+        let replaced = tool
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "研修", "slides": [{"html": "<h1>x</h1>"}]}),
+                None,
+            )
+            .await
+            .expect("replace");
+        assert_eq!(slides_in(&replaced).len(), 1);
+    }
+
+    /// 先に作った下書きが無い append は作らない（前半の無い下書きで上書きしない）。
+    #[tokio::test]
+    async fn 先の下書きが無いappendは拒否する() {
+        let tool = SaveSlideTool::new();
+        let err = tool
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "研修", "append": true, "slides": [{"html": "<h1>2</h1>"}]}),
+                None,
+            )
+            .await
+            .expect_err("no base draft");
+        assert!(matches!(err, ToolError::Invalid(m) if m.contains("全スライドを指定して")));
+    }
 
     #[test]
     fn denied_outcomeは権限と存在を秘匿して畳む() {
