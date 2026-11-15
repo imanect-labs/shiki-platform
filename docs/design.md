@@ -118,7 +118,7 @@ flowchart LR
 | `DocumentParser` | Docling（ローカル） | Docling / 商用OCR |
 | `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 |
 | `KeyProvider` | ローカルキーファイル（将来HSM） | Cloud KMS |
-| `SearchProvider` | SearXNG 自己ホスト（エアギャップは機能無効） | Brave Search API |
+| `SearchProvider` | SearXNG 自己ホスト（エアギャップは機能無効） | Brave Search API / TinyFish Search API |
 | `OfficeSuite` | Collabora Online（同梱） | Collabora Online（OnlyOffice へ差し替え可能な退路） |
 
 ## 4. サブシステム設計
@@ -436,6 +436,9 @@ flowchart LR
   フォルダ未指定は `agent-workspace-<thread>` を自動生成（「未指定なら Drive 全体」は採らない）。
   不変条件テスト: `crates/chat/tests/workspace_containment_it.rs`。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
+  SaaS の選択肢に TinyFish Search API（`websearch.backend=tinyfish`・API キー必須・#1288）を足す。
+  自己ホストの SearXNG は上流エンジンが送信元 IP 単位で CAPTCHA・403 を返すと全クエリが空になり、
+  検索語を変えても回復しないため、外部 API を選べるようにする（shiki-preview は TinyFish）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
   web ツール有効時、取得はサンドボックスを介さずホスト側で行い（#348・§4.6）、**宛先は解決後 IP の検証＋
   接続アドレス固定**で公開ホストに限定する（シークレット添付なし・リダイレクト非追従）。
