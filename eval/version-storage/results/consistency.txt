@@ -1,0 +1,4 @@
+main: 491 histories, 10091 versions, 333003 verified restores; corpus hashes match main; storage sizes equal across 3 trials
+files: 52 histories, 1284 versions, 26964 verified restores; corpus hashes match main; storage sizes equal across 3 trials
+window-22: 20 histories, 292 versions, 1752 verified restores; corpus hashes match main; storage sizes equal across 3 trials
+window-24: 20 histories, 292 versions, 1752 verified restores; corpus hashes match main; storage sizes equal across 3 trials

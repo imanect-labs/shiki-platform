@@ -15,9 +15,10 @@ use std::time::Duration;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::content_address::blob_object_key;
+use crate::blob_storage::BlobStorage;
 use crate::error::StorageError;
 use crate::object_store::ObjectStore;
+use authz::TenantId;
 
 /// インジェスト時点のノード状態のスナップショット。
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -132,10 +133,20 @@ impl IndexerStorage {
         org: &str,
         blob_sha256: &str,
     ) -> Result<String, StorageError> {
-        let key = blob_object_key(tenant_id, org, blob_sha256);
-        let url = self
-            .store
-            .presign_get_internal(&key, self.internal_get_ttl)
+        let tenant =
+            TenantId::parse(tenant_id).map_err(|e| StorageError::Invalid(e.to_string()))?;
+        let url = BlobStorage::new(self.pool.clone(), self.store.clone())
+            .presign(
+                &tenant,
+                org,
+                blob_sha256,
+                crate::blob_storage::DownloadSpec {
+                    ttl: self.internal_get_ttl,
+                    filename: None,
+                    content_type: None,
+                    internal: true,
+                },
+            )
             .await?;
         Ok(url)
     }

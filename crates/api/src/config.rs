@@ -399,6 +399,10 @@ impl AppConfig {
         }
         Self::check_session_bounds(&self.session)?;
         Self::check_upload_gc_bounds(&self.storage)?;
+        self.storage
+            .version_storage
+            .validate()
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;

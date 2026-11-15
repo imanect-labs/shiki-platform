@@ -71,6 +71,10 @@ pub const RETENANT_SIDECAR_COMPLETE: &[&str] = &[
     "node_version",
     "pending_upload",
     "blob",
+    // 物理キーも tenant prefix 配下なので retenant の prefix コピーで移送される。
+    "blob_storage_object",
+    "blob_storage_ref",
+    "blob_storage_hold",
     // 共有リンク台帳は node タプルに従属し、独自の FGA オブジェクトを持たない。
     "node_share_link",
     "node_share_link_grant",

@@ -1,0 +1,40 @@
+{
+  "started_utc": "2026-11-12T02:27:50Z",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "cpu_count": 5,
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "cpu_quota": "400000 100000",
+  "memory_limit": "17179869184",
+  "packages": {
+    "fastcdc": "1.7.0",
+    "zstandard": "0.25.0",
+    "python-docx": "1.2.0",
+    "openpyxl": "3.1.5",
+    "python-pptx": "1.0.2",
+    "Pillow": "13.0.0",
+    "reportlab": "4.4.9",
+    "numpy": "2.3.5"
+  },
+  "trials": 3,
+  "quick": false,
+  "methods": [
+    "full-cas",
+    "zanchor32"
+  ],
+  "backend": "memory",
+  "dictionary_window_log": 22,
+  "object_model_bytes": 64,
+  "version_model_bytes": 48,
+  "baseline_commit": "ad548e7598198d4019da10dcef37fa3a401a2966",
+  "xdelta_version": [
+    "Xdelta version 3.0.11, Copyright (C) 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015 Joshua MacDonald"
+  ],
+  "xdelta_binary_sha256": "326f51f66d401306b69c9273a04b84a1bbac1089986fdff8ed412ce2de750cd0",
+  "timing_boundary": "single-process serial codec + in-memory object index; xdelta additionally includes subprocess and temp-file I/O; no DB/network/fsync",
+  "verified_reads": 1752,
+  "histories": 20,
+  "versions": 292,
+  "logical_bytes": 412035791,
+  "elapsed_s": 15.365533096000036
+}

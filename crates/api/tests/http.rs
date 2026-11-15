@@ -362,6 +362,7 @@ fn base_config() -> AppConfig {
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
             audit_retention: api::config::AuditRetentionConfig::default(),
+            version_storage: storage::blob_storage::VersionStorageOptions::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,

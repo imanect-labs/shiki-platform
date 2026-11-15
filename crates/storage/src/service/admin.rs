@@ -81,6 +81,24 @@ impl StorageService {
         actor: &str,
     ) -> Result<(u64, u64), StorageError> {
         let ctx = system_ctx(tenant_id, org, actor)?;
+        // 最適化・バックアップ開始と同時に prefix を消さない。guard は撤去完了まで保持する。
+        let mut storage_guard = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 118488))")
+            .bind(tenant_id)
+            .execute(&mut *storage_guard)
+            .await?;
+        let held: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM blob_storage_hold \
+            WHERE tenant_id = $1 AND expires_at > now())",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut *storage_guard)
+        .await?;
+        if held {
+            return Err(StorageError::Invalid(
+                "バックアップ保護中のためテナント撤去を再試行してください".into(),
+            ));
+        }
         let ns = ctx.ns();
         let mut tuples_deleted: u64 = 0;
 

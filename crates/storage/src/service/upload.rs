@@ -204,15 +204,8 @@ impl StorageService {
         )
         .await?;
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
         let url = self
-            .store
-            .presign_get(
-                &key,
-                self.presign_get_ttl,
-                Some(&node.name),
-                node.content_type.as_deref(),
-            )
+            .presign_blob(ctx, sha, &node.name, node.content_type.as_deref())
             .await?;
         self.audit
             .record(
@@ -245,6 +238,10 @@ impl StorageService {
         content_type: &str,
         object_key: &str,
     ) -> Result<(), StorageError> {
+        let _io = crate::blob_storage::BlobStorage::io_permit().await?;
+        let tenant =
+            TenantId::parse(tenant_id).map_err(|e| StorageError::Invalid(e.to_string()))?;
+        crate::blob_storage::BlobStorage::protect_lifecycle_on(conn, &tenant).await?;
         sqlx::query(
             "INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
              VALUES ($1, $2, $3, $4, $5, $6, 1) \
@@ -256,8 +253,17 @@ impl StorageService {
         .bind(size)
         .bind(content_type)
         .bind(object_key)
-        .execute(conn)
+        .execute(&mut *conn)
         .await?;
+        self.content
+            .materialize_on(
+                conn,
+                &tenant,
+                org,
+                sha256,
+                self.presign_get_ttl.max(Duration::from_mins(1)),
+            )
+            .await?;
         Ok(())
     }
 
@@ -348,8 +354,12 @@ impl StorageService {
         .bind(size)
         .bind(content_type)
         .bind(&ctx.principal().id)
-        .execute(conn)
+        .execute(&mut *conn)
         .await?;
+        if self.version_storage.enabled {
+            crate::blob_storage::BlobStorage::enqueue(conn, ctx.tenant_id(), ctx.org(), node_id)
+                .await?;
+        }
         Ok(())
     }
 }
