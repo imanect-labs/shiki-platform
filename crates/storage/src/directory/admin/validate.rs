@@ -127,24 +127,32 @@ impl DirectoryAdminStore {
             return Err(StorageError::Conflict);
         }
         tx.commit().await?;
-        let mut done = BTreeMap::new();
-        let mut ordered = Vec::new();
-        for id in graph.keys() {
-            visit(
-                id,
-                &graph,
-                &edits,
-                &mut BTreeSet::new(),
-                &mut done,
-                &mut ordered,
-            )?;
-        }
         Ok(DirectoryChangeSet {
             idempotency_key: changes.idempotency_key,
-            roles: order_by_slots(ordered, &graph, &slots)?,
+            roles: order_edits(&graph, &edits, &slots)?,
             mappings: changes.mappings.clone(),
         })
     }
+}
+
+fn order_edits(
+    graph: &BTreeMap<String, ManagedRole>,
+    edits: &BTreeMap<String, RoleEdit>,
+    slots: &BTreeMap<(Option<String>, String), String>,
+) -> Result<Vec<RoleEdit>, StorageError> {
+    let mut done = BTreeMap::new();
+    let mut ordered = Vec::new();
+    for id in graph.keys() {
+        visit(
+            id,
+            graph,
+            edits,
+            &mut BTreeSet::new(),
+            &mut done,
+            &mut ordered,
+        )?;
+    }
+    order_by_slots(ordered, graph, slots)
 }
 
 fn visit(

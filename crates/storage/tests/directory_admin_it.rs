@@ -272,7 +272,14 @@ async fn validation_rejects_foreign_ids_cycles_collisions_and_stale_groups() {
     }
     assert!(store.validate(&ctx, &input(deep.clone())).await.is_err());
     deep.truncate(128);
-    assert!(store.validate(&ctx, &input(deep)).await.is_ok());
+    assert!(store.validate(&ctx, &input(deep.clone())).await.is_ok());
+    deep.truncate(127);
+    let mut moved_parent = a.clone();
+    moved_parent.expected_version = 1;
+    moved_parent.parent_id = Some(deep.last().unwrap().id.clone());
+    deep.push(moved_parent);
+    // Parent depth 128 is valid alone, but its existing child would become 129.
+    assert!(store.validate(&ctx, &input(deep)).await.is_err());
     let g = group(&ctx, "g", &[]);
     store.cache_group(&ctx, &g).await.unwrap();
     let mut changed = g.clone();

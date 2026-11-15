@@ -75,7 +75,7 @@ export function AutoDialog({
       }}
     >
       <DialogContent className="flex h-[min(800px,calc(100dvh-64px))] max-w-6xl flex-col gap-0 overflow-hidden p-0 max-sm:h-[94dvh] max-sm:max-h-[94dvh] max-sm:px-0 max-sm:pb-0 max-sm:pt-0">
-        <header className="shrink-0 border-b px-5 py-4 pr-12">
+        <header className="shrink-0 shiki-dash-bottom px-5 py-4 pr-12">
           <div className="mb-2 flex items-center gap-2 text-[11px] text-muted-foreground">
             <span className={!review ? "font-medium text-foreground" : ""}>
               1 対象を選ぶ
@@ -93,7 +93,7 @@ export function AutoDialog({
           </DialogDescription>
         </header>
         <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto md:grid-cols-[300px_minmax(0,1fr)] md:overflow-hidden">
-          <aside className="flex min-h-0 flex-col border-b bg-muted/15 md:border-b-0 md:border-r">
+          <aside className="flex min-h-0 flex-col border-b bg-muted/15 md:border-b-0 ">
             {review && plan ? (
               <ReviewSources
                 sources={plan.sources}
@@ -164,7 +164,7 @@ export function AutoDialog({
             )}
           </aside>
           <section
-            className="flex min-h-80 min-w-0 flex-col md:min-h-0"
+            className="flex min-h-80 min-w-0 flex-col md:min-h-0 md:shiki-divide-l"
             aria-busy={busy}
           >
             {busy ? (
@@ -184,6 +184,17 @@ export function AutoDialog({
                   key={plan.changes.idempotency_key}
                   nodes={plan.nodes}
                   changes={plan.changes}
+                  ouPaths={
+                    mode === "ou"
+                      ? new Set(
+                          plan.sources.flatMap((g) =>
+                            g.ou_path.map((_, i) =>
+                              g.ou_path.slice(0, i + 1).join("\0"),
+                            ),
+                          ),
+                        )
+                      : undefined
+                  }
                 />
                 <MappingDiff
                   group={active}
@@ -198,7 +209,7 @@ export function AutoDialog({
             )}
           </section>
         </div>
-        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3">
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 shiki-dash-top px-5 py-3">
           <p className="text-xs text-muted-foreground">
             {plan
               ? `${plan.group_count}グループ / 新規ロール ${plan.changes.roles.length}件 / 既存 ${plan.existing_roles}件`

@@ -25,6 +25,8 @@ directory_ldap_allowed_hosts = ["ad.example.co.jp"]
 
 接続と固定tenant／orgマッパーは組織ごとに分離し、AD属性で認証先のtenantを変更できない構成にする。同期先は`/tenants/<tenant>/<org>/ad`、ロール定義は`/__shiki_roles/<tenant>/<org>`。後者をLDAP mapperの同期先に含める構成は拒否する。ロール定義のグループはAD所属の正本には使用しない。
 
+接続先・検索DN・階層保持の設定を変えると、旧スナップショットは保存処理の前に無効化されます。再同期が成功するまでグループ一覧・自動作成・対応付けに使用しません。同期後、既存の対応表は同一グループIDのものだけ復帰します。
+
 ## 自動作成・CSV・確認
 
 「ADから自動作成」は選択したグループ、またはすべてを対象にする。OUの配置とグループの入れ子は別の情報であり、OU配下にあるだけで所属は付与されない。OUの元情報はADの`distinguishedName`属性から取得する。
@@ -45,7 +47,7 @@ Keycloak、OpenFGA、PostgreSQLをまたぐ反映は全件一括の原子処理�
 
 版競合は古い確認案を自動上書きしない。未反映の編集は再読込前に確認する。テナント撤去は実行中の管理操作と排他にし、所有するLDAP接続と管理ロール定義も撤去する。外部状態を含むため、この管理情報が存在するテナントのretenantは既存の副産物移行チェックで拒否される。
 
-一覧は1ページ最大100件（画面の通常取得は40件）。AD同期・自動作成は各10,000グループ／ロール、階層は128段まで、CSVは1MB・1,000行まで。確認案・一操作に含める対応表のロールID合計は20,000件まで。上限超過は切り捨てず拒否する。大量の部署は接続の検索ベースを分ける運用を検討する。
+一覧は1ページ最大100件（画面の通常取得は40件）。AD同期・自動作成は各10,000グループ／ロール、階層は128段まで、CSVは1MB・1,000行まで。確認案・一操作に含める対応表のロールID合計、およびロールの親変更による配下への影響範囲は20,000件まで。上限超過は切り捨てず拒否する。大量の部署は接続の検索ベースを分ける運用を検討する。
 
 ## 参照
 
@@ -53,5 +55,3 @@ Keycloak、OpenFGA、PostgreSQLをまたぐ反映は全件一括の原子処理�
 - [Keycloak 26.2のGroupLDAPStorageMapper実装](https://github.com/keycloak/keycloak/blob/26.2.0/federation/ldap/src/main/java/org/keycloak/storage/ldap/mappers/membership/group/GroupLDAPStorageMapper.java)
 - [ADのOU設計](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/reviewing-ou-design-concepts)
 - [ADセキュリティグループ](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups)
-
-接続先・検索DN・階層保持の設定を変えると、旧スナップショットは保存処理の前に無効化されます。再同期が成功するまでグループ一覧・自動作成・対応付けに使用しません。同期後、既存の対応表は同一グループIDのものだけ復帰します。
