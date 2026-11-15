@@ -7,6 +7,7 @@ struct SlowPutStore {
     inner: Arc<dyn ObjectStore>,
     entered: AtomicUsize,
     release: Semaphore,
+    fail_put: bool,
 }
 
 #[async_trait::async_trait]
@@ -18,6 +19,9 @@ impl ObjectStore for SlowPutStore {
         content_type: &str,
     ) -> Result<(), ObjectStoreError> {
         self.entered.fetch_add(1, Ordering::SeqCst);
+        if self.fail_put {
+            return Err(ObjectStoreError::Backend("injected PUT failure".into()));
+        }
         let _permit = self
             .release
             .acquire()
@@ -93,6 +97,7 @@ async fn reconstruction_holds_io_limit_until_raw_put_finishes() {
         inner: env.store.clone(),
         entered: AtomicUsize::new(0),
         release: Semaphore::new(0),
+        fail_put: false,
     });
     let archive = BlobStorage::new(env.pool.clone(), store.clone());
     let mut tasks = tokio::task::JoinSet::new();
@@ -127,4 +132,35 @@ async fn reconstruction_holds_io_limit_until_raw_put_finishes() {
         "遅いPUTが復元済みバッファを保持する間、5件目を展開しない"
     );
     assert_eq!(store.entered.load(Ordering::SeqCst), 5);
+}
+
+#[tokio::test]
+async fn failed_put_keeps_orphan_gc_within_its_protection_deadline() {
+    let Some(env) = setup().await else { return };
+    let (id, _) = history(&env, 2).await;
+    sqlx::query("INSERT INTO blob_storage_scope (tenant_id, org, next_check_at) VALUES ($1, $2, now() + interval '7 days')")
+        .bind(env.ctx.tenant_id()).bind(env.ctx.org()).execute(&env.pool).await.unwrap();
+    let store = Arc::new(SlowPutStore {
+        inner: env.store.clone(),
+        entered: AtomicUsize::new(0),
+        release: Semaphore::new(0),
+        fail_put: true,
+    });
+    let archive = BlobStorage::new(env.pool.clone(), store.clone());
+    assert!(matches!(
+        archive
+            .compact_node(env.ctx.tenant(), env.ctx.org(), id, 0, env.options)
+            .await,
+        Err(StorageError::ObjectStore(_))
+    ));
+    assert!(store.entered.load(Ordering::SeqCst) > 0);
+    let (objects, scheduled): (i64, bool) = sqlx::query_as(
+        "SELECT count(*), bool_and(s.next_check_at <= o.protected_until) FROM blob_storage_scope s \
+         JOIN blob_storage_object o USING (tenant_id, org) WHERE s.tenant_id = $1 AND s.org = $2 AND o.refcount = 0")
+        .bind(env.ctx.tenant_id()).bind(env.ctx.org()).fetch_one(&env.pool).await.unwrap();
+    assert!(objects > 0);
+    assert!(
+        scheduled,
+        "PUT失敗後も、遠いraw期限ではなく未公開実体の期限に回収を予定する"
+    );
 }

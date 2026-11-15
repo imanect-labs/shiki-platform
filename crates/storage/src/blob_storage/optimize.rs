@@ -231,6 +231,8 @@ impl BlobStorage {
             ON CONFLICT (tenant_id, org, sha256) DO UPDATE SET collected_at = NULL, protected_until = \
             GREATEST(blob_storage_object.protected_until, EXCLUDED.protected_until)")
             .bind(tenant.as_str()).bind(org).bind(hashes).bind(sizes).execute(&mut *tx).await?;
+        sqlx::query("UPDATE blob_storage_scope SET next_check_at = LEAST(next_check_at, now() + interval '1 day') WHERE tenant_id = $1 AND org = $2")
+            .bind(tenant.as_str()).bind(org).execute(&mut *tx).await?;
         tx.commit().await?;
         let writes: Vec<(String, Vec<u8>)> = plan
             .objects

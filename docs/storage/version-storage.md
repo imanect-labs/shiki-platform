@@ -49,7 +49,7 @@ GCは次を保護する。
 
 現在の論理版・提案版・履歴はGCで削除しない。物理参照がゼロの実体と、期限を過ぎたrawキャッシュを回収する。回収した物理実体の台帳はtombstoneとして残す。タイムアウト/中断後に遅延PUTが完了した場合も、次の監査で回収できる。
 
-GCは`blob_storage_scope`の組織単位の予定を毎分16組織ずつ処理する。保護中はhold期限、削除中は1時間後へ予定を進めるため、その組織の大量のblobが他組織の回収を妨げない。組織内では複合索引から次の期限を求め、実体公開・raw再生成・hold解除時に予定を更新する。
+GCは`blob_storage_scope`の組織単位の予定を毎分16組織ずつ処理する。保護中はhold期限、削除中は1時間後へ予定を進めるため、その組織の大量のblobが他組織の回収を妨げない。組織内では複合索引から次の期限を求め、実体登録・公開・raw再生成・hold解除時に予定を更新する。登録時にも予定を前倒しし、PUT失敗による未公開実体を遠いraw期限まで残さない。
 
 rawは1回に有効フラグのある候補64件、欠落フラグの監査16件、物理実体は16件まで。期限走査には `now()` と部分indexを使い、参照付き全実体のanti-joinを繰り返さない。削除はraw/物理実体ごとの `delete_batch` と一括SQLで行い、1回あたりストア削除要求を最大2回に抑える。欠落フラグも監査するため、全文再生成後の親トランザクションrollbackによるrawを取り残さない。
 
@@ -101,6 +101,6 @@ SHIKI_REQUIRE_IT=1 cargo test -p shiki-storage --all-features -- --test-threads=
 
 接続先は既存と同じ `STORAGE_TEST_DATABASE_URL` / `OPENFGA_TEST_URL` / `STORAGE_TEST_S3_*`。ローカル・CIともS3互換ストアはRustFSを使う。
 
-2026-11-15のローカル検証: 実Postgres/OpenFGA/RustFSを使ったstorage全190件（版保存の結合テスト15件を含む）が成功。API設定56件と、2接続でのバックアップ保護・データ撤去の回帰テストも成功。fmt、workspaceのall-targets・all-features clippy、tenant SQL、ファイル行数、migration番号、CI対応表、依存検査が通過。変更行カバレッジは80%ゲートを通過し、未計測の変更元クレートなし。DB/permitの逆順、同時撤去、GCの組織間公平性、撤去後の再投入、共有読取、cursor統合、提案版が挟まる履歴も検証した。ベンチマークの11件のテストと、基準方式を省略したCLI実行・異なる条件での再開拒否も確認した。
+2026-11-15のローカル検証: 実Postgres/OpenFGA/RustFSを使ったstorage全190件が成功し、最終変更後の版保存の結合テスト16件（追加1件を含む）も成功。API設定56件と、2接続でのバックアップ保護・データ撤去の回帰テストも成功。fmt、workspaceのall-targets・all-features clippy、tenant SQL、ファイル行数、migration番号、CI対応表、依存検査が通過。変更行カバレッジは80%ゲートを通過し、未計測の変更元クレートなし。DB/permitの逆順、同時撤去、GCの組織間公平性、撤去後の再投入、共有読取、cursor統合、提案版が挟まる履歴も検証した。ベンチマークの11件のテストと、基準方式を省略したCLI実行・異なる条件での再開拒否も確認した。
 
 [SQL実行計画](../../eval/version-storage/README.md#sql実行計画)では10万版・1万ジョブを用いて索引の利用と有界走査を確認した。pack/Rangeの270回の測定はPython SDKによるもので、Rust機能テストやSQLの測定と区別する。
