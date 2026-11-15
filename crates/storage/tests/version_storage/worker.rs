@@ -1,4 +1,22 @@
 use super::*;
+use sqlx::{Connection, PgConnection};
+
+pub(super) async fn isolated_env() -> Option<(Env, PgConnection, String)> {
+    let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        return None;
+    };
+    let options: sqlx::postgres::PgConnectOptions = url.parse().unwrap();
+    let mut admin = PgConnection::connect_with(&options.database("postgres"))
+        .await
+        .unwrap();
+    let database = format!("version_worker_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE DATABASE {database}"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
+    let env = setup_in(Some(&database)).await?;
+    Some((env, admin, database))
+}
 
 #[tokio::test]
 async fn proposals_do_not_skip_the_previous_current_blob() {

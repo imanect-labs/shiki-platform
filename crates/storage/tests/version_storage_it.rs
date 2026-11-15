@@ -34,15 +34,24 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
+    setup_in(None).await
+}
+
+async fn setup_in(database: Option<&str>) -> Option<Env> {
     let (Ok(db), Ok(fga)) = (
         shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
         shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         return None;
     };
+    let options: sqlx::postgres::PgConnectOptions = db.parse().unwrap();
+    let options = match database {
+        Some(name) => options.database(name),
+        None => options,
+    };
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .connect(&db)
+        .connect_with(options)
         .await
         .unwrap();
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
@@ -719,7 +728,9 @@ async fn purge_lock_rejects_new_materialization_without_waiting_for_pool() {
 
 #[tokio::test]
 async fn worker_backfills_legacy_versions_without_new_writes() {
-    let Some(env) = setup().await else { return };
+    let Some((env, mut admin, database)) = worker_tests::isolated_env().await else {
+        return;
+    };
     let (id, versions) = history(&env, 3).await;
     // 最適化機能の導入前に保存された履歴を再現する。
     sqlx::query(
@@ -729,23 +740,15 @@ async fn worker_backfills_legacy_versions_without_new_writes() {
     .execute(&env.pool)
     .await
     .unwrap();
-    // 既存の大量履歴に混ぜても、この fixture は移行対象の古い履歴として先に発見される。
-    sqlx::query(
-        "UPDATE blob SET created_at = '2000-01-01T00:00:00Z' WHERE tenant_id = $1 AND org = $2",
-    )
-    .bind(env.ctx.tenant_id())
-    .bind(env.ctx.org())
-    .execute(&env.pool)
-    .await
-    .unwrap();
-
     let handle =
         storage::blob_storage::spawn_version_storage_worker(env.archive.clone(), env.options);
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM blob WHERE tenant_id = $1 AND org = $2 AND storage_manifest IS NOT NULL")
                 .bind(env.ctx.tenant_id()).bind(env.ctx.org()).fetch_one(&env.pool).await.unwrap();
-            if count == 2 { break; }
+            let current_checked: bool = sqlx::query_scalar("SELECT storage_checked_at IS NOT NULL FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3")
+                .bind(env.ctx.tenant_id()).bind(env.ctx.org()).bind(sha256_hex(&versions[2])).fetch_one(&env.pool).await.unwrap();
+            if count == 2 && current_checked { break; }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }).await;
@@ -785,6 +788,11 @@ async fn worker_backfills_legacy_versions_without_new_writes() {
         .await
         .unwrap();
     assert_eq!(download(&url.url).await, versions[0]);
+    env.pool.close().await;
+    sqlx::query(&format!("DROP DATABASE {database}"))
+        .execute(&mut admin)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
