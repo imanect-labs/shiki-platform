@@ -100,6 +100,23 @@ fn is_ident_byte(b: u8) -> bool {
 mod tests {
     use super::*;
 
+    /// 全角空白入りの列名（警察庁 CSV の「発生日時　　年」）は、引用符なしだと解析に失敗し、二重引用符で
+    /// 囲めば通る（csv.query の案内文と一致させる）。括弧入り（「曜日(発生年月日)」）は引用符なしでも
+    /// 関数呼び出しとして解析は通り、DuckDB 側で「関数が無い」になる（どちらも引用符で直る）。
+    #[test]
+    fn quoted_japanese_column_names_pass_and_unquoted_fail_to_parse() {
+        let unquoted =
+            validate_read_only("SELECT 発生日時　　年 AS 年, COUNT(*) FROM data GROUP BY 1");
+        assert!(
+            matches!(&unquoted, Err(TabularError::SqlRejected(m)) if m.starts_with("解析に失敗")),
+            "{unquoted:?}"
+        );
+        assert!(validate_read_only(
+            "SELECT \"発生日時　　年\" AS 年, \"曜日(発生年月日)\", SUM(CAST(\"死者数\" AS INTEGER)) FROM data GROUP BY 1, 2"
+        )
+        .is_ok());
+    }
+
     #[test]
     fn allows_plain_select() {
         assert!(validate_read_only("SELECT * FROM data").is_ok());

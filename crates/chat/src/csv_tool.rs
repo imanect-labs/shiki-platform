@@ -25,6 +25,17 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     if let TE::InvalidTables(m) = err {
         return ToolOutcome::error(format!("tables の指定が不正です: {m}"));
     }
+    // SQL の検証で弾いた理由（解析失敗・複数文・危険関数）は入力だけから決まるので返してよい。
+    // 一律「SELECT のみ」に畳むと、全角空白入りの列名を引用符なしで書いただけの SELECT でも
+    // モデルが原因を掴めず同じ誤りを繰り返す（プレビュー検証 T3 で 4 回）。
+    if let TE::SqlRejected(reason) = err {
+        let hint = if reason.starts_with("解析に失敗") {
+            "空白（全角空白を含む）・括弧・記号を含む列名は \"発生日時　　年\" のように二重引用符で囲んでください。"
+        } else {
+            "読み取り専用の SELECT を 1 文だけ実行できます。"
+        };
+        return ToolOutcome::error(format!("SQL が拒否されました（{reason}）。{hint}"));
+    }
     let msg = match err {
         TE::Forbidden | TE::Authz(_) | TE::Storage(storage::StorageError::Forbidden) => {
             "この CSV を操作する権限がありません。"
@@ -32,7 +43,6 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
         TE::NotFound(_) | TE::Storage(storage::StorageError::NotFound) => {
             "指定された CSV が見つかりません。"
         }
-        TE::SqlRejected(_) => "SQL が拒否されました（読み取り専用の SELECT のみ実行できます）。",
         TE::RevConflict { .. } => "CSV が他の編集で更新されています。最新を読み直してください。",
         // ランナー起動失敗・クォータ・内部エラー。モデルへは秘匿するが、**運用側には残す**
         // （ランナー未ビルド/パス誤りが「CSV 操作に失敗しました。」だけで消え、原因調査に
@@ -68,7 +78,10 @@ const QUERY_DESCRIPTION: &str = "CSV ファイルに読み取り専用 SQL（SEL
          `data`。例: SELECT category, count(*) FROM data GROUP BY category。複数の CSV を JOIN する\
          ときは tables に {name, node_id} を並べると、各 CSV が name のテーブルとして使える（最大 8 個）。\
          例: tables=[{name:\"customers\", node_id:…}] で SELECT c.name, sum(d.amount) FROM data d JOIN \
-         customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。";
+         customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。\
+         空白（全角空白を含む）・括弧・記号を含む列名は \"発生日時　　年\" のように二重引用符で囲む。\
+         先頭が 0 のコードなど、数値に見えても文字列として読まれる列がある。合計・平均で型エラーに\
+         なったら CAST(\"死者数\" AS INTEGER) のように変換する。";
 
 /// csv.query の入力スキーマ。追加テーブルの上限・名前規則は tabular の定義を参照する（単一定義）。
 fn query_input_schema() -> serde_json::Value {
@@ -508,6 +521,19 @@ mod tests {
         assert!(denied(&TE::SqlRejected("ddl".into()))
             .content
             .contains("SQL が拒否されました"));
+        // 解析失敗は理由と、列名を引用符で囲む直し方を返す（SELECT なのに「SELECT のみ」と言わない）。
+        let parse = denied(&TE::SqlRejected(
+            "解析に失敗: Expected end of statement".into(),
+        ))
+        .content;
+        assert!(parse.contains("Expected end of statement"), "{parse}");
+        assert!(parse.contains("二重引用符"), "{parse}");
+        assert!(!parse.contains("SELECT を 1 文だけ"), "{parse}");
+        let multi = denied(&TE::SqlRejected("複数文は実行できません".into())).content;
+        assert!(
+            multi.contains("複数文") && multi.contains("SELECT を 1 文だけ"),
+            "{multi}"
+        );
         assert!(denied(&TE::RevConflict {
             base: 1,
             current: 2
