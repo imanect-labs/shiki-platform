@@ -80,8 +80,9 @@ const QUERY_DESCRIPTION: &str = "CSV ファイルに読み取り専用 SQL（SEL
          例: tables=[{name:\"customers\", node_id:…}] で SELECT c.name, sum(d.amount) FROM data d JOIN \
          customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。\
          空白（全角空白を含む）・括弧・記号を含む列名は \"発生日時　　年\" のように二重引用符で囲む。\
-         先頭が 0 のコードなど、数値に見えても文字列として読まれる列がある。合計・平均で型エラーに\
-         なったら CAST(\"死者数\" AS INTEGER) のように変換する。";
+         列の型は値から推定される（先頭が 0 の \"000\" は文字列、\"11\" のようなコードは数値になる）。\
+         合計・平均で型エラーなら CAST(\"死者数\" AS INTEGER)、LIKE・文字列比較で型エラーなら\
+         CAST(\"昼夜\" AS VARCHAR) のように変換する。";
 
 /// csv.query の入力スキーマ。追加テーブルの上限・名前規則は tabular の定義を参照する（単一定義）。
 fn query_input_schema() -> serde_json::Value {
