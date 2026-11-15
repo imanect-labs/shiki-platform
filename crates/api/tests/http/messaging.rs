@@ -21,7 +21,10 @@ async fn call(
             Request::builder()
                 .method(method)
                 .uri(path)
-                .header(COOKIE, format!("shiki_session={sid}.default; shiki_csrf=csrf"))
+                .header(
+                    COOKIE,
+                    format!("shiki_session={sid}.default; shiki_csrf=csrf"),
+                )
                 .header("x-csrf-token", "csrf")
                 .header("content-type", "application/json")
                 .body(Body::from(if body.is_null() {
@@ -52,7 +55,10 @@ async fn open_stream(
         .oneshot(
             Request::builder()
                 .uri(path)
-                .header(COOKIE, format!("shiki_session={sid}.default; shiki_csrf=csrf"))
+                .header(
+                    COOKIE,
+                    format!("shiki_session={sid}.default; shiki_csrf=csrf"),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -122,8 +128,10 @@ async fn messaging_http_stream_closes_on_revocation_and_stays_in_org() {
                 base_url: fga_url,
                 store_name: format!("messaging-http-{}", uuid::Uuid::new_v4()),
             },
-            &serde_json::from_str(include_str!("../../../authz/model/authorization-model.json"))
-                .unwrap(),
+            &serde_json::from_str(include_str!(
+                "../../../authz/model/authorization-model.json"
+            ))
+            .unwrap(),
         )
         .await
         .unwrap(),
@@ -188,7 +196,12 @@ async fn messaging_http_stream_closes_on_revocation_and_stays_in_org() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = open_stream(&app, "sid-carol", &format!("/messaging/channels/{id}/stream")).await;
+    let (status, _) = open_stream(
+        &app,
+        "sid-carol",
+        &format!("/messaging/channels/{id}/stream"),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // bob が購読し、alice の発言が届く。
