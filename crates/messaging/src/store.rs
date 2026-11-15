@@ -477,20 +477,17 @@ pub async fn display_names(
     Ok(rows.into_iter().collect())
 }
 
-/// 正規化した表示名が一致する利用者がいるか（エージェント名のなりすまし対策）。
-pub async fn display_name_taken(
+/// 組織の利用者の表示名（エージェント名のなりすまし判定用・上限つき）。
+pub async fn all_display_names(
     conn: &mut PgConnection,
     ctx: &AuthContext,
-    normalized: &str,
-) -> Result<bool, Error> {
+) -> Result<Vec<String>, Error> {
     Ok(sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM directory_user WHERE tenant_id = $1 AND org = $2 \
-           AND lower(regexp_replace(display_name, '[[:space:]]', '', 'g')) = $3)",
+        "SELECT display_name FROM directory_user WHERE tenant_id = $1 AND org = $2 LIMIT 50000",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
-    .bind(normalized)
-    .fetch_one(conn)
+    .fetch_all(conn)
     .await?)
 }
 

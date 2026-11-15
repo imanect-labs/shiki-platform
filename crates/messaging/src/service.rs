@@ -459,7 +459,7 @@ impl MessagingService {
         tx.commit().await?;
         let mut out = Vec::new();
         for (i, r) in rows.into_iter().enumerate() {
-            if !ok[i * 3] || (r.hidden_at.is_some() && r.unread == 0) {
+            if !ok[i * 3] || r.hidden_at.is_some() {
                 continue;
             }
             let c = &r.channel;

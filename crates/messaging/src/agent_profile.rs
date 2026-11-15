@@ -198,7 +198,12 @@ impl MessagingService {
             Some("") => None,
             Some(n) => {
                 let n = validate_agent_name(n)?;
-                if store::display_name_taken(&mut tx, ctx, &normalize_name(&n)).await? {
+                let norm = normalize_name(&n);
+                if store::all_display_names(&mut tx, ctx)
+                    .await?
+                    .iter()
+                    .any(|d| normalize_name(d) == norm)
+                {
                     return Err(Error::Invalid(
                         "組織の利用者と同じ名前は付けられません".into(),
                     ));
