@@ -262,6 +262,12 @@ async fn validation_rejects_foreign_ids_cycles_collisions_and_stale_groups() {
     missing.parent_id = Some(missing.id.clone());
     assert!(store.validate(&ctx, &input(vec![missing])).await.is_err());
     assert!(store.validate(&ctx, &input(vec![])).await.is_err());
+    let mut invalid_label = edit(&ctx, "control", None);
+    invalid_label.label = "Invalid\0label".into();
+    assert!(store
+        .validate(&ctx, &input(vec![invalid_label]))
+        .await
+        .is_err());
     let mut deep = Vec::new();
     for n in 0..130 {
         deep.push(edit(

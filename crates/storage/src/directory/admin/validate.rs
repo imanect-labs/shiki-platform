@@ -285,6 +285,7 @@ fn index_changes(
         if role.id.len() > 255
             || role.label.trim().is_empty()
             || role.label.chars().count() > 80
+            || role.label.chars().any(char::is_control)
             || role.expected_version < 0
         {
             return Err(StorageError::Invalid(
