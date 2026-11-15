@@ -21,6 +21,9 @@ impl BlobStorage {
         manifest: Manifest,
     ) -> Result<Vec<u8>, StorageError> {
         manifest.validate(size)?;
+        // permit の保持中に DB 接続・行ロックを取りに行かない。
+        // 全取得/展開が完了してから呼出元の DB 更新へ戻る。
+        let _io = Self::io_permit().await?;
         let refs: BTreeSet<String> = manifest.refs().into_iter().map(str::to_owned).collect();
         let objects: BTreeMap<String, Vec<u8>> =
             stream::iter(refs.into_iter().map(|hash| async move {
@@ -80,8 +83,7 @@ impl BlobStorage {
         org: &str,
         sha: &str,
     ) -> Result<Vec<u8>, StorageError> {
-        let _io = Self::io_permit().await?;
-        let row = Self::lock_blob(conn, tenant, org, sha).await?;
+        let row = Self::lock_blob(conn, tenant, org, sha, false).await?;
         self.read_row(tenant, org, sha, row).await
     }
 
@@ -94,7 +96,6 @@ impl BlobStorage {
         org: &str,
         sha: &str,
     ) -> Result<Vec<u8>, StorageError> {
-        let _io = Self::io_permit().await?;
         let row = sqlx::query_as("SELECT size_bytes, content_type, storage_manifest FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3")
             .bind(tenant.as_str()).bind(org).bind(sha).fetch_optional(conn).await?.ok_or(StorageError::NotFound)?;
         self.read_row(tenant, org, sha, row).await
@@ -112,6 +113,7 @@ impl BlobStorage {
         if let Some(manifest) = row.storage_manifest {
             return self.decode(tenant, org, sha, size, manifest.0).await;
         }
+        let _io = Self::io_permit().await?;
         let bytes = self
             .store
             .get_object(&blob_object_key(tenant.as_str(), org, sha))
@@ -137,7 +139,7 @@ impl BlobStorage {
         sha: &str,
         ttl: Duration,
     ) -> Result<String, StorageError> {
-        let row = Self::lock_blob(conn, tenant, org, sha).await?;
+        let row = Self::lock_blob(conn, tenant, org, sha, true).await?;
         let key = blob_object_key(tenant.as_str(), org, sha);
         if let Some(manifest) = row.storage_manifest {
             if !self.store.exists(&key).await? {
@@ -170,7 +172,6 @@ impl BlobStorage {
         sha: &str,
         spec: super::DownloadSpec<'_>,
     ) -> Result<String, StorageError> {
-        let _io = Self::io_permit().await?;
         let mut tx = self.maintenance_guard(tenant).await?;
         let key = self
             .materialize_on(&mut tx, tenant, org, sha, spec.ttl)

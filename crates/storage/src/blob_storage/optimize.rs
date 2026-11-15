@@ -15,6 +15,14 @@ use crate::content_address::sha256_hex;
 struct Candidate {
     blob_sha256: String,
     version: i64,
+    eligible: bool,
+}
+
+/// 次のバッチへ渡す版番号。論理版を16件ずつ走査し、処理済みの長い接頭部を読み直さない。
+pub struct CompactionBatch {
+    pub checked: usize,
+    pub optimized: usize,
+    pub after_version: i64,
 }
 
 impl BlobStorage {
@@ -24,9 +32,15 @@ impl BlobStorage {
         tenant: &TenantId,
         org: &str,
         node: Uuid,
+        after_version: i64,
         options: VersionStorageOptions,
-    ) -> Result<usize, StorageError> {
+    ) -> Result<CompactionBatch, StorageError> {
         options.validate()?;
+        if self.pool.options().get_max_connections() < 3 {
+            return Err(StorageError::Invalid(
+                "旧版最適化にはDB接続数3以上が必要です".into(),
+            ));
+        }
         let _memory = super::PLAN_LIMIT
             .acquire()
             .await
@@ -34,23 +48,33 @@ impl BlobStorage {
         let _lifecycle = self.maintenance_guard(tenant).await?;
         let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, tenant).await?;
         let candidates: Vec<Candidate> = sqlx::query_as(
-            "SELECT blob_sha256, version FROM ( \
-             SELECT DISTINCT ON (v.blob_sha256) v.blob_sha256, v.version FROM node_version v \
-             JOIN blob b ON b.tenant_id = v.tenant_id AND b.org = v.org AND b.sha256 = v.blob_sha256 \
-             WHERE v.tenant_id = $1 AND v.org = $2 AND v.node_id = $3 AND NOT v.is_proposal \
-               AND b.storage_checked_at IS NULL AND b.size_bytes <= $4 \
-               AND NOT EXISTS (SELECT 1 FROM node n WHERE n.tenant_id = $1 AND n.org = $2 AND n.blob_sha256 = b.sha256) \
-             ORDER BY v.blob_sha256, v.version) pending ORDER BY version LIMIT 16")
+            "WITH version_window AS MATERIALIZED ( \
+               SELECT blob_sha256, version, is_proposal FROM node_version \
+               WHERE tenant_id = $1 AND org = $2 AND node_id = $3 AND version > $5 \
+               ORDER BY version LIMIT 16) \
+             SELECT v.blob_sha256, v.version, (NOT v.is_proposal \
+               AND b.storage_manifest IS NULL AND b.size_bytes <= $4 \
+               AND NOT EXISTS (SELECT 1 FROM node n WHERE n.tenant_id = $1 AND n.org = $2 AND n.blob_sha256 = b.sha256)) AS eligible \
+             FROM version_window v \
+             JOIN blob b ON b.tenant_id = $1 AND b.org = $2 AND b.sha256 = v.blob_sha256 \
+             ORDER BY v.version")
             .bind(tenant.as_str()).bind(org).bind(node).bind(options.max_optimize_bytes.min(codec::MAX_BYTES) as i64)
+            .bind(after_version)
             .fetch_all(&mut *tx).await?;
         tx.commit().await?;
-        let mut candidates = candidates;
-        candidates.sort_by_key(|c| c.version);
-        let count = candidates.len();
+        let mut batch = CompactionBatch {
+            checked: candidates.len(),
+            optimized: 0,
+            after_version: candidates.last().map_or(after_version, |c| c.version),
+        };
+        let mut seen = HashSet::new();
         for c in candidates {
-            self.compact_one(tenant, org, node, c, options).await?;
+            if c.eligible && seen.insert(c.blob_sha256.clone()) {
+                self.compact_one(tenant, org, node, c, options).await?;
+                batch.optimized += 1;
+            }
         }
-        Ok(count)
+        Ok(batch)
     }
 
     async fn compact_one(
@@ -134,9 +158,8 @@ impl BlobStorage {
         tx.commit().await?;
         let plan = choose(plans, &known, &hints, options.read_cost_bytes)?;
         self.register_and_write(tenant, org, &plan).await?;
-        let _io = Self::io_permit().await?;
         let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, tenant).await?;
-        let row = Self::lock_blob(&mut tx, tenant, org, sha).await?;
+        let row = Self::lock_blob(&mut tx, tenant, org, sha, true).await?;
         if row.storage_manifest.is_none() {
             let refs: BTreeSet<String> = plan
                 .manifest

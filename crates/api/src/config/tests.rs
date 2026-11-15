@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "tests/version_storage.rs"]
+mod version_storage;
+
 // RAG の設定（`SHIKI__RAG__*`）の読み込み。
 mod rag_config;
 

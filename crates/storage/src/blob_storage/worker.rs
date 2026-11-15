@@ -1,4 +1,4 @@
-use super::{codec, BlobStorage, VersionStorageOptions, QUEUE};
+use super::{BlobStorage, VersionStorageOptions, QUEUE};
 use crate::StorageError;
 use authz::TenantId;
 use serde::Deserialize;
@@ -9,34 +9,11 @@ use uuid::Uuid;
 struct Payload {
     org: String,
     node_id: Uuid,
+    #[serde(default)]
+    after_version: i64,
 }
 
 impl BlobStorage {
-    /// 既存データの移行用。未処理 blob の部分 index から必要な仕事だけ投入する。
-    async fn backfill(&self, max_bytes: usize) -> Result<usize, StorageError> {
-        let mut scan =
-            crate::db_tenant::begin_cross_tenant_tx(&self.pool, "blob_storage_backfill").await?;
-        // tenant-sql: allow(横断保守 executor の有界 backfill)
-        let rows: Vec<(String, String, Uuid)> = sqlx::query_as(
-            "SELECT b.tenant_id, b.org, v.node_id FROM blob b \
-             CROSS JOIN LATERAL (SELECT node_id FROM node_version v \
-               WHERE v.tenant_id = b.tenant_id AND v.org = b.org AND v.blob_sha256 = b.sha256 AND NOT v.is_proposal LIMIT 1) v \
-             WHERE b.storage_checked_at IS NULL AND b.size_bytes <= $1 \
-               AND NOT EXISTS (SELECT 1 FROM node n WHERE n.tenant_id = b.tenant_id AND n.org = b.org AND n.blob_sha256 = b.sha256) \
-               AND NOT EXISTS (SELECT 1 FROM tenant t WHERE t.tenant_id = b.tenant_id AND t.status IN ('deleting', 'deleted')) \
-             ORDER BY b.created_at LIMIT 16")
-            .bind(max_bytes.min(codec::MAX_BYTES) as i64).fetch_all(&mut *scan).await?;
-        scan.commit().await?;
-        for (tenant, org, node) in &rows {
-            let tenant_id = TenantId::parse(tenant.clone())
-                .map_err(|e| StorageError::Integrity(e.to_string()))?;
-            let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, &tenant_id).await?;
-            Self::enqueue(&mut tx, tenant, org, *node).await?;
-            tx.commit().await?;
-        }
-        Ok(rows.len())
-    }
-
     async fn gc_due(&self) -> Result<(), StorageError> {
         let mut tx =
             crate::db_tenant::begin_cross_tenant_tx(&self.pool, "blob_storage_gc_scan").await?;
@@ -76,12 +53,25 @@ impl BlobStorage {
         let result = async {
             let payload: Payload = serde_json::from_value(job.payload)
                 .map_err(|e| StorageError::Integrity(e.to_string()))?;
-            let n = self
-                .compact_node(&tenant, &payload.org, payload.node_id, options)
+            let batch = self
+                .compact_node(
+                    &tenant,
+                    &payload.org,
+                    payload.node_id,
+                    payload.after_version,
+                    options,
+                )
                 .await?;
             let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, &tenant).await?;
-            if n == 16 {
-                Self::enqueue(&mut tx, tenant.as_str(), &payload.org, payload.node_id).await?;
+            if batch.checked == 16 {
+                Self::enqueue_after(
+                    &mut tx,
+                    &tenant,
+                    &payload.org,
+                    payload.node_id,
+                    batch.after_version,
+                )
+                .await?;
             }
             jobq::ack(&mut tx, job.id)
                 .await
@@ -132,7 +122,7 @@ pub fn spawn_version_storage_worker(
                         Ok(0) => 3600,
                         Ok(_) => {
                             enqueued = true;
-                            60
+                            0
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "旧版移行の投入に失敗しました");

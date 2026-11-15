@@ -403,6 +403,12 @@ impl AppConfig {
             .version_storage
             .validate()
             .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        if self.storage.version_storage.enabled && self.database.max_connections < 3 {
+            return Err(ConfigError::Invalid(
+                "storage.version_storage の有効化には database.max_connections が3以上必要です"
+                    .into(),
+            ));
+        }
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;

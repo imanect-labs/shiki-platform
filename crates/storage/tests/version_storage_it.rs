@@ -21,6 +21,9 @@ use storage::{
 };
 use uuid::Uuid;
 
+#[path = "version_storage/worker.rs"]
+mod worker_tests;
+
 struct Env {
     pool: PgPool,
     service: StorageService,
@@ -103,8 +106,7 @@ async fn setup() -> Option<Env> {
         Duration::from_secs(300),
         Duration::from_secs(900),
         64 * 1024 * 1024,
-    )
-    .with_version_storage(options);
+    );
     let archive = BlobStorage::new(pool.clone(), store.clone());
     Some(Env {
         pool,
@@ -153,13 +155,18 @@ async fn history(env: &Env, count: usize) -> (Uuid, Vec<Vec<u8>>) {
 }
 
 async fn compact(env: &Env, node: Uuid) {
-    while env
-        .archive
-        .compact_node(env.ctx.tenant(), env.ctx.org(), node, env.options)
-        .await
-        .unwrap()
-        == 16
-    {}
+    let mut after = 0;
+    loop {
+        let batch = env
+            .archive
+            .compact_node(env.ctx.tenant(), env.ctx.org(), node, after, env.options)
+            .await
+            .unwrap();
+        after = batch.after_version;
+        if batch.checked < 16 {
+            break;
+        }
+    }
 }
 
 async fn expire_raw(env: &Env) {
@@ -582,9 +589,10 @@ async fn long_history_uses_bounded_direct_anchors_and_preserves_every_version() 
     let (id, versions) = history(&env, 129).await;
     assert_eq!(
         env.archive
-            .compact_node(env.ctx.tenant(), env.ctx.org(), id, env.options)
+            .compact_node(env.ctx.tenant(), env.ctx.org(), id, 0, env.options)
             .await
-            .unwrap(),
+            .unwrap()
+            .optimized,
         16
     );
     let first_batch: Vec<i64> = sqlx::query_scalar("SELECT v.version FROM node_version v JOIN blob b ON b.tenant_id = v.tenant_id AND b.org = v.org AND b.sha256 = v.blob_sha256 WHERE v.tenant_id = $1 AND v.org = $2 AND v.node_id = $3 AND b.storage_manifest IS NOT NULL ORDER BY v.version")
@@ -626,7 +634,7 @@ async fn deleting_tenant_cannot_start_compaction_or_backup() {
         .bind(env.ctx.tenant_id()).bind(env.ctx.org()).execute(&env.pool).await.unwrap();
     assert!(matches!(
         env.archive
-            .compact_node(env.ctx.tenant(), env.ctx.org(), id, env.options)
+            .compact_node(env.ctx.tenant(), env.ctx.org(), id, 0, env.options)
             .await,
         Err(StorageError::NotFound)
     ));
@@ -711,11 +719,16 @@ async fn purge_lock_rejects_new_materialization_without_waiting_for_pool() {
 
 #[tokio::test]
 async fn worker_backfills_legacy_versions_without_new_writes() {
-    let Some(mut env) = setup().await else { return };
-    env.service = env
-        .service
-        .with_version_storage(VersionStorageOptions::default());
+    let Some(env) = setup().await else { return };
     let (id, versions) = history(&env, 3).await;
+    // 最適化機能の導入前に保存された履歴を再現する。
+    sqlx::query(
+        "DELETE FROM job_queue WHERE tenant_id = $1 AND queue = 'storage_version_optimize'",
+    )
+    .bind(env.ctx.tenant_id())
+    .execute(&env.pool)
+    .await
+    .unwrap();
     // 既存の大量履歴に混ぜても、この fixture は移行対象の古い履歴として先に発見される。
     sqlx::query(
         "UPDATE blob SET created_at = '2000-01-01T00:00:00Z' WHERE tenant_id = $1 AND org = $2",
@@ -739,6 +752,28 @@ async fn worker_backfills_legacy_versions_without_new_writes() {
     handle.abort();
     let _ = handle.await;
     outcome.expect("新たな保存がなくても既存履歴が処理される");
+    let current_checked: bool = sqlx::query_scalar("SELECT storage_checked_at IS NOT NULL FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3")
+        .bind(env.ctx.tenant_id()).bind(env.ctx.org()).bind(sha256_hex(&versions[2])).fetch_one(&env.pool).await.unwrap();
+    assert!(
+        current_checked,
+        "現在版も確認済みにし、backfillの全件再走査を避ける"
+    );
+    env.service
+        .update_file_content_internal(
+            &env.ctx,
+            id,
+            b"new current after backfill",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    let queued: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM job_queue WHERE tenant_id = $1 AND queue = 'storage_version_optimize' AND payload->>'node_id' = $2)")
+        .bind(env.ctx.tenant_id()).bind(id.to_string()).fetch_one(&env.pool).await.unwrap();
+    assert!(
+        queued,
+        "後に旧版になった内容は、停止中も耐久キューで再発見できる"
+    );
     expire_raw(&env).await;
     env.archive
         .collect(env.ctx.tenant(), env.ctx.org())
@@ -774,7 +809,7 @@ async fn migration_protects_legacy_urls_without_extending_new_raw_leases() {
         .await
         .unwrap();
     let mut before = sqlx::migrate!("../../migrations");
-    before.migrations = Cow::Owned(before.iter().filter(|m| m.version < 118).cloned().collect());
+    before.migrations = Cow::Owned(before.iter().filter(|m| m.version < 122).cloned().collect());
     before.run(&pool).await.unwrap();
     sqlx::query("INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key) VALUES ('legacy', 'org', $1, 4, 'text/plain', 'legacy-object')")
         .bind("a".repeat(64)).execute(&pool).await.unwrap();

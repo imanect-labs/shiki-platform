@@ -1,0 +1,104 @@
+BEGIN
+SET
+SET
+INSERT 0 100000
+INSERT 0 1
+INSERT 0 100000
+INSERT 0 10000
+ANALYZE
+ANALYZE
+ANALYZE
+ANALYZE
+SET
+  set_config  
+--------------
+ version-perf
+(1 row)
+
+                                                                                                                                   QUERY PLAN                                                                                                                                    
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.33..8.37 rows=1 width=14) (actual time=0.035..0.035 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.002..0.002 rows=1 loops=1)
+   InitPlan 2 (returns $1)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=1)
+   ->  LockRows  (cost=0.30..8.34 rows=1 width=14) (actual time=0.034..0.034 rows=1 loops=1)
+         Buffers: shared hit=4
+         ->  Index Scan using job_queue_version_storage_pending_idx on job_queue  (cost=0.30..8.33 rows=1 width=14) (actual time=0.031..0.031 rows=1 loops=1)
+               Index Cond: ((tenant_id = 'version-perf'::text) AND (storage_coalesce_key = md5(((jsonb_build_object('org', 'version-perf', 'node_id', 5000, 'after_version', 0) - 'after_version'::text))::text)))
+               Filter: ((($0 IS NULL) OR (tenant_id = $1)) AND (queue = 'storage_version_optimize'::text) AND (attempts = 0) AND ((payload - 'after_version'::text) = (jsonb_build_object('org', 'version-perf', 'node_id', 5000, 'after_version', 0) - 'after_version'::text)))
+               Buffers: shared hit=3
+ Planning:
+   Buffers: shared hit=77
+ Planning Time: 0.465 ms
+ Execution Time: 0.062 ms
+(16 rows)
+
+                                                                           QUERY PLAN                                                                           
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=221.64..221.65 rows=5 width=41) (actual time=0.145..0.147 rows=16 loops=1)
+   Sort Key: v.version
+   Sort Method: quicksort  Memory: 26kB
+   Buffers: shared hit=71
+   CTE version_window
+     ->  Limit  (cost=0.45..59.89 rows=16 width=74) (actual time=0.031..0.041 rows=16 loops=1)
+           Buffers: shared hit=7
+           InitPlan 1 (returns $0)
+             ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.002..0.002 rows=1 loops=1)
+           InitPlan 2 (returns $1)
+             ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+           ->  Index Scan Backward using node_version_node_idx on node_version  (cost=0.42..175.02 rows=47 width=74) (actual time=0.031..0.039 rows=16 loops=1)
+                 Index Cond: ((node_id = '00000000-0000-4000-8000-000000001297'::uuid) AND (version > 99900))
+                 Filter: ((($0 IS NULL) OR (tenant_id = $1)) AND (tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text))
+                 Buffers: shared hit=7
+   InitPlan 10 (returns $9)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+   InitPlan 11 (returns $10)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=1)
+   ->  Nested Loop  (cost=0.42..161.66 rows=5 width=41) (actual time=0.054..0.126 rows=16 loops=1)
+         Buffers: shared hit=71
+         ->  CTE Scan on version_window v  (cost=0.00..0.32 rows=16 width=41) (actual time=0.032..0.044 rows=16 loops=1)
+               Buffers: shared hit=7
+         ->  Index Scan using blob_pkey on blob b  (cost=0.42..8.44 rows=1 width=105) (actual time=0.005..0.005 rows=1 loops=16)
+               Index Cond: ((tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text) AND (sha256 = v.blob_sha256))
+               Filter: (($9 IS NULL) OR (tenant_id = $10))
+               Buffers: shared hit=64
+         SubPlan 9
+           ->  Seq Scan on node n  (cost=0.03..5.10 rows=1 width=65) (never executed)
+                 Filter: ((($7 IS NULL) OR (tenant_id = $8)) AND (tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text))
+                 InitPlan 7 (returns $7)
+                   ->  Result  (cost=0.00..0.01 rows=1 width=32) (never executed)
+                 InitPlan 8 (returns $8)
+                   ->  Result  (cost=0.00..0.01 rows=1 width=32) (never executed)
+ Planning:
+   Buffers: shared hit=222
+ Planning Time: 1.177 ms
+ Execution Time: 0.232 ms
+(38 rows)
+
+RESET
+                                                                       QUERY PLAN                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.54..135.77 rows=56 width=106) (actual time=0.044..0.093 rows=62 loops=1)
+   Buffers: shared hit=34 read=2 dirtied=3
+   ->  Nested Loop Anti Join  (cost=0.54..135.77 rows=56 width=106) (actual time=0.044..0.089 rows=62 loops=1)
+         Join Filter: (t.tenant_id = b.tenant_id)
+         Buffers: shared hit=34 read=2 dirtied=3
+         ->  Index Only Scan using blob_storage_backfill_idx on blob b  (cost=0.54..116.71 rows=57 width=106) (actual time=0.024..0.060 rows=62 loops=1)
+               Index Cond: (size_bytes <= 67108864)
+               Heap Fetches: 73
+               Buffers: shared hit=34 read=1 dirtied=2
+         ->  Materialize  (cost=0.00..15.64 rows=4 width=32) (actual time=0.000..0.000 rows=0 loops=62)
+               Buffers: shared read=1 dirtied=1
+               ->  Seq Scan on tenant t  (cost=0.00..15.62 rows=4 width=32) (actual time=0.015..0.015 rows=0 loops=1)
+                     Filter: (status = ANY ('{deleting,deleted}'::text[]))
+                     Rows Removed by Filter: 1
+                     Buffers: shared read=1 dirtied=1
+ Planning:
+   Buffers: shared hit=54
+ Planning Time: 0.248 ms
+ Execution Time: 0.111 ms
+(19 rows)
+
+ROLLBACK

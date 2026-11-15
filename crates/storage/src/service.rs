@@ -49,7 +49,6 @@ const NEXT_CONTENT_VERSION: &str = "GREATEST(version, COALESCE((SELECT MAX(v.ver
 /// 単一チョークポイントの StorageService。
 pub struct StorageService {
     content: crate::blob_storage::BlobStorage,
-    version_storage: crate::blob_storage::VersionStorageOptions,
     db: PgPool,
     store: Arc<dyn ObjectStore>,
     authz: Arc<dyn AuthzClient>,
@@ -141,7 +140,6 @@ impl StorageService {
         let audit = AuditRecorder::new(db.clone());
         StorageService {
             content: crate::blob_storage::BlobStorage::new(db.clone(), store.clone()),
-            version_storage: crate::blob_storage::VersionStorageOptions::default(),
             db,
             store,
             authz,
@@ -158,16 +156,6 @@ impl StorageService {
     /// `next_share_link_expiry()` まで sleep しつつ、新期限設定の `notify_one()` で起きる。
     pub fn expiry_notify(&self) -> Arc<Notify> {
         Arc::clone(&self.expiry_notify)
-    }
-
-    /// reader は設定によらず全表現に対応する。worker の有効化は全 reader の更新後に行う。
-    #[must_use]
-    pub fn with_version_storage(
-        mut self,
-        options: crate::blob_storage::VersionStorageOptions,
-    ) -> Self {
-        self.version_storage = options;
-        self
     }
 
     async fn presign_blob(

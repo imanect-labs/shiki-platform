@@ -43,7 +43,7 @@ pub struct StorageConfig {
     /// 監査ログの保持期間の適用（#831）。保持日数はテナントごと（`tenant.audit_retention_days`）。
     #[serde(default)]
     pub audit_retention: AuditRetentionConfig,
-    /// 版の物理表現の最適化。全 reader 更新後に有効にする。
+    /// 版の物理表現の最適化。既定で有効。旧 reader と混在する更新中は無効化する。
     #[serde(default)]
     pub version_storage: storage::blob_storage::VersionStorageOptions,
 }

@@ -121,3 +121,13 @@ RustFS 1.0.1を同じ開発VMのDockerで使用。Python SDK・warm cache・共�
 eval/version-storage/.venv/bin/python eval/version-storage/rustfs_layouts.py \
   --output /tmp/version-storage-rustfs-layouts.jsonl
 ```
+
+## SQL実行計画
+
+`sql_plans.sql` は専用テストDBに10万blob/10万版/1万ジョブの合成メタデータを作り、最後にROLLBACKする。オブジェクトのバイトは書き込まない。[実行計画](results/sql-plans.txt)を保存した。RLSを有効にしたruntimeロールで、重複ジョブの点検索は `job_queue_version_storage_pending_idx` を使用して0.062 ms、履歴末尾の16版取得は版番号のindexとblobの主キーを使用して0.232 ms。64 MiB超の10万blobを置いたbackfillはサイズ先頭のindexを使い、0.111 msだった。
+
+2026-11-15のローカルPostgres・warm cache・共有開発VMでの実測。符号化・ネットワークGET・復元を含む性能値ではない。時間を本番のSLOとせず、走査範囲と索引の利用を確認する。RLS用の索引はJSONB式を直接索引にせず、保存生成列のtextキーで絞り、実際のJSON内容も残余条件で照合する。
+
+```bash
+psql -v ON_ERROR_STOP=1 -f eval/version-storage/sql_plans.sql "$STORAGE_TEST_DATABASE_URL"
+```

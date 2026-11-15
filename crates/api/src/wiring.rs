@@ -51,17 +51,14 @@ pub(crate) async fn wire_storage(
         .ensure_bucket()
         .await
         .context("オブジェクトストアのバケット準備に失敗")?;
-    let service = Arc::new(
-        storage::StorageService::new(
-            db.clone(),
-            object_store.clone(),
-            Arc::clone(authz),
-            presign_get_ttl,
-            presign_put_ttl,
-            config.storage.max_upload_size_bytes,
-        )
-        .with_version_storage(config.storage.version_storage),
-    );
+    let service = Arc::new(storage::StorageService::new(
+        db.clone(),
+        object_store.clone(),
+        Arc::clone(authz),
+        presign_get_ttl,
+        presign_put_ttl,
+        config.storage.max_upload_size_bytes,
+    ));
     let mut version_options = config.storage.version_storage;
     version_options.raw_grace_secs = version_options
         .raw_grace_secs

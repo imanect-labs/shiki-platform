@@ -8,6 +8,7 @@ use sqlx::{PgConnection, PgPool};
 
 use crate::{content_address::is_valid_sha256_hex, ObjectStore, StorageError};
 
+mod backfill;
 mod codec;
 mod gc;
 mod namespace;
@@ -15,7 +16,12 @@ mod optimize;
 mod read;
 mod worker;
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod concurrency_tests;
+
 pub use namespace::NamespaceMove;
+pub use optimize::CompactionBatch;
 pub use worker::spawn_version_storage_worker;
 
 pub(crate) const QUEUE: &str = "storage_version_optimize";
@@ -80,7 +86,8 @@ mod tests {
     }
 }
 
-/// ローリング更新時は全 reader の更新後に有効にする。無効でも保存済み表現は常に読める。
+/// 既定で有効。旧 reader と混在するローリング更新中は明示的に無効化する。
+/// 無効でも保存済み表現は常に読める。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VersionStorageOptions {
@@ -96,7 +103,7 @@ pub struct VersionStorageOptions {
 impl Default for VersionStorageOptions {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             raw_grace_secs: 86400,
             max_optimize_bytes: codec::MAX_BYTES,
             read_cost_bytes: 0,
@@ -113,7 +120,7 @@ impl VersionStorageOptions {
         }
         if self.max_optimize_bytes == 0 || self.max_optimize_bytes > codec::MAX_BYTES {
             return Err(StorageError::Invalid(
-                "version_storage.max_optimize_bytes は1〜64 MiBの範囲が必要です".into(),
+                "version_storage.max_optimize_bytes は1バイト〜64 MiBの範囲が必要です".into(),
             ));
         }
         if self.read_cost_bytes > 1024 * 1024 {
@@ -185,7 +192,6 @@ impl BlobStorage {
         if ttl.is_zero() {
             return Err(StorageError::Invalid("export lease が空です".into()));
         }
-        let _io = Self::io_permit().await?;
         let mut tx = self.maintenance_guard(tenant).await?;
         let key = self.materialize_on(&mut tx, tenant, org, sha, ttl).await?;
         tx.commit().await?;
@@ -214,34 +220,73 @@ impl BlobStorage {
         tenant: &TenantId,
         org: &str,
         sha: &str,
+        exclusive: bool,
     ) -> Result<BlobRow, StorageError> {
         if !is_valid_sha256_hex(sha) {
             return Err(StorageError::NotFound);
         }
-        sqlx::query_as(
+        let lock = if exclusive { "UPDATE" } else { "SHARE" };
+        let sql = format!(
             "SELECT size_bytes, content_type, storage_manifest FROM blob \
-            WHERE tenant_id = $1 AND org = $2 AND sha256 = $3 FOR UPDATE",
-        )
-        .bind(tenant.as_str())
-        .bind(org)
-        .bind(sha)
-        .fetch_optional(conn)
-        .await?
-        .ok_or(StorageError::NotFound)
+            WHERE tenant_id = $1 AND org = $2 AND sha256 = $3 FOR {lock}"
+        );
+        sqlx::query_as(&sql)
+            .bind(tenant.as_str())
+            .bind(org)
+            .bind(sha)
+            .fetch_optional(conn)
+            .await?
+            .ok_or(StorageError::NotFound)
     }
 
     pub(crate) async fn enqueue(
         conn: &mut PgConnection,
-        tenant: &str,
+        tenant: &TenantId,
         org: &str,
         node_id: uuid::Uuid,
     ) -> Result<(), StorageError> {
-        let payload = serde_json::json!({ "org": org, "node_id": node_id });
-        jobq::enqueue_unless_pending_on(
+        Self::enqueue_after(conn, tenant, org, node_id, 0).await
+    }
+
+    pub(crate) async fn enqueue_after(
+        conn: &mut PgConnection,
+        tenant: &TenantId,
+        org: &str,
+        node_id: uuid::Uuid,
+        after_version: i64,
+    ) -> Result<(), StorageError> {
+        Self::protect_lifecycle_on(conn, tenant).await?;
+        let payload =
+            serde_json::json!({ "org": org, "node_id": node_id, "after_version": after_version });
+        // queue はリテラルにし、このキューだけの有界なJSONに張った部分indexを使う。
+        let pending: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM job_queue WHERE queue = 'storage_version_optimize' \
+            AND tenant_id = $1 AND storage_coalesce_key = md5(($2::jsonb - 'after_version')::text) \
+            AND (payload - 'after_version') = ($2::jsonb - 'after_version') \
+            AND attempts = 0 LIMIT 1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(tenant.as_str())
+        .bind(&payload)
+        .fetch_optional(&mut *conn)
+        .await?;
+        if let Some(id) = pending {
+            sqlx::query(
+                "UPDATE job_queue SET payload = jsonb_set(payload, '{after_version}', \
+                to_jsonb(LEAST(COALESCE((payload->>'after_version')::bigint, 0), $3))) \
+                WHERE tenant_id = $1 AND id = $2",
+            )
+            .bind(tenant.as_str())
+            .bind(id)
+            .bind(after_version)
+            .execute(&mut *conn)
+            .await?;
+            return Ok(());
+        }
+        jobq::enqueue_on(
             conn,
             jobq::NewJob {
                 queue: QUEUE,
-                tenant_id: tenant,
+                tenant_id: tenant.as_str(),
                 payload: &payload,
                 trace_id: None,
                 max_attempts: 12,

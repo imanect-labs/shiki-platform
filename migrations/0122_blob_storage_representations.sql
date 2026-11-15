@@ -12,7 +12,7 @@ ALTER TABLE blob
 -- 新しい raw の lease は reader/最適化処理が実際の TTL で設定する。
 ALTER TABLE blob ALTER COLUMN raw_expires_at SET DEFAULT now();
 
-CREATE INDEX blob_storage_backfill_idx ON blob (created_at, tenant_id, org, sha256)
+CREATE INDEX blob_storage_backfill_idx ON blob (size_bytes, created_at, tenant_id, org, sha256)
     WHERE storage_checked_at IS NULL;
 CREATE INDEX blob_storage_raw_gc_idx ON blob (raw_expires_at)
     WHERE storage_manifest IS NOT NULL AND raw_available;
@@ -22,6 +22,12 @@ CREATE INDEX node_version_blob_lookup_idx
     ON node_version (tenant_id, org, blob_sha256, node_id, version);
 CREATE INDEX node_current_blob_idx ON node (tenant_id, org, blob_sha256)
     WHERE blob_sha256 IS NOT NULL;
+
+-- このキューのpayloadはorg/node_id/after_versionのみ。他キューの大きいJSONは索引に入れない。
+ALTER TABLE job_queue ADD COLUMN storage_coalesce_key text GENERATED ALWAYS AS (
+    CASE WHEN queue = 'storage_version_optimize' THEN md5((payload - 'after_version')::text) END) STORED;
+CREATE INDEX job_queue_version_storage_pending_idx ON job_queue (tenant_id, storage_coalesce_key)
+    WHERE queue = 'storage_version_optimize' AND attempts = 0;
 
 -- 登録を先に commit してからバイトを書く。公開前に落ちた実体も台帳から回収できる。
 CREATE TABLE blob_storage_object (
