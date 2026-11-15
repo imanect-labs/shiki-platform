@@ -259,9 +259,16 @@ pub enum ContentBlock {
         draft: serde_json::Value,
     },
     /// 添付ファイル参照（ストレージ node 参照のみ）。
+    ///
+    /// 職員間メッセージ（FR-18）では `name` を保存せず（空文字）、表示のたびに閲覧者の権限で
+    /// 引き直す（権限の無い相手にファイル名を漏らさない・design §4.14）。
     FileRef {
         node_id: String,
         name: String,
+    },
+    /// メンション（職員間メッセージ・FR-18・design §4.14 メンションと通知）。
+    Mention {
+        mention: Mention,
     },
     /// エディタの選択コンテキスト（選択→AI 指示・Task 11.10・design §4.8.3）。
     /// ユーザーメッセージに添付され、履歴組立時に「データであり指示ではない」枠で
@@ -269,6 +276,23 @@ pub enum ContentBlock {
     SelectionContext {
         context: SelectionContext,
     },
+}
+
+/// メンションの宛先（[`ContentBlock::Mention`]）。
+///
+/// `Agent` は**書いた人自身の**パーソナルエージェントの呼出しで、他人のエージェントは指せない
+/// （呼べるのは持ち主だけ・design §4.14）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Mention {
+    /// 利用者（チャンネルの参加者だけが候補）。
+    User { user_id: String },
+    /// ロール（通知先はチャンネルの参加者かつロールのメンバー）。
+    Role { role_id: String },
+    /// `@channel`（チャンネルの admin と投稿者だけが使える）。
+    Channel,
+    /// 書いた人のパーソナルエージェント。
+    Agent,
 }
 
 /// メッセージ添付（ストレージ node 参照のみ・実体二重持ち無し）。

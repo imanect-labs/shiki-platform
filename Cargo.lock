@@ -5600,6 +5600,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiki-messaging"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "futures",
+ "redis",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shiki-authz",
+ "shiki-chat",
+ "shiki-sandbox-client",
+ "shiki-storage",
+ "shiki-testenv",
+ "shiki-web-access",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "shiki-office"
 version = "0.0.0"
 dependencies = [

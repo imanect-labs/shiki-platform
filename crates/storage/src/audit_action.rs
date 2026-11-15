@@ -18,6 +18,7 @@ pub enum AuditCategory {
     Share,
     Search,
     Chat,
+    Message,
     Agent,
     Workflow,
     App,
@@ -37,6 +38,7 @@ impl AuditCategory {
         AuditCategory::Share,
         AuditCategory::Search,
         AuditCategory::Chat,
+        AuditCategory::Message,
         AuditCategory::Agent,
         AuditCategory::Workflow,
         AuditCategory::App,
@@ -56,6 +58,7 @@ impl AuditCategory {
             AuditCategory::Share => "share",
             AuditCategory::Search => "search",
             AuditCategory::Chat => "chat",
+            AuditCategory::Message => "message",
             AuditCategory::Agent => "agent",
             AuditCategory::Workflow => "workflow",
             AuditCategory::App => "app",
@@ -81,6 +84,7 @@ impl AuditCategory {
             AuditCategory::Share => "共有",
             AuditCategory::Search => "検索・参照",
             AuditCategory::Chat => "チャット",
+            AuditCategory::Message => "メッセージ",
             AuditCategory::Agent => "エージェント",
             AuditCategory::Workflow => "ワークフロー",
             AuditCategory::App => "アプリ・スキル",
@@ -258,6 +262,30 @@ audit_actions! {
     MeChatgptDisconnect = "me.chatgpt.disconnect", "ChatGPT プランの連携を解除", Chat;
     MeCustomInstructionsUpdate = "me.custom_instructions.update", "カスタム指示を変更", Chat;
     MePreferencesUpdate = "me.preferences.update", "ユーザー設定を変更", Chat;
+    MessagingAccessApprove = "messaging.access.approve", "メッセージ閲覧の申請を承認", Audit;
+    MessagingAccessReject = "messaging.access.reject", "メッセージ閲覧の申請を却下", Audit;
+    MessagingAccessRequest = "messaging.access.request", "メッセージ閲覧を申請", Audit;
+    MessagingAccessRevoke = "messaging.access.revoke", "メッセージ閲覧の承認を取り消し", Audit;
+    MessagingAdminExport = "messaging.admin.export", "監査担当者がメッセージをエクスポート", Audit;
+    MessagingAdminRead = "messaging.admin.read", "監査担当者がメッセージを閲覧", Audit;
+    MessagingAgentInvoke = "messaging.agent.invoke", "メッセージからエージェントを呼び出し", Message;
+    MessagingAgentProfileUpdate = "messaging.agent.profile_update", "エージェントの名前・アイコンを変更", Message;
+    MessagingAgentReplyPost = "messaging.agent.reply_post", "エージェントの回答をチャンネルに投稿", Message;
+    MessagingChannelArchive = "messaging.channel.archive", "チャンネルをアーカイブ", Message;
+    MessagingChannelCreate = "messaging.channel.create", "チャンネルを作成", Message;
+    MessagingChannelUnarchive = "messaging.channel.unarchive", "チャンネルのアーカイブを解除", Message;
+    MessagingChannelUpdate = "messaging.channel.update", "チャンネルを変更", Message;
+    MessagingDeny = "messaging.deny", "メッセージの操作を拒否", Message;
+    MessagingDmOpen = "messaging.dm.open", "DM を開始", Message;
+    MessagingMemberAdd = "messaging.member.add", "チャンネルに参加・招待", Message;
+    MessagingMemberRemove = "messaging.member.remove", "チャンネルから退出・除外", Message;
+    MessagingMemberRole = "messaging.member.role", "チャンネルの管理者・投稿者を変更", Message;
+    MessagingMessageDelete = "messaging.message.delete", "発言を削除", Message;
+    MessagingMessageEdit = "messaging.message.edit", "発言を編集", Message;
+    MessagingMessagePost = "messaging.message.post", "発言を投稿", Message;
+    MessagingRetentionPurge = "messaging.retention.purge", "保存期間を過ぎた発言を削除", System;
+    MessagingSearch = "messaging.search", "発言を検索", Search;
+    MessagingSettingsUpdate = "messaging.settings.update", "メッセージの設定を変更", Admin;
     MiniappResolve = "miniapp.resolve", "ミニアプリを開く", App;
     NodeBreadcrumbRead = "node.breadcrumb.read", "フォルダの階層を参照", Folder;
     NodeSearch = "node.search", "ドライブを検索", Search;

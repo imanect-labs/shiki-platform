@@ -10,6 +10,9 @@ pub enum Error {
     /// 読めるが、その操作は許されない（投稿・管理・退出の制約など）。
     #[error("forbidden: {0}")]
     Forbidden(&'static str),
+    /// 一意制約・楽観ロックの衝突（同名チャンネル・設定の同時更新）。
+    #[error("conflict: {0}")]
+    Conflict(&'static str),
     /// 入力が不正。
     #[error("invalid: {0}")]
     Invalid(String),
@@ -19,4 +22,10 @@ pub enum Error {
     /// DB の失敗。
     #[error("db: {0}")]
     Db(#[from] sqlx::Error),
+    /// 監査・ストレージの失敗。
+    #[error("storage: {0}")]
+    Storage(#[from] storage::StorageError),
+    /// 依存する機能が無効（LLM 未設定など）。
+    #[error("unavailable: {0}")]
+    Unavailable(&'static str),
 }
