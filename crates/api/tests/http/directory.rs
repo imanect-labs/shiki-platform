@@ -355,7 +355,26 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
     let app = build_router(state.clone());
     let base = "/org-admin/directory";
     let prefix = storage::directory::admin::role_id_prefix(&ctx);
-    let request = json!({"idempotency_key":uuid::Uuid::new_v4(),"roles":[{"id":format!("{prefix}test"),"label":"Test","parent_id":null,"expected_version":0}],"mappings":[]});
+    let connection = json!({"connection_url":"ldaps://ad.example.test:636","users_dn":"OU=Users,DC=example","groups_dn":"OU=Groups,DC=example","bind_dn":"CN=reader,DC=example","bind_password":"test-bind-secret"});
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            &format!("{base}/connection"),
+            connection.clone()
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let source: storage::directory::admin::AdGroup = serde_json::from_value(json!({"id":"retry-source","name":"Retry source","claim_path":format!("/tenants/{}/{}/ad/Retry",ctx.tenant_id(),ctx.org()),"distinguished_name":"CN=Retry,OU=Groups,DC=example","ou_path":[],"parent_ids":[],"role_ids":[],"mapping_version":0})).unwrap();
+    state
+        .directory
+        .admin()
+        .cache_group(&ctx, &source)
+        .await
+        .unwrap();
+    let request = json!({"idempotency_key":uuid::Uuid::new_v4(),"roles":[{"id":format!("{prefix}test"),"label":"Test","parent_id":null,"expected_version":0}],"mappings":[{"group_id":"retry-source","role_ids":[format!("{prefix}test")],"expected_version":0}]});
     let (status, op) = call(&app, "POST", &format!("{base}/apply"), request).await;
     assert_eq!(status, StatusCode::OK);
     let id: uuid::Uuid = op["id"].as_str().unwrap().parse().unwrap();
@@ -369,6 +388,27 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
         .fail_operation(&ctx, id, "synchronization_failed")
         .await
         .unwrap();
+    fixture.lock().unwrap().fail = false;
+    let (_, before_config_change) = call(&app, "GET", &format!("{base}/groups"), Value::Null).await;
+    let mut changed_scope = connection.clone();
+    changed_scope["groups_dn"] = json!("OU=OtherGroups,DC=example");
+    let (status, blocked) = call(&app, "PUT", &format!("{base}/connection"), changed_scope).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(blocked["message"]
+        .as_str()
+        .unwrap()
+        .contains("停止中の反映"));
+    let (_, after_config_change) = call(&app, "GET", &format!("{base}/groups"), Value::Null).await;
+    assert_eq!(before_config_change, after_config_change);
+    let mut repaired = connection;
+    repaired["bind_dn"] = json!("CN=repaired-reader,DC=example");
+    repaired["bind_password"] = json!("repaired-test-secret");
+    assert_eq!(
+        call(&app, "PUT", &format!("{base}/connection"), repaired)
+            .await
+            .0,
+        StatusCode::OK
+    );
     let (_, op) = call(
         &app,
         "POST",
@@ -390,6 +430,17 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
             .unwrap()
             .state,
         "succeeded"
+    );
+    assert_eq!(
+        state
+            .directory
+            .admin()
+            .groups(&ctx, "", None, 40, &[])
+            .await
+            .unwrap()
+            .items[0]
+            .role_ids,
+        vec![format!("{prefix}test")]
     );
     assert_eq!(
         call(
@@ -455,6 +506,64 @@ async fn directory_http_fails_closed_and_retry_is_persistent() {
         .await
         .0,
         StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
+async fn failed_initial_sync_can_be_repaired_by_configuring_ad() {
+    let Some((state, ctx, _fixture)) = fixture().await else {
+        return;
+    };
+    let app = build_router(state.clone());
+    let base = "/org-admin/directory";
+    let (status, op) = call(
+        &app,
+        "POST",
+        &format!("{base}/sync"),
+        json!({"idempotency_key":uuid::Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = op["id"].as_str().unwrap().parse().unwrap();
+    assert!(api::directory_admin::process(&state, &ctx, id)
+        .await
+        .is_err());
+    state
+        .directory
+        .admin()
+        .fail_operation(&ctx, id, "synchronization_failed")
+        .await
+        .unwrap();
+    let input = json!({"connection_url":"ldaps://ad.example.test:636","users_dn":"OU=Users,DC=example","groups_dn":"OU=Groups,DC=example","bind_dn":"CN=reader,DC=example","bind_password":"repair-test-secret"});
+    assert_eq!(
+        call(&app, "PUT", &format!("{base}/connection"), input)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{base}/operations/{id}/retry"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    api::directory_admin::process(&state, &ctx, id)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .directory
+            .admin()
+            .operation(&ctx, id)
+            .await
+            .unwrap()
+            .state,
+        "succeeded"
     );
 }
 

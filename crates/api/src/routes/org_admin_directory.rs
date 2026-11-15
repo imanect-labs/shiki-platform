@@ -268,6 +268,9 @@ pub async fn save_connection(
         || previous.groups_dn.as_deref() != Some(input.groups_dn.as_str())
         || previous.preserve_group_inheritance != input.preserve_group_inheritance
     {
+        if store.has_unfinished_mappings(&ctx).await? {
+            return Err(ApiError::invalid_input("停止中の反映を再実行して完了してから、接続先・検索DN・階層設定を変更してください。バインドDNとパスワードは変更できます。"));
+        }
         // Invalid credentials must not deactivate the currently working snapshot.
         kc.test_ldap(&ctx, &input).await.map_err(keycloak_error)?;
         store
