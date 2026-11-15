@@ -99,7 +99,7 @@ export function AccessRequestList({
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className={cn("rounded-full px-2 py-px text-[11px] font-medium", st.tone)}>{st.label}</span>
                 <span className="truncate text-[13px] font-medium text-foreground">
-                  {channelNames?.get(g.channel_id) ?? `チャンネル ${g.channel_id.slice(0, 8)}`}
+                  {g.channel_name || channelNames?.get(g.channel_id) || `チャンネル ${g.channel_id.slice(0, 8)}`}
                 </span>
               </div>
               <p className="mt-1 text-[12.5px] leading-relaxed text-foreground/90">{g.reason}</p>
