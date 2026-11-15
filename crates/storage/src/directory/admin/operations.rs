@@ -43,7 +43,7 @@ impl DirectoryAdminStore {
         let json =
             serde_json::to_value(changes).map_err(|e| StorageError::Invalid(e.to_string()))?;
         let mut tx = begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM directory_admin_operation WHERE tenant_id = $1 AND org = $2 AND state <> 'succeeded' AND jsonb_array_length(request->'mappings') > 0)").bind(ctx.tenant_id()).bind(ctx.org()).fetch_one(&mut *tx).await?;
+        let active: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM directory_admin_operation WHERE tenant_id = $1 AND org = $2 AND state <> 'succeeded')").bind(ctx.tenant_id()).bind(ctx.org()).fetch_one(&mut *tx).await?;
         if active {
             return Err(StorageError::Conflict);
         }
