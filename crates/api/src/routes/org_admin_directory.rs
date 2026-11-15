@@ -268,6 +268,8 @@ pub async fn save_connection(
         || previous.groups_dn.as_deref() != Some(input.groups_dn.as_str())
         || previous.preserve_group_inheritance != input.preserve_group_inheritance
     {
+        // Invalid credentials must not deactivate the currently working snapshot.
+        kc.test_ldap(&ctx, &input).await.map_err(keycloak_error)?;
         store
             .configuration_event(&ctx, "snapshot_invalidated", trace.as_deref())
             .await?;

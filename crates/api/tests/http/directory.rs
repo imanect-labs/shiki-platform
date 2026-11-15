@@ -280,6 +280,23 @@ async fn directory_http_connection_sync_plan_apply_replay_and_preview() {
     )
     .await;
     assert_eq!(last["items"].as_array().unwrap().len(), 1);
+    let (_, before_failed_save) = call(&app, "GET", &format!("{base}/groups"), Value::Null).await;
+    let mut invalid_connection = input.clone();
+    invalid_connection["preserve_group_inheritance"] = json!(true);
+    invalid_connection["bind_password"] = json!("**********");
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            &format!("{base}/connection"),
+            invalid_connection
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (_, after_failed_save) = call(&app, "GET", &format!("{base}/groups"), Value::Null).await;
+    assert_eq!(before_failed_save, after_failed_save);
     let mut changed_connection = input.clone();
     changed_connection["preserve_group_inheritance"] = json!(true);
     assert_eq!(
