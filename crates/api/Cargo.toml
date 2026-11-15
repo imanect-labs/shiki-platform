@@ -40,6 +40,7 @@ shiki-artifact.workspace = true
 shiki-gui.workspace = true
 shiki-secrets.workspace = true
 shiki-bug-report.workspace = true
+shiki-messaging.workspace = true
 shiki-workflow-engine.workspace = true
 shiki-script-runtime.workspace = true
 

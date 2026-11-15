@@ -596,6 +596,10 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::bug_reports::route_decls());
+    table.extend(routes::messaging::route_decls());
+    table.extend(routes::messaging_messages::route_decls());
+    table.extend(routes::messaging_agent::route_decls());
+    table.extend(routes::messaging_admin::route_decls());
     table.extend(routes::chat_help_cases::route_decls());
     table.extend(routes::org_admin_bug_reports::route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());

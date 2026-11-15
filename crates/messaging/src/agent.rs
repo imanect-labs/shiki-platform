@@ -363,6 +363,36 @@ impl MessagingService {
         Ok(())
     }
 
+    /// エージェントが応答できなかったことを、呼んだ人だけに知らせる（失敗は黙らない）。
+    pub async fn agent_failed(&self, ctx: &AuthContext, trigger: Uuid, err: &Error) {
+        let channel = {
+            let Ok(mut tx) = begin_tenant_tx(&self.pool, ctx.tenant()).await else {
+                return;
+            };
+            let Ok(Some(raw)) = sm::raw_message(&mut tx, ctx, trigger).await else {
+                return;
+            };
+            let _ = tx.commit().await;
+            raw.channel_id
+        };
+        let reason = match err {
+            Error::Unavailable(m) | Error::Forbidden(m) => (*m).to_string(),
+            Error::Invalid(m) => m.clone(),
+            _ => "一時的なエラーです。しばらくしてから呼び直してください".to_string(),
+        };
+        let text = format!("エージェントが応答できませんでした（{reason}）。");
+        let _ = self
+            .save_private_reply(
+                ctx,
+                channel,
+                trigger,
+                vec![ContentBlock::Text { text }],
+                &[],
+                None,
+            )
+            .await;
+    }
+
     async fn save_private_reply(
         &self,
         ctx: &AuthContext,

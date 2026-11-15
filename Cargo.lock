@@ -5243,6 +5243,7 @@ dependencies = [
  "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
+ "shiki-messaging",
  "shiki-office",
  "shiki-rag",
  "shiki-sandbox-client",

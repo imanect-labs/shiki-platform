@@ -75,6 +75,10 @@ pub struct AppState {
     /// シークレット管理（Task 10.9）。マスターキー未設定では `None`（/secrets は 503）。
     pub secrets: Option<Arc<secrets::SecretStore>>,
     pub bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
+    /// 職員間メッセージ（Phase 14）。DB 未構成のテスト等では `None`（/messaging は 503）。
+    pub messaging: Option<Arc<messaging::MessagingService>>,
+    /// メッセージから呼ぶパーソナルエージェントの実行部（LLM 未構成では `None`・呼ぶと失敗を本人に知らせる）。
+    pub messaging_agent: Option<Arc<dyn messaging::AgentRuntime>>,
     /// ワークフロー IR の保存/取得（Task 10.1a・artifact kind=workflow の上に載る）。
     pub workflows: Arc<workflow_engine::WorkflowStore>,
     /// ワークフロー run 起動（対話トリガ・Stage A W3）。`workflow.enabled=false` では `None`。

@@ -464,6 +464,8 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
     ));
     AppState {
         bug_report: None,
+        messaging: None,
+        messaging_agent: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),

@@ -466,6 +466,8 @@ async fn setup() -> Option<Harness> {
     ));
     let state = AppState {
         bug_report: None,
+        messaging: None,
+        messaging_agent: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
         db: api::state::ReadinessProbe::new(pool.clone()),

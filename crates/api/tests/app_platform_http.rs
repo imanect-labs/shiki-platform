@@ -343,6 +343,8 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
     ));
     AppState {
         bug_report: None,
+        messaging: None,
+        messaging_agent: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),

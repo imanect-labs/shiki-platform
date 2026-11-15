@@ -63,6 +63,10 @@ pub mod workflows;
 pub use me::get_me;
 
 pub mod bug_reports;
+pub mod messaging;
+pub mod messaging_admin;
+pub mod messaging_agent;
+pub mod messaging_messages;
 pub mod org_admin_bug_reports;
 
 pub mod chat_help_cases;
