@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 
-import { MockMembersView } from "@/components/admin/mock-members-view";
+import { DirectoryMembersView } from "@/components/admin/directory-live/members";
 
 export const metadata: Metadata = { title: "メンバー" };
 
-export default function MockMembersPage() {
-  return <MockMembersView />;
+export default function MembersPage() {
+  return <DirectoryMembersView />;
 }

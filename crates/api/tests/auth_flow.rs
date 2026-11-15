@@ -297,6 +297,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             max_connections: 1,
         },
         auth: AuthConfig {
+            directory_ldap_allowed_hosts: vec![],
             // ブラウザ向け authorize/end-session は公開 issuer 由来。
             issuer: ISSUER.into(),
             // token 交換・JWKS はモック IdP（内部 base）へ向ける。
@@ -1074,6 +1075,10 @@ async fn spawn_idp_with_admin() -> String {
                     Json(json!([{ "id": format!("{id}-{name}"), "name": name }]))
                 },
             ),
+        )
+        .route(
+            "/admin/realms/shiki/components",
+            get(|| async { Json(json!([])) }),
         )
         .route("/admin/realms/shiki/users", {
             let created_post = created.clone();

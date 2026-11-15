@@ -66,3 +66,5 @@ pub mod bug_reports;
 pub mod org_admin_bug_reports;
 
 pub mod chat_help_cases;
+
+pub mod org_admin_directory;

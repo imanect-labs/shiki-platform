@@ -24,6 +24,7 @@ e2e = ["auth.spec.ts"]
 [all]
 pages = ["web/src/app/login/page.tsx"]
 paths = [
+    "deploy/keycloak/**",
     "web/src/middleware.ts",
     "web/e2e/helpers.ts",
     "web/e2e/fixtures/**",

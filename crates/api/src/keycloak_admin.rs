@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 
 use crate::config::AuthConfig;
 
+mod directory;
 mod groups;
+pub mod ldap;
 pub mod org_group_migration;
 pub use groups::{GroupPathReferences, KcGroup, RenameOutcome};
 
@@ -54,12 +56,12 @@ impl KcUser {
     }
 }
 
-/// admin REST の薄いクライアント。トークンは呼び出し毎に取得する
-/// （プロビジョニングは低頻度の管理操作でありキャッシュ複雑性に見合わない）。
+/// admin RESTクライアント。一括管理操作ではインスタンス内で短命トークンを共有する。
 pub struct KeycloakAdmin<'a> {
     http: &'a reqwest::Client,
     auth: &'a AuthConfig,
     base: String,
+    token: tokio::sync::Mutex<Option<(String, tokio::time::Instant)>>,
 }
 
 impl<'a> KeycloakAdmin<'a> {
@@ -76,15 +78,27 @@ impl<'a> KeycloakAdmin<'a> {
         let base = auth.admin_base().ok_or_else(|| {
             KeycloakAdminError::NotConfigured("auth.admin_base_url（realm パス導出不能）".into())
         })?;
-        Ok(Self { http, auth, base })
+        Ok(Self {
+            http,
+            auth,
+            base,
+            token: tokio::sync::Mutex::new(None),
+        })
     }
 
     /// service account の access token を client_credentials で取得する。
     async fn admin_token(&self) -> Result<String, KeycloakAdminError> {
+        let mut cached = self.token.lock().await;
+        if let Some((token, until)) = cached.as_ref() {
+            if *until > tokio::time::Instant::now() {
+                return Ok(token.clone());
+            }
+        }
         // from_config で存在検証済みだが、状態不変条件をエラーとして明示的に扱う。
         let (id, secret) = self.auth.provisioner_credentials().ok_or_else(|| {
             KeycloakAdminError::NotConfigured("auth.provisioner（client_id/secret）".into())
         })?;
+        let requested_at = tokio::time::Instant::now();
         let resp = self
             .http
             .post(self.auth.token_endpoint())
@@ -93,6 +107,7 @@ impl<'a> KeycloakAdmin<'a> {
                 ("client_id", id),
                 ("client_secret", secret),
             ])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -100,11 +115,21 @@ impl<'a> KeycloakAdmin<'a> {
         #[derive(Deserialize)]
         struct Token {
             access_token: String,
+            #[serde(default)]
+            expires_in: u64,
         }
         let t: Token = resp
             .json()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
+        let Some(until) = token_deadline(requested_at, t.expires_in, tokio::time::Instant::now())
+        else {
+            *cached = None;
+            return Err(KeycloakAdminError::Transport(
+                "管理トークンの応答が有効期限に間に合いませんでした".into(),
+            ));
+        };
+        *cached = (t.expires_in > 10).then(|| (t.access_token.clone(), until));
         Ok(t.access_token)
     }
 
@@ -113,12 +138,12 @@ impl<'a> KeycloakAdmin<'a> {
         &self,
         username: &str,
     ) -> Result<Option<KcUser>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .get(format!("{}/users", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[("username", username), ("exact", "true")])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -154,7 +179,6 @@ impl<'a> KeycloakAdmin<'a> {
                 .resolve_existing_admin(existing, tenant_id, username, temp_password)
                 .await;
         }
-        let token = self.admin_token().await?;
         let body = json!({
             "username": username,
             "email": email,
@@ -168,8 +192,9 @@ impl<'a> KeycloakAdmin<'a> {
         let resp = self
             .http
             .post(format!("{}/users", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&body)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -237,12 +262,12 @@ impl<'a> KeycloakAdmin<'a> {
         user_id: &str,
         temp_password: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .put(format!("{}/users/{}/reset-password", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&json!({ "type": "password", "value": temp_password, "temporary": true }))
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -257,7 +282,6 @@ impl<'a> KeycloakAdmin<'a> {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<KcUser>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         // Keycloak の属性検索（`q=key:value`）。ページングして全件集める。
         let mut out = Vec::new();
         let mut first: u32 = 0;
@@ -266,12 +290,13 @@ impl<'a> KeycloakAdmin<'a> {
             let resp = self
                 .http
                 .get(format!("{}/users", self.base))
-                .bearer_auth(&token)
+                .bearer_auth(self.admin_token().await?)
                 .query(&[
                     ("q", format!("tenant:{tenant_id}").as_str()),
                     ("first", first.to_string().as_str()),
                     ("max", PAGE.to_string().as_str()),
                 ])
+                .timeout(std::time::Duration::from_secs(30))
                 .send()
                 .await
                 .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -298,11 +323,11 @@ impl<'a> KeycloakAdmin<'a> {
         user_id: &str,
         tenant_id: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .get(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -326,8 +351,9 @@ impl<'a> KeycloakAdmin<'a> {
         let resp = self
             .http
             .put(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&user)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -339,11 +365,11 @@ impl<'a> KeycloakAdmin<'a> {
 
     /// ユーザーを削除する（不在 404 は成功に倒す＝冪等）。
     pub async fn delete_user(&self, user_id: &str) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .delete(format!("{}/users/{}", self.base, user_id))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -365,4 +391,35 @@ async fn status_error(resp: reqwest::Response) -> KeycloakAdminError {
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
     KeycloakAdminError::Status { status, body }
+}
+
+fn token_deadline(
+    requested: tokio::time::Instant,
+    expires: u64,
+    received: tokio::time::Instant,
+) -> Option<tokio::time::Instant> {
+    let until = requested + std::time::Duration::from_secs(expires.min(3600).saturating_sub(5));
+    (until > received).then_some(until)
+}
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+    #[test]
+    fn response_latency_does_not_extend_token_validity() {
+        use std::time::Duration;
+        let requested = tokio::time::Instant::now();
+        assert_eq!(
+            token_deadline(requested, 20, requested + Duration::from_secs(10)),
+            Some(requested + Duration::from_secs(15))
+        );
+        assert_eq!(
+            token_deadline(requested, 20, requested + Duration::from_secs(21)),
+            None
+        );
+        assert_eq!(token_deadline(requested, 0, requested), None);
+        assert_eq!(
+            token_deadline(requested, u64::MAX, requested),
+            Some(requested + Duration::from_secs(3595))
+        );
+    }
 }

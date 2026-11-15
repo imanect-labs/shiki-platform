@@ -871,6 +871,10 @@ jobs:
         working-directory: deploy/compose
         run: bash smoke-keycloak-user-profile.sh
 
+      - name: smoke test (Keycloak GUID mapper registration / READ_ONLY)
+        working-directory: deploy/compose
+        run: python3 smoke-keycloak-guid-mapper.py
+
       - name: smoke test (skillex)
         working-directory: deploy/compose
         run: |

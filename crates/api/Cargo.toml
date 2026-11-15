@@ -22,6 +22,7 @@ name = "export-openapi"
 path = "src/bin/export-openapi.rs"
 
 [dependencies]
+csv.workspace = true
 shiki-authz.workspace = true
 shiki-collab.workspace = true
 shiki-tabular.workspace = true

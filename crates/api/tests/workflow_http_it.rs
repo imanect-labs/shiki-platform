@@ -151,6 +151,7 @@ fn config(db_url: &str) -> AppConfig {
             max_connections: 5,
         },
         auth: AuthConfig {
+            directory_ldap_allowed_hosts: vec![],
             issuer: "http://localhost/realms/shiki".into(),
             internal_base_url: None,
             jwks_uri: None,

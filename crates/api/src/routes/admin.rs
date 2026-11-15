@@ -221,47 +221,64 @@ pub async fn delete_tenant(
     reject_unless_multi_tenant(&state.config.auth)?;
     validate_tenant_id(&tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
-    // 1. deleting へ（不在なら冪等成功）。org は登録簿から得る（無ければ tenant_id と同値とみなす）。
-    let tenant = state.tenants.mark_deleting(&tenant_id).await?;
-    let org = tenant
-        .as_ref()
-        .map_or_else(|| tenant_id.clone(), |t| t.org.clone());
+    // 1. 同じ排他セッションでdeletingを確定する。不在でもtombstone用の登録簿を残す。
+    let tenant_scope = authz::TenantId::parse(&tenant_id)
+        .map_err(|_| ApiError::BadRequest("tenant_idが不正です".into()))?;
+    let directory_guard = state
+        .directory
+        .admin()
+        .tenant_deletion_lease(&tenant_scope)
+        .await?
+        .ok_or(ApiError::Conflict)?;
+    directory_guard
+        .while_live(async {
+            let org = directory_guard.mark_tenant_deleting(&tenant_scope).await?;
 
-    // 2. セッション即時失効（新規ログインは次段の IdP ユーザー削除で塞ぐ）。
-    let sessions = state.sessions.delete_tenant(&tenant_id).await?;
-    tracing::info!(%tenant_id, sessions, "tenant purge: セッションを失効");
+            // 2. セッション即時失効（新規ログインは次段の IdP ユーザー削除で塞ぐ）。
+            let sessions = state.sessions.delete_tenant(&tenant_id).await?;
+            tracing::info!(%tenant_id, sessions, "tenant purge: セッションを失効");
 
-    // 3. Keycloak: tenant 属性一致ユーザーとテナントの group subtree を撤去（冪等）。
-    let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth)
-        .map_err(|e| ApiError::Internal(format!("keycloak admin: {e}")))?;
-    let users = kc
-        .find_users_by_tenant(&tenant_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("keycloak users 検索: {e}")))?;
-    for u in &users {
-        kc.delete_user(&u.id)
-            .await
-            .map_err(|e| ApiError::Internal(format!("keycloak user 削除: {e}")))?;
-    }
-    // group はテナントで修飾されている（`/tenants/<tenant>/...`）ので、同じ org slug を使う
-    // 他テナントの group を巻き込まずに subtree ごと消せる（#811）。
-    kc.delete_tenant_groups(&tenant_id)
-        .await
-        .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
-    // ステップ 2 と IdP ユーザー削除の間に完了したログインが新セッションを作る競合に備え、
-    // IdP 側を塞いだ後にもう一度セッションを失効させる（belt-and-braces）。
-    let late_sessions = state.sessions.delete_tenant(&tenant_id).await?;
-    if late_sessions > 0 {
-        tracing::info!(%tenant_id, late_sessions, "tenant purge: 競合セッションを追加失効");
-    }
+            // 3. Keycloak: tenant 属性一致ユーザーとテナントの group subtree を撤去（冪等）。
+            let kc = KeycloakAdmin::from_config(&state.http, &state.config.auth)
+                .map_err(|e| ApiError::Internal(format!("keycloak admin: {e}")))?;
+            directory_guard.verify().await?;
+            kc.delete_directory_integrations(&tenant_id)
+                .await
+                .map_err(crate::directory_admin::connection::keycloak_error)?;
+            let users = kc
+                .find_users_by_tenant(&tenant_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("keycloak users 検索: {e}")))?;
+            for u in &users {
+                directory_guard.verify().await?;
+                kc.delete_user(&u.id)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("keycloak user 削除: {e}")))?;
+            }
+            // group はテナントで修飾されている（`/tenants/<tenant>/...`）ので、同じ org slug を使う
+            // 他テナントの group を巻き込まずに subtree ごと消せる（#811）。
+            directory_guard.verify().await?;
+            kc.delete_tenant_groups(&tenant_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("keycloak group 削除: {e}")))?;
+            // ステップ 2 と IdP ユーザー削除の間に完了したログインが新セッションを作る競合に備え、
+            // IdP 側を塞いだ後にもう一度セッションを失効させる（belt-and-braces）。
+            let late_sessions = state.sessions.delete_tenant(&tenant_id).await?;
+            if late_sessions > 0 {
+                tracing::info!(%tenant_id, late_sessions, "tenant purge: 競合セッションを追加失効");
+            }
 
-    // 4. データ面の purge（storage / RAG / 構造化データ。audit は保持）。
-    purge_tenant_data(&state, &tenant_id, &org, &actor.0).await?;
+            // 4. データ面の purge（storage / RAG / 構造化データ。audit は保持）。
+            directory_guard.verify().await?;
+            purge_tenant_data(&state, &tenant_id, &org, &actor.0).await?;
 
-    // 5. tombstone 化。
-    state.tenants.mark_deleted(&tenant_id).await?;
-    tracing::info!(%tenant_id, kc_users = users.len(), "tenant purge: 完了");
-    Ok(StatusCode::NO_CONTENT)
+            // 5. tombstone 化。
+            directory_guard.verify().await?;
+            state.tenants.mark_deleted(&tenant_id).await?;
+            tracing::info!(%tenant_id, kc_users = users.len(), "tenant purge: 完了");
+            Ok(StatusCode::NO_CONTENT)
+        })
+        .await?
 }
 
 /// テナントの自律エージェントポリシ設定リクエスト（#350）。

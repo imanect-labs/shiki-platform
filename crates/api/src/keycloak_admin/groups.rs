@@ -75,7 +75,6 @@ impl KeycloakAdmin<'_> {
         parent_id: Option<&str>,
         name: &str,
     ) -> Result<Option<KcGroup>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let url = match parent_id {
             Some(pid) => format!("{}/groups/{pid}/children", self.base),
             None => format!("{}/groups", self.base),
@@ -84,12 +83,13 @@ impl KeycloakAdmin<'_> {
         let resp = self
             .http
             .get(url)
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .query(&[
                 ("search", name),
                 ("exact", "true"),
                 ("briefRepresentation", "false"),
             ])
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -110,7 +110,6 @@ impl KeycloakAdmin<'_> {
         if let Some(existing) = self.find_child_group(parent_id, name).await? {
             return Ok(existing.id);
         }
-        let token = self.admin_token().await?;
         let url = match parent_id {
             Some(pid) => format!("{}/groups/{pid}/children", self.base),
             None => format!("{}/groups", self.base),
@@ -118,8 +117,9 @@ impl KeycloakAdmin<'_> {
         let resp = self
             .http
             .post(url)
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&json!({ "name": name }))
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -203,14 +203,14 @@ impl KeycloakAdmin<'_> {
         if self.find_group_path(&[TENANTS_GROUP, to]).await?.is_some() {
             return Ok(RenameOutcome::TargetExists);
         }
-        let token = self.admin_token().await?;
         let url = format!("{}/groups/{}", self.base, root.id);
         // PUT は representation の置換なので、GET した全体の name だけ差し替えて書き戻す
         // （属性・role 割り当てを落とさない）。
         let resp = self
             .http
             .get(&url)
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -229,8 +229,9 @@ impl KeycloakAdmin<'_> {
         let resp = self
             .http
             .put(&url)
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
             .json(&representation)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -278,11 +279,11 @@ impl KeycloakAdmin<'_> {
         user_id: &str,
         group_id: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .put(format!("{}/users/{user_id}/groups/{group_id}", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -295,11 +296,11 @@ impl KeycloakAdmin<'_> {
         user_id: &str,
         group_id: &str,
     ) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .delete(format!("{}/users/{user_id}/groups/{group_id}", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -311,11 +312,11 @@ impl KeycloakAdmin<'_> {
 
     /// group を削除する（子 group ごと消える・不在 404 は成功）。
     pub async fn delete_group(&self, group_id: &str) -> Result<(), KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .delete(format!("{}/groups/{group_id}", self.base))
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -378,23 +379,40 @@ impl KeycloakAdmin<'_> {
     }
 
     /// LDAP group マッパーの（名前, `groups.path`）。
-    async fn ldap_mapper_groups(&self) -> Result<Vec<(String, String)>, KeycloakAdminError> {
-        let mappers: Vec<Value> = self
+    pub(super) async fn ldap_mapper_groups(
+        &self,
+    ) -> Result<Vec<(String, String)>, KeycloakAdminError> {
+        let providers: Vec<Value> = self
             .get_json(&format!(
-                "{}/components?type=org.keycloak.storage.ldap.mappers.LDAPStorageMapper",
+                "{}/components?type=org.keycloak.storage.UserStorageProvider",
                 self.base
             ))
             .await?;
         let mut out = Vec::new();
-        for m in &mappers {
-            let name = m.get("name").and_then(Value::as_str).unwrap_or("?");
-            let values = m
-                .pointer("/config/groups.path")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str);
-            out.extend(values.map(|g| (name.to_string(), g.to_string())));
+        for provider in providers.iter().filter(|p| p["providerId"] == "ldap") {
+            let id = provider.get("id").and_then(Value::as_str).ok_or_else(|| {
+                KeycloakAdminError::NotConfigured("LDAP provider IDがありません".into())
+            })?;
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("parent", id)
+                .append_pair(
+                    "type",
+                    "org.keycloak.storage.ldap.mappers.LDAPStorageMapper",
+                )
+                .finish();
+            let mappers: Vec<Value> = self
+                .get_json(&format!("{}/components?{query}", self.base))
+                .await?;
+            for m in &mappers {
+                let name = m.get("name").and_then(Value::as_str).unwrap_or("?");
+                let values = m
+                    .pointer("/config/groups.path")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str);
+                out.extend(values.map(|g| (name.to_string(), g.to_string())));
+            }
         }
         Ok(out)
     }
@@ -412,11 +430,11 @@ impl KeycloakAdmin<'_> {
         &self,
         url: &str,
     ) -> Result<T, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let resp = self
             .http
             .get(url)
-            .bearer_auth(&token)
+            .bearer_auth(self.admin_token().await?)
+            .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
             .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
@@ -433,7 +451,6 @@ impl KeycloakAdmin<'_> {
         url: &str,
         extra: &[(&str, &str)],
     ) -> Result<Vec<T>, KeycloakAdminError> {
-        let token = self.admin_token().await?;
         let mut out = Vec::new();
         let mut first: u32 = 0;
         loop {
@@ -443,8 +460,9 @@ impl KeycloakAdmin<'_> {
             let resp = self
                 .http
                 .get(url)
-                .bearer_auth(&token)
+                .bearer_auth(self.admin_token().await?)
                 .query(&query)
+                .timeout(std::time::Duration::from_secs(30))
                 .send()
                 .await
                 .map_err(|e| KeycloakAdminError::Transport(e.to_string()))?;
