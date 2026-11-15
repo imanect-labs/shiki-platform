@@ -417,7 +417,7 @@ flowchart LR
       BM25F のみ（相対カットオフ 0.1・#518）。名前の一覧は 100 件を超えたら名前空間ごとの件数に要約する（#519）。
     - 根拠と再実行手順は `eval/tool-search/`（評価基盤・#516）。
 - **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
-  オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
+  オート（版管理で復元可能な書込と隔離サンドボックス内の shell を自動・fs_delete/drive.move 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
   `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
   モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
   doc_search/doc_read）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
