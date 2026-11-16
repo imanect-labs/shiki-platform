@@ -239,7 +239,7 @@ impl MessagingService {
         (admin, poster): (Option<bool>, Option<bool>),
         trace: Option<&str>,
     ) -> Result<(), Error> {
-        let mut tx = sqlx::Connection::begin(conn).await?;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
         set_tenant(&mut tx, ctx.tenant()).await?;
         // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
         if poster.is_some() && !announcement {
@@ -319,10 +319,22 @@ impl MessagingService {
             }
         }
         let result = match failed {
-            Some(e) => Err(e),
+            Some(e) => {
+                drop(tx);
+                Err(e)
+            }
             None => tx.commit().await.map_err(Error::from),
         };
         if let Err(e) = result {
+            // 巻き戻すのはロックを持っている間だけ。セッションが切れていれば（ロックは外れている）、後続の
+            // 役割変更が既に進んでいるかもしれないので、古い判断で戻さずに記録だけ残す。
+            if !applied.is_empty() && sqlx::query("SELECT 1").execute(&mut *conn).await.is_err() {
+                tracing::error!(
+                    channel = %id,
+                    "messaging: セッションが切れてロックを失ったため、役割変更を巻き戻さない（監査と食い違う）"
+                );
+                return Err(e);
+            }
             for (rel, on) in applied {
                 let undo = if on {
                     self.authz.delete_tuple(&subject, rel, &obj).await

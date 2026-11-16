@@ -136,7 +136,7 @@ impl StorageService {
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
         let subject = ctx.ns().channel_member(&channel_id.to_string());
-        let mut tx = sqlx::Connection::begin(conn).await?;
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
         // 付与・剥奪は冪等。changed=true なら今回実際に変えた（巻き戻すのはその分だけ）。
         let changed = if grant {
             self.authz
@@ -176,12 +176,28 @@ impl StorageService {
         .await;
         let committed = match audited {
             Ok(()) => tx.commit().await.map_err(StorageError::from),
-            Err(e) => Err(e),
+            Err(e) => {
+                drop(tx);
+                Err(e)
+            }
         };
         if let Err(e) = committed {
             if changed {
-                self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
-                    .await;
+                // 巻き戻すのはロックを持っている間だけ。セッションが切れていれば（ロックは外れている）、
+                // 後続の共有・解除が既に進んでいるかもしれないので、古い判断で戻さずに記録だけ残す。
+                // 解除の場合は「解除のまま」になる（権限が増える側には倒れない）。
+                let alive = sqlx::query("SELECT 1").execute(&mut *conn).await.is_ok();
+                if alive {
+                    self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
+                        .await;
+                } else {
+                    tracing::error!(
+                        %node_id,
+                        %channel_id,
+                        granted = grant,
+                        "sharing: セッションが切れてロックを失ったため、チャンネル共有の変更を巻き戻さない（監査と食い違う）"
+                    );
+                }
             }
             return Err(e);
         }
