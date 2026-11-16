@@ -25,22 +25,27 @@ async fn signals_cross_replicas_through_redis_and_stay_on_topic() {
     let a = Hub::connect(&url).await;
     let b = Hub::connect(&url).await;
     let tenant = format!("t{}", Uuid::new_v4().simple());
-    let channel = Uuid::new_v4();
-    let mut on_b = b.subscribe(&tenant, channel);
-    let mut on_a = a.subscribe(&tenant, channel);
-    // psubscribe の開始を待つ（届くまで送り直す）。
-    let mut got = None;
+    // psubscribe の開始を、検証とは別のチャンネルで待つ（再送の残りが検証の購読に混ざらない）。
+    let warm = Uuid::new_v4();
+    let mut warm_b = b.subscribe(&tenant, warm);
+    let mut ready = false;
     for _ in 0..25 {
-        a.publish(&tenant, channel, Signal::Changed).await;
-        if let Ok(Some(s)) = tokio::time::timeout(Duration::from_millis(200), on_b.recv()).await {
-            got = Some(s);
+        a.publish(&tenant, warm, Signal::Changed).await;
+        if let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(200), warm_b.recv()).await {
+            ready = true;
             break;
         }
     }
-    assert!(matches!(got, Some(Signal::Changed)), "{got:?}");
+    assert!(ready, "Redis の中継が 5 秒以内に始まる");
+
+    let channel = Uuid::new_v4();
+    let mut on_b = b.subscribe(&tenant, channel);
+    let mut on_a = a.subscribe(&tenant, channel);
     // 別テナントの同じ channel_id は届かない。
     let other = format!("t{}", Uuid::new_v4().simple());
     a.publish(&other, channel, Signal::Changed).await;
+    // 検証するトピックへは 2 回だけ送る。
+    a.publish(&tenant, channel, Signal::Changed).await;
     a.publish(
         &tenant,
         channel,
@@ -49,16 +54,20 @@ async fn signals_cross_replicas_through_redis_and_stay_on_topic() {
         },
     )
     .await;
+    assert!(matches!(next(&mut on_b).await, Some(Signal::Changed)));
     match next(&mut on_b).await {
         Some(Signal::Leave { user_id }) => assert_eq!(user_id, "bob"),
-        other => panic!("同じトピックの合図だけが届く: {other:?}"),
+        other => panic!("同じトピックの合図だけが順に届く: {other:?}"),
     }
-    // 送り手のハブには、プロセス内の合図だけが届く（Redis から二重に戻らない）。
+    // 受け手にはちょうど 2 件（別テナントの合図・重複は無い）。
+    let extra = tokio::time::timeout(Duration::from_millis(500), on_b.recv()).await;
+    assert!(extra.is_err(), "余分な合図が届いた: {extra:?}");
+    // 送り手のハブには、プロセス内の 2 件だけが届く（Redis から二重に戻らない）。
     let mut seen = 0;
     while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(500), on_a.recv()).await {
         seen += 1;
     }
-    assert!(seen >= 2, "送り手もプロセス内で受け取る: {seen}");
+    assert_eq!(seen, 2, "送り手は自分の合図を 1 回ずつだけ受け取る");
 
     // URL が不正でも、プロセス内の配信は動く。
     let bad = Hub::connect("not a url").await;

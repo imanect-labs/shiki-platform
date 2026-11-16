@@ -121,8 +121,12 @@ test("送信の応答を待つ間に書き足した下書きは消えず、そ�
   await posted;
   await box.press("End");
   await box.pressSequentially(" 追記");
+  const done = page.waitForResponse((r) => r.request().method() === "POST" && /\/messages$/.test(r.url()));
   release();
+  await done;
   await expect(row(page, sent)).toBeVisible();
+  // 送信の後始末（応答を受けて送信中を解く）が終わってから下書きを見る。
+  await expect(page.getByRole("button", { name: "送信" })).toBeEnabled();
   await expect(box).toHaveValue(`${sent} 追記`);
   await page.unroute("**/api/messaging/channels/*/messages");
 
@@ -172,8 +176,11 @@ test("送信の応答を待つ間に添付だけを外しても、下書きは�
   await posted;
   // 応答を待つ間に添付だけを外す。
   await detach.click();
+  const done = page.waitForResponse((r) => r.request().method() === "POST" && /\/messages$/.test(r.url()));
   release();
+  await done;
   await expect(row(page, sent)).toBeVisible();
+  await expect(page.getByRole("button", { name: "送信" })).toBeEnabled();
   // 下書きは送った内容と違うので残る（本文は消えず、外した添付は戻らない）。
   await expect(box).toHaveValue(sent);
   await expect(detach).toHaveCount(0);
