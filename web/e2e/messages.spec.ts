@@ -97,6 +97,42 @@ test("チャンネルを作って投稿し、スレッド・リアクション�
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
 });
 
+test("送信の応答を待つ間に書き足した下書きは消えず、そのまま送ったときだけ空になる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-draft");
+  await createChannel(page, name, "公開");
+  const box = page.getByRole("combobox", { name: /へメッセージを送る$/ });
+
+  // 投稿のリクエストを止めておき、その間に書き足してから流す。
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let seen: () => void = () => undefined;
+  const posted = new Promise<void>((r) => (seen = r));
+  await page.route("**/api/messaging/channels/*/messages", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    seen();
+    await held;
+    await route.continue();
+  });
+  const sent = `送った本文 ${name}`;
+  await box.fill(sent);
+  await box.press("Enter");
+  await posted;
+  await box.press("End");
+  await box.pressSequentially(" 追記");
+  release();
+  await expect(row(page, sent)).toBeVisible();
+  await expect(box).toHaveValue(`${sent} 追記`);
+  await page.unroute("**/api/messaging/channels/*/messages");
+
+  // 書き足さずに送れば空になる。
+  await box.fill(`次の発言 ${name}`);
+  await box.press("Enter");
+  await expect(row(page, `次の発言 ${name}`)).toBeVisible();
+  await expect(box).toHaveValue("");
+});
+
 test("非公開チャンネルは参加していない人には見えず、DM を開ける", async ({ page, browser }) => {
   await loginViaKeycloak(page);
   await openMessages(page);
