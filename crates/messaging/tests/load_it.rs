@@ -133,7 +133,7 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
         .unwrap();
 
     // 購読者: 許可を取って購読し、合図を受けたら自分の権限で読み直す（SSE ハンドラと同じ手順）。
-    let (ready_tx, mut ready_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (ready_tx, mut ready_rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
     let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<Instant>();
     let since = chrono::Utc::now();
     for u in &users {
@@ -143,9 +143,16 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
         let seen_tx = seen_tx.clone();
         let channel = ch.id;
         tokio::spawn(async move {
-            let mut grant = svc.authorize_read(&ctx, channel).await.unwrap();
+            // 準備の失敗は親へ伝える（親は失敗を見たらすぐ落ちる・黙って待たない）。
+            let mut grant = match svc.authorize_read(&ctx, channel).await {
+                Ok(g) => g,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
             let mut sub = svc.hub().subscribe(ctx.tenant_id(), channel);
-            ready_tx.send(()).unwrap();
+            let _ = ready_tx.send(Ok(()));
             while let Some(sig) = sub.recv().await {
                 if sig != Signal::Changed {
                     continue;
@@ -166,13 +173,18 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
             }
         });
     }
-    for _ in 0..n {
-        // 購読タスクが準備の前に落ちたら（許可が取れない等）無期限に待たない。
-        tokio::time::timeout(Duration::from_secs(60), ready_rx.recv())
-            .await
-            .expect("購読者の準備が 60 秒以内に揃うこと")
-            .unwrap();
-    }
+    // 準備全体に 60 秒の上限を置き、購読者の失敗はその場で落とす。
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for _ in 0..n {
+            ready_rx
+                .recv()
+                .await
+                .expect("準備の通知が閉じた")
+                .expect("購読者の準備に失敗した");
+        }
+    })
+    .await
+    .expect("購読者の準備が 60 秒以内に揃うこと");
     let started = Instant::now();
     svc.post(
         &poster,
