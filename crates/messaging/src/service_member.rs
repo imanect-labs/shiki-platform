@@ -13,6 +13,9 @@ use crate::service::audit;
 use crate::store::{self, ChannelRow};
 use crate::{ChannelKind, ChannelView, Error, MemberView, MessagingService, NotifyLevel};
 
+/// 管理権が無いときの拒否（ロックの内側の引き直しで失ったときも同じ文言）。
+const MANAGE_ONLY: &str = "チャンネルの管理者だけが操作できます";
+
 impl MessagingService {
     /// 公開チャンネルに参加する（`can_join`）。
     pub async fn join(
@@ -188,12 +191,40 @@ impl MessagingService {
         // トランザクションのロックは rollback で外れるので、DB の失敗の後の巻き戻しが後続の役割変更と
         // 前後して、後続の剥奪を覆しうる。セッションのロックは巻き戻しが終わるまで持つ。
         // 区間内の DB 操作はロックと同じ接続で行う（2 本目の接続を待たない）。
+        // 権限の判定と拒否の監査（別の接続を使う）は、ロックを取る前と外した後に行う。
+        // 拒否の監査も接続を 1 本取るので、チャンネルを読む接続はその前に返しておく。
+        let c = {
+            let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+            let c = self.readable_channel(&mut tx, ctx, id).await?;
+            tx.commit().await?;
+            c
+        };
+        if c.kind() == ChannelKind::Dm || !self.check(ctx, Relation::CanManage, id).await? {
+            self.deny(ctx, "channel", id, "manage", trace).await;
+            return Err(Error::Forbidden(MANAGE_ONLY));
+        }
+        let announcement = c.announcement;
         let mut lock = store::lock_channel_session(&self.pool, ctx, id).await?;
         let result = self
-            .apply_member_role(lock.conn()?, ctx, id, user, admin, poster, trace)
+            .apply_member_role(
+                lock.conn()?,
+                ctx,
+                id,
+                user,
+                announcement,
+                (admin, poster),
+                trace,
+            )
             .await;
         lock.release().await;
-        result?;
+        match result {
+            Err(Error::Forbidden(MANAGE_ONLY)) => {
+                // ロックを待つ間に管理権を失っていた。拒否の監査はロックを外してから残す。
+                self.deny(ctx, "channel", id, "manage", trace).await;
+                return Err(Error::Forbidden(MANAGE_ONLY));
+            }
+            r => r?,
+        }
         self.members(ctx, id).await
     }
 
@@ -204,15 +235,14 @@ impl MessagingService {
         ctx: &AuthContext,
         id: Uuid,
         user: &str,
-        admin: Option<bool>,
-        poster: Option<bool>,
+        announcement: bool,
+        (admin, poster): (Option<bool>, Option<bool>),
         trace: Option<&str>,
     ) -> Result<(), Error> {
         let mut tx = sqlx::Connection::begin(conn).await?;
         set_tenant(&mut tx, ctx.tenant()).await?;
-        let c = self.managed_channel(&mut tx, ctx, id, trace).await?;
         // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
-        if poster.is_some() && !c.announcement {
+        if poster.is_some() && !announcement {
             return Err(Error::Invalid(
                 "投稿者を個別に決めるのはアナウンス専用チャンネルだけです".into(),
             ));
@@ -226,7 +256,7 @@ impl MessagingService {
         }
         // 操作者自身の管理権もロックの内側で引き直す（待っている間に外されていたら変えない）。
         if !self.check(ctx, Relation::CanManage, id).await? {
-            return Err(Error::Forbidden("チャンネルの管理者だけが操作できます"));
+            return Err(Error::Forbidden(MANAGE_ONLY));
         }
         // 今の状態を先に読み、変わらない指定は書かない。付与の通信エラーで巻き戻すのは
         // 「今回付けたかもしれない」タプルだけにするため（既に admin の人を admin=true にして

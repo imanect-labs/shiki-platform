@@ -1390,14 +1390,26 @@ async fn concurrent_role_changes_do_not_exhaust_a_small_pool() {
         Hub::local(),
         env.files.clone(),
     ));
+    // 管理者の役割変更と、管理権の無い dave（参加者）の役割変更（拒否・拒否の監査は別の接続）を混ぜる。
+    env.svc
+        .invite(&alice, ch.id, vec!["dave".into()], None)
+        .await
+        .unwrap();
+    let dave = env.ctx("dave");
     let mut tasks = Vec::new();
-    for i in 0..6 {
+    for i in 0..8 {
         let svc = svc.clone();
-        let ctx = alice.clone();
+        let (ctx, denied) = if i % 4 == 3 {
+            (dave.clone(), true)
+        } else {
+            (alice.clone(), false)
+        };
         let user = if i % 2 == 0 { "bob" } else { "carol" };
         tasks.push(tokio::spawn(async move {
-            svc.set_member_role(&ctx, ch.id, user, Some(i % 4 < 2), None, None)
-                .await
+            let r = svc
+                .set_member_role(&ctx, ch.id, user, Some(i % 4 < 2), None, None)
+                .await;
+            (denied, r)
         }));
     }
     let all = tokio::time::timeout(
@@ -1407,8 +1419,21 @@ async fn concurrent_role_changes_do_not_exhaust_a_small_pool() {
     .await
     .expect("役割変更が詰まらずに終わる");
     for r in all {
-        r.unwrap().unwrap();
+        let (denied, r) = r.unwrap();
+        if denied {
+            assert!(matches!(r, Err(Error::Forbidden(_))), "{r:?}");
+        } else {
+            r.unwrap();
+        }
     }
+    let denies: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'messaging.deny' AND actor = 'dave'",
+    )
+    .bind(&env.tenant)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert_eq!(denies, 2, "拒否はどちらも監査に残る");
     // ロックが外れていること（後続の操作が待たされない）。
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
