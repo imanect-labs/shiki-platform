@@ -233,6 +233,10 @@ pub struct InsertMessage<'a> {
 }
 
 /// 発言を書く。スレッドの返信は親の `updated_at` も進める（返信数の配信）。
+///
+/// 時刻は挿入した瞬間（`clock_timestamp()`）にする。参加の境界（`visible_from`）も挿入した瞬間なので、
+/// 同じ基準で比べられる（`now()` だとトランザクション開始時刻になり、参加の確定後に書いた発言が
+/// 参加前扱いで新しい参加者から見えなくなる）。
 pub async fn insert_message(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -240,7 +244,8 @@ pub async fn insert_message(
 ) -> Result<DateTime<Utc>, Error> {
     let at: DateTime<Utc> = sqlx::query_scalar(
         "INSERT INTO channel_message (tenant_id, org, id, channel_id, parent_id, author_kind, author_id, \
-            blocks, search_text) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING created_at",
+            blocks, search_text, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, clock_timestamp(), clock_timestamp()) RETURNING created_at",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())

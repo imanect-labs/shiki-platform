@@ -61,25 +61,67 @@ export function draftOf(
   files: readonly { block_index: number; name?: string | null; available: boolean }[],
   label: (m: Mention) => string,
 ): Draft {
-  let text = "";
-  const tokens: Token[] = [];
+  const list = blocks as MessageBlock[];
   const attachments: Attachment[] = [];
-  (blocks as MessageBlock[]).forEach((b, i) => {
-    if (b.type === "text") text += b.text;
-    else if (b.type === "mention") {
-      // 同じ表示名でも宛先が違えば別のラベルにする（保存し直したときに宛先を取り違えない）。
-      const base = label(b.mention).replace(/^@/, "");
-      const key = JSON.stringify(b.mention);
-      let l = base;
-      for (let n = 2; tokens.some((t) => t.label === l && JSON.stringify(t.mention) !== key); n += 1) l = `${base}(${n})`;
-      text += `@${l}`;
-      if (!tokens.some((t) => t.label === l)) tokens.push({ label: l, mention: b.mention });
-    } else if (b.type === "file_ref") {
+  list.forEach((b, i) => {
+    if (b.type === "file_ref") {
       const f = files.find((x) => x.block_index === i);
       attachments.push({ node_id: b.node_id, name: f?.available && f.name ? f.name : "参照できない添付" });
     }
   });
-  return { text, tokens, files: attachments };
+  // 保存し直したときに同じ本文・同じ宛先へ戻ることを確かめ、戻らなければラベルの番号をずらして組み直す
+  // （同じ表示名の別の宛先や、メンションの直後の文字列・本文中の `@名前` と表記が重なる場合）。
+  const expected = JSON.stringify(withoutFiles(list));
+  let draft = draftText(list, label, 0);
+  for (let shift = 1; shift <= 50 && JSON.stringify(toBlocks(draft.text, draft.tokens, [])) !== expected; shift += 1) {
+    draft = draftText(list, label, shift);
+  }
+  return { ...draft, files: attachments };
+}
+
+/// 添付を除き、隣り合う本文をまとめたブロック列（`toBlocks` の出力と比べる形）。
+function withoutFiles(blocks: readonly MessageBlock[]): MessageBlock[] {
+  const out: MessageBlock[] = [];
+  for (const b of blocks) {
+    if (b.type === "text") {
+      if (!b.text) continue;
+      const last = out[out.length - 1];
+      if (last?.type === "text") out[out.length - 1] = { type: "text", text: last.text + b.text };
+      else out.push({ type: "text", text: b.text });
+    } else if (b.type === "mention") out.push({ type: "mention", mention: b.mention });
+  }
+  return out;
+}
+
+/// 本文とメンションの表記を組む。同じ表示名でも宛先が違えば別のラベルにする。
+/// `shift` が 0 なら最初の宛先は番号なし、それ以外は全員に `shift` だけずらした番号を付ける。
+function draftText(
+  blocks: readonly MessageBlock[],
+  label: (m: Mention) => string,
+  shift: number,
+): { text: string; tokens: Token[] } {
+  let text = "";
+  const tokens: Token[] = [];
+  const seen = new Map<string, string[]>();
+  for (const b of blocks) {
+    if (b.type === "text") text += b.text;
+    else if (b.type === "mention") {
+      const base = label(b.mention).replace(/^@/, "");
+      const key = JSON.stringify(b.mention);
+      const keys = seen.get(base) ?? [];
+      let j = keys.indexOf(key);
+      if (j < 0) {
+        j = keys.length;
+        keys.push(key);
+        seen.set(base, keys);
+      }
+      const n = j + 1 + shift;
+      const l = n === 1 ? base : `${base}(${n})`;
+      text += `@${l}`;
+      if (!tokens.some((t) => t.label === l)) tokens.push({ label: l, mention: b.mention });
+    }
+  }
+  return { text, tokens };
 }
 
 /// カーソル直前の `@` から始まる未確定の入力を取り出す（メンション補完のトリガ）。

@@ -204,13 +204,33 @@ impl MessagingService {
         if !self.check(ctx, Relation::CanManage, id).await? {
             return Err(Error::Forbidden("チャンネルの管理者だけが操作できます"));
         }
-        if admin == Some(false) {
-            let target = subject.to_string();
-            let admins = self.admin_ids(&obj).await?;
-            if admins.contains(&target) && admins.len() <= 1 {
-                return Err(Error::Forbidden("最後の管理者は外せません"));
+        // 今の状態を先に読み、変わらない指定は書かない。付与の通信エラーで巻き戻すのは
+        // 「今回付けたかもしれない」タプルだけにするため（既に admin の人を admin=true にして
+        // 通信エラーになっても、元からある admin を剥がさない＝最後の管理者を失わない）。
+        let target = subject.to_string();
+        let admin = match admin {
+            Some(on) => {
+                let admins = self.admin_ids(&obj).await?;
+                let has = admins.contains(&target);
+                if !on && has && admins.len() <= 1 {
+                    return Err(Error::Forbidden("最後の管理者は外せません"));
+                }
+                (on != has).then_some(on)
             }
-        }
+            None => None,
+        };
+        let poster = match poster {
+            Some(on) => {
+                let has = self
+                    .authz
+                    .read_tuples(&obj, Some(Relation::Poster))
+                    .await?
+                    .iter()
+                    .any(|t| t.user == target);
+                (on != has).then_some(on)
+            }
+            None => None,
+        };
         audit(
             &mut tx,
             ctx,
