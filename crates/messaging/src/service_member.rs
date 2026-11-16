@@ -5,7 +5,7 @@
 use authz::{AuthContext, CheckTuple, Consistency, Relation};
 use sqlx::PgConnection;
 use storage::audit::AuditAction;
-use storage::db_tenant::begin_tenant_tx;
+use storage::db_tenant::{begin_tenant_tx, set_tenant};
 use uuid::Uuid;
 
 use crate::pubsub::Signal;
@@ -187,18 +187,20 @@ impl MessagingService {
         // 管理者の数の判定・タプルの書込・失敗時の巻き戻しまでを、チャンネル単位で 1 つの区間にする。
         // トランザクションのロックは rollback で外れるので、DB の失敗の後の巻き戻しが後続の役割変更と
         // 前後して、後続の剥奪を覆しうる。セッションのロックは巻き戻しが終わるまで持つ。
-        // 接続を持ったまま待たないよう、トランザクションを開く前に取る。
-        let lock = store::lock_channel_session(&self.pool, ctx, id).await?;
+        // 区間内の DB 操作はロックと同じ接続で行う（2 本目の接続を待たない）。
+        let mut lock = store::lock_channel_session(&self.pool, ctx, id).await?;
         let result = self
-            .apply_member_role(ctx, id, user, admin, poster, trace)
+            .apply_member_role(lock.conn()?, ctx, id, user, admin, poster, trace)
             .await;
         lock.release().await;
         result?;
         self.members(ctx, id).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apply_member_role(
         &self,
+        conn: &mut PgConnection,
         ctx: &AuthContext,
         id: Uuid,
         user: &str,
@@ -206,7 +208,8 @@ impl MessagingService {
         poster: Option<bool>,
         trace: Option<&str>,
     ) -> Result<(), Error> {
-        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+        let mut tx = sqlx::Connection::begin(conn).await?;
+        set_tenant(&mut tx, ctx.tenant()).await?;
         let c = self.managed_channel(&mut tx, ctx, id, trace).await?;
         // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
         if poster.is_some() && !c.announcement {

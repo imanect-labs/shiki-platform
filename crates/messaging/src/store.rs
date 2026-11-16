@@ -231,12 +231,15 @@ fn channel_lock_key(ctx: &AuthContext, channel: Uuid) -> String {
     format!("messaging:{}:{}:{channel}", ctx.tenant_id(), ctx.org())
 }
 
-/// [`lock_channel`] と同じ鍵を、トランザクションを越えて持つ（専用の接続のセッションロック）。
+/// [`lock_channel`] と同じ鍵を、トランザクションを越えて持つ（接続のセッションロック）。
 ///
 /// 外部（OpenFGA）への書込とその巻き戻しまでを 1 つの区間で直列化するのに使う。トランザクションの
 /// ロックは commit／rollback で外れるので、DB の失敗の後に行う巻き戻しが、後続の操作と前後してしまう。
-/// 解放は [`ChannelLock::release`]。解放せずに落とした（呼び出しが中断された）場合は接続ごと捨て、
-/// セッションの終了でロックを外す（プールにロックを持った接続を戻さない）。
+///
+/// 区間内の DB 操作は [`ChannelLock::conn`] の同じ接続で行う（ロック用とは別の接続をプールから取ると、
+/// ロック待ちが接続を使い切ったときに、ロックを持つ側がトランザクションを開けず互いに待つ）。
+/// ロックの取得・解放の途中も含め、解放を終えずに落とした（呼び出しが中断された）場合は接続ごと捨て、
+/// セッションの終了でロックを外す（ロックを持ったかもしれない接続をプールへ戻さない）。
 pub struct ChannelLock {
     conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
     key: String,
@@ -247,32 +250,43 @@ pub async fn lock_channel_session(
     ctx: &AuthContext,
     channel: Uuid,
 ) -> Result<ChannelLock, Error> {
-    let mut conn = pool.acquire().await?;
-    let key = channel_lock_key(ctx, channel);
+    // 先にガードへ入れてから取得する（取得を待つ間に中断されても Drop が接続を捨てる）。
+    let mut lock = ChannelLock {
+        conn: Some(pool.acquire().await?),
+        key: channel_lock_key(ctx, channel),
+    };
     sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
-        .bind(&key)
-        .execute(&mut *conn)
+        .bind(lock.key.clone())
+        .execute(lock.conn()?)
         .await?;
-    Ok(ChannelLock {
-        conn: Some(conn),
-        key,
-    })
+    Ok(lock)
 }
 
 impl ChannelLock {
+    /// ロックを持っている接続（区間内の DB 操作に使う）。
+    pub fn conn(&mut self) -> Result<&mut PgConnection, Error> {
+        self.conn
+            .as_deref_mut()
+            .ok_or(Error::Unavailable("チャンネルのロックは解放済みです"))
+    }
+
     /// ロックを外して接続をプールへ返す。外せなかったら接続を閉じる（セッションの終了で外れる）。
+    /// 外し終えるまで接続はガードの中に置く（解放を待つ間に中断されても Drop が接続を捨てる）。
     pub async fn release(mut self) {
-        let Some(mut conn) = self.conn.take() else {
-            return;
+        let unlocked: Result<bool, sqlx::Error> = match self.conn.as_deref_mut() {
+            Some(conn) => {
+                sqlx::query_scalar("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+                    .bind(self.key.clone())
+                    .fetch_one(conn)
+                    .await
+            }
+            None => return,
         };
-        let unlocked: Result<bool, sqlx::Error> =
-            sqlx::query_scalar("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
-                .bind(&self.key)
-                .fetch_one(&mut *conn)
-                .await;
-        if !matches!(unlocked, Ok(true)) {
+        if matches!(unlocked, Ok(true)) {
+            // 外せたので、接続はプールへ戻してよい（Drop で捨てない）。
+            drop(self.conn.take());
+        } else {
             tracing::warn!("messaging: チャンネルのロックを外せないため接続を閉じる");
-            drop(conn.detach());
         }
     }
 }
@@ -280,7 +294,7 @@ impl ChannelLock {
 impl Drop for ChannelLock {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            // 解放前に落とされた。ロックを持った接続をプールに戻さず、接続ごと閉じる。
+            // 解放を終えずに落とされた。ロックを持った接続をプールに戻さず、接続ごと閉じる。
             drop(conn.detach());
         }
     }

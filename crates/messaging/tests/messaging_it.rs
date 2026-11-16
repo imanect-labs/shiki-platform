@@ -1355,3 +1355,66 @@ async fn join_boundary_follows_insert_order_and_ties_stay_hidden() {
         .unwrap()
         .is_empty());
 }
+
+/// 役割変更はチャンネルのロックと同じ接続で行う。小さいプールで同じチャンネルへ同時に投げても、
+/// ロック待ちが接続を使い切って互いに待つことがない（全件が期限内に終わる）。
+#[tokio::test]
+async fn concurrent_role_changes_do_not_exhaust_a_small_pool() {
+    let Some(env) = setup().await else { return };
+    let alice = env.ctx("alice");
+    let ch = env
+        .svc
+        .create_channel(&alice, create("役割の同時変更", ChannelKind::Public), None)
+        .await
+        .unwrap();
+    env.svc
+        .invite(&alice, ch.id, vec!["bob".into(), "carol".into()], None)
+        .await
+        .unwrap();
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let small = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SET ROLE shiki_runtime").execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    let svc = Arc::new(MessagingService::new(
+        small,
+        env.fga.clone(),
+        Hub::local(),
+        env.files.clone(),
+    ));
+    let mut tasks = Vec::new();
+    for i in 0..6 {
+        let svc = svc.clone();
+        let ctx = alice.clone();
+        let user = if i % 2 == 0 { "bob" } else { "carol" };
+        tasks.push(tokio::spawn(async move {
+            svc.set_member_role(&ctx, ch.id, user, Some(i % 4 < 2), None, None)
+                .await
+        }));
+    }
+    let all = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        futures::future::join_all(tasks),
+    )
+    .await
+    .expect("役割変更が詰まらずに終わる");
+    for r in all {
+        r.unwrap().unwrap();
+    }
+    // ロックが外れていること（後続の操作が待たされない）。
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        svc.set_member_role(&alice, ch.id, "bob", Some(false), None, None),
+    )
+    .await
+    .expect("ロックが残っていない")
+    .unwrap();
+}
