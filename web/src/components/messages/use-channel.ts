@@ -86,11 +86,15 @@ export function useChannel(channelId: string | null, initial: ChannelView | null
     }
   }, [channelId]);
 
+  // 回答一覧は開いた直後・配信の再接続・合図のたびに取り直す。応答の届く順は前後するので、
+  // いちばん新しく始めた取得の結果だけを反映する（遅れて届いた古い一覧で上書きしない）。
+  const agentRepliesSeq = React.useRef(0);
   const refreshAgentReplies = React.useCallback(async () => {
     if (!channelId) return;
+    const seq = ++agentRepliesSeq.current;
     try {
       const r = await listAgentReplies(channelId);
-      if (channelRef.current === channelId) setAgentReplies(r);
+      if (channelRef.current === channelId && agentRepliesSeq.current === seq) setAgentReplies(r);
     } catch {
       // 出せないだけ（チャンネル自体は読める）。
     }

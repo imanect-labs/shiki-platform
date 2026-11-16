@@ -88,8 +88,9 @@ impl MessagingService {
         .await?;
         let versions: Vec<(Uuid, DateTime<Utc>)> =
             rows.iter().map(|r| (r.id, r.updated_at)).collect();
-        let views = self.views(&mut tx, ctx, rows).await?;
+        let parts = self.view_parts(&mut tx, ctx, rows).await?;
         tx.commit().await?;
+        let views = self.finish_views(ctx, parts).await?;
         // 返せたことが確定してから「送った」と記録する（失敗した版を次の読み直しで落とさない）。
         sent.extend(versions);
         Ok(views)

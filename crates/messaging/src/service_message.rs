@@ -48,9 +48,9 @@ impl MessagingService {
             },
         )
         .await?;
-        let views = self.views(&mut tx, ctx, rows).await?;
+        let parts = self.view_parts(&mut tx, ctx, rows).await?;
         tx.commit().await?;
-        Ok(views)
+        self.finish_views(ctx, parts).await
     }
 
     /// スレッド（親＋返信・古い順）。親が読めなければ返信だけ。
@@ -81,9 +81,9 @@ impl MessagingService {
         if rows.is_empty() {
             return Err(Error::NotFound);
         }
-        let views = self.views(&mut tx, ctx, rows).await?;
+        let parts = self.view_parts(&mut tx, ctx, rows).await?;
         tx.commit().await?;
-        Ok(views)
+        self.finish_views(ctx, parts).await
     }
 
     /// 1 件（読めなければ NotFound）。
@@ -101,14 +101,13 @@ impl MessagingService {
             MessageFilter::Ids { ids: &ids },
         )
         .await?;
-        let view = self
-            .views(&mut tx, ctx, rows)
+        let parts = self.view_parts(&mut tx, ctx, rows).await?;
+        tx.commit().await?;
+        self.finish_views(ctx, parts)
             .await?
             .into_iter()
             .next()
-            .ok_or(Error::NotFound)?;
-        tx.commit().await?;
-        Ok(view)
+            .ok_or(Error::NotFound)
     }
 
     /// 投稿する。`can_post`（poster ∩ member）が要る。アーカイブ中は投稿できない。
@@ -536,7 +535,7 @@ impl MessagingService {
             .filter(|r| readable.contains(&r.channel_id))
             .take(usize::try_from(limit.clamp(1, 100)).unwrap_or(100))
             .collect();
-        let views = self.views(&mut tx, ctx, rows).await?;
+        let parts = self.view_parts(&mut tx, ctx, rows).await?;
         let names = store::display_names(
             &mut tx,
             ctx,
@@ -555,12 +554,13 @@ impl MessagingService {
                 object_id: "",
                 decision: Decision::Allow,
                 trace_id: trace,
-                metadata: serde_json::json!({ "hits": views.len() }),
+                metadata: serde_json::json!({ "hits": parts.rows.len() }),
             },
             Chain::No,
         )
         .await?;
         tx.commit().await?;
+        let views = self.finish_views(ctx, parts).await?;
         Ok(views
             .into_iter()
             .filter_map(|m| {
@@ -617,12 +617,7 @@ impl MessagingService {
             .map(|r| r.0)
             .collect();
         let msgs = sm::fetch_messages(&mut tx, ctx, &me, MessageFilter::Ids { ids: &ids }).await?;
-        let views: HashMap<Uuid, MessageView> = self
-            .views(&mut tx, ctx, msgs)
-            .await?
-            .into_iter()
-            .map(|v| (v.id, v))
-            .collect();
+        let parts = self.view_parts(&mut tx, ctx, msgs).await?;
         let mut names: HashMap<Uuid, String> = HashMap::new();
         for c in &readable {
             if let Some(row) = store::channel(&mut tx, ctx, *c).await? {
@@ -638,12 +633,19 @@ impl MessagingService {
                 names.insert(*c, name);
             }
         }
-        let mentioned: Vec<String> = views
-            .values()
-            .flat_map(|v| crate::model::mentioned_users(&v.blocks))
+        let mentioned: Vec<String> = parts
+            .rows
+            .iter()
+            .flat_map(|r| crate::model::mentioned_users(&r.blocks.0))
             .collect();
         let mention_names = store::display_names(&mut tx, ctx, &mentioned).await?;
         tx.commit().await?;
+        let views: HashMap<Uuid, MessageView> = self
+            .finish_views(ctx, parts)
+            .await?
+            .into_iter()
+            .map(|v| (v.id, v))
+            .collect();
         Ok(rows
             .into_iter()
             .filter_map(|(mid, cid, via, read_at, created_at)| {
@@ -677,24 +679,53 @@ impl MessagingService {
         Ok(())
     }
 
-    /// 行を閲覧者から見た形にする（file_ref を閲覧者の権限で解決・リアクション・書き手の表示）。
-    pub(crate) async fn views(
+    /// 閲覧者向けの形にするための DB の読み取り（リアクション・書き手の名前・エージェントの名前）。
+    /// 接続を持っている間はここまでにし、添付の権限と在籍の判定は [`Self::finish_views`] で
+    /// トランザクションを閉じてから行う（StorageService は同じプールから別の接続を取るので、
+    /// 接続を持ったまま待つとプールが詰まったときに互いを待つ）。
+    pub(crate) async fn view_parts(
         &self,
         conn: &mut PgConnection,
         ctx: &AuthContext,
         rows: Vec<MessageRow>,
-    ) -> Result<Vec<MessageView>, Error> {
+    ) -> Result<ViewParts, Error> {
         if rows.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ViewParts::default());
         }
         let me = ctx.principal().id.clone();
         let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-        let mut reactions = sm::reactions(conn, ctx, &me, &ids).await?;
+        let reactions = sm::reactions(conn, ctx, &me, &ids).await?;
         let mut authors: Vec<String> = rows.iter().map(|r| r.author_id.clone()).collect();
         authors.sort();
         authors.dedup();
         let names = store::display_names(conn, ctx, &authors).await?;
         let agents = crate::agent_profile::profiles(conn, ctx, &authors).await?;
+        Ok(ViewParts {
+            rows,
+            reactions,
+            names,
+            agents,
+            authors,
+        })
+    }
+
+    /// 行を閲覧者から見た形にする（file_ref を閲覧者の権限で解決・リアクション・書き手の表示）。
+    /// DB の接続を持たずに呼ぶ（[`Self::view_parts`] の後でトランザクションを閉じてから）。
+    pub(crate) async fn finish_views(
+        &self,
+        ctx: &AuthContext,
+        parts: ViewParts,
+    ) -> Result<Vec<MessageView>, Error> {
+        let ViewParts {
+            rows,
+            mut reactions,
+            names,
+            agents,
+            authors,
+        } = parts;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
         let active = self.active_users(ctx, &authors).await?;
         let all_files: Vec<Uuid> = rows
             .iter()
@@ -858,4 +889,14 @@ mod tests {
             assert!(!is_emoji(ng), "{ng}");
         }
     }
+}
+
+/// [`MessagingService::view_parts`] で読んだ、閲覧者向けの形にする前の材料。
+#[derive(Default)]
+pub(crate) struct ViewParts {
+    rows: Vec<MessageRow>,
+    reactions: HashMap<Uuid, Vec<crate::model::ReactionView>>,
+    names: HashMap<String, String>,
+    agents: HashMap<String, crate::agent_profile::ProfileRow>,
+    authors: Vec<String>,
 }
