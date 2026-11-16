@@ -28,8 +28,12 @@ export function ShareChannelsPanel({ open, nodeId }: { open: boolean; nodeId: st
   const [error, setError] = React.useState<string | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
 
+  // 共有・解除のたびに取り直す。応答の届く順は前後するので、最後に始めた取得の結果だけを反映する。
+  const latest = React.useRef(0);
   const refresh = React.useCallback(async () => {
+    const request = ++latest.current;
     const [mine, current] = await Promise.all([listChannels(), listChannelShares(nodeId)]);
+    if (request !== latest.current) return;
     // チャンネル（公開・非公開）を先に、DM を後に並べる（名前順）。
     const rank = (c: ChannelView) => (c.kind === "dm" ? 1 : 0);
     setChannels(
@@ -104,7 +108,8 @@ export function ShareChannelsPanel({ open, nodeId }: { open: boolean; nodeId: st
     <div className="flex min-w-0 flex-col gap-3">
       <p className="text-xs leading-relaxed text-muted-foreground">
         チャンネルの参加者全員が<strong className="font-medium text-foreground">閲覧</strong>
-        できるようになります。エージェントがチャンネルに公開で答えるときの根拠にも使われます。
+        できるようになります。エージェントがチャンネルに公開で答えるときの根拠にも使われます
+        （公開チャンネルでは参加していない組織メンバーも返信を読めるため、組織全体が読める資料だけが根拠になります）。
       </p>
 
       <div className="rounded-lg border border-border">

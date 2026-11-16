@@ -27,7 +27,7 @@ use crate::pubsub::Signal;
 use crate::service_message::audit_message;
 use crate::store;
 use crate::store_message::{self as sm, InsertMessage, MessageFilter};
-use crate::{AuthorKind, Error, MessagingService, DEFAULT_AGENT_NAME};
+use crate::{AuthorKind, ChannelKind, Error, MessagingService, DEFAULT_AGENT_NAME};
 use storage::audit::AuditAction;
 
 /// 文脈に入れる発言の最大件数（スレッド＋直近）。
@@ -58,6 +58,8 @@ pub struct ContextLine {
 pub struct AgentRequest {
     mode: ReplyMode,
     channel_id: Uuid,
+    /// 公開チャンネルか（参加していない組織メンバーも公開返信を読める）。
+    public_channel: bool,
     channel_name: String,
     transcript: Vec<ContextLine>,
     question: String,
@@ -74,6 +76,10 @@ impl AgentRequest {
     /// 呼び出したチャンネル（公開返信の根拠は、このチャンネルに共有した資料に限る）。
     pub fn channel_id(&self) -> Uuid {
         self.channel_id
+    }
+    /// 公開チャンネルか。公開返信の読み手は組織全体なので、根拠の資料は組織全体が読めるものに限る。
+    pub fn public_channel(&self) -> bool {
+        self.public_channel
     }
     pub fn channel_name(&self) -> &str {
         &self.channel_name
@@ -266,6 +272,7 @@ impl MessagingService {
         Ok(AgentRequest {
             mode,
             channel_id: c.id,
+            public_channel: c.kind() == ChannelKind::Public,
             channel_name: c.name.clone().unwrap_or_else(|| "DM".into()),
             transcript,
             force_chat: asks_for_chat(&question),
@@ -346,7 +353,10 @@ impl MessagingService {
         let blocks = vec![ContentBlock::Text {
             text: answer.text.clone(),
         }];
-        match self.reply_mode_for(ctx, channel, mode, &answer).await? {
+        match self
+            .reply_mode_for(ctx, channel, c.kind() == ChannelKind::Public, mode, &answer)
+            .await?
+        {
             ReplyMode::Private => {
                 self.save_private_reply(ctx, channel, trigger_id, blocks, &answer.sources, None)
                     .await?;
@@ -498,26 +508,35 @@ impl MessagingService {
     }
 
     /// 回答を書く形。公開返信の根拠は、チャンネル内の発言と**このチャンネルに共有した資料**
-    /// （`channel#member` が viewer の文書）だけ。根拠の文書が 1 件でもチャンネルに共有されていなければ、
-    /// 参加者に公開せず本人だけに表示する（実行部の取り違えでも、参加者が読めない資料を出さない）。
+    /// （`channel#member` が viewer の文書）だけ。公開チャンネルは参加していない組織メンバーも返信を読める
+    /// （org_reader）ので、資料は組織全体（`organization#member`）にも読めるものに限る（手動投稿の
+    /// [`Self::unreadable_sources`] と同じ読み手の基準）。1 件でも外れれば参加者に公開せず本人だけに表示する
+    /// （実行部の取り違えでも、読み手の誰かが読めない資料を出さない）。
     async fn reply_mode_for(
         &self,
         ctx: &AuthContext,
         channel: Uuid,
+        org_readers: bool,
         mode: ReplyMode,
         answer: &AgentAnswer,
     ) -> Result<ReplyMode, Error> {
         if mode != ReplyMode::Public || answer.sources.is_empty() {
             return Ok(mode);
         }
-        let members = ctx.ns().channel_member(&channel.to_string());
+        let mut readers = vec![ctx.ns().channel_member(&channel.to_string())];
+        if org_readers {
+            readers.push(ctx.ns().organization_member(ctx.org()));
+        }
         let items: Vec<CheckTuple> = answer
             .sources
             .iter()
-            .map(|f| CheckTuple {
-                subject: members.clone(),
-                relation: Relation::Viewer,
-                object: ctx.ns().file(&f.to_string()),
+            .flat_map(|f| {
+                let file = ctx.ns().file(&f.to_string());
+                readers.iter().map(move |r| CheckTuple {
+                    subject: r.clone(),
+                    relation: Relation::Viewer,
+                    object: file.clone(),
+                })
             })
             .collect();
         let shared = self

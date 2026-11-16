@@ -939,6 +939,20 @@ async fn retention_cannot_undercut_audit_and_purges_search() {
         .post(&alice, ch.id, msg("昔の決定事項"), None)
         .await
         .unwrap();
+    // 編集して改訂を作っておく（期限切れで改訂も消えることを確かめるため）。
+    env.svc
+        .edit(&alice, old.id, text("昔の決定事項（修正）"), None)
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM channel_message_revision WHERE tenant_id = $1 AND message_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(old.id)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert!(before >= 1, "編集で改訂が残る");
     sqlx::query(
         "UPDATE channel_message SET created_at = now() - make_interval(days => $3) \
          WHERE tenant_id = $1 AND id = $2",
@@ -1540,49 +1554,104 @@ async fn public_reply_is_grounded_on_channel_shared_documents_only() {
         .unwrap()
         .is_empty());
 
-    // チャンネルに共有した資料（channel#member が viewer）だけが根拠なら、公開返信として書く。
+    // 公開チャンネルは、参加していない組織メンバーも公開返信を読める。チャンネルに共有しただけの資料
+    // （組織全体は読めない）は根拠にできず、組織全体にも読める資料なら公開返信にする。
     let shared = Uuid::new_v4();
+    let shared_file = bob.ns().file(&shared.to_string());
     env.fga
         .write_tuple(
             &bob.ns().channel_member(&ch.id.to_string()),
             Relation::Viewer,
-            &bob.ns().file(&shared.to_string()),
+            &shared_file,
         )
         .await
         .unwrap();
-    for (sources, public) in [(vec![shared], true), (vec![shared, Uuid::new_v4()], false)] {
-        *rt.sources.lock().unwrap() = sources;
-        let trigger = env
-            .svc
-            .post(
-                &bob,
-                ch.id,
-                NewMessage {
-                    parent_id: None,
-                    blocks: vec![
-                        ContentBlock::Mention {
-                            mention: Mention::Agent,
-                        },
-                        ContentBlock::Text {
-                            text: " 共有した議事録を要約して".into(),
-                        },
-                    ],
-                    agent_private: false,
-                },
-                None,
-            )
-            .await
-            .unwrap();
-        env.svc
-            .invoke_agent(&bob, &runtime, trigger.id, ReplyMode::Public, None)
-            .await
-            .unwrap();
-        let thread = env.svc.thread(&alice, ch.id, trigger.id).await.unwrap();
-        let posted = thread
-            .iter()
-            .any(|m| m.author.kind == messaging::AuthorKind::Assistant);
-        // 共有されていない文書が 1 件でも混ざれば公開しない。
-        assert_eq!(posted, public, "{thread:?}");
-    }
-    assert_eq!(env.svc.agent_replies(&bob, ch.id).await.unwrap().len(), 2);
+    assert!(!ask(&env, &bob, &runtime, &rt, ch.id, vec![shared]).await);
+    env.fga
+        .write_tuple(
+            &bob.ns().organization_member(bob.org()),
+            Relation::Viewer,
+            &shared_file,
+        )
+        .await
+        .unwrap();
+    assert!(ask(&env, &bob, &runtime, &rt, ch.id, vec![shared]).await);
+    // 共有されていない文書が 1 件でも混ざれば公開しない。
+    assert!(
+        !ask(
+            &env,
+            &bob,
+            &runtime,
+            &rt,
+            ch.id,
+            vec![shared, Uuid::new_v4()]
+        )
+        .await
+    );
+    assert_eq!(env.svc.agent_replies(&bob, ch.id).await.unwrap().len(), 3);
+
+    // 非公開チャンネルでは、チャンネルに共有した資料（参加者全員が読める）だけで公開返信にできる。
+    let private = env
+        .svc
+        .create_channel(&alice, create("根拠・非公開", ChannelKind::Private), None)
+        .await
+        .unwrap();
+    env.svc
+        .invite(&alice, private.id, vec!["bob".into()], None)
+        .await
+        .unwrap();
+    let doc = Uuid::new_v4();
+    env.fga
+        .write_tuple(
+            &bob.ns().channel_member(&private.id.to_string()),
+            Relation::Viewer,
+            &bob.ns().file(&doc.to_string()),
+        )
+        .await
+        .unwrap();
+    assert!(ask(&env, &bob, &runtime, &rt, private.id, vec![doc]).await);
+    assert!(!ask(&env, &bob, &runtime, &rt, private.id, vec![Uuid::new_v4()]).await);
+}
+
+/// エージェントを公開返信で呼び、チャンネル（スレッド）に公開されたかを返す。
+async fn ask(
+    env: &Env,
+    who: &AuthContext,
+    runtime: &Arc<dyn AgentRuntime>,
+    rt: &FakeRuntime,
+    channel: Uuid,
+    sources: Vec<Uuid>,
+) -> bool {
+    *rt.sources.lock().unwrap() = sources;
+    let trigger = env
+        .svc
+        .post(
+            who,
+            channel,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 共有した資料を要約して".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .invoke_agent(who, runtime, trigger.id, ReplyMode::Public, None)
+        .await
+        .unwrap();
+    env.svc
+        .thread(who, channel, trigger.id)
+        .await
+        .unwrap()
+        .iter()
+        .any(|m| m.author.kind == messaging::AuthorKind::Assistant)
 }

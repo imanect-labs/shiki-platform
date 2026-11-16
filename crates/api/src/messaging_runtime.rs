@@ -6,7 +6,8 @@
 //!   そこでの承認は照会者の承認モード設定（§4.4 の 3 モード）に従う。
 //! - 自分だけに表示の回答は、照会者の `AuthContext` で RAG を引く（二段 authz は RAG 側が守る）。
 //! - 公開返信の根拠は、チャンネルの発言と**このチャンネルに共有した資料**だけ。照会者の権限で引いた結果から、
-//!   `channel#member` が viewer の文書だけを残す（参加者全員が読める資料だけ・design §4.14）。
+//!   `channel#member` が viewer の文書だけを残す（参加者全員が読める資料だけ・design §4.14）。公開チャンネルは
+//!   参加していない組織メンバーも返信を読めるので、組織全体にも読める資料に限る。
 
 use async_trait::async_trait;
 use authz::{AuthContext, AuthzClient, CheckTuple, Consistency, Relation};
@@ -136,24 +137,33 @@ impl GatewayAgentRuntime {
 }
 
 impl GatewayAgentRuntime {
-    /// 検索結果のうち、チャンネルに共有された（`channel#member` が viewer の）文書だけを残す。
+    /// 検索結果のうち、公開返信の読み手全員が読める文書だけを残す: チャンネルに共有された
+    /// （`channel#member` が viewer の）文書で、公開チャンネルなら組織全体（`organization#member`）にも
+    /// 読めるもの（参加していない組織メンバーも公開返信を読めるため）。
     /// 判定に失敗したら何も残さない（fail-closed・公開返信は発言だけを根拠にする）。
-    async fn shared_with_channel(
+    async fn readable_by_reply_readers(
         &self,
         ctx: &AuthContext,
-        channel: Uuid,
+        req: &AgentRequest,
         results: Vec<rag::SearchResult>,
     ) -> Vec<rag::SearchResult> {
         if results.is_empty() {
             return results;
         }
-        let members = ctx.ns().channel_member(&channel.to_string());
+        let mut readers = vec![ctx.ns().channel_member(&req.channel_id().to_string())];
+        if req.public_channel() {
+            readers.push(ctx.ns().organization_member(ctx.org()));
+        }
+        let per = readers.len();
         let items: Vec<CheckTuple> = results
             .iter()
-            .map(|r| CheckTuple {
-                subject: members.clone(),
-                relation: Relation::Viewer,
-                object: ctx.ns().file(&r.file_id.to_string()),
+            .flat_map(|r| {
+                let file = ctx.ns().file(&r.file_id.to_string());
+                readers.iter().map(move |s| CheckTuple {
+                    subject: s.clone(),
+                    relation: Relation::Viewer,
+                    object: file.clone(),
+                })
             })
             .collect();
         match self
@@ -163,8 +173,8 @@ impl GatewayAgentRuntime {
         {
             Ok(ok) => results
                 .into_iter()
-                .zip(ok)
-                .filter_map(|(r, ok)| ok.then_some(r))
+                .zip(ok.chunks(per))
+                .filter_map(|(r, ok)| ok.iter().all(|v| *v).then_some(r))
                 .collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "messaging agent: チャンネルへの共有を確かめられません");
@@ -201,9 +211,7 @@ impl AgentRuntime for GatewayAgentRuntime {
                 Ok(out) => {
                     let mut results = out.results;
                     if public {
-                        results = self
-                            .shared_with_channel(ctx, req.channel_id(), results)
-                            .await;
+                        results = self.readable_by_reply_readers(ctx, req, results).await;
                     }
                     if !results.is_empty() {
                         docs.push_str("<documents>\n");

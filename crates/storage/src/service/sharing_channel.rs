@@ -42,32 +42,8 @@ impl StorageService {
         if !member {
             return Err(StorageError::Forbidden);
         }
-        let subject = ctx.ns().channel_member(&channel_id.to_string());
-        let granted = self
-            .authz
-            .write_tuple(&subject, Relation::Viewer, &obj)
-            .await?;
-        if let Err(e) = self
-            .record_channel_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeShare,
-                channel_id,
-                trace_id,
-            )
+        self.change_channel_share(ctx, node_id, &obj, channel_id, true, trace_id)
             .await
-        {
-            // 実際に付与した時だけ巻き戻す（既にあった共有を剥がさない）。
-            if granted {
-                let _ = self
-                    .authz
-                    .delete_tuple(&subject, Relation::Viewer, &obj)
-                    .await;
-            }
-            return Err(e);
-        }
-        Ok(())
     }
 
     /// チャンネルへの共有を解除する（owner 権限・冪等・即時反映）。
@@ -85,32 +61,8 @@ impl StorageService {
         let obj = self
             .authorize_share_admin(ctx, node_id, AuditAction::NodeUnshare, trace_id)
             .await?;
-        let subject = ctx.ns().channel_member(&channel_id.to_string());
-        let revoked = self
-            .authz
-            .delete_tuple(&subject, Relation::Viewer, &obj)
-            .await?;
-        if let Err(e) = self
-            .record_channel_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeUnshare,
-                channel_id,
-                trace_id,
-            )
+        self.change_channel_share(ctx, node_id, &obj, channel_id, false, trace_id)
             .await
-        {
-            // 実際に剥奪した時だけ巻き戻す（無かった共有を付けない）。
-            if revoked {
-                let _ = self
-                    .authz
-                    .write_tuple(&subject, Relation::Viewer, &obj)
-                    .await;
-            }
-            return Err(e);
-        }
-        Ok(())
     }
 
     /// このノードを共有しているチャンネルの id（owner 権限・このノードに直接書いた共有だけ）。
@@ -139,23 +91,50 @@ impl StorageService {
         Ok(ids)
     }
 
-    /// チャンネル共有の付与・解除を監査に残す（権限変更なのでハッシュチェーンに連結する）。
-    async fn record_channel_share_audit(
+    /// チャンネル共有の付与・解除と監査を、同じノード・チャンネルの操作と直列化して行う。
+    ///
+    /// トランザクションの advisory lock を取ってから FGA を書き、同じトランザクションで監査を書いて commit する。
+    /// 監査が書けなければ、**ロックを持ったまま**今回変えた分だけを巻き戻す（並行する共有・解除が割り込んで
+    /// 古い判断で権限を戻すことがない）。commit 自体の失敗は巻き戻すがロックの外になる（稀・ログに残す）。
+    async fn change_channel_share(
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
         obj: &FgaObject,
-        action: AuditAction,
         channel_id: Uuid,
+        grant: bool,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        let subject = ctx.ns().channel_member(&channel_id.to_string());
+        let mut tx = self.db.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "node_channel_share:{}:{node_id}:{channel_id}",
+                ctx.tenant_id()
+            ))
+            .execute(&mut *tx)
+            .await?;
+        // 付与・剥奪は冪等。changed=true なら今回実際に変えた（巻き戻すのはその分だけ）。
+        let changed = if grant {
+            self.authz
+                .write_tuple(&subject, Relation::Viewer, obj)
+                .await?
+        } else {
+            self.authz
+                .delete_tuple(&subject, Relation::Viewer, obj)
+                .await?
+        };
+        let action = if grant {
+            AuditAction::NodeShare
+        } else {
+            AuditAction::NodeUnshare
+        };
         let object_type = if obj.as_str().starts_with("folder:") {
             "folder"
         } else {
             "file"
         };
-        let mut tx = self.db.begin().await?;
-        audit::record_on(
+        let audited = audit::record_on(
             &mut tx,
             ctx,
             AuditEntry {
@@ -171,8 +150,48 @@ impl StorageService {
             },
             Chain::Yes,
         )
-        .await?;
-        tx.commit().await?;
+        .await;
+        if let Err(e) = audited {
+            if changed {
+                self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
+                    .await;
+            }
+            return Err(e);
+        }
+        if let Err(e) = tx.commit().await {
+            if changed {
+                self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
+                    .await;
+            }
+            return Err(e.into());
+        }
         Ok(())
+    }
+
+    /// 監査が残せなかった変更を戻す。戻せなければタプルの食い違いをログに残す（運用者が検知できるように）。
+    async fn undo_channel_share(
+        &self,
+        subject: &Subject,
+        obj: &FgaObject,
+        granted: bool,
+        node_id: Uuid,
+        channel_id: Uuid,
+    ) {
+        let undo = if granted {
+            self.authz
+                .delete_tuple(subject, Relation::Viewer, obj)
+                .await
+        } else {
+            self.authz.write_tuple(subject, Relation::Viewer, obj).await
+        };
+        if let Err(err) = undo {
+            tracing::error!(
+                error = %err,
+                %node_id,
+                %channel_id,
+                granted,
+                "sharing: 監査失敗後のチャンネル共有の巻き戻しに失敗（閲覧タプルが監査と食い違う）"
+            );
+        }
     }
 }
