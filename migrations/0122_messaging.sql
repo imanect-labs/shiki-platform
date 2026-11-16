@@ -160,6 +160,8 @@ CREATE TABLE channel_agent_reply (
     -- 照会者へ DM で知らせた承認待ち（run_id:tool_call_id・同じ承認待ちを二度知らせない）。
     notified_approvals text[] NOT NULL DEFAULT '{}',
     posted_message_id uuid,
+    -- 本人が「閉じる」で隠した時刻（行は残す・チャットの承認待ちの見張りは続ける）。
+    dismissed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, org, id),
     FOREIGN KEY (tenant_id, org, channel_id) REFERENCES channel (tenant_id, org, id) ON DELETE CASCADE

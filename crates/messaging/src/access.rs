@@ -630,9 +630,15 @@ async fn admin_messages(
     .bind(channel)
     .bind(from)
     .bind(until)
-    .bind(ADMIN_READ_LIMIT)
+    .bind(ADMIN_READ_LIMIT + 1)
     .fetch_all(&mut *conn)
     .await?;
+    // 上限を超えたら黙って切らずに失敗させる（期間全体を取得したと誤認させない）。
+    if rows.len() as i64 > ADMIN_READ_LIMIT {
+        return Err(Error::Invalid(format!(
+            "期間内の発言が {ADMIN_READ_LIMIT} 件を超えています。期間を絞ってください"
+        )));
+    }
     let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
     let revs: Vec<RevisionRow> = sqlx::query_as(
         "SELECT message_id, rev, reason, blocks, recorded_at FROM channel_message_revision \

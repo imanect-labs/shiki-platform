@@ -28,9 +28,12 @@ export function MentionsView({
   const [busy, setBusy] = React.useState(false);
 
   const load = React.useCallback(() => {
-    listMentions(false)
-      .then((r) => {
-        setItems(r);
+    // 最新の一覧（既読を含む）だけだと、それより古い未読が見えず既読にもできない。未読は別に引いて合わせる。
+    Promise.all([listMentions(true), listMentions(false)])
+      .then(([unreadOnly, recent]) => {
+        const byId = new Map<string, MentionNotice>();
+        for (const m of [...recent, ...unreadOnly]) byId.set(m.message_id, m);
+        setItems([...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0)));
         setError(null);
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));

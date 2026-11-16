@@ -237,12 +237,16 @@ export function Composer({
     if (!mention) return;
     const el = ref.current;
     const caret = el?.selectionStart ?? text.length;
-    const next = `${text.slice(0, mention.start)}@${c.label} ${text.slice(caret)}`;
+    // 同じ表示名でも宛先が違えば別のラベルにする（同姓同名・利用者名とロール名の衝突で宛先を取り違えない）。
+    const same = (t: Token) => JSON.stringify(t.mention) === JSON.stringify(c.mention);
+    let label = c.label;
+    for (let n = 2; tokens.some((t) => t.label === label && !same(t)); n += 1) label = `${c.label}(${n})`;
+    const next = `${text.slice(0, mention.start)}@${label} ${text.slice(caret)}`;
     setText(next);
-    setTokens((prev) => (prev.some((t) => t.label === c.label) ? prev : [...prev, { label: c.label, mention: c.mention }]));
+    setTokens((prev) => (prev.some((t) => t.label === label) ? prev : [...prev, { label, mention: c.mention }]));
     setMention(null);
     requestAnimationFrame(() => {
-      const pos = mention.start + c.label.length + 2;
+      const pos = mention.start + label.length + 2;
       el?.focus();
       el?.setSelectionRange(pos, pos);
     });

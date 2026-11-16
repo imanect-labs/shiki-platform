@@ -385,6 +385,8 @@ struct StreamState {
     cursor: DateTime<Utc>,
     /// 送った発言の版（`updated_at`）。重なりのある読み直しで同じ版を二度送らない。
     sent: std::collections::HashMap<Uuid, DateTime<Utc>>,
+    /// 自分だけに表示する回答を最後に確かめた時刻（合図を取りこぼしたときにポーリングで拾う）。
+    replies_checked: DateTime<Utc>,
     pending: std::collections::VecDeque<Event>,
     keepalive: tokio::time::Interval,
     poll: tokio::time::Interval,
@@ -422,6 +424,27 @@ impl StreamState {
             Err(messaging::Error::NotFound | messaging::Error::Forbidden(_)) => self.leave(),
             Err(e) => tracing::warn!(error = %e, "messaging stream: 読み直しに失敗"),
         }
+    }
+
+    /// 自分だけに表示する回答が増えていたら `agent_reply` を積む（別レプリカで書かれ合図が届かない場合）。
+    async fn poll_agent_replies(&mut self) {
+        let now = Utc::now();
+        match self
+            .svc
+            .has_agent_replies_since(
+                &self.ctx,
+                self.grant.channel(),
+                self.replies_checked - OVERLAP,
+            )
+            .await
+        {
+            Ok(true) => self
+                .pending
+                .push_back(Event::default().event("agent_reply").data("{}")),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "messaging stream: 回答の確認に失敗"),
+        }
+        self.replies_checked = now;
     }
 
     /// 権限を引き直す（剥奪の合図・上限 TTL）。
@@ -467,7 +490,10 @@ impl StreamState {
                     Some(Signal::Leave { .. } | Signal::AgentReply { .. }) => {}
                     None => self.closed = true,
                 },
-                _ = self.poll.tick() => self.refresh().await,
+                _ = self.poll.tick() => {
+                    self.refresh().await;
+                    self.poll_agent_replies().await;
+                }
                 _ = self.recheck.tick() => self.recheck().await,
                 _ = self.keepalive.tick() => {
                     return Some(Event::default().event("keepalive").data("{}"));
@@ -514,6 +540,7 @@ pub async fn stream_channel(
         sub,
         cursor: since,
         sent: std::collections::HashMap::new(),
+        replies_checked: Utc::now(),
         pending: std::collections::VecDeque::from([Event::default().event("ready").data("{}")]),
         keepalive: interval(KEEPALIVE),
         poll: interval(POLL),

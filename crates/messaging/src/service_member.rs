@@ -85,6 +85,8 @@ impl MessagingService {
         trace: Option<&str>,
     ) -> Result<(), Error> {
         let obj = ctx.ns().channel(&c.id.to_string());
+        // 公開返信の書込（参加の境界の確かめ）と直列化する。
+        store::lock_channel(conn, ctx, c.id).await?;
         // 新しく加わった人だけ（既に参加している人の境界 visible_from は動かさない）。
         let added = store::add_members(conn, ctx, c.id, users).await?;
         let tuples: Vec<_> = added
@@ -180,9 +182,6 @@ impl MessagingService {
     ) -> Result<Vec<MemberView>, Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let c = self.managed_channel(&mut tx, ctx, id, trace).await?;
-        if store::member(&mut tx, ctx, id, user).await?.is_none() {
-            return Err(Error::Invalid("参加していない利用者です".into()));
-        }
         // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
         if poster.is_some() && !c.announcement {
             return Err(Error::Invalid(
@@ -193,6 +192,10 @@ impl MessagingService {
         let subject = ctx.ns().user(user);
         // 管理者の数の判定と剥奪をチャンネル単位で直列化する（同時に外して管理者 0 人にしない）。
         store::lock_channel(&mut tx, ctx, id).await?;
+        // 参加の確認は除名と同じロックの内側で行う（除名と並行して権限が復活しないように）。
+        if store::member(&mut tx, ctx, id, user).await?.is_none() {
+            return Err(Error::Invalid("参加していない利用者です".into()));
+        }
         if admin == Some(false) {
             let target = subject.to_string();
             let admins = self.admin_ids(&obj).await?;

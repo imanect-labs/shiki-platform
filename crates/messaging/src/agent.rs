@@ -62,6 +62,8 @@ pub struct AgentRequest {
     question: String,
     agent_name: String,
     force_chat: bool,
+    /// 文脈を絞った参加の境界（公開返信を書く時に、生成中に新しい参加者が来ていないか確かめる）。
+    history_boundary: Option<DateTime<Utc>>,
 }
 
 impl AgentRequest {
@@ -204,8 +206,10 @@ impl MessagingService {
         rows.retain(|r| r.deleted_at.is_none() && r.expired_at.is_none());
         // 公開返信は参加者全員が読む。非公開・DM では、いちばん後から参加した人の境界より前の発言を
         // 文脈に入れない（照会者だけが読める過去の発言を、要約の形で他の参加者へ漏らさない・PIT-63）。
+        let mut history_boundary = None;
         if mode == ReplyMode::Public && c.kind().hides_history_before_join() {
-            if let Some(boundary) = store::latest_join(conn, ctx, channel).await? {
+            history_boundary = store::latest_join(conn, ctx, channel).await?;
+            if let Some(boundary) = history_boundary {
                 rows.retain(|r| r.created_at >= boundary);
             }
         }
@@ -254,6 +258,7 @@ impl MessagingService {
             force_chat: asks_for_chat(&question),
             question,
             agent_name,
+            history_boundary,
         })
     }
 
@@ -337,6 +342,30 @@ impl MessagingService {
                 // 公開返信は投稿の権限（can_post）で書く（照会者が投稿できないチャンネルには書かない）。
                 self.require_post(ctx, &c, trace).await?;
                 let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+                // 生成している間に新しい参加者が来ていたら、その人に読めない発言を含む文脈で作った
+                // 回答になりうるので、チャンネルには書かず本人だけに見せる（PIT-63）。
+                if c.kind().hides_history_before_join() {
+                    store::lock_channel(&mut tx, ctx, channel).await?;
+                    let now_boundary = store::latest_join(&mut tx, ctx, channel).await?;
+                    if now_boundary != req.history_boundary {
+                        drop(tx);
+                        let mut blocks = blocks;
+                        blocks.push(ContentBlock::Text {
+                            text: "\n\n（回答を作っている間に参加者が増えたため、あなただけに表示しています）"
+                                .into(),
+                        });
+                        self.save_private_reply(
+                            ctx,
+                            channel,
+                            trigger_id,
+                            blocks,
+                            &answer.sources,
+                            None,
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                }
                 let id = Uuid::new_v4();
                 let text = plain_text(&blocks);
                 sm::insert_message(
@@ -442,7 +471,8 @@ impl MessagingService {
         let rows: Vec<ReplyRow> = sqlx::query_as(
             "SELECT id, channel_id, trigger_message_id, visibility, blocks, sources, chat_thread_id, created_at \
              FROM channel_agent_reply WHERE tenant_id = $1 AND org = $2 AND channel_id = $3 \
-               AND invoked_by = $4 AND visibility = 'private' ORDER BY created_at DESC LIMIT 50",
+               AND invoked_by = $4 AND visibility = 'private' AND dismissed_at IS NULL \
+             ORDER BY created_at DESC LIMIT 50",
         )
         .bind(ctx.tenant_id())
         .bind(ctx.org())
@@ -452,6 +482,29 @@ impl MessagingService {
         .await?;
         tx.commit().await?;
         Ok(rows.into_iter().map(ReplyRow::view).collect())
+    }
+
+    /// `since` より後に、自分だけに表示する回答が増えたか（配信の合図を取りこぼしたときの保険）。
+    pub async fn has_agent_replies_since(
+        &self,
+        ctx: &AuthContext,
+        channel: Uuid,
+        since: DateTime<Utc>,
+    ) -> Result<bool, Error> {
+        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+        let found: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM channel_agent_reply WHERE tenant_id = $1 AND org = $2 \
+               AND channel_id = $3 AND invoked_by = $4 AND visibility = 'private' AND created_at > $5)",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(channel)
+        .bind(&ctx.principal().id)
+        .bind(since)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(found)
     }
 
     /// 自分だけに表示中の回答をチャンネルに投稿する。
@@ -554,8 +607,9 @@ impl MessagingService {
     pub async fn dismiss_agent_reply(&self, ctx: &AuthContext, reply: Uuid) -> Result<(), Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let n = sqlx::query(
-            "DELETE FROM channel_agent_reply WHERE tenant_id = $1 AND org = $2 AND id = $3 \
-               AND invoked_by = $4 AND visibility = 'private'",
+            // 行は消さない（チャットの承認待ちの見張りが拾う行なので、表示だけを隠す）。
+            "UPDATE channel_agent_reply SET dismissed_at = now() WHERE tenant_id = $1 AND org = $2 \
+               AND id = $3 AND invoked_by = $4 AND visibility = 'private' AND dismissed_at IS NULL",
         )
         .bind(ctx.tenant_id())
         .bind(ctx.org())

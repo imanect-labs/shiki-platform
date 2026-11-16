@@ -154,7 +154,8 @@ export function useChannel(channelId: string | null, initial: ChannelView | null
       .then(([c, page]) => {
         if (!active) return;
         setChannel(c);
-        setMessages(page.slice().reverse());
+        // 先に配信で反映した新しい版を、古いスナップショットで上書きしない（id と updated_at で合わせる）。
+        setMessages((current) => page.reduce((list, m) => upsert(list, m), current));
         setHasMore(page.length >= PAGE);
       })
       .catch((e: unknown) => {
