@@ -12,6 +12,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use crate::session_lock::SessionLock;
 
 impl StorageService {
     /// ノードをチャンネルの参加者へ閲覧で共有する（owner かつチャンネルの参加者・冪等）。
@@ -93,9 +94,9 @@ impl StorageService {
 
     /// チャンネル共有の付与・解除と監査を、同じノード・チャンネルの操作と直列化して行う。
     ///
-    /// トランザクションの advisory lock を取ってから FGA を書き、同じトランザクションで監査を書いて commit する。
-    /// 監査が書けなければ、**ロックを持ったまま**今回変えた分だけを巻き戻す（並行する共有・解除が割り込んで
-    /// 古い判断で権限を戻すことがない）。commit 自体の失敗は巻き戻すがロックの外になる（稀・ログに残す）。
+    /// セッションの advisory lock（[`SessionLock`]）を取り、同じ接続のトランザクションで FGA の変更・監査・
+    /// commit を行う。監査か commit に失敗したら、**ロックを持ったまま**今回変えた分だけを巻き戻す
+    /// （並行する共有・解除が割り込んで、古い判断で権限を戻すことがない）。ロックは巻き戻しの後に外す。
     async fn change_channel_share(
         &self,
         ctx: &AuthContext,
@@ -105,15 +106,37 @@ impl StorageService {
         grant: bool,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        let key = format!(
+            "node_channel_share:{}:{node_id}:{channel_id}",
+            ctx.tenant_id()
+        );
+        let mut lock = SessionLock::acquire(&self.db, key).await?;
+        let result = match lock.conn() {
+            Some(conn) => {
+                self.change_channel_share_locked(
+                    conn, ctx, node_id, obj, channel_id, grant, trace_id,
+                )
+                .await
+            }
+            None => Err(StorageError::Integrity("ロックの接続がありません".into())),
+        };
+        lock.release().await;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn change_channel_share_locked(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        node_id: Uuid,
+        obj: &FgaObject,
+        channel_id: Uuid,
+        grant: bool,
+        trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
         let subject = ctx.ns().channel_member(&channel_id.to_string());
-        let mut tx = self.db.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(format!(
-                "node_channel_share:{}:{node_id}:{channel_id}",
-                ctx.tenant_id()
-            ))
-            .execute(&mut *tx)
-            .await?;
+        let mut tx = sqlx::Connection::begin(conn).await?;
         // 付与・剥奪は冪等。changed=true なら今回実際に変えた（巻き戻すのはその分だけ）。
         let changed = if grant {
             self.authz
@@ -151,19 +174,16 @@ impl StorageService {
             Chain::Yes,
         )
         .await;
-        if let Err(e) = audited {
+        let committed = match audited {
+            Ok(()) => tx.commit().await.map_err(StorageError::from),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = committed {
             if changed {
                 self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
                     .await;
             }
             return Err(e);
-        }
-        if let Err(e) = tx.commit().await {
-            if changed {
-                self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
-                    .await;
-            }
-            return Err(e.into());
         }
         Ok(())
     }
