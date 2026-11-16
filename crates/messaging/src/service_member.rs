@@ -234,6 +234,11 @@ impl MessagingService {
                 Ok(true) => applied.push((rel, on)),
                 Ok(false) => {}
                 Err(e) => {
+                    // 付与の通信エラーは適用されたか分からないので、剥がす側に倒す（fail-closed・
+                    // share_link_redeem と同じ扱い）。剥奪のエラーは権限が残らない方向なので戻さない。
+                    if on {
+                        applied.push((rel, on));
+                    }
                     failed = Some(Error::from(e));
                     break;
                 }
