@@ -133,6 +133,53 @@ test("送信の応答を待つ間に書き足した下書きは消えず、そ�
   await expect(box).toHaveValue("");
 });
 
+test("送信の応答を待つ間に添付だけを外しても、下書きは消えない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  // 添付する文書をドライブに置く。
+  await page.goto("/drive");
+  const fileName = `${uniqueName("添付")}.txt`;
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from("添付の本文"),
+  });
+  await expect(page.getByRole("button", { name: `「${fileName}」の操作` })).toBeVisible({ timeout: 20_000 });
+
+  await openMessages(page);
+  const name = uniqueName("e2e-attach");
+  await createChannel(page, name, "公開");
+  const box = page.getByRole("combobox", { name: /へメッセージを送る$/ });
+  await page.getByRole("button", { name: "ドライブの文書を共有" }).click();
+  const picker = page.getByRole("dialog", { name: "ドライブの文書を共有" });
+  await picker.getByRole("button", { name: fileName }).click();
+  await expect(picker).toBeHidden();
+  const detach = page.getByRole("button", { name: `${fileName} の添付を外す` });
+  await expect(detach).toBeVisible();
+
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let seen: () => void = () => undefined;
+  const posted = new Promise<void>((r) => (seen = r));
+  await page.route("**/api/messaging/channels/*/messages", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    seen();
+    await held;
+    await route.continue();
+  });
+  const sent = `添付つきの発言 ${name}`;
+  await box.fill(sent);
+  await box.press("Enter");
+  await posted;
+  // 応答を待つ間に添付だけを外す。
+  await detach.click();
+  release();
+  await expect(row(page, sent)).toBeVisible();
+  // 下書きは送った内容と違うので残る（本文は消えず、外した添付は戻らない）。
+  await expect(box).toHaveValue(sent);
+  await expect(detach).toHaveCount(0);
+  await page.unroute("**/api/messaging/channels/*/messages");
+});
+
 test("非公開チャンネルは参加していない人には見えず、DM を開ける", async ({ page, browser }) => {
   await loginViaKeycloak(page);
   await openMessages(page);
