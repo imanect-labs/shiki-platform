@@ -820,6 +820,57 @@ async fn admin_access_requires_an_approved_grant_for_dms() {
             .await,
         Err(Error::Forbidden(_))
     ));
+    // 承認者を未指名に戻すと、期間内の承認があっても閲覧できない（fail-closed）。
+    let grant2 = env
+        .svc
+        .request_access(
+            &carol,
+            AccessRequest {
+                channel_id: dm.id,
+                reason: "再調査".into(),
+                messages_from: range.0,
+                messages_until: range.1,
+                valid_days: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .decide_access(&dave, grant2.id, true, None)
+        .await
+        .unwrap();
+    assert!(env
+        .svc
+        .admin_read(&carol, dm.id, range.0, range.1, false, None)
+        .await
+        .is_ok());
+    let mut s = env.svc.settings(&alice).await.unwrap();
+    s.access_approvers = vec![];
+    env.svc.update_settings(&alice, s, None).await.unwrap();
+    assert!(matches!(
+        env.svc
+            .admin_read(&carol, dm.id, range.0, range.1, false, None)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
+    // 承認の範囲を超える期間は黙って縮めずに失敗する。
+    let mut s = env.svc.settings(&alice).await.unwrap();
+    s.access_approvers = vec!["dave".into()];
+    env.svc.update_settings(&alice, s, None).await.unwrap();
+    assert!(matches!(
+        env.svc
+            .admin_read(
+                &carol,
+                dm.id,
+                range.0 - chrono::Duration::days(3),
+                range.1,
+                false,
+                None
+            )
+            .await,
+        Err(Error::Forbidden(_))
+    ));
     // 全操作が監査に残る。
     let actions: Vec<String> = sqlx::query_scalar(
         "SELECT action FROM audit_log WHERE tenant_id = $1 AND action LIKE 'messaging.%' ORDER BY id",
@@ -1164,6 +1215,39 @@ async fn review_regressions_stay_fixed() {
             .all(|l| !l.text.contains("機密")),
         "公開返信の文脈に、参加者の一部が読めない発言を入れない"
     );
+    // 呼び出しの発言そのものが後から参加した人の境界より前なら、公開返信しない。
+    let early = env
+        .svc
+        .post(
+            &alice,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 極秘の件を要約".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    env.svc
+        .invite(&alice, ch.id, vec!["carol".into()], None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        env.svc
+            .invoke_agent(&alice, &runtime, early.id, ReplyMode::Public, None)
+            .await,
+        Err(Error::Forbidden(_))
+    ));
     // 自分だけに表示なら、照会者が読める発言を使ってよい。
     let trigger2 = env
         .svc

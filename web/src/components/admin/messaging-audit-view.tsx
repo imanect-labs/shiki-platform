@@ -259,9 +259,14 @@ export function MessagingAuditView() {
   const readSeq = React.useRef(0);
   const read = React.useCallback(
     async (c: AdminChannel) => {
-      const r = rangeOf(from, until);
-      if (!r) return;
+      // 期間が不正でも、前の取得は無効にして表示を空にする（古い応答を新しい選択の下に出さない）。
       const seq = ++readSeq.current;
+      const r = rangeOf(from, until);
+      if (!r) {
+        setMessages(null);
+        setReadState("idle");
+        return;
+      }
       setReadState("loading");
       setReadError(null);
       setMessages(null);
