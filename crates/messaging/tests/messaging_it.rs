@@ -75,6 +75,8 @@ struct FakeRuntime {
     seen: Mutex<Vec<AgentRequest>>,
     chats: Mutex<Vec<Uuid>>,
     pending: Mutex<Vec<PendingApprovalRef>>,
+    /// 回答に付ける社内文書（公開返信に紛れ込んだ場合の扱いを確かめる）。
+    sources: Mutex<Vec<Uuid>>,
 }
 
 #[async_trait]
@@ -83,7 +85,7 @@ impl AgentRuntime for FakeRuntime {
         self.seen.lock().unwrap().push(req.clone());
         Ok(AgentAnswer {
             text: format!("要約: {} 件", req.transcript().len()),
-            sources: Vec::new(),
+            sources: self.sources.lock().unwrap().clone(),
             create_chat: None,
         })
     }
@@ -310,10 +312,18 @@ async fn public_channel_lifecycle_and_posting_rules() {
     ));
     let edited = env
         .svc
-        .edit(&alice, first.id, text("おはようございます"), None)
+        .edit(&alice, first.id, text("こんにちは"), None)
         .await
         .unwrap();
     assert!(edited.edited);
+    // 編集前の本文は、通常の読取・検索に出ない（管理者閲覧の手続でだけ読める）。
+    assert_eq!(messaging::plain_text(&edited.blocks), "こんにちは");
+    assert!(env
+        .svc
+        .search(&bob, "おはよう", 20, None)
+        .await
+        .unwrap()
+        .is_empty());
     // 削除は本人とチャンネルの admin（alice は bob の返信を消せる・bob は alice の発言を消せない）。
     assert!(matches!(
         env.svc.delete(&bob, first.id, None).await,
@@ -323,6 +333,14 @@ async fn public_channel_lifecycle_and_posting_rules() {
     let thread = env.svc.thread(&bob, ch.id, first.id).await.unwrap();
     assert_eq!(thread[1].state, MessageState::Deleted);
     assert!(thread[1].blocks.is_empty(), "削除後の本文を返さない");
+    assert!(
+        env.svc
+            .search(&bob, "返信", 20, None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "削除した発言は検索に出ない"
+    );
     // 最後の admin は退出できない。
     assert!(matches!(
         env.svc.remove_member(&alice, ch.id, "alice", None).await,
@@ -942,12 +960,33 @@ async fn retention_cannot_undercut_audit_and_purges_search() {
     assert_eq!(n, 1);
     let view = env.svc.message(&alice, old.id).await.unwrap();
     assert_eq!(view.state, MessageState::Expired);
+    assert!(view.blocks.is_empty(), "期限切れの本文を返さない");
     assert!(env
         .svc
         .search(&alice, "決定事項", 20, None)
         .await
         .unwrap()
         .is_empty());
+    // 本文・索引・改訂そのものが消える（検索・対話文脈・管理者閲覧のどの経路にも出せない）。
+    let (blocks, search_text): (serde_json::Value, Option<String>) = sqlx::query_as(
+        "SELECT blocks, search_text FROM channel_message WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(old.id)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert_eq!(blocks, serde_json::json!([]));
+    assert_eq!(search_text, None);
+    let revisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM channel_message_revision WHERE tenant_id = $1 AND message_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(old.id)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert_eq!(revisions, 0);
 }
 
 #[tokio::test]
@@ -1442,4 +1481,62 @@ async fn concurrent_role_changes_do_not_exhaust_a_small_pool() {
     .await
     .expect("ロックが残っていない")
     .unwrap();
+}
+
+/// 公開返信の根拠はチャンネルの発言だけ。実行部が社内文書を根拠に返してきても、参加者には公開しない
+/// （本人だけに表示する・チャンネルに共有されていない資料を出さない）。
+#[tokio::test]
+async fn public_reply_never_carries_unshared_documents() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob) = (env.ctx("alice"), env.ctx("bob"));
+    let ch = env
+        .svc
+        .create_channel(&alice, create("根拠", ChannelKind::Public), None)
+        .await
+        .unwrap();
+    env.svc.join(&bob, ch.id, None).await.unwrap();
+    let rt = Arc::new(FakeRuntime::default());
+    rt.sources.lock().unwrap().push(Uuid::new_v4());
+    let runtime: Arc<dyn AgentRuntime> = rt.clone();
+    let trigger = env
+        .svc
+        .post(
+            &bob,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 規程を教えて".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .invoke_agent(&bob, &runtime, trigger.id, ReplyMode::Public, None)
+        .await
+        .unwrap();
+    // チャンネル（スレッド）にエージェントの発言は書かれない。
+    let thread = env.svc.thread(&alice, ch.id, trigger.id).await.unwrap();
+    assert!(
+        thread
+            .iter()
+            .all(|m| m.author.kind != messaging::AuthorKind::Assistant),
+        "{thread:?}"
+    );
+    // 本人だけに表示の回答として残る（他の参加者には見えない）。
+    assert_eq!(env.svc.agent_replies(&bob, ch.id).await.unwrap().len(), 1);
+    assert!(env
+        .svc
+        .agent_replies(&alice, ch.id)
+        .await
+        .unwrap()
+        .is_empty());
 }

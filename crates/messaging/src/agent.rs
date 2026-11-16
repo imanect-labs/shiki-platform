@@ -340,7 +340,7 @@ impl MessagingService {
         let blocks = vec![ContentBlock::Text {
             text: answer.text.clone(),
         }];
-        match mode {
+        match reply_mode_for(mode, &answer) {
             ReplyMode::Private => {
                 self.save_private_reply(ctx, channel, trigger_id, blocks, &answer.sources, None)
                     .await?;
@@ -787,6 +787,16 @@ async fn insert_reply(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// 回答を書く形。公開返信の根拠はチャンネルの発言だけなので、実行部が社内文書を根拠に返してきたら
+/// （取り違え・実装の誤り）、参加者に公開せず本人だけに表示する（チャンネルに共有されていない資料を出さない）。
+fn reply_mode_for(mode: ReplyMode, answer: &AgentAnswer) -> ReplyMode {
+    if mode == ReplyMode::Public && !answer.sources.is_empty() {
+        tracing::warn!("messaging: 公開返信に社内文書の根拠が付いていたため、本人だけに表示します");
+        return ReplyMode::Private;
+    }
+    mode
 }
 
 #[cfg(test)]

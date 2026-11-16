@@ -34,10 +34,7 @@ pub(crate) async fn wire_messaging(
         hub,
         Arc::new(messaging::files::StorageFiles(Arc::clone(storage))),
     );
-    let external = matches!(
-        config.websearch.backend,
-        Some(b) if b != WebSearchBackend::Stub
-    );
+    let external = link_previews_enabled(config.websearch.backend);
     if external {
         service = service.with_link_previews(messaging::preview::LinkPreviewer::new(Arc::new(
             sandbox_client::net_guard::SystemResolver,
@@ -61,4 +58,22 @@ pub(crate) async fn wire_messaging(
         service.spawn_approval_watcher(Arc::clone(rt));
     }
     (service, runtime)
+}
+
+/// リンクのプレビューを組むか（外部接続のある構成＝Web 検索が実プロバイダで構成されているときだけ）。
+fn link_previews_enabled(backend: Option<WebSearchBackend>) -> bool {
+    matches!(backend, Some(b) if b != WebSearchBackend::Stub)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn link_previews_need_an_external_search_backend() {
+        // 未設定・Stub（エアギャップ・テスト）ではプレビューの取得自体を組まない。
+        assert!(!link_previews_enabled(None));
+        assert!(!link_previews_enabled(Some(WebSearchBackend::Stub)));
+        assert!(link_previews_enabled(Some(WebSearchBackend::Searxng)));
+    }
 }
