@@ -264,6 +264,8 @@ export function Composer({
   // 送信の応答を待つ間に書き足されたかを、応答の後に確かめるための最新の本文。
   const textRef = React.useRef(text);
   textRef.current = text;
+  const filesRef = React.useRef(files);
+  filesRef.current = files;
 
   const canSend = !sending && !tooLong && (text.trim().length > 0 || files.length > 0);
 
@@ -277,11 +279,14 @@ export function Composer({
     const ok = await onSubmit(blocks, { agentPrivate: callsAgent && agentPrivate });
     setSending(false);
     if (ok && !initial) {
-      // 送信を待つ間に書き足した下書きは消さない（送った内容のままのときだけ空にする）。
-      setText((cur) => (cur === sentText ? "" : cur));
-      setFiles((cur) => (cur === sentFiles ? [] : cur));
-      setTokens((cur) => (textRef.current === sentText ? [] : cur));
-      setMention(null);
+      // 送信を待つ間に下書き（本文か添付のどちらか）を変えたなら、下書き全体を残す。
+      // 本文と添付を別々に比べると、本文だけ書き足したときに添付だけが消えて下書きが崩れる。
+      if (textRef.current === sentText && filesRef.current === sentFiles) {
+        setText("");
+        setFiles([]);
+        setTokens([]);
+        setMention(null);
+      }
       requestAnimationFrame(() => ref.current?.focus());
     }
   };
