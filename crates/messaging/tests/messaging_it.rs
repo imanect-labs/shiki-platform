@@ -1277,3 +1277,81 @@ async fn review_regressions_stay_fixed() {
     let seen = rt.seen.lock().unwrap().clone();
     assert!(seen[1].transcript().iter().any(|l| l.text.contains("機密")));
 }
+
+/// 参加の境界は「挿入した順」で決まる（PIT-63）。投稿のトランザクションが参加より先に始まっていても、
+/// 参加の確定後に挿入した発言は見える。参加と同じ時刻の発言は参加前として扱う。
+#[tokio::test]
+async fn join_boundary_follows_insert_order_and_ties_stay_hidden() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob) = (env.ctx("alice"), env.ctx("bob"));
+    let ch = env
+        .svc
+        .create_channel(&alice, create("境界", ChannelKind::Private), None)
+        .await
+        .unwrap();
+
+    // 投稿のトランザクションを先に始め（now() はここで固定される）、その後に bob の参加を確定させる。
+    let mut posting = env.db.begin().await.unwrap();
+    let started: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut *posting)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    env.svc
+        .invite(&alice, ch.id, vec!["bob".into()], None)
+        .await
+        .unwrap();
+    let blocks = text("参加の確定後に挿入した発言");
+    let at = messaging::store_message::insert_message(
+        &mut posting,
+        &alice,
+        &messaging::store_message::InsertMessage {
+            id: Uuid::new_v4(),
+            channel_id: ch.id,
+            parent_id: None,
+            author_kind: "user",
+            author_id: "alice",
+            blocks: &blocks,
+            search_text: "参加の確定後に挿入した発言",
+        },
+    )
+    .await
+    .unwrap();
+    posting.commit().await.unwrap();
+    assert!(
+        at > started,
+        "発言の時刻はトランザクション開始ではなく挿入の瞬間"
+    );
+    let listed = env.svc.list_messages(&bob, ch.id, None, 50).await.unwrap();
+    assert_eq!(texts(&listed), vec!["参加の確定後に挿入した発言"]);
+
+    // 参加と同じ時刻の発言は見えない（同値は参加前に倒す）。
+    let joined: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT visible_from FROM channel_member WHERE tenant_id = $1 AND channel_id = $2 AND user_id = 'bob'",
+    )
+    .bind(&env.tenant)
+    .bind(ch.id)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channel_message (tenant_id, org, id, channel_id, author_kind, author_id, blocks, \
+            search_text, created_at, updated_at) VALUES ($1, 'org', $2, $3, 'user', 'alice', $4, '同時刻', $5, $5)",
+    )
+    .bind(&env.tenant)
+    .bind(Uuid::new_v4())
+    .bind(ch.id)
+    .bind(sqlx::types::Json(text("同時刻")))
+    .bind(joined)
+    .execute(&env.db)
+    .await
+    .unwrap();
+    let listed = env.svc.list_messages(&bob, ch.id, None, 50).await.unwrap();
+    assert_eq!(texts(&listed), vec!["参加の確定後に挿入した発言"]);
+    assert!(env
+        .svc
+        .search(&bob, "同時刻", 20, None)
+        .await
+        .unwrap()
+        .is_empty());
+}
