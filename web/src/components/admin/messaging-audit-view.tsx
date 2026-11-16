@@ -255,15 +255,19 @@ export function MessagingAuditView() {
 
   const range = rangeOf(from, until);
 
+  // 取得ごとの番号（選択を変えた後に届いた古い応答で表示を上書きしない）。
+  const readSeq = React.useRef(0);
   const read = React.useCallback(
     async (c: AdminChannel) => {
       const r = rangeOf(from, until);
       if (!r) return;
+      const seq = ++readSeq.current;
       setReadState("loading");
       setReadError(null);
       setMessages(null);
       try {
         const list = await auditMessages(c.id, r.from, r.until);
+        if (seq !== readSeq.current) return;
         setMessages(list);
         setReadState("idle");
         const users = new Set<string>();
@@ -278,6 +282,7 @@ export function MessagingAuditView() {
         }
         void Promise.all([resolveUserNames(users), resolveRoleNames(roles)]).then(([a, b]) => (a || b) && setNamesTick((n) => n + 1));
       } catch (e) {
+        if (seq !== readSeq.current) return;
         if (e instanceof MessagingError && e.status === 403) setReadState("forbidden");
         else {
           setReadState("error");

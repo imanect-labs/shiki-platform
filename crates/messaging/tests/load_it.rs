@@ -113,7 +113,9 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
             }
         });
     }
-    while writes.join_next().await.is_some() {}
+    while let Some(r) = writes.join_next().await {
+        r.expect("タプルの書込タスクが失敗した");
+    }
     let poster = context(&tenant, "poster");
     let ch = svc
         .create_channel(
@@ -165,7 +167,11 @@ async fn thousand_subscribers_see_a_post_within_three_seconds() {
         });
     }
     for _ in 0..n {
-        ready_rx.recv().await.unwrap();
+        // 購読タスクが準備の前に落ちたら（許可が取れない等）無期限に待たない。
+        tokio::time::timeout(Duration::from_secs(60), ready_rx.recv())
+            .await
+            .expect("購読者の準備が 60 秒以内に揃うこと")
+            .unwrap();
     }
     let started = Instant::now();
     svc.post(
