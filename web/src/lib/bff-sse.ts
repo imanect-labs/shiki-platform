@@ -29,6 +29,8 @@ export async function relaySse(req: Request, upstreamPath: string): Promise<Resp
   req.signal.addEventListener("abort", onClientGone);
 
   let upstream: Response;
+  // ヘッダーが返るまでの待ちにも上限を置く（繋がったまま黙る上流で、ブラウザ側が繋ぎ直せなくならないように）。
+  const headerTimer = setTimeout(() => abort.abort(), IDLE_MS);
   try {
     upstream = await fetch(`${BACKEND}${upstreamPath}${search}`, {
       headers,
@@ -36,7 +38,9 @@ export async function relaySse(req: Request, upstreamPath: string): Promise<Resp
       cache: "no-store",
       redirect: "manual",
     });
+    clearTimeout(headerTimer);
   } catch {
+    clearTimeout(headerTimer);
     req.signal.removeEventListener("abort", onClientGone);
     // ブラウザが離れた（中止）なら返す先は無い。
     if (req.signal.aborted) return new Response(null, { status: 499 });

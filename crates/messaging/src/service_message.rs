@@ -63,17 +63,24 @@ impl MessagingService {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         self.readable_channel(&mut tx, ctx, channel).await?;
         let me = ctx.principal().id.clone();
+        // 親がこのチャンネルの最上位の発言であることを確かめる（境界は掛けない・存在だけ）。
+        let p = sm::peek_message(&mut tx, ctx, parent)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if p.channel_id != channel || p.parent_id.is_some() {
+            return Err(Error::NotFound);
+        }
+        // 親が参加前の発言でも、参加後の返信は読める（親も返信も読めなければ存在を開示しない）。
         let ids = [parent];
         let mut rows =
             sm::fetch_messages(&mut tx, ctx, &me, MessageFilter::Ids { ids: &ids }).await?;
-        rows.retain(|r| r.channel_id == channel && r.parent_id.is_none());
-        if rows.is_empty() {
-            return Err(Error::NotFound);
-        }
         rows.extend(
             sm::fetch_messages(&mut tx, ctx, &me, MessageFilter::Thread { channel, parent })
                 .await?,
         );
+        if rows.is_empty() {
+            return Err(Error::NotFound);
+        }
         let views = self.views(&mut tx, ctx, rows).await?;
         tx.commit().await?;
         Ok(views)

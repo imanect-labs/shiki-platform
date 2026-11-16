@@ -124,6 +124,8 @@ export function useChannel(channelId: string | null, initial: ChannelView | null
   /// 発言の追加・変更を画面へ反映する（配信と、自分の操作の応答の両方から呼ぶ）。
   const apply = React.useCallback(
     (m: MessageView) => {
+      // 表示先を切り替えた後に届いた古い応答（前のチャンネルの投稿・編集）を混ぜない。
+      if (m.channel_id !== channelRef.current) return;
       if (!m.parent_id) {
         setMessages((list) => upsert(list, m));
         if (threadRef.current === m.id) setThread((t) => (t.length > 0 ? upsert(t, m) : t));
@@ -180,7 +182,12 @@ export function useChannel(channelId: string | null, initial: ChannelView | null
         void refreshMembers();
       },
       onLeave: () => active && setLeft(true),
-      onOpen: () => active && setStream("open"),
+      onOpen: () => {
+        if (!active) return;
+        setStream("open");
+        // 切れていた間に届いた自分だけの回答を拾い直す。
+        void refreshAgentReplies();
+      },
       onError: () => active && setStream("reconnecting"),
     });
     const timers = parentTimers.current;

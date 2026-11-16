@@ -67,7 +67,11 @@ export function draftOf(
   (blocks as MessageBlock[]).forEach((b, i) => {
     if (b.type === "text") text += b.text;
     else if (b.type === "mention") {
-      const l = label(b.mention).replace(/^@/, "");
+      // 同じ表示名でも宛先が違えば別のラベルにする（保存し直したときに宛先を取り違えない）。
+      const base = label(b.mention).replace(/^@/, "");
+      const key = JSON.stringify(b.mention);
+      let l = base;
+      for (let n = 2; tokens.some((t) => t.label === l && JSON.stringify(t.mention) !== key); n += 1) l = `${base}(${n})`;
       text += `@${l}`;
       if (!tokens.some((t) => t.label === l)) tokens.push({ label: l, mention: b.mention });
     } else if (b.type === "file_ref") {
@@ -257,6 +261,10 @@ export function Composer({
   const callsAgent = liveTokens.some((t) => t.mention.kind === "agent");
   const length = Array.from(text).length;
   const tooLong = length > MAX_TEXT_CHARS;
+  // 送信の応答を待つ間に書き足されたかを、応答の後に確かめるための最新の本文。
+  const textRef = React.useRef(text);
+  textRef.current = text;
+
   const canSend = !sending && !tooLong && (text.trim().length > 0 || files.length > 0);
 
   const submit = async () => {
@@ -264,12 +272,15 @@ export function Composer({
     const blocks = toBlocks(text.trim(), liveTokens, files);
     if (blocks.length === 0) return;
     setSending(true);
+    const sentText = text;
+    const sentFiles = files;
     const ok = await onSubmit(blocks, { agentPrivate: callsAgent && agentPrivate });
     setSending(false);
     if (ok && !initial) {
-      setText("");
-      setTokens([]);
-      setFiles([]);
+      // 送信を待つ間に書き足した下書きは消さない（送った内容のままのときだけ空にする）。
+      setText((cur) => (cur === sentText ? "" : cur));
+      setFiles((cur) => (cur === sentFiles ? [] : cur));
+      setTokens((cur) => (textRef.current === sentText ? [] : cur));
       setMention(null);
       requestAnimationFrame(() => ref.current?.focus());
     }

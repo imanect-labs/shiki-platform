@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// `readable_files_metadata` が 1 回で扱う件数（呼び出し側で分ける上限）。
+const READ_BATCH: usize = 2_000;
+
 /// 閲覧者が読めるファイルのメタデータ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMeta {
@@ -31,15 +34,15 @@ pub struct StorageFiles(pub Arc<storage::StorageService>);
 #[async_trait]
 impl FileAccess for StorageFiles {
     async fn readable(&self, ctx: &AuthContext, ids: &[Uuid]) -> HashMap<Uuid, FileMeta> {
-        // まとめて 1 回で判定する（添付ごとの往復・監査を作らない）。失敗は「読めない」に倒す。
-        match self
-            .0
-            .readable_files_metadata(ctx, ids, "messaging.file_ref")
-            .await
-        {
-            Ok(nodes) => nodes
-                .into_iter()
-                .map(|n| {
+        // 一括判定の上限ごとに分けて判定する（添付ごとの往復・監査を作らない）。失敗した塊は「読めない」に倒す。
+        let mut out = HashMap::new();
+        for chunk in ids.chunks(READ_BATCH) {
+            match self
+                .0
+                .readable_files_metadata(ctx, chunk, "messaging.file_ref")
+                .await
+            {
+                Ok(nodes) => out.extend(nodes.into_iter().map(|n| {
                     (
                         n.id,
                         FileMeta {
@@ -48,13 +51,13 @@ impl FileAccess for StorageFiles {
                             content_type: n.content_type,
                         },
                     )
-                })
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "messaging: 添付の権限を評価できません（参照できないとして扱う）");
-                HashMap::new()
+                })),
+                Err(e) => {
+                    tracing::warn!(error = %e, "messaging: 添付の権限を評価できません（参照できないとして扱う）");
+                }
             }
         }
+        out
     }
 }
 

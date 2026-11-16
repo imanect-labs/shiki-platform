@@ -89,22 +89,26 @@ impl MessagingService {
         store::lock_channel(conn, ctx, c.id).await?;
         // 新しく加わった人だけ（既に参加している人の境界 visible_from は動かさない）。
         let added = store::add_members(conn, ctx, c.id, users).await?;
-        let tuples: Vec<_> = added
+        // member タプルは指定された全員に書く（冪等）。DB の行が残っているのにタプルが欠けた状態
+        // （退出のタプル剥奪の後に DB のコミットが失敗した）も、参加し直せば直る。
+        let tuples: Vec<_> = users
             .iter()
             .map(|u| (ctx.ns().user(u), Relation::Member, obj.clone()))
             .collect();
         if tuples.is_empty() {
             return Ok(());
         }
-        audit(
-            conn,
-            ctx,
-            AuditAction::MessagingMemberAdd,
-            c.id,
-            trace,
-            serde_json::json!({ "users": users }),
-        )
-        .await?;
+        if !added.is_empty() {
+            audit(
+                conn,
+                ctx,
+                AuditAction::MessagingMemberAdd,
+                c.id,
+                trace,
+                serde_json::json!({ "users": added }),
+            )
+            .await?;
+        }
         self.write_tuples(&tuples).await?;
         Ok(())
     }
@@ -196,6 +200,10 @@ impl MessagingService {
         if store::member(&mut tx, ctx, id, user).await?.is_none() {
             return Err(Error::Invalid("参加していない利用者です".into()));
         }
+        // 操作者自身の管理権もロックの内側で引き直す（待っている間に外されていたら変えない）。
+        if !self.check(ctx, Relation::CanManage, id).await? {
+            return Err(Error::Forbidden("チャンネルの管理者だけが操作できます"));
+        }
         if admin == Some(false) {
             let target = subject.to_string();
             let admins = self.admin_ids(&obj).await?;
@@ -212,18 +220,42 @@ impl MessagingService {
             serde_json::json!({ "user": user, "admin": admin, "poster": poster }),
         )
         .await?;
+        // 付け外しが途中で失敗したら、変えた分を元に戻して失敗を返す（監査の無い変更を残さない）。
+        let mut applied: Vec<(Relation, bool)> = Vec::new();
+        let mut failed = None;
         for (flag, rel) in [(admin, Relation::Admin), (poster, Relation::Poster)] {
-            match flag {
-                Some(true) => {
-                    self.authz.write_tuple(&subject, rel, &obj).await?;
+            let Some(on) = flag else { continue };
+            let r = if on {
+                self.authz.write_tuple(&subject, rel, &obj).await
+            } else {
+                self.authz.delete_tuple(&subject, rel, &obj).await
+            };
+            match r {
+                Ok(true) => applied.push((rel, on)),
+                Ok(false) => {}
+                Err(e) => {
+                    failed = Some(Error::from(e));
+                    break;
                 }
-                Some(false) => {
-                    self.authz.delete_tuple(&subject, rel, &obj).await?;
-                }
-                None => {}
             }
         }
-        tx.commit().await?;
+        let result = match failed {
+            Some(e) => Err(e),
+            None => tx.commit().await.map_err(Error::from),
+        };
+        if let Err(e) = result {
+            for (rel, on) in applied {
+                let undo = if on {
+                    self.authz.delete_tuple(&subject, rel, &obj).await
+                } else {
+                    self.authz.write_tuple(&subject, rel, &obj).await
+                };
+                if let Err(err) = undo {
+                    tracing::error!(error = %err, "messaging: 役割変更の巻き戻しに失敗（タプルが残る）");
+                }
+            }
+            return Err(e);
+        }
         self.members(ctx, id).await
     }
 

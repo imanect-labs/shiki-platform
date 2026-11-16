@@ -496,11 +496,24 @@ impl MessagingService {
         let (from, until, grant) = if c.kind() == ChannelKind::Public {
             (from, until, None)
         } else {
+            // 承認者が今は未指名なら、過去の承認があっても閲覧させない（fail-closed）。
+            if store::settings(&mut tx, ctx)
+                .await?
+                .access_approvers
+                .is_empty()
+            {
+                drop(tx);
+                self.deny(ctx, "channel", channel, "admin_read", trace)
+                    .await;
+                return Err(Error::Forbidden(
+                    "閲覧の承認者が指名されていないため、DM・非公開チャンネルは閲覧できません",
+                ));
+            }
             let grant: Option<AccessGrant> = sqlx::query_as(&format!(
                 "SELECT {GRANT_COLS} FROM messaging_access_grant WHERE tenant_id = $1 AND org = $2 \
                    AND channel_id = $3 AND requester = $4 AND status = 'approved' \
                    AND approver IS NOT NULL AND approver <> requester AND valid_until > now() \
-                   AND messages_from < $6 AND messages_until > $5 \
+                   AND messages_from <= $5 AND messages_until >= $6 \
                  ORDER BY valid_until DESC LIMIT 1"
             ))
             .bind(ctx.tenant_id())
@@ -516,14 +529,11 @@ impl MessagingService {
                 self.deny(ctx, "channel", channel, "admin_read", trace)
                     .await;
                 return Err(Error::Forbidden(
-                    "この DM・非公開チャンネルを閲覧できる承認がありません（期間外を含む）",
+                    "指定の期間全体を閲覧できる承認がありません（承認の期間・範囲の外を含む）",
                 ));
             };
-            (
-                from.max(grant.messages_from),
-                until.min(grant.messages_until),
-                Some(grant.id),
-            )
+            // 範囲は承認が丸ごと覆うものだけ通す（黙って縮めて一部を欠落させない）。
+            (from, until, Some(grant.id))
         };
         let messages = admin_messages(&mut tx, ctx, channel, from, until).await?;
         audit_access(

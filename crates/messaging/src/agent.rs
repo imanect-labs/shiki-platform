@@ -211,6 +211,13 @@ impl MessagingService {
             history_boundary = store::latest_join(conn, ctx, channel).await?;
             if let Some(boundary) = history_boundary {
                 rows.retain(|r| r.created_at >= boundary);
+                // 呼び出しの発言そのものが境界より前（後から参加した人には読めない）なら、
+                // その質問への回答も公開できない。
+                if trigger.created_at < boundary {
+                    return Err(Error::Forbidden(
+                        "この発言は後から参加した人には見えないため、公開返信できません（自分だけに表示で呼んでください）",
+                    ));
+                }
             }
         }
         if rows.len() > CONTEXT_MESSAGES as usize {
@@ -680,14 +687,30 @@ impl MessagingService {
     /// 自分のエージェントから自分への DM に書く（承認の通知など）。
     pub async fn notify_owner(&self, ctx: &AuthContext, text: &str) -> Result<Uuid, Error> {
         let channel = self.agent_dm(ctx).await?;
+        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+        let id = self.write_owner_notice(&mut tx, ctx, channel, text).await?;
+        tx.commit().await?;
+        self.hub
+            .publish(ctx.tenant_id(), channel, Signal::Changed)
+            .await;
+        Ok(id)
+    }
+
+    /// エージェントとの DM に知らせを書く（呼び出し側のトランザクションの中で）。
+    pub(crate) async fn write_owner_notice(
+        &self,
+        conn: &mut PgConnection,
+        ctx: &AuthContext,
+        channel: Uuid,
+        text: &str,
+    ) -> Result<Uuid, Error> {
         let me = ctx.principal().id.clone();
         let blocks = vec![ContentBlock::Text {
             text: text.to_string(),
         }];
-        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let id = Uuid::new_v4();
         sm::insert_message(
-            &mut tx,
+            conn,
             ctx,
             &InsertMessage {
                 id,
@@ -700,12 +723,8 @@ impl MessagingService {
             },
         )
         .await?;
-        store::unhide_all(&mut tx, ctx, channel).await?;
-        sm::insert_mentions(&mut tx, ctx, id, channel, &[(me.clone(), "user")]).await?;
-        tx.commit().await?;
-        self.hub
-            .publish(ctx.tenant_id(), channel, Signal::Changed)
-            .await;
+        store::unhide_all(conn, ctx, channel).await?;
+        sm::insert_mentions(conn, ctx, id, channel, &[(me, "user")]).await?;
         Ok(id)
     }
 }

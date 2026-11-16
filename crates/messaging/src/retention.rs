@@ -37,12 +37,12 @@ pub async fn sweep(pool: &PgPool) -> Result<u64, Error> {
         };
         // 監査ログの保存期間が後から延びても、それより短い期限では消さない（eDiscovery の前提・
         // design §4.14 保存期間）。設定時の検証に加え、消す時点でも監査の保存期間と比べる。
-        let audit_days = storage::audit_retention::AuditRetention::new(pool.clone())
-            .retention_days(tenant.as_str())
-            .await?;
-        let days = days.max(audit_days);
+        // バッチごとに引き直す（途中で監査の保存期間が延びたら、後続のバッチから延びた日数で判定する）。
         loop {
-            let n = sweep_org(pool, &tenant, &org, days).await?;
+            let audit_days = storage::audit_retention::AuditRetention::new(pool.clone())
+                .retention_days(tenant.as_str())
+                .await?;
+            let n = sweep_org(pool, &tenant, &org, days.max(audit_days)).await?;
             total += n;
             if n < BATCH as u64 {
                 break;

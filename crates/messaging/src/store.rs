@@ -201,7 +201,8 @@ pub async fn upsert_member(
     user: &str,
 ) -> Result<(), Error> {
     sqlx::query(
-        "INSERT INTO channel_member (tenant_id, org, channel_id, user_id) VALUES ($1, $2, $3, $4) \
+        "INSERT INTO channel_member (tenant_id, org, channel_id, user_id, visible_from) \
+         VALUES ($1, $2, $3, $4, clock_timestamp()) \
          ON CONFLICT (tenant_id, org, channel_id, user_id) DO NOTHING",
     )
     .bind(ctx.tenant_id())
@@ -289,8 +290,10 @@ pub async fn add_members(
         return Ok(Vec::new());
     }
     Ok(sqlx::query_scalar(
-        "INSERT INTO channel_member (tenant_id, org, channel_id, user_id) \
-         SELECT $1, $2, $3, u FROM unnest($4::text[]) AS u \
+        // 参加の境界は挿入の時刻（トランザクション開始の now() だと、その間にコミットされた参加前の
+        // 発言が境界の後ろに入って見えてしまう）。
+        "INSERT INTO channel_member (tenant_id, org, channel_id, user_id, visible_from) \
+         SELECT $1, $2, $3, u, clock_timestamp() FROM unnest($4::text[]) AS u \
          ON CONFLICT (tenant_id, org, channel_id, user_id) DO NOTHING RETURNING user_id",
     )
     .bind(ctx.tenant_id())
