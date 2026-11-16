@@ -66,10 +66,10 @@ pub enum MessageFilter<'a> {
 }
 
 /// 境界（PIT-63）を `alias` の発言に掛ける: 公開チャンネルは制約しない。非公開・DM は閲覧者の
-/// 参加の時刻より後だけ。参加していなければ（visible_from が NULL）比較が NULL になり 1 件も返らない。
+/// 参加の時刻より後だけ（同じ時刻は参加前に倒す）。参加していなければ（visible_from が NULL）比較が NULL になり 1 件も返らない。
 fn push_visible(q: &mut QueryBuilder<'_, Postgres>, alias: &str, viewer: &str) {
     q.push(format!(
-        "(c.kind = 'public' OR {alias}.created_at >= (SELECT vm.visible_from FROM channel_member vm \
+        "(c.kind = 'public' OR {alias}.created_at > (SELECT vm.visible_from FROM channel_member vm \
          WHERE vm.tenant_id = {alias}.tenant_id AND vm.org = {alias}.org \
          AND vm.channel_id = {alias}.channel_id AND vm.user_id = "
     ))

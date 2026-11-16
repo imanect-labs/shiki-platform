@@ -210,10 +210,10 @@ impl MessagingService {
         if mode == ReplyMode::Public && c.kind().hides_history_before_join() {
             history_boundary = store::latest_join(conn, ctx, channel).await?;
             if let Some(boundary) = history_boundary {
-                rows.retain(|r| r.created_at >= boundary);
+                rows.retain(|r| r.created_at > boundary);
                 // 呼び出しの発言そのものが境界より前（後から参加した人には読めない）なら、
                 // その質問への回答も公開できない。
-                if trigger.created_at < boundary {
+                if trigger.created_at <= boundary {
                     return Err(Error::Forbidden(
                         "この発言は後から参加した人には見えないため、公開返信できません（自分だけに表示で呼んでください）",
                     ));

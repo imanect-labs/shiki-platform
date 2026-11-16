@@ -518,7 +518,7 @@ pub async fn my_channels(
               AND mm.channel_id = c.id AND mm.user_id = $3 AND mm.read_at IS NULL) AS mentions, \
            (SELECT max(msg.created_at) FROM channel_message msg WHERE msg.tenant_id = c.tenant_id \
               AND msg.org = c.org AND msg.channel_id = c.id AND msg.parent_id IS NULL \
-              AND (c.kind = 'public' OR msg.created_at >= m.visible_from)) AS last_message_at \
+              AND (c.kind = 'public' OR msg.created_at > m.visible_from)) AS last_message_at \
          FROM channel_member m \
          JOIN channel c ON c.tenant_id = m.tenant_id AND c.org = m.org AND c.id = m.channel_id \
          LEFT JOIN channel_read_state rs ON rs.tenant_id = m.tenant_id AND rs.org = m.org \
