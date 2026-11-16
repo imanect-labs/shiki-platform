@@ -1372,3 +1372,5 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
 mod bug_reports;
 #[path = "http/messaging.rs"]
 mod messaging_http;
+#[path = "http/messaging_routes.rs"]
+mod messaging_routes;

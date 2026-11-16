@@ -6103,3 +6103,61 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
         "{orgs:?}"
     );
 }
+
+/// 添付の一括メタデータ取得（職員間メッセージの file_ref・Task 14.6）。
+/// 読めるものだけを返し、他人のファイル・削除済み・存在しない id は含めない。
+#[tokio::test]
+async fn readable_files_metadata_returns_only_readable_files() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let other = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    for c in [&owner, &other] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("member tuple seed");
+    }
+    let mine = upload(&service, &http, &owner, None, "mine.txt", b"mine")
+        .await
+        .expect("upload");
+    let gone = upload(&service, &http, &owner, None, "gone.txt", b"gone")
+        .await
+        .expect("upload");
+    let theirs = upload(&service, &http, &other, None, "theirs.txt", b"theirs")
+        .await
+        .expect("upload");
+    service
+        .soft_delete_file(&owner, gone.id, None)
+        .await
+        .expect("delete");
+
+    // 空・重複は問題にならない。
+    assert!(service
+        .readable_files_metadata(&owner, &[], "test")
+        .await
+        .unwrap()
+        .is_empty());
+    let ids = [mine.id, mine.id, gone.id, theirs.id, Uuid::new_v4()];
+    let got = service
+        .readable_files_metadata(&owner, &ids, "test")
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].id, mine.id);
+    assert_eq!(got[0].name, "mine.txt");
+    let got = service
+        .readable_files_metadata(&other, &ids, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        got.iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![theirs.id]
+    );
+}
