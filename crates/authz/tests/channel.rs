@@ -207,3 +207,43 @@ async fn public_channel_does_not_cross_tenants() {
         .await
     );
 }
+
+/// 資料のチャンネル共有（`folder` / `file` の viewer に `channel#member`・design §4.14）。
+/// 参加者は読めるが編集はできず、非参加者・org 管理者は読めない。退出すれば読めなくなり、
+/// フォルダへの共有は中のファイルへ継承される。
+#[tokio::test]
+async fn sharing_a_document_with_a_channel_reaches_members_only() {
+    let Some(c) = connect().await else { return };
+    let t = ctx("t1", "alice");
+    let ch = seed(&c, &t, "docs").await;
+    let (alice, bob, carol) = (
+        t.ns().user("alice"),
+        t.ns().user("bob"),
+        t.ns().user("carol"),
+    );
+    write(&c, &bob, Relation::Member, &ch).await;
+    let members = t.ns().channel_member("docs");
+    let file = t.ns().file("f1");
+    write(&c, &members, Relation::Viewer, &file).await;
+    let folder = t.ns().folder("d1");
+    let inner = t.ns().file("f2");
+    write(&c, &Subject::object(&folder), Relation::Parent, &inner).await;
+    write(&c, &members, Relation::Viewer, &folder).await;
+
+    for o in [&file, &inner] {
+        assert!(can(&c, &alice, Relation::Viewer, o).await);
+        assert!(can(&c, &bob, Relation::Viewer, o).await);
+        // 共有は閲覧だけ。
+        assert!(!can(&c, &bob, Relation::Editor, o).await);
+        // 負例: 参加していない org 管理者は読めない。
+        assert!(!can(&c, &carol, Relation::Viewer, o).await);
+        // チャンネルの参加者集合として、共有された資料を引ける（公開返信の根拠の判定）。
+        assert!(can(&c, &members, Relation::Viewer, o).await);
+    }
+    // 退出すると読めなくなる（剥奪の即時反映）。
+    c.delete_tuple(&bob, Relation::Member, &ch).await.unwrap();
+    assert!(!can(&c, &bob, Relation::Viewer, &file).await);
+    assert!(!can(&c, &bob, Relation::Viewer, &inner).await);
+    // 共有されていない資料は、チャンネルの参加者集合から読めない。
+    assert!(!can(&c, &members, Relation::Viewer, &t.ns().file("other")).await);
+}

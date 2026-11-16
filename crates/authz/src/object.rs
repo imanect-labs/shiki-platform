@@ -267,6 +267,14 @@ impl<'a> Namespace<'a> {
             .and_then(|rest| rest.strip_suffix("#member"))
             .and_then(|body| self.strip_object_id(body))
     }
+
+    /// チャンネル参加者 subject `channel:<tenant>|<id>#member` から local channel id を取り出す。
+    /// 型/tenant/relation が一致しなければ `None`（資料のチャンネル共有の一覧で使う）。
+    pub fn parse_channel_member_subject<'s>(&self, raw: &'s str) -> Option<&'s str> {
+        raw.strip_prefix("channel:")
+            .and_then(|rest| rest.strip_suffix("#member"))
+            .and_then(|body| self.strip_object_id(body))
+    }
 }
 
 impl std::fmt::Display for FgaObject {
@@ -433,6 +441,22 @@ mod tests {
         );
         assert_eq!(ns.parse_role_member_subject("user:acme|alice"), None);
         assert_eq!(ns.parse_role_member_subject("role:acme|dept-1#owner"), None);
+    }
+
+    #[test]
+    fn namespace_parse_channel_member_subject() {
+        let ns = Namespace::new("acme");
+        let subject = ns.channel_member("c1").to_string();
+        assert_eq!(ns.parse_channel_member_subject(&subject), Some("c1"));
+        assert_eq!(
+            ns.parse_channel_member_subject("channel:other|c1#member"),
+            None
+        );
+        assert_eq!(
+            ns.parse_channel_member_subject("channel:acme|c1#admin"),
+            None
+        );
+        assert_eq!(ns.parse_channel_member_subject("role:acme|c1#member"), None);
     }
 
     #[test]

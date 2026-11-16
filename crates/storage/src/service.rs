@@ -175,6 +175,7 @@ mod share_link_reconcile;
 mod share_link_redeem;
 mod share_link_util;
 mod sharing;
+mod sharing_channel;
 mod trash;
 mod upload;
 mod upload_gc;

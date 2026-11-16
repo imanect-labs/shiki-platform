@@ -191,6 +191,19 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::shares::list_shares)
             },
         ),
+        // 資料のチャンネル共有（design §4.14・閲覧だけ・owner かつチャンネルの参加者）。
+        r("/nodes/{id}/channel-shares", &["GET"], Session, || {
+            get(routes::channel_shares::list_channel_shares)
+        }),
+        r(
+            "/nodes/{id}/channel-shares/{channel_id}",
+            &["PUT", "DELETE"],
+            Session,
+            || {
+                put(routes::channel_shares::share_with_channel)
+                    .delete(routes::channel_shares::unshare_from_channel)
+            },
+        ),
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),

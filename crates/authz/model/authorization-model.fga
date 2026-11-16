@@ -69,9 +69,11 @@ type folder
     define editor_via_link: [user]
     define viewer_via_link: [user]
     define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
+    define viewer: [user, user:*, role#member, organization#member, channel#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
+# folder / file の viewer は channel#member も受理する（チャンネルへの資料共有・design §4.14）。
+# 共有は閲覧だけ（editor には入れない）で、共有した資料はチャンネルへの公開返信の根拠に使える。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
 # 共有先は user 直接付与 ＋ role#member（#76・folder と同一ポリシ）。
 type file
@@ -82,7 +84,7 @@ type file
     define editor_via_link: [user]
     define viewer_via_link: [user]
     define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
+    define viewer: [user, user:*, role#member, organization#member, channel#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。

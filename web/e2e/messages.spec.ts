@@ -187,6 +187,41 @@ test("送信の応答を待つ間に添付だけを外しても、下書きは�
   await page.unroute("**/api/messaging/channels/*/messages");
 });
 
+test("ドライブの資料をチャンネルに閲覧で共有し、解除できる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-docs");
+  await createChannel(page, name, "公開");
+
+  await page.goto("/drive");
+  const folder = uniqueName("チャンネル共有");
+  await page.getByRole("button", { name: "新規フォルダ" }).click();
+  const create = page.getByRole("dialog");
+  await create.getByRole("textbox").fill(folder);
+  await create.getByRole("button", { name: "作成" }).click();
+  await expect(page.getByText(folder, { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  const share = page.getByRole("dialog");
+  await share.getByTestId("share-tab-channels").click();
+  await share.getByRole("button", { name: `${name} に共有`, exact: true }).click();
+  const entry = share.getByTestId("share-channel-entry").filter({ hasText: name });
+  await expect(entry).toBeVisible();
+  await expect(share.getByRole("button", { name: `${name} に共有済み` })).toBeDisabled();
+
+  // 閉じて開き直しても共有が残っている（サーバに保存されている）。
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  await share.getByTestId("share-tab-channels").click();
+  await expect(entry).toBeVisible();
+
+  await share.getByRole("button", { name: `${name} への共有を解除` }).click();
+  await expect(entry).toHaveCount(0);
+  await expect(share.getByText("まだどのチャンネルにも共有していません。")).toBeVisible();
+});
+
 test("非公開チャンネルは参加していない人には見えず、DM を開ける", async ({ page, browser }) => {
   await loginViaKeycloak(page);
   await openMessages(page);

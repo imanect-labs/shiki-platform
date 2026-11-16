@@ -6161,3 +6161,88 @@ async fn readable_files_metadata_returns_only_readable_files() {
         vec![theirs.id]
     );
 }
+
+/// 資料のチャンネル共有（`channel#member` の viewer・design §4.14）。owner かつチャンネルの参加者だけが
+/// 共有でき、参加者は読めて非参加者は読めない。解除・一覧・監査も確かめる。
+#[tokio::test]
+async fn sharing_with_a_channel_reaches_its_members_only() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let member = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let outsider = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    for c in [&owner, &member, &outsider] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("member tuple seed");
+    }
+    let channel = Uuid::new_v4();
+    let channel_obj = owner.ns().channel(&channel.to_string());
+    let file = upload(&service, &http, &owner, None, "議事録.txt", b"minutes")
+        .await
+        .expect("upload");
+
+    // 参加していないチャンネルへは共有できない。
+    assert!(matches!(
+        service
+            .share_node_with_channel(&owner, file.id, channel, None)
+            .await,
+        Err(StorageError::Forbidden)
+    ));
+    for c in [&owner, &member] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &channel_obj)
+            .await
+            .expect("channel member seed");
+    }
+    // owner でなければ共有できない（参加者でも）。
+    assert!(matches!(
+        service
+            .share_node_with_channel(&member, file.id, channel, None)
+            .await,
+        Err(StorageError::Forbidden)
+    ));
+    service
+        .share_node_with_channel(&owner, file.id, channel, Some("trace-ch"))
+        .await
+        .expect("share with channel");
+    assert!(service.get_metadata(&member, file.id, None).await.is_ok());
+    assert!(service
+        .get_metadata(&outsider, file.id, None)
+        .await
+        .is_err());
+    assert_eq!(
+        service
+            .list_channel_shares(&owner, file.id, None)
+            .await
+            .unwrap(),
+        vec![channel]
+    );
+    // ユーザー・ロールの共有一覧には混ざらない。
+    assert!(service
+        .list_shares(&owner, file.id, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(audit_count(&pool, &org, "node.share", "allow").await, 1);
+
+    service
+        .unshare_node_from_channel(&owner, file.id, channel, None)
+        .await
+        .expect("unshare from channel");
+    assert!(service.get_metadata(&member, file.id, None).await.is_err());
+    assert!(service
+        .list_channel_shares(&owner, file.id, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(audit_count(&pool, &org, "node.unshare", "allow").await, 1);
+}

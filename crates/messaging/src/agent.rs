@@ -57,6 +57,7 @@ pub struct ContextLine {
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
     mode: ReplyMode,
+    channel_id: Uuid,
     channel_name: String,
     transcript: Vec<ContextLine>,
     question: String,
@@ -69,6 +70,10 @@ pub struct AgentRequest {
 impl AgentRequest {
     pub fn mode(&self) -> ReplyMode {
         self.mode
+    }
+    /// 呼び出したチャンネル（公開返信の根拠は、このチャンネルに共有した資料に限る）。
+    pub fn channel_id(&self) -> Uuid {
+        self.channel_id
     }
     pub fn channel_name(&self) -> &str {
         &self.channel_name
@@ -260,6 +265,7 @@ impl MessagingService {
             .collect();
         Ok(AgentRequest {
             mode,
+            channel_id: c.id,
             channel_name: c.name.clone().unwrap_or_else(|| "DM".into()),
             transcript,
             force_chat: asks_for_chat(&question),
@@ -340,7 +346,7 @@ impl MessagingService {
         let blocks = vec![ContentBlock::Text {
             text: answer.text.clone(),
         }];
-        match reply_mode_for(mode, &answer) {
+        match self.reply_mode_for(ctx, channel, mode, &answer).await? {
             ReplyMode::Private => {
                 self.save_private_reply(ctx, channel, trigger_id, blocks, &answer.sources, None)
                     .await?;
@@ -489,6 +495,40 @@ impl MessagingService {
         .await?;
         tx.commit().await?;
         Ok(rows.into_iter().map(ReplyRow::view).collect())
+    }
+
+    /// 回答を書く形。公開返信の根拠は、チャンネル内の発言と**このチャンネルに共有した資料**
+    /// （`channel#member` が viewer の文書）だけ。根拠の文書が 1 件でもチャンネルに共有されていなければ、
+    /// 参加者に公開せず本人だけに表示する（実行部の取り違えでも、参加者が読めない資料を出さない）。
+    async fn reply_mode_for(
+        &self,
+        ctx: &AuthContext,
+        channel: Uuid,
+        mode: ReplyMode,
+        answer: &AgentAnswer,
+    ) -> Result<ReplyMode, Error> {
+        if mode != ReplyMode::Public || answer.sources.is_empty() {
+            return Ok(mode);
+        }
+        let members = ctx.ns().channel_member(&channel.to_string());
+        let items: Vec<CheckTuple> = answer
+            .sources
+            .iter()
+            .map(|f| CheckTuple {
+                subject: members.clone(),
+                relation: Relation::Viewer,
+                object: ctx.ns().file(&f.to_string()),
+            })
+            .collect();
+        let shared = self
+            .authz
+            .batch_check(&items, Consistency::HigherConsistency)
+            .await?;
+        if shared.iter().all(|ok| *ok) {
+            return Ok(ReplyMode::Public);
+        }
+        tracing::warn!("messaging: 公開返信の根拠にチャンネルへ共有されていない文書があるため、本人だけに表示します");
+        Ok(ReplyMode::Private)
     }
 
     /// `since` より後に、自分だけに表示する回答が増えたか（配信の合図を取りこぼしたときの保険）。
@@ -787,16 +827,6 @@ async fn insert_reply(
     .execute(conn)
     .await?;
     Ok(())
-}
-
-/// 回答を書く形。公開返信の根拠はチャンネルの発言だけなので、実行部が社内文書を根拠に返してきたら
-/// （取り違え・実装の誤り）、参加者に公開せず本人だけに表示する（チャンネルに共有されていない資料を出さない）。
-fn reply_mode_for(mode: ReplyMode, answer: &AgentAnswer) -> ReplyMode {
-    if mode == ReplyMode::Public && !answer.sources.is_empty() {
-        tracing::warn!("messaging: 公開返信に社内文書の根拠が付いていたため、本人だけに表示します");
-        return ReplyMode::Private;
-    }
-    mode
 }
 
 #[cfg(test)]

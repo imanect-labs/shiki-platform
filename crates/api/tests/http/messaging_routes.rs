@@ -193,6 +193,16 @@ async fn messaging_http_routes_round_trip() {
         .unwrap();
     }
     let mut state = state_with_authz(sessions, fga.clone());
+    // 資料のチャンネル共有は実 DB ＋実 OpenFGA の StorageService で確かめる（blob は使わない）。
+    let storage = Arc::new(storage::StorageService::new(
+        pool.clone(),
+        Arc::new(FakeStore),
+        fga.clone(),
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
+    ));
+    state.storage = storage.clone();
     state.messaging = Some(Arc::new(messaging::MessagingService::new(
         pool,
         fga.clone(),
@@ -581,6 +591,74 @@ async fn messaging_http_routes_round_trip() {
     )
     .await;
     assert!(s.is_success(), "{s}");
+
+    // --- 資料のチャンネル共有（owner かつ参加者だけ・閲覧だけ） ---
+    let alice_ctx = AuthContext::new(
+        Principal {
+            kind: authz::PrincipalKind::User,
+            id: alice.clone(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: None,
+        },
+        org.clone(),
+        authz::TenantId::parse("default").unwrap(),
+    );
+    let folder = storage
+        .create_folder(&alice_ctx, None, "共有資料", None)
+        .await
+        .unwrap();
+    let share_path = format!("/nodes/{}/channel-shares/{id}", folder.id);
+    let (s, _) = call(&app, "sid-bob", "PUT", &share_path, Value::Null).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "owner でなければ共有できない");
+    let (s, _) = call(&app, "sid-alice", "PUT", &share_path, Value::Null).await;
+    assert!(s.is_success(), "{s}");
+    let bob_subject = AuthContext::new(
+        Principal {
+            kind: authz::PrincipalKind::User,
+            id: bob.clone(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: None,
+        },
+        org.clone(),
+        authz::TenantId::parse("default").unwrap(),
+    )
+    .subject();
+    let folder_obj = alice_ctx.ns().folder(&folder.id.to_string());
+    assert!(fga
+        .check(
+            &bob_subject,
+            Relation::Viewer,
+            &folder_obj,
+            Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
+    let (s, shares) = call(
+        &app,
+        "sid-alice",
+        "GET",
+        &format!("/nodes/{}/channel-shares", folder.id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(shares[0]["channel_id"], ch["id"]);
+    assert_eq!(shares[0]["name"], "routes");
+    let (s, _) = call(&app, "sid-alice", "DELETE", &share_path, Value::Null).await;
+    assert!(s.is_success(), "{s}");
+    assert!(!fga
+        .check(
+            &bob_subject,
+            Relation::Viewer,
+            &folder_obj,
+            Consistency::HigherConsistency
+        )
+        .await
+        .unwrap());
 
     // --- DM・非表示・アーカイブ・退出 ---
     let (s, dm) = call(

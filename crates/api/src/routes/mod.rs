@@ -63,6 +63,7 @@ pub mod workflows;
 pub use me::get_me;
 
 pub mod bug_reports;
+pub mod channel_shares;
 pub mod messaging;
 pub mod messaging_admin;
 pub mod messaging_agent;

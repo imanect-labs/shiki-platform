@@ -5,10 +5,11 @@
 //!   インジェクションとして入り込むため・design §4.14）。書き込みを伴う作業はチャットへ移し、
 //!   そこでの承認は照会者の承認モード設定（§4.4 の 3 モード）に従う。
 //! - 自分だけに表示の回答は、照会者の `AuthContext` で RAG を引く（二段 authz は RAG 側が守る）。
-//!   公開返信はチャンネルの発言だけを根拠にし、社内文書を引かない。
+//! - 公開返信の根拠は、チャンネルの発言と**このチャンネルに共有した資料**だけ。照会者の権限で引いた結果から、
+//!   `channel#member` が viewer の文書だけを残す（参加者全員が読める資料だけ・design §4.14）。
 
 use async_trait::async_trait;
-use authz::AuthContext;
+use authz::{AuthContext, AuthzClient, CheckTuple, Consistency, Relation};
 use futures::StreamExt as _;
 use llm_gateway::{
     GenerateRequest, GenerationRecord, LlmGateway, Message, Role, StreamDelta, Usage, UsageSource,
@@ -20,14 +21,18 @@ use uuid::Uuid;
 
 /// 回答の最大トークン数。
 const MAX_TOKENS: u32 = 1_500;
-/// 自分だけに表示の回答で引く社内文書の件数。
+/// 回答の根拠に使う社内文書の件数。
 const RAG_TOP_K: u32 = 5;
+/// 公開返信で引く候補の件数（チャンネルに共有した資料だけに絞る前）。
+const RAG_PUBLIC_CANDIDATES: u32 = 30;
 /// チャットへ移す判断の印（モデルの出力の先頭行）。
 const CHAT_MARKER: &str = "[[CHAT:";
 
 /// llm-gateway・RAG・チャットを束ねた実行部。
 pub struct GatewayAgentRuntime {
     pub llm: Arc<LlmGateway>,
+    /// 公開返信の根拠を、チャンネルに共有した資料に絞るのに使う。
+    pub authz: Arc<dyn AuthzClient>,
     pub search: Option<Arc<rag::SearchService>>,
     pub chat: Option<Arc<chat::ChatStore>>,
 }
@@ -35,8 +40,9 @@ pub struct GatewayAgentRuntime {
 fn system_prompt(req: &AgentRequest, docs: &str) -> String {
     let scope = match req.mode() {
         ReplyMode::Public => {
-            "回答はチャンネルの参加者全員に公開されます。**根拠にしてよいのは、下の <channel> の発言だけ**です。\
-             社内文書やあなたの記憶にある他の情報を持ち込まないでください。発言から分からないことは「分かりません」と答えます。"
+            "回答はチャンネルの参加者全員に公開されます。**根拠にしてよいのは、下の <channel> の発言と、\
+             <documents> にあるチャンネルに共有された資料だけ**です。それ以外の社内文書やあなたの記憶にある情報を\
+             持ち込まないでください。資料を使ったときは文書名を挙げ、分からないことは「分かりません」と答えます。"
         }
         ReplyMode::Private => {
             "回答は呼んだ本人にだけ表示されます。<channel> の発言と <documents> の社内文書を根拠にしてよく、\
@@ -129,28 +135,79 @@ impl GatewayAgentRuntime {
     }
 }
 
+impl GatewayAgentRuntime {
+    /// 検索結果のうち、チャンネルに共有された（`channel#member` が viewer の）文書だけを残す。
+    /// 判定に失敗したら何も残さない（fail-closed・公開返信は発言だけを根拠にする）。
+    async fn shared_with_channel(
+        &self,
+        ctx: &AuthContext,
+        channel: Uuid,
+        results: Vec<rag::SearchResult>,
+    ) -> Vec<rag::SearchResult> {
+        if results.is_empty() {
+            return results;
+        }
+        let members = ctx.ns().channel_member(&channel.to_string());
+        let items: Vec<CheckTuple> = results
+            .iter()
+            .map(|r| CheckTuple {
+                subject: members.clone(),
+                relation: Relation::Viewer,
+                object: ctx.ns().file(&r.file_id.to_string()),
+            })
+            .collect();
+        match self
+            .authz
+            .batch_check(&items, Consistency::HigherConsistency)
+            .await
+        {
+            Ok(ok) => results
+                .into_iter()
+                .zip(ok)
+                .filter_map(|(r, ok)| ok.then_some(r))
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "messaging agent: チャンネルへの共有を確かめられません");
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl AgentRuntime for GatewayAgentRuntime {
     async fn answer(&self, ctx: &AuthContext, req: &AgentRequest) -> Result<AgentAnswer, Error> {
         let mut sources = Vec::new();
         let mut docs = String::new();
-        if req.mode() == ReplyMode::Private {
-            if let Some(search) = &self.search {
-                // 照会者の AuthContext で引く（pre-filter ＋ post-filter は RAG が守る）。
-                match search
-                    .search(
-                        ctx,
-                        req.question(),
-                        Some(RAG_TOP_K),
-                        rag::SearchMode::Hybrid,
-                        None,
-                        None,
-                    )
-                    .await
-                {
-                    Ok(out) => {
+        if let Some(search) = &self.search {
+            let public = req.mode() == ReplyMode::Public;
+            let k = if public {
+                RAG_PUBLIC_CANDIDATES
+            } else {
+                RAG_TOP_K
+            };
+            // 照会者の AuthContext で引く（pre-filter ＋ post-filter は RAG が守る）。
+            match search
+                .search(
+                    ctx,
+                    req.question(),
+                    Some(k),
+                    rag::SearchMode::Hybrid,
+                    None,
+                    None,
+                )
+                .await
+            {
+                Ok(out) => {
+                    let mut results = out.results;
+                    if public {
+                        results = self
+                            .shared_with_channel(ctx, req.channel_id(), results)
+                            .await;
+                    }
+                    if !results.is_empty() {
                         docs.push_str("<documents>\n");
-                        for r in out.results {
+                        for r in results.into_iter().take(RAG_TOP_K as usize) {
                             if !sources.contains(&r.file_id) {
                                 sources.push(r.file_id);
                             }
@@ -159,8 +216,8 @@ impl AgentRuntime for GatewayAgentRuntime {
                         }
                         docs.push_str("</documents>");
                     }
-                    Err(e) => tracing::warn!(error = %e, "messaging agent: 社内文書を引けません"),
                 }
+                Err(e) => tracing::warn!(error = %e, "messaging agent: 社内文書を引けません"),
             }
         }
         let text = self

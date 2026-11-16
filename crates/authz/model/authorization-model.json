@@ -207,6 +207,10 @@
                 "relation": "member"
               },
               {
+                "type": "channel",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -354,6 +358,10 @@
               },
               {
                 "type": "organization",
+                "relation": "member"
+              },
+              {
+                "type": "channel",
                 "relation": "member"
               },
               {

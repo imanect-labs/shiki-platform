@@ -1483,10 +1483,10 @@ async fn concurrent_role_changes_do_not_exhaust_a_small_pool() {
     .unwrap();
 }
 
-/// 公開返信の根拠はチャンネルの発言だけ。実行部が社内文書を根拠に返してきても、参加者には公開しない
-/// （本人だけに表示する・チャンネルに共有されていない資料を出さない）。
+/// 公開返信の根拠は、チャンネルの発言とチャンネルに共有した資料だけ。実行部が共有されていない社内文書を
+/// 根拠に返してきても、参加者には公開しない（本人だけに表示する）。
 #[tokio::test]
-async fn public_reply_never_carries_unshared_documents() {
+async fn public_reply_is_grounded_on_channel_shared_documents_only() {
     let Some(env) = setup().await else { return };
     let (alice, bob) = (env.ctx("alice"), env.ctx("bob"));
     let ch = env
@@ -1539,4 +1539,50 @@ async fn public_reply_never_carries_unshared_documents() {
         .await
         .unwrap()
         .is_empty());
+
+    // チャンネルに共有した資料（channel#member が viewer）だけが根拠なら、公開返信として書く。
+    let shared = Uuid::new_v4();
+    env.fga
+        .write_tuple(
+            &bob.ns().channel_member(&ch.id.to_string()),
+            Relation::Viewer,
+            &bob.ns().file(&shared.to_string()),
+        )
+        .await
+        .unwrap();
+    for (sources, public) in [(vec![shared], true), (vec![shared, Uuid::new_v4()], false)] {
+        *rt.sources.lock().unwrap() = sources;
+        let trigger = env
+            .svc
+            .post(
+                &bob,
+                ch.id,
+                NewMessage {
+                    parent_id: None,
+                    blocks: vec![
+                        ContentBlock::Mention {
+                            mention: Mention::Agent,
+                        },
+                        ContentBlock::Text {
+                            text: " 共有した議事録を要約して".into(),
+                        },
+                    ],
+                    agent_private: false,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        env.svc
+            .invoke_agent(&bob, &runtime, trigger.id, ReplyMode::Public, None)
+            .await
+            .unwrap();
+        let thread = env.svc.thread(&alice, ch.id, trigger.id).await.unwrap();
+        let posted = thread
+            .iter()
+            .any(|m| m.author.kind == messaging::AuthorKind::Assistant);
+        // 共有されていない文書が 1 件でも混ざれば公開しない。
+        assert_eq!(posted, public, "{thread:?}");
+    }
+    assert_eq!(env.svc.agent_replies(&bob, ch.id).await.unwrap().len(), 2);
 }

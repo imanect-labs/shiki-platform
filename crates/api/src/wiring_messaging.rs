@@ -44,6 +44,7 @@ pub(crate) async fn wire_messaging(
     let runtime = llm.map(|llm| {
         Arc::new(api::messaging_runtime::GatewayAgentRuntime {
             llm: Arc::clone(llm),
+            authz: Arc::clone(authz),
             search: search.cloned(),
             chat: chat.cloned(),
         }) as Arc<dyn messaging::AgentRuntime>
