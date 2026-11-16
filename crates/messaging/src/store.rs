@@ -221,14 +221,69 @@ pub async fn lock_channel(
     channel: Uuid,
 ) -> Result<(), Error> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!(
-            "messaging:{}:{}:{channel}",
-            ctx.tenant_id(),
-            ctx.org()
-        ))
+        .bind(channel_lock_key(ctx, channel))
         .execute(conn)
         .await?;
     Ok(())
+}
+
+fn channel_lock_key(ctx: &AuthContext, channel: Uuid) -> String {
+    format!("messaging:{}:{}:{channel}", ctx.tenant_id(), ctx.org())
+}
+
+/// [`lock_channel`] と同じ鍵を、トランザクションを越えて持つ（専用の接続のセッションロック）。
+///
+/// 外部（OpenFGA）への書込とその巻き戻しまでを 1 つの区間で直列化するのに使う。トランザクションの
+/// ロックは commit／rollback で外れるので、DB の失敗の後に行う巻き戻しが、後続の操作と前後してしまう。
+/// 解放は [`ChannelLock::release`]。解放せずに落とした（呼び出しが中断された）場合は接続ごと捨て、
+/// セッションの終了でロックを外す（プールにロックを持った接続を戻さない）。
+pub struct ChannelLock {
+    conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+    key: String,
+}
+
+pub async fn lock_channel_session(
+    pool: &sqlx::PgPool,
+    ctx: &AuthContext,
+    channel: Uuid,
+) -> Result<ChannelLock, Error> {
+    let mut conn = pool.acquire().await?;
+    let key = channel_lock_key(ctx, channel);
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
+        .bind(&key)
+        .execute(&mut *conn)
+        .await?;
+    Ok(ChannelLock {
+        conn: Some(conn),
+        key,
+    })
+}
+
+impl ChannelLock {
+    /// ロックを外して接続をプールへ返す。外せなかったら接続を閉じる（セッションの終了で外れる）。
+    pub async fn release(mut self) {
+        let Some(mut conn) = self.conn.take() else {
+            return;
+        };
+        let unlocked: Result<bool, sqlx::Error> =
+            sqlx::query_scalar("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+                .bind(&self.key)
+                .fetch_one(&mut *conn)
+                .await;
+        if !matches!(unlocked, Ok(true)) {
+            tracing::warn!("messaging: チャンネルのロックを外せないため接続を閉じる");
+            drop(conn.detach());
+        }
+    }
+}
+
+impl Drop for ChannelLock {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            // 解放前に落とされた。ロックを持った接続をプールに戻さず、接続ごと閉じる。
+            drop(conn.detach());
+        }
+    }
 }
 
 /// いちばん後から参加した人の参加時刻（公開返信の文脈の境界）。

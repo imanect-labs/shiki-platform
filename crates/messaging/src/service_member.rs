@@ -184,6 +184,28 @@ impl MessagingService {
         poster: Option<bool>,
         trace: Option<&str>,
     ) -> Result<Vec<MemberView>, Error> {
+        // 管理者の数の判定・タプルの書込・失敗時の巻き戻しまでを、チャンネル単位で 1 つの区間にする。
+        // トランザクションのロックは rollback で外れるので、DB の失敗の後の巻き戻しが後続の役割変更と
+        // 前後して、後続の剥奪を覆しうる。セッションのロックは巻き戻しが終わるまで持つ。
+        // 接続を持ったまま待たないよう、トランザクションを開く前に取る。
+        let lock = store::lock_channel_session(&self.pool, ctx, id).await?;
+        let result = self
+            .apply_member_role(ctx, id, user, admin, poster, trace)
+            .await;
+        lock.release().await;
+        result?;
+        self.members(ctx, id).await
+    }
+
+    async fn apply_member_role(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        user: &str,
+        admin: Option<bool>,
+        poster: Option<bool>,
+        trace: Option<&str>,
+    ) -> Result<(), Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let c = self.managed_channel(&mut tx, ctx, id, trace).await?;
         // 入力の検証を書込より先に済ませる（途中で失敗して権限だけ変わる状態を作らない）。
@@ -194,8 +216,7 @@ impl MessagingService {
         }
         let obj = ctx.ns().channel(&id.to_string());
         let subject = ctx.ns().user(user);
-        // 管理者の数の判定と剥奪をチャンネル単位で直列化する（同時に外して管理者 0 人にしない）。
-        store::lock_channel(&mut tx, ctx, id).await?;
+        // ここから先は set_member_role が持つチャンネルのロックの内側（同時に外して管理者 0 人にしない）。
         // 参加の確認は除名と同じロックの内側で行う（除名と並行して権限が復活しないように）。
         if store::member(&mut tx, ctx, id, user).await?.is_none() {
             return Err(Error::Invalid("参加していない利用者です".into()));
@@ -281,7 +302,7 @@ impl MessagingService {
             }
             return Err(e);
         }
-        self.members(ctx, id).await
+        Ok(())
     }
 
     /// 参加者の一覧。
