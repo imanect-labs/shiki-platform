@@ -94,9 +94,8 @@ impl StorageService {
 
     /// チャンネル共有の付与・解除と監査を、同じノード・チャンネルの操作と直列化して行う。
     ///
-    /// セッションの advisory lock（[`SessionLock`]）を取り、同じ接続のトランザクションで FGA の変更・監査・
-    /// commit を行う。監査か commit に失敗したら、**ロックを持ったまま**今回変えた分だけを巻き戻す
-    /// （並行する共有・解除が割り込んで、古い判断で権限を戻すことがない）。ロックは巻き戻しの後に外す。
+    /// セッションの advisory lock（[`SessionLock`]）を取り、同じ接続で「監査の確定 → 権限の変更」を行う。
+    /// 巻き戻しを持たないので、セッションが切れてロックを失っても、古い判断で権限を戻すことはない。
     async fn change_channel_share(
         &self,
         ctx: &AuthContext,
@@ -135,18 +134,65 @@ impl StorageService {
         grant: bool,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        // 監査を先に確定させてから権限を変える（巻き戻しを持たない）。権限の変更に失敗したら要求は失敗し、
+        // 失敗を監査に追記する。巻き戻しが無いので、並行する操作の後に古い判断で権限を戻すことがない。
+        // 監査の確定後・権限の変更前にプロセスが止まると、監査は変更しなかった操作を記録する（多めに残る側）。
+        self.record_channel_share(
+            &mut *conn, ctx, node_id, obj, channel_id, grant, None, trace_id,
+        )
+        .await?;
         let subject = ctx.ns().channel_member(&channel_id.to_string());
-        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
-        // 付与・剥奪は冪等。changed=true なら今回実際に変えた（巻き戻すのはその分だけ）。
-        let changed = if grant {
+        let applied = if grant {
             self.authz
                 .write_tuple(&subject, Relation::Viewer, obj)
-                .await?
+                .await
         } else {
             self.authz
                 .delete_tuple(&subject, Relation::Viewer, obj)
-                .await?
+                .await
         };
+        if let Err(e) = applied {
+            let failure = e.to_string();
+            if let Err(err) = self
+                .record_channel_share(
+                    &mut *conn,
+                    ctx,
+                    node_id,
+                    obj,
+                    channel_id,
+                    grant,
+                    Some(&failure),
+                    trace_id,
+                )
+                .await
+            {
+                tracing::error!(
+                    error = %err,
+                    %node_id,
+                    %channel_id,
+                    granted = grant,
+                    "sharing: チャンネル共有の変更の失敗を監査に追記できない"
+                );
+            }
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    /// チャンネル共有の付与・解除を監査に残す（権限変更なのでハッシュチェーンに連結する）。
+    /// `failure` があれば、先に記録した操作が適用できなかったことを `deny` で追記する。
+    #[allow(clippy::too_many_arguments)]
+    async fn record_channel_share(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        node_id: Uuid,
+        obj: &FgaObject,
+        channel_id: Uuid,
+        grant: bool,
+        failure: Option<&str>,
+        trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
         let action = if grant {
             AuditAction::NodeShare
         } else {
@@ -157,77 +203,30 @@ impl StorageService {
         } else {
             "file"
         };
-        let audited = audit::record_on(
+        let mut tx = sqlx::Connection::begin(conn).await?;
+        audit::record_on(
             &mut tx,
             ctx,
             AuditEntry {
                 action,
                 object_type,
                 object_id: &node_id.to_string(),
-                decision: Decision::Allow,
+                decision: if failure.is_some() {
+                    Decision::Deny
+                } else {
+                    Decision::Allow
+                },
                 trace_id,
                 metadata: json!({
                     "target": { "type": "channel", "id": channel_id },
                     "role": ShareRole::Viewer,
+                    "failed": failure,
                 }),
             },
             Chain::Yes,
         )
-        .await;
-        let committed = match audited {
-            Ok(()) => tx.commit().await.map_err(StorageError::from),
-            Err(e) => {
-                drop(tx);
-                Err(e)
-            }
-        };
-        if let Err(e) = committed {
-            if changed {
-                // 巻き戻すのはロックを持っている間だけ。セッションが切れていれば（ロックは外れている）、
-                // 後続の共有・解除が既に進んでいるかもしれないので、古い判断で戻さずに記録だけ残す。
-                // 解除の場合は「解除のまま」になる（権限が増える側には倒れない）。
-                let alive = sqlx::query("SELECT 1").execute(&mut *conn).await.is_ok();
-                if alive {
-                    self.undo_channel_share(&subject, obj, grant, node_id, channel_id)
-                        .await;
-                } else {
-                    tracing::error!(
-                        %node_id,
-                        %channel_id,
-                        granted = grant,
-                        "sharing: セッションが切れてロックを失ったため、チャンネル共有の変更を巻き戻さない（監査と食い違う）"
-                    );
-                }
-            }
-            return Err(e);
-        }
+        .await?;
+        tx.commit().await?;
         Ok(())
-    }
-
-    /// 監査が残せなかった変更を戻す。戻せなければタプルの食い違いをログに残す（運用者が検知できるように）。
-    async fn undo_channel_share(
-        &self,
-        subject: &Subject,
-        obj: &FgaObject,
-        granted: bool,
-        node_id: Uuid,
-        channel_id: Uuid,
-    ) {
-        let undo = if granted {
-            self.authz
-                .delete_tuple(subject, Relation::Viewer, obj)
-                .await
-        } else {
-            self.authz.write_tuple(subject, Relation::Viewer, obj).await
-        };
-        if let Err(err) = undo {
-            tracing::error!(
-                error = %err,
-                %node_id,
-                %channel_id,
-                granted,
-                "sharing: 監査失敗後のチャンネル共有の巻き戻しに失敗（閲覧タプルが監査と食い違う）"
-            );
-        }
     }
 }
