@@ -182,7 +182,7 @@ fn is_continuation_nudge(m: &LlmMessage) -> bool {
 
 /// 1 run で「思考だけで出力上限に達した」応答を書き直させる回数の上限。超えたら従来どおり
 /// 空応答の催促・Truncated へ落とす（思考を絞っても書けないモデルで予算を空費しない）。
-const MAX_THINKING_RETRIES: usize = 2;
+const MAX_THINKING_RETRIES: usize = 4;
 
 /// **思考だけで出力上限（`max_tokens`）に達した**応答（本文もツール呼び出しも無い）への催促。
 /// 上限回数を超えた、または添える先が無ければ `false`。
@@ -234,6 +234,57 @@ pub(crate) fn nudge_thinking_exhausted(
         }
         None => false,
     }
+}
+
+/// 出力上限で切れた応答のうち、**見えている本文が出力量に比べてごく短い**もの（出力の大半を
+/// 思考に使い切った）か。`completion_tokens` が届かないプロバイダ（0）では判定しない。
+///
+/// 実測（プレビュー・Claude Haiku・上限 8192）: 20 枚のスライドを数枚ずつ足す作業で、次の 6 枚の
+/// 原稿を思考の中で書き進めて上限を使い切り、本文は「9〜14枚目を追記します。」の 1 行だけで
+/// 切れた。本文の途中切れとして「続きを書いて簡潔に終えて」と促すと、次の生成も同じように思考で
+/// 使い切って止まり、「続けて」の案内で run が畳まれた。本文 1 文字はおおむね 1 トークン以上なので、
+/// 本文が出力量の 1/4 に満たなければ、切れたのは本文ではなく思考とみなす。
+pub(crate) fn output_mostly_hidden(text: &str, completion_tokens: u64) -> bool {
+    completion_tokens > 0 && (text.chars().count() as u64).saturating_mul(4) < completion_tokens
+}
+
+/// 本文が短いまま思考で出力上限に達した応答への催促（**user 発話**として積む。直前に切れた
+/// 本文を assistant として積んだ後なので、user の連続にはならない）。上限を超えたら `None`。
+///
+/// 本文が短いことは「作業予告だけ」とは限らない（思考の後に回答を書き始め、表の途中で切れた
+/// こともあり得る）。そこで**本文の続きの催促でもある**形にする: 先頭に
+/// [`llm_gateway::CONTINUATION_MARK`] を置き（次の生成は思考を画面へ流さず、本文が直前と連結
+/// される・回数は続きの催促と合わせて数える）、[`llm_gateway::THINKING_EXHAUSTED_MARK`] も
+/// 含めて次の生成の effort を下げる。指示は「ツールの途中ならすぐ呼ぶ・本文の途中なら切れた
+/// 位置から続ける」の両方を書く。
+pub(crate) fn thinking_exhausted_after_text(
+    messages: &[LlmMessage],
+    max_tokens: Option<u32>,
+) -> Option<LlmMessage> {
+    let continued = messages.iter().filter(|m| is_continuation_nudge(m)).count();
+    let tried: usize = messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(block_text)
+        .map(|t| t.matches(llm_gateway::THINKING_EXHAUSTED_MARK).count())
+        .sum();
+    if continued >= MAX_TEXT_CONTINUATIONS || tried >= MAX_THINKING_RETRIES {
+        return None;
+    }
+    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    Some(LlmMessage::text(
+        llm_gateway::Role::User,
+        format!(
+            "{} {} 直前の応答は思考に出力上限{limit}の大半を使い、本文が短いまま切れました\
+             （利用者の発話ではなくシステムからの連絡です。何も実行していません）。\
+             思考は短く切り上げてください。ツールを呼ぶ前の説明だったなら、書いた本文は繰り返さず\
+             次のツール呼び出しをすぐに出してください（1 回の呼び出しで書く量は小さく分ける）。\
+             回答の本文の途中だったなら、切れた位置の直後から続きを書いてください\
+             （前置き・繰り返しは書かない。文・表の行・```ブロックの途中ならその続きの文字から）。",
+            llm_gateway::CONTINUATION_MARK,
+            llm_gateway::THINKING_EXHAUSTED_MARK
+        ),
+    ))
 }
 
 /// 次の生成が「思考だけで上限に達した」直後の書き直しか（履歴の最後に催促がある）。
@@ -372,6 +423,9 @@ mod tests {
             matches!(&messages[2].content[0], Block::ToolResult { content, .. }
                 if content.starts_with("ok") && content.contains("8192 トークン"))
         );
+        for _ in 2..MAX_THINKING_RETRIES {
+            assert!(nudge_thinking_exhausted(&mut messages, Some(8192)));
+        }
         assert!(
             !nudge_thinking_exhausted(&mut messages, Some(8192)),
             "上限で打ち切る"
@@ -397,6 +451,43 @@ mod tests {
         messages.push(LlmMessage::text(LlmRole::Assistant, "まだ途中"));
         assert!(!is_text_continuation(&messages));
         assert!(text_continuation(&messages).is_none(), "上限回数で打ち切る");
+    }
+
+    #[test]
+    fn output_mostly_hidden_compares_visible_text_with_the_output() {
+        assert!(output_mostly_hidden("9〜14枚目を追記します。", 8192));
+        assert!(
+            !output_mostly_hidden(&"表の行".repeat(2000), 8192),
+            "長い本文の途中切れ"
+        );
+        assert!(
+            !output_mostly_hidden("短い", 0),
+            "出力量が届かなければ判定しない"
+        );
+    }
+
+    #[test]
+    fn thinking_exhausted_after_text_is_a_user_turn_and_shares_the_bound() {
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "スライドを作って")];
+        for _ in 0..MAX_THINKING_RETRIES {
+            messages.push(LlmMessage::text(LlmRole::Assistant, "追記します。"));
+            let nudge = thinking_exhausted_after_text(&messages, Some(8192)).unwrap();
+            assert_eq!(nudge.role, LlmRole::User);
+            assert!(
+                thinking_was_exhausted(std::slice::from_ref(&nudge)),
+                "effort を下げる目印"
+            );
+            assert!(
+                is_text_continuation(std::slice::from_ref(&nudge)),
+                "本文の続きとして連結する"
+            );
+            let Block::Text { text } = &nudge.content[0] else {
+                panic!("本文ブロック: {nudge:?}");
+            };
+            assert!(text.contains("8192"), "{text}");
+            messages.push(nudge);
+        }
+        assert!(thinking_exhausted_after_text(&messages, Some(8192)).is_none());
     }
 
     fn result(id: &str, content: &str) -> Block {

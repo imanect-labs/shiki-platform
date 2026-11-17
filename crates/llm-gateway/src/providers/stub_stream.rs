@@ -106,6 +106,32 @@ pub(super) fn thinking_only_stream(thinking: &str, prompt_tokens: u64) -> DeltaS
     .boxed()
 }
 
+/// 思考で出力上限をほぼ使い切り、本文の書き出しだけで止まるストリーム（`MaxTokens`）。
+/// `completion_tokens` は上限いっぱい（見えている本文はその一部だけ）。
+pub(super) fn thinking_then_short_text_stream(
+    thinking: &str,
+    text: &str,
+    prompt_tokens: u64,
+) -> DeltaStream {
+    stream::iter([
+        Ok(StreamDelta::ThinkingDelta {
+            text: thinking.to_string(),
+        }),
+        Ok(StreamDelta::TextDelta {
+            text: text.to_string(),
+        }),
+        Ok(StreamDelta::Done {
+            stop_reason: StopReason::MaxTokens,
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens: 8192,
+                ..Default::default()
+            },
+        }),
+    ])
+    .boxed()
+}
+
 fn text_stream_with_stop(reply: &str, prompt_tokens: u64, stop_reason: StopReason) -> DeltaStream {
     let words: Vec<String> = reply
         .split_inclusive(char::is_whitespace)
