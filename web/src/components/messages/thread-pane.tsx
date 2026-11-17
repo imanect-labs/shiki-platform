@@ -59,7 +59,7 @@ export function ThreadPane({
 
   return (
     <aside
-      className="flex h-full w-full shrink-0 flex-col border-l border-border bg-background sm:w-[380px]"
+      className="flex h-full w-full shrink-0 flex-col border-l border-border bg-background sm:w-[380px] lg:w-[440px] 2xl:w-[520px]"
       aria-label="スレッド"
       data-testid="thread-pane"
     >
