@@ -258,7 +258,7 @@ export function MessageRow({
 
       <div
         className={cn(
-          "group/msg relative px-5 outline-none transition-colors hover:bg-accent/35 focus-within:bg-accent/35 [content-visibility:auto] [contain-intrinsic-size:auto_56px]",
+          "group/msg relative px-5 outline-none transition-colors hover:bg-accent/35 focus-within:bg-accent/35",
           grouped ? "py-0.5" : "pb-0.5 pt-2.5",
         )}
         data-testid="message-row"
@@ -274,7 +274,9 @@ export function MessageRow({
             onDelete={alive && (mine || canModerate) ? () => setConfirmDelete(true) : undefined}
           />
         ) : null}
-        <div className="flex gap-2.5">
+        {/* 描画の省略（content-visibility）は本文側だけに掛ける。行に掛けると paint containment で
+            絶対配置の操作バーが行の高さで切れる（1 行の連続発言・タッチ端末の大きいボタン）。 */}
+        <div className="flex gap-2.5 [contain-intrinsic-size:auto_48px] [content-visibility:auto]">
           <div className="w-8 shrink-0 pt-0.5">
             {grouped ? (
               <span className="hidden select-none pt-1 text-[10.5px] leading-none text-muted-foreground/70 group-hover/msg:block">
