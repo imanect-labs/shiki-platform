@@ -197,8 +197,16 @@ fn fold(content: &str, is_error: bool) -> String {
     // 切れ目が封筒（<document> / <web_page>）の内側なら閉じてから注記を付ける。閉じないと
     // こちらの注記まで「文書のデータ」に見える（#1065）。
     let head = crate::tools::document_envelope::close_dangling(&content[..end]);
-    format!("{head}{FOLD_MARK}: {tag} {omitted} バイト］")
+    format!("{head}{FOLD_MARK}: {tag} {omitted} バイト。{FOLD_HINT}］")
 }
+
+/// 畳んだ結果に添える案内（#1326）。
+///
+/// 注記が「省略」だけだと、モデルは畳まれた中身を「根拠が無かった」と読み違える。実際に、
+/// 検索結果から正しく取った数値を「自分で入れた数字」と疑い、作業を止めて利用者に確認を
+/// 求めた。中身はあったこと、確かめるなら同じ呼び出しをし直せばよいことを書く。
+const FOLD_HINT: &str = "中身が無かったのではなく、文脈を空けるために省いただけ。\
+     この出力を根拠に書いた内容を確かめるには、同じツールを同じ引数で呼び直して読む";
 
 /// 省略（畳み込み）を始める閾値の、有効窓に対する千分率。
 const SOFT_PERMILLE: usize = 600;
@@ -407,6 +415,8 @@ mod tests {
         if let Block::ToolResult { content, .. } = &msgs[0].content[0] {
             assert!(is_folded(content));
             assert!(content.len() < big.len());
+            // 畳んだ中身を「根拠が無い」と読み違えないよう、呼び直しを案内する（#1326）。
+            assert!(content.contains("同じ引数で呼び直して"), "{content}");
         } else {
             panic!("expected tool_result");
         }
