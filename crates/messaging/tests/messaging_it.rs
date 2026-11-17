@@ -1728,3 +1728,148 @@ async fn failure_notice_is_shown_to_the_invoker_but_cannot_be_posted() {
         .unwrap();
     assert!(env.svc.agent_replies(&bob, ch.id).await.unwrap().is_empty());
 }
+
+/// 回答に ```ui の app（会話に送るボタンとワークフローのボタン）を書くエージェント。
+struct UiRuntime;
+
+const UI_ANSWER: &str = "見積もりの条件を選んでください。\n\n```ui\napp 見積もり\n## 条件\n人数 = number 必須 名 as seats\n契約 = choice 月額 | 年間 as term\nbutton 申請する -> workflow quote\nbutton 試算する -> chat\n```";
+
+#[async_trait]
+impl AgentRuntime for UiRuntime {
+    async fn answer(&self, _ctx: &AuthContext, _req: &AgentRequest) -> Result<AgentAnswer, Error> {
+        Ok(AgentAnswer {
+            text: UI_ANSWER.into(),
+            sources: Vec::new(),
+            create_chat: None,
+        })
+    }
+
+    async fn start_chat(
+        &self,
+        _ctx: &AuthContext,
+        _title: &str,
+        _req: &AgentRequest,
+    ) -> Result<Uuid, Error> {
+        Err(Error::Unavailable("使わない"))
+    }
+
+    async fn chat_status(
+        &self,
+        _ctx: &AuthContext,
+        _thread: Uuid,
+    ) -> Result<(Vec<PendingApprovalRef>, bool), Error> {
+        Ok((Vec::new(), false))
+    }
+}
+
+#[tokio::test]
+async fn ui_buttons_continue_the_thread_as_the_owner_only() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob) = (env.ctx("alice"), env.ctx("bob"));
+    let ch = env
+        .svc
+        .create_channel(&alice, create("図のボタン", ChannelKind::Public), None)
+        .await
+        .unwrap();
+    env.svc.join(&bob, ch.id, None).await.unwrap();
+    let runtime: Arc<dyn AgentRuntime> = Arc::new(UiRuntime);
+    let trigger = env
+        .svc
+        .post(
+            &bob,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 見積もりを作って".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .invoke_agent(&bob, &runtime, trigger.id, ReplyMode::Public, None)
+        .await
+        .unwrap();
+    let answer = env
+        .svc
+        .thread(&bob, ch.id, trigger.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.author.kind == messaging::AuthorKind::Assistant)
+        .expect("公開返信がスレッドに入る");
+    let block = yui::extract_action_blocks(UI_ANSWER)
+        .into_iter()
+        .next()
+        .unwrap();
+    let workflow_key = yui::action_key(&block.hash, "a1");
+    let chat_key = yui::action_key(&block.hash, "a2");
+    let values: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_value(serde_json::json!({ "seats": 300, "term": "年間" })).unwrap();
+
+    // 持ち主が会話に送るボタンを押すと、同じスレッドへの自分のエージェントあての発言になる。
+    let (channel, reply) = env
+        .svc
+        .ui_action_reply(&bob, answer.id, &chat_key, &values)
+        .await
+        .unwrap();
+    assert_eq!(channel, ch.id);
+    assert_eq!(reply.parent_id, Some(trigger.id));
+    assert!(messaging::mentions_agent(&reply.blocks));
+    let text: String = reply
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("試算する") && text.contains("300") && text.contains("年間"),
+        "{text}"
+    );
+    let posted = env.svc.post(&bob, channel, reply, None).await.unwrap();
+    assert_eq!(posted.parent_id, Some(trigger.id));
+
+    // 他人のエージェントの回答のボタンは押せない。
+    let err = env
+        .svc
+        .ui_action_reply(&alice, answer.id, &chat_key, &values)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Forbidden(_)), "{err:?}");
+    // ワークフローのボタンはチャンネルでは押せない（回答に紛れ込んだボタンで起動させない）。
+    let err = env
+        .svc
+        .ui_action_reply(&bob, answer.id, &workflow_key, &values)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+    // 必須の値が無い・回答に無いボタン・人の発言は受け付けない。
+    let err = env
+        .svc
+        .ui_action_reply(&bob, answer.id, &chat_key, &serde_json::Map::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+    let err = env
+        .svc
+        .ui_action_reply(&bob, answer.id, &format!("{}:a9", block.hash), &values)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::NotFound), "{err:?}");
+    let err = env
+        .svc
+        .ui_action_reply(&bob, trigger.id, &chat_key, &values)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::Forbidden(_)), "{err:?}");
+}

@@ -394,6 +394,25 @@ async fn messaging_http_routes_round_trip() {
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+    // 図のボタンは自分のエージェントの回答だけ（人の発言は 403・無い発言は 404）。
+    let (s, _) = call(
+        &app,
+        "sid-bob",
+        "POST",
+        &format!("/messaging/messages/{mid}/ui-actions"),
+        json!({"action_id": "0000000000000000:a1", "values": {}}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = call(
+        &app,
+        "sid-bob",
+        "POST",
+        &format!("/messaging/messages/{}/ui-actions", uuid::Uuid::new_v4()),
+        json!({"action_id": "0000000000000000:a1"}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, mentions) = call(&app, "sid-bob", "GET", "/messaging/mentions", Value::Null).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(mentions.as_array().unwrap().len(), 1);

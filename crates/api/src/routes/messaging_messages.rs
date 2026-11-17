@@ -79,6 +79,12 @@ pub(crate) fn route_decls() -> Vec<RouteDecl> {
             || get(get_message).patch(edit_message).delete(delete_message),
         ),
         RouteDecl::new(
+            "/messaging/messages/{id}/ui-actions",
+            &["POST"],
+            AccessPolicy::Session,
+            || post(invoke_ui_action),
+        ),
+        RouteDecl::new(
             "/messaging/messages/{id}/reactions",
             &["POST"],
             AccessPolicy::Session,
@@ -149,6 +155,45 @@ pub async fn post_message(
     if messaging::mentions_agent(&view.blocks) {
         spawn_agent(&state, &svc, ctx, view.id, private, trace.0);
     }
+    Ok(Json(view))
+}
+
+/// エージェントの回答の図（```ui）のボタンを押す。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UiActionBody {
+    /// ボタンの id（`{ブロックの識別子}:{a1}`）。
+    pub action_id: String,
+    /// 図の入力部品の値（部品の名前 → 値）。サーバーが保存済みの図で検証する。
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 自分のエージェントの回答の図のボタン（`-> chat`）を押す。押した内容を自分の発言としてスレッドに書き、
+/// エージェントが続けて答える（通常の投稿と同じ経路・権限は増えない）。
+#[utoipa::path(post, path = "/messaging/messages/{id}/ui-actions", params(("id" = Uuid, Path)), request_body = UiActionBody,
+    responses((status = 200, description = "スレッドに書いた発言", body = MessageView),
+        (status = 400, description = "値が不正・ワークフローのボタン"),
+        (status = 403, description = "自分のエージェントの回答ではない・投稿できない"),
+        (status = 404, description = "回答・ボタンが無い")),
+    security(("session" = [])))]
+pub async fn invoke_ui_action(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UiActionBody>,
+) -> Result<Json<MessageView>, ApiError> {
+    let svc = service(&state)?.clone();
+    let (channel, input) = svc
+        .ui_action_reply(&ctx, id, &body.action_id, &body.values)
+        .await
+        .map_err(error)?;
+    let view = svc
+        .post(&ctx, channel, input, trace.0.as_deref())
+        .await
+        .map_err(error)?;
+    spawn_agent(&state, &svc, ctx, view.id, false, trace.0);
     Ok(Json(view))
 }
 

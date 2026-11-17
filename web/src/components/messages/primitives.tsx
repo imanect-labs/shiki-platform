@@ -5,7 +5,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Bot, Hash, Lock, Megaphone, User } from "lucide-react";
+import { Bot, Hash, Lock, Megaphone, Sparkles, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/format";
@@ -21,6 +21,9 @@ import {
   type FileView,
   type MessageView,
 } from "@/lib/messaging-api";
+
+/// エージェントの回答の外部リンクの出所（無し＝外部リンクはすべて押したときに確認する）。
+const NO_LINK_SOURCES: ReadonlySet<string> = new Set();
 
 /// 画面全体で共有する表示用の文脈。
 export type MessagingDisplay = {
@@ -116,12 +119,26 @@ export function AuthorAvatar({
   );
 }
 
+/// AI の発言の印（名前の横に置く・人の発言と見分けるため。色は付けない）。
+export function AiBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 self-center rounded-[5px] border border-foreground/25 px-1 py-px text-[10px] font-semibold leading-[14px] tracking-wide text-foreground/75"
+      data-testid="ai-badge"
+    >
+      <Sparkles className="size-2.5" aria-hidden />
+      AI
+    </span>
+  );
+}
+
 /// 書き手の名前の行（エージェントは必ず「〇〇 のエージェント」を並べる・なりすまし対策）。
 export function AuthorLabel({ author }: { author: AuthorView }) {
   if (author.kind === "assistant") {
     return (
       <>
         <span className="text-[13.5px] font-semibold text-foreground">{author.display_name}</span>
+        <AiBadge />
         <span
           className="rounded-full border border-border/60 px-1.5 py-px text-[10.5px] font-medium leading-4 text-muted-foreground"
           data-testid="agent-owner-label"
@@ -252,8 +269,9 @@ export function Blocks({ message }: { message: Pick<MessageView, "blocks" | "fil
       files.push(<FileRefCard key={i} file={message.files.find((f) => f.block_index === i)} />);
     }
   });
-  // エージェントの回答は Markdown で書かれる（箇条書き・強調）。本文はチャンネルの発言（利用者が書いたもの）
-  // から作られるので、利用者の本文と同じく untrusted で描く（画像を読まず、リンクには行き先のホストを添える）。
+  // エージェントの回答は Markdown（箇条書き・強調・```ui の図）で書かれる。図はチャットの回答と同じく描き、
+  // ボタンは置き場所（発言の行の YuiActionContext）が押せるかを決める。本文はチャンネルの発言（利用者が
+  // 書いたもの）を元に作られるので、外部の画像は読まず、外部リンクは押したときに確認してから開く。
   const agentText =
     message.author.kind === "assistant" && message.blocks.every((b) => b.type === "text")
       ? message.blocks.map((b) => (b.type === "text" ? b.text : "")).join("")
@@ -261,7 +279,10 @@ export function Blocks({ message }: { message: Pick<MessageView, "blocks" | "fil
   return (
     <>
       {agentText !== null ? (
-        <Markdown untrusted breaks className="text-[13.5px] leading-[1.65] text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+        <Markdown
+          linkSources={NO_LINK_SOURCES}
+          className="text-[13.5px] leading-[1.65] text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+        >
           {agentText}
         </Markdown>
       ) : inline.length > 0 ? (

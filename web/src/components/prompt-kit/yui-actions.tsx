@@ -39,6 +39,8 @@ export type YuiActionHost = {
   onChanged: () => void;
   /// `app` の図を「アプリとして保存」する（会話の回答の図だけ）。
   saveAsApp?: (block: string, title: string) => void;
+  /// ボタンを押せない理由（置き場所が決める・例: 他人のエージェントの回答）。あれば表示だけにする。
+  disabledReason?: string;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -137,6 +139,7 @@ export function useYuiActions(
 
   if (!actionable) return null;
   if (!host) return { actionDisabledReason: "この場所ではボタンを使えません", runs: [] };
+  if (host.disabledReason) return { actionDisabledReason: host.disabledReason, runs: [] };
   if (nested) return { actionDisabledReason: "引用や箇条書きの中の図のボタンは使えません", runs: [] };
   if (!complete) return { actionDisabledReason: "回答の生成が終わると使えます", runs: [] };
   if (!closed) return { actionDisabledReason: "図のブロックが閉じていないため、ボタンは使えません", runs: [] };

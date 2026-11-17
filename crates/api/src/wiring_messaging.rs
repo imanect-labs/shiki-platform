@@ -47,6 +47,7 @@ pub(crate) async fn wire_messaging(
             authz: Arc::clone(authz),
             search: search.cloned(),
             chat: chat.cloned(),
+            yui: config.chat.yui,
         }) as Arc<dyn messaging::AgentRuntime>
     });
     tracing::info!(

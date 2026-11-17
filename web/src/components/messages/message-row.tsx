@@ -18,7 +18,8 @@ import {
 } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { mentionLabel, type MemberView, type MessageBlock, type MessageView } from "@/lib/messaging-api";
+import { invokeMessageUiAction, mentionLabel, type MemberView, type MessageBlock, type MessageView } from "@/lib/messaging-api";
+import { YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import { AuthorAvatar, AuthorLabel, Blocks, useMessagingDisplay } from "./primitives";
 import { Composer, draftOf } from "./composer";
 import { timeLabel } from "./time";
@@ -234,6 +235,27 @@ export function MessageRow({
   const time = timeLabel(message.created_at);
   const replyCount = message.reply_count;
 
+  // エージェントの回答の図（```ui）のボタン。押した内容は自分の発言としてスレッドに入り、エージェントが
+  // 続けて答える（サーバーが保存済みの回答で検証する）。押せるのは自分のエージェントの回答だけ。
+  const yuiHost = React.useMemo<YuiActionHost | null>(() => {
+    if (message.author.kind !== "assistant") return null;
+    const owner = message.author.user_id === me;
+    return {
+      invoke: (key, values) => invokeMessageUiAction(message.id, key, values),
+      isBound: () => false,
+      invokedActions: [],
+      uiRuns: [],
+      onChanged: () => undefined,
+      disabledReason: !alive
+        ? "この回答のボタンは使えません"
+        : !owner
+          ? `${message.author.owner_name ?? "持ち主"} のエージェントの回答なので、ボタンは持ち主だけが押せます`
+          : !canReact
+            ? "このチャンネルでは投稿できないため、ボタンは使えません"
+            : undefined,
+    };
+  }, [message.author, message.id, me, alive, canReact]);
+
   const draft = React.useMemo(
     () => (editing ? draftOf(message.blocks, message.files, (m) => mentionLabel(m, names, agentName)) : undefined),
     [editing, message.blocks, message.files, names, agentName],
@@ -318,7 +340,9 @@ export function MessageRow({
               />
             ) : (
               <>
-                <Blocks message={message} />
+                <YuiActionContext.Provider value={yuiHost}>
+                  <Blocks message={message} />
+                </YuiActionContext.Provider>
                 {message.edited ? <span className="text-[11px] text-muted-foreground">（編集済み）</span> : null}
                 <LinkPreviews message={message} />
               </>

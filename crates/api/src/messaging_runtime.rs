@@ -21,7 +21,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 /// 回答の最大トークン数。
-const MAX_TOKENS: u32 = 1_500;
+/// 1 回答の上限。```ui の図（表・計算機・ボタン）を書けるだけの余裕を持たせる。
+const MAX_TOKENS: u32 = 4_000;
 /// 回答の根拠に使う社内文書の件数。
 const RAG_TOP_K: u32 = 5;
 /// 公開返信で引く候補の件数（チャンネルに共有した資料だけに絞る前）。
@@ -36,9 +37,26 @@ pub struct GatewayAgentRuntime {
     pub authz: Arc<dyn AuthzClient>,
     pub search: Option<Arc<rag::SearchService>>,
     pub chat: Option<Arc<chat::ChatStore>>,
+    /// 回答の中に ```ui（Yui）の図を書かせるか（チャットと同じ運用設定 `chat.yui`）。
+    pub yui: bool,
 }
 
-fn system_prompt(req: &AgentRequest, docs: &str) -> String {
+/// 職員間メッセージでの図と UI の決まり（チャットの決まりのうち、ここで使えるものだけ）。
+///
+/// - ボタンは `-> chat` だけ。押すと、押した人（エージェントの持ち主）の発言としてスレッドに送られ、
+///   エージェントが続けて答える。
+/// - ワークフローを起動するボタンは使わない（チャンネルの発言はほかの参加者が書いたもので、回答に
+///   紛れ込んだボタンを押した人の権限で起動させない）。ask・plan のカードも使わない。
+const MESSAGING_YUI_GUIDE: &str = "# 回答の中の図と UI（```ui ブロック）\n\
+回答を文章だけで済ませず、内容に合う図や操作できる UI を ```ui ブロックで回答の中に置ける。\n\
+- 数値（比較・推移・割合・指標）、手順・予定、構成、案の比較を含む回答では、下の早見から合う種類を選んで書く。\n\
+- 条件しだいで答えが変わる試算（料金・割り勘など）は、calc で利用者が値を動かせるようにする。\n\
+- 次に選べる行動・続けて聞けることを示すときは、app の `button 文言 -> chat` で押して選べるようにする。押すと利用者の発言としてスレッドに送られ、あなたが続けて答える。\n\
+- `-> workflow` のボタン、ask・plan のカードは使わない（このチャンネルでは押せない）。\n\
+- 数値はチャンネルの発言と資料にあるものだけを使う。無ければ数値の図は作らない。\n\
+- 短い返事・あいさつなど、図が助けにならない回答には付けない。図は 1 回答に 1〜2 個までにする。";
+
+fn system_prompt(req: &AgentRequest, docs: &str, yui: bool) -> String {
     let scope = match req.mode() {
         ReplyMode::Public => {
             "回答はチャンネルの参加者全員に公開されます。**根拠にしてよいのは、下の <channel> の発言と、\
@@ -58,7 +76,13 @@ fn system_prompt(req: &AgentRequest, docs: &str) -> String {
          1 行目に `[[CHAT:` と作業の内容を表す 20 字以内の題名と `]]` だけを書き（例: `[[CHAT:ABC 商事向け提案書の作成]]`）、\
          それ以外は何も書かないでください（チャットを作って作業を移します）。\
          質問に答える根拠が手元に無いだけなら、チャットは作らずに「分かりません」と答えてください。\n\
+         {figures}\
          <channel name=\"{channel}\">\n{transcript}\n</channel>\n{docs}",
+        figures = if yui {
+            format!("{MESSAGING_YUI_GUIDE}\n\n{}\n\n", chat::yui_inline_reference())
+        } else {
+            String::new()
+        },
         name = req.agent_name(),
         channel = req.channel_name(),
         transcript = req
@@ -235,7 +259,7 @@ impl AgentRuntime for GatewayAgentRuntime {
             }
         }
         let text = self
-            .generate(ctx, system_prompt(req, &docs), req.question())
+            .generate(ctx, system_prompt(req, &docs, self.yui), req.question())
             .await?;
         let (text, create_chat) = parse_answer(&text, req.question());
         if create_chat.is_none() && text.is_empty() {

@@ -30,8 +30,18 @@ import {
   type AgentReplyView,
   type PublishResult,
 } from "@/lib/messaging-api";
-import { AgentAvatar, Blocks, useMessagingDisplay } from "./primitives";
+import { AgentAvatar, AiBadge, Blocks, useMessagingDisplay } from "./primitives";
 import { timeLabel } from "./time";
+import { YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
+
+const PRIVATE_REPLY_YUI: YuiActionHost = {
+  invoke: () => Promise.reject(new Error("チャンネルに投稿すると押せます")),
+  isBound: () => false,
+  invokedActions: [],
+  uiRuns: [],
+  onChanged: () => undefined,
+  disabledReason: "自分だけに表示の回答のボタンは、チャンネルに投稿すると押せます",
+};
 
 export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; onChanged: () => void }) {
   const { me, agentName, agentHasIcon } = useMessagingDisplay();
@@ -86,6 +96,7 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
             <span className="text-[13.5px] font-semibold text-foreground">{agentName}</span>
+            <AiBadge />
             {failed ? (
               <span className="inline-flex items-center gap-1 self-center rounded-full bg-destructive/10 px-1.5 py-px text-[10.5px] font-medium leading-4 text-destructive">
                 <AlertCircle className="size-3" aria-hidden />
@@ -102,7 +113,10 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
             </time>
           </div>
 
-          <Blocks message={{ blocks: reply.blocks, files: [], author }} />
+          {/* 自分だけに表示の回答の図は表示だけ（ボタンはチャンネルに投稿した後の発言で押せる）。 */}
+          <YuiActionContext.Provider value={PRIVATE_REPLY_YUI}>
+            <Blocks message={{ blocks: reply.blocks, files: [], author }} />
+          </YuiActionContext.Provider>
 
           {reply.chat_thread_id ? (
             // チャット画面の成果物カードと同じ作り（タイル・題名・説明・開くボタン）。色は付けない。

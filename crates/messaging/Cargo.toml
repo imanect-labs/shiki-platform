@@ -13,6 +13,7 @@ name = "messaging"
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 shiki-chat.workspace = true
+shiki-yui.workspace = true
 shiki-web-access.workspace = true
 shiki-sandbox-client.workspace = true
 sqlx.workspace = true
@@ -32,9 +33,9 @@ reqwest.workspace = true
 [dev-dependencies]
 shiki-testenv.workspace = true
 
-# lib 名 authz/storage/chat/sandbox_client/web_access で参照するため machete が誤検出する。
+# lib 名 authz/storage/chat/yui/sandbox_client/web_access で参照するため machete が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-chat", "shiki-sandbox-client", "shiki-web-access"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-chat", "shiki-yui", "shiki-sandbox-client", "shiki-web-access"]
 
 [lints]
 workspace = true

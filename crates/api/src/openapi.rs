@@ -107,6 +107,7 @@ use utoipa::{
         crate::routes::messaging::open_dm,
         crate::routes::messaging_messages::list_messages,
         crate::routes::messaging_messages::post_message,
+        crate::routes::messaging_messages::invoke_ui_action,
         crate::routes::messaging_messages::get_thread,
         crate::routes::messaging_messages::stream_channel,
         crate::routes::messaging_messages::list_agent_replies,

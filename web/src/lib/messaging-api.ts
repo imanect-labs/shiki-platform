@@ -203,6 +203,16 @@ export async function deleteMessage(id: string): Promise<void> {
   return empty(await apiFetch(`/messaging/messages/${enc(id)}`, send("DELETE")));
 }
 
+/// エージェントの回答の図（```ui）のボタンを押す。押した内容が自分の発言としてスレッドに入り、
+/// エージェントが続けて答える（押せるのは自分のエージェントの回答の `-> chat` のボタンだけ）。
+export async function invokeMessageUiAction(
+  id: string,
+  actionId: string,
+  values: Record<string, unknown>,
+): Promise<MessageView> {
+  return json(await apiFetch(`/messaging/messages/${enc(id)}/ui-actions`, send("POST", { action_id: actionId, values })));
+}
+
 export async function react(id: string, emoji: string, on: boolean): Promise<MessageView> {
   return json(await apiFetch(`/messaging/messages/${enc(id)}/reactions`, send("POST", { emoji, on })));
 }

@@ -5617,6 +5617,7 @@ dependencies = [
  "shiki-storage",
  "shiki-testenv",
  "shiki-web-access",
+ "shiki-yui",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
