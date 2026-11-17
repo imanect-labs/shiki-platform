@@ -8,7 +8,6 @@ import Link from "next/link";
 import { Bot, Hash, Lock, Megaphone, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { seasonVar } from "@/lib/season";
 import { formatBytes } from "@/lib/format";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { NodeIcon } from "@/components/drive/primitives";
@@ -49,50 +48,33 @@ export function useMessagingDisplay(): MessagingDisplay {
   return React.useContext(MessagingDisplayContext);
 }
 
-/// 利用者 id から決まる四季の巡回インデックス（アバターの色味が人ごとに揃う）。
-function seasonOf(id: string): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) | 0;
-  return Math.abs(h) % 4;
-}
-
 /// 表示名の頭文字（空なら「?」）。
 function initialOf(name: string): string {
   const t = name.trim();
   return t ? Array.from(t)[0].toUpperCase() : "?";
 }
 
-/// 利用者のアバター（季節色のタイルに頭文字）。プロフィール画像の API は無いので頭文字で示す。
+/// 利用者のアバター（中立の淡い地に頭文字）。プロフィール画像の API は無いので頭文字で示す。
+/// 色で人を塗り分けない（名前の行で見分けられ、色だけが騒がしくなるため）。
 export function UserAvatar({
-  userId,
   name,
   size = "default",
   className,
 }: {
-  userId: string;
+  /// 呼び出し側の互換のため受け取る（色で人を塗り分けないので見た目には使わない）。
+  userId?: string;
   name: string;
   size?: "xs" | "sm" | "default" | "lg";
   className?: string;
 }) {
-  const tint = seasonVar(seasonOf(userId));
   return (
     <Avatar size={size} className={cn("rounded-[10px]", className)}>
-      <AvatarFallback
-        // 平らなパステルではなく、その人の季節色で淡いグラデ＋内側の細い縁。
-        className="rounded-[inherit] font-semibold tracking-tight"
-        style={{
-          backgroundImage: `linear-gradient(140deg, color-mix(in oklab, ${tint} 38%, transparent), color-mix(in oklab, ${tint} 16%, transparent))`,
-          color: `color-mix(in oklab, ${tint} 45%, var(--foreground))`,
-          boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${tint} 32%, transparent)`,
-        }}
-      >
-        {initialOf(name)}
-      </AvatarFallback>
+      <AvatarFallback className="rounded-[inherit] bg-muted font-medium text-muted-foreground ring-1 ring-inset ring-border">{initialOf(name)}</AvatarFallback>
     </Avatar>
   );
 }
 
-/// エージェント（AI）のアイコン。持ち主が設定していればその画像、無ければプライマリ地のロボット。
+/// エージェント（AI）のアイコン。持ち主が設定していればその画像、無ければ中立の淡い地に細い線のロボット。
 export function AgentAvatar({
   ownerId,
   hasIcon,
@@ -110,11 +92,8 @@ export function AgentAvatar({
       {hasIcon ? (
         <AvatarImage src={agentIconUrl(ownerId, ownerId === me ? iconVersion : undefined)} alt="" />
       ) : null}
-      <AvatarFallback
-        className="rounded-[inherit] text-primary-foreground"
-        style={{ backgroundImage: "linear-gradient(140deg, var(--primary), color-mix(in oklab, var(--primary) 70%, var(--season-autumn)))" }}
-      >
-        <Bot className="size-[60%]" strokeWidth={2.25} aria-hidden />
+      <AvatarFallback className="rounded-[inherit] bg-muted text-muted-foreground ring-1 ring-inset ring-border">
+        <Bot className="size-[58%]" strokeWidth={1.75} aria-hidden />
       </AvatarFallback>
     </Avatar>
   );
@@ -179,41 +158,31 @@ export function ChannelIcon({
 }
 
 const TILE_SIZE = {
-  xs: "size-5 rounded-[6px] [&_svg]:size-3",
-  sm: "size-7 rounded-[8px] [&_svg]:size-3.5",
-  md: "size-9 rounded-[10px] [&_svg]:size-[18px]",
-  lg: "size-14 rounded-[16px] [&_svg]:size-7",
+  xs: "size-5 [&_svg]:size-4",
+  sm: "size-7 [&_svg]:size-[18px]",
+  md: "size-9 [&_svg]:size-5",
+  lg: "size-10 [&_svg]:size-7",
 } as const;
 
-/// チャンネルのタイル（チャンネルごとの季節色の地に種別のアイコン）。人のアバターと同じ色の作りにして、
-/// 一覧・ヘッダ・チャンネルの冒頭で同じチャンネルが同じ色で見分けられるようにする。
+/// チャンネルの種別アイコン（地も枠も付けない細い線のアイコン・大きさだけを揃える）。
 export function ChannelTile({
-  channelId,
   kind,
   announcement,
   agentDm,
   size = "md",
   className,
 }: {
-  channelId: string;
+  /// 呼び出し側の互換のため受け取る（見た目には使わない）。
+  channelId?: string;
   kind: ChannelKind;
   announcement?: boolean;
   agentDm?: boolean;
   size?: keyof typeof TILE_SIZE;
   className?: string;
 }) {
-  const tint = seasonVar(seasonOf(channelId));
   return (
-    <span
-      aria-hidden
-      className={cn("flex shrink-0 items-center justify-center", TILE_SIZE[size], className)}
-      style={{
-        backgroundImage: `linear-gradient(140deg, color-mix(in oklab, ${tint} 34%, transparent), color-mix(in oklab, ${tint} 14%, transparent))`,
-        color: `color-mix(in oklab, ${tint} 50%, var(--foreground))`,
-        boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${tint} 30%, transparent)`,
-      }}
-    >
-      <ChannelIcon kind={kind} announcement={announcement} agentDm={agentDm} className="size-auto" />
+    <span aria-hidden className={cn("flex shrink-0 items-center justify-center text-muted-foreground", TILE_SIZE[size], className)}>
+      <ChannelIcon kind={kind} announcement={announcement} agentDm={agentDm} className="size-auto [stroke-width:1.75]" />
     </span>
   );
 }
