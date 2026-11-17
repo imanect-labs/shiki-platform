@@ -145,6 +145,7 @@ pub struct AgentReplyView {
     pub id: Uuid,
     pub channel_id: Uuid,
     pub trigger_message_id: Uuid,
+    /// `private`（回答・投稿できる）か `failed`（応答できなかった知らせ・投稿できない）。
     pub visibility: String,
     pub blocks: Vec<ContentBlock>,
     /// 作業を移したチャット（`/c/{id}` で開く）。
@@ -444,11 +445,13 @@ impl MessagingService {
             _ => "一時的なエラーです。しばらくしてから呼び直してください".to_string(),
         };
         let text = format!("エージェントが応答できませんでした（{reason}）。");
+        // 回答ではないので `failed` で残す（本人に見せて閉じられるが、チャンネルには投稿できない）。
         let _ = self
-            .save_private_reply(
+            .save_reply_for_invoker(
                 ctx,
                 channel,
                 trigger,
+                "failed",
                 vec![ContentBlock::Text { text }],
                 &[],
                 None,
@@ -465,9 +468,25 @@ impl MessagingService {
         sources: &[Uuid],
         chat: Option<(Uuid, &str)>,
     ) -> Result<(), Error> {
+        self.save_reply_for_invoker(ctx, channel, trigger, "private", blocks, sources, chat)
+            .await
+    }
+
+    /// 呼んだ本人だけに見せる行（`private` = 回答・`failed` = 応答できなかった知らせ）を残して知らせる。
+    #[allow(clippy::too_many_arguments)]
+    async fn save_reply_for_invoker(
+        &self,
+        ctx: &AuthContext,
+        channel: Uuid,
+        trigger: Uuid,
+        visibility: &str,
+        blocks: Vec<ContentBlock>,
+        sources: &[Uuid],
+        chat: Option<(Uuid, &str)>,
+    ) -> Result<(), Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         insert_reply(
-            &mut tx, ctx, channel, trigger, "private", &blocks, sources, chat, None,
+            &mut tx, ctx, channel, trigger, visibility, &blocks, sources, chat, None,
         )
         .await?;
         tx.commit().await?;
@@ -494,7 +513,7 @@ impl MessagingService {
         let rows: Vec<ReplyRow> = sqlx::query_as(
             "SELECT id, channel_id, trigger_message_id, visibility, blocks, sources, chat_thread_id, created_at \
              FROM channel_agent_reply WHERE tenant_id = $1 AND org = $2 AND channel_id = $3 \
-               AND invoked_by = $4 AND visibility = 'private' AND dismissed_at IS NULL \
+               AND invoked_by = $4 AND visibility IN ('private', 'failed') AND dismissed_at IS NULL \
              ORDER BY created_at DESC LIMIT 50",
         )
         .bind(ctx.tenant_id())
@@ -560,7 +579,7 @@ impl MessagingService {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
         let found: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM channel_agent_reply WHERE tenant_id = $1 AND org = $2 \
-               AND channel_id = $3 AND invoked_by = $4 AND visibility = 'private' AND created_at > $5)",
+               AND channel_id = $3 AND invoked_by = $4 AND visibility IN ('private', 'failed') AND created_at > $5)",
         )
         .bind(ctx.tenant_id())
         .bind(ctx.org())
@@ -598,6 +617,11 @@ impl MessagingService {
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::NotFound)?;
+        if row.visibility == "failed" {
+            return Err(Error::Invalid(
+                "応答できなかった知らせは投稿できません".into(),
+            ));
+        }
         if row.visibility != "private" {
             return Err(Error::Conflict("すでに投稿済みです"));
         }
@@ -675,7 +699,7 @@ impl MessagingService {
         let n = sqlx::query(
             // 行は消さない（チャットの承認待ちの見張りが拾う行なので、表示だけを隠す）。
             "UPDATE channel_agent_reply SET dismissed_at = now() WHERE tenant_id = $1 AND org = $2 \
-               AND id = $3 AND invoked_by = $4 AND visibility = 'private' AND dismissed_at IS NULL",
+               AND id = $3 AND invoked_by = $4 AND visibility IN ('private', 'failed') AND dismissed_at IS NULL",
         )
         .bind(ctx.tenant_id())
         .bind(ctx.org())

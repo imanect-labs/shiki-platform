@@ -91,7 +91,9 @@ function HoverToolbar({
         // 見えていない間はクリックを奪わない（上の行の右上に不可視の的が重なるのを防ぐ）。
         "pointer-events-none opacity-0 transition-opacity duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
         "group-hover/msg:pointer-events-auto group-hover/msg:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100",
-        "pointer-coarse:pointer-events-auto pointer-coarse:opacity-100",
+        // タッチ端末は hover が無い。全行に常に出すと名前や本文に重なるので、行をタップした（行に
+        // フォーカスがある）ときだけ出す。指で押せる大きさにする。
+        "group-focus-within/msg:pointer-events-auto group-focus-within/msg:opacity-100 pointer-coarse:[&_button]:size-10",
         pickerOpen && "pointer-events-auto opacity-100",
       )}
     >
@@ -256,11 +258,13 @@ export function MessageRow({
 
       <div
         className={cn(
-          "group/msg relative px-5 transition-colors hover:bg-accent/35 [content-visibility:auto] [contain-intrinsic-size:auto_56px]",
+          "group/msg relative px-5 outline-none transition-colors hover:bg-accent/35 focus-within:bg-accent/35 [content-visibility:auto] [contain-intrinsic-size:auto_56px]",
           grouped ? "py-0.5" : "pb-0.5 pt-2.5",
         )}
         data-testid="message-row"
         data-message-id={message.id}
+        // タップで行にフォーカスを置き、タッチ端末でも操作（リアクション・返信・編集・削除）を出せるようにする。
+        tabIndex={-1}
       >
         {!editing ? (
           <HoverToolbar

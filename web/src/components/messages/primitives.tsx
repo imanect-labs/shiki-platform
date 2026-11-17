@@ -12,6 +12,7 @@ import { seasonVar } from "@/lib/season";
 import { formatBytes } from "@/lib/format";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { NodeIcon } from "@/components/drive/primitives";
+import { Markdown } from "@/components/prompt-kit/markdown";
 import {
   agentIconUrl,
   authorName,
@@ -242,9 +243,19 @@ export function Blocks({ message }: { message: Pick<MessageView, "blocks" | "fil
       files.push(<FileRefCard key={i} file={message.files.find((f) => f.block_index === i)} />);
     }
   });
+  // エージェントの回答は Markdown で書かれる（箇条書き・強調）。本文はチャンネルの発言（利用者が書いたもの）
+  // から作られるので、利用者の本文と同じく untrusted で描く（画像を読まず、リンクには行き先のホストを添える）。
+  const agentText =
+    message.author.kind === "assistant" && message.blocks.every((b) => b.type === "text")
+      ? message.blocks.map((b) => (b.type === "text" ? b.text : "")).join("")
+      : null;
   return (
     <>
-      {inline.length > 0 ? (
+      {agentText !== null ? (
+        <Markdown untrusted breaks className="text-[13.5px] leading-[1.65] text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+          {agentText}
+        </Markdown>
+      ) : inline.length > 0 ? (
         <p className="whitespace-pre-wrap break-words text-[13.5px] leading-[1.65] text-foreground/90">{inline}</p>
       ) : null}
       {files.length > 0 ? <div className="flex flex-col items-start">{files}</div> : null}

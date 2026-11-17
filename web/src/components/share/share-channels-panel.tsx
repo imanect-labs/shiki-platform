@@ -9,7 +9,7 @@
 /// - 共有・解除の認可（owner かつ参加者）はサーバが決める。ここは候補を絞るだけ。
 
 import * as React from "react";
-import { Hash, Loader2, Lock, MessageSquare, X } from "lucide-react";
+import { Hash, Loader2, Lock, Megaphone, MessageSquare, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/use-toast";
@@ -121,7 +121,7 @@ export function ShareChannelsPanel({ open, nodeId }: { open: boolean; nodeId: st
               const already = shared.has(c.id);
               return (
                 <li key={c.id} data-testid="share-channel-candidate" className="flex items-center gap-2.5 px-3 py-2">
-                  <ChannelAvatar kind={c.kind} />
+                  <ChannelAvatar kind={c.kind} announcement={c.announcement} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{c.name}</p>
                     <p className="truncate text-xs text-muted-foreground">
@@ -201,8 +201,9 @@ function kindLabel(kind: ChannelKind): string {
   return kind === "public" ? "公開チャンネル" : kind === "private" ? "非公開チャンネル" : "ダイレクトメッセージ";
 }
 
-function ChannelAvatar({ kind }: { kind: ChannelKind | null }) {
-  const Icon = kind === "private" ? Lock : kind === "dm" ? MessageSquare : Hash;
+function ChannelAvatar({ kind, announcement = false }: { kind: ChannelKind | null; announcement?: boolean }) {
+  // メッセージ画面のチャンネル一覧と同じ見分け方（アナウンス専用はメガホン）。
+  const Icon = kind === "private" ? Lock : kind === "dm" ? MessageSquare : announcement ? Megaphone : Hash;
   return (
     <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground">
       <Icon className="size-4" aria-hidden />

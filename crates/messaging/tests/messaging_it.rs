@@ -1655,3 +1655,76 @@ async fn ask(
         .iter()
         .any(|m| m.author.kind == messaging::AuthorKind::Assistant)
 }
+
+#[tokio::test]
+async fn failure_notice_is_shown_to_the_invoker_but_cannot_be_posted() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob) = (env.ctx("alice"), env.ctx("bob"));
+    let ch = env
+        .svc
+        .create_channel(&alice, create("失敗の知らせ", ChannelKind::Public), None)
+        .await
+        .unwrap();
+    env.svc.join(&bob, ch.id, None).await.unwrap();
+    let trigger = env
+        .svc
+        .post(
+            &bob,
+            ch.id,
+            NewMessage {
+                parent_id: None,
+                blocks: vec![
+                    ContentBlock::Mention {
+                        mention: Mention::Agent,
+                    },
+                    ContentBlock::Text {
+                        text: " 要約して".into(),
+                    },
+                ],
+                agent_private: false,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    env.svc
+        .agent_failed(
+            &bob,
+            trigger.id,
+            &Error::Unavailable("AI を呼び出せませんでした"),
+        )
+        .await;
+
+    // 呼んだ本人にだけ、失敗として見える。
+    let replies = env.svc.agent_replies(&bob, ch.id).await.unwrap();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert_eq!(replies[0].visibility, "failed");
+    assert!(env
+        .svc
+        .agent_replies(&alice, ch.id)
+        .await
+        .unwrap()
+        .is_empty());
+    // 回答ではないので、確認の有無にかかわらずチャンネルには投稿できない。
+    for confirmed in [false, true] {
+        let err = env
+            .svc
+            .publish_agent_reply(&bob, replies[0].id, confirmed, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+    }
+    let thread = env.svc.thread(&alice, ch.id, trigger.id).await.unwrap();
+    assert!(
+        thread
+            .iter()
+            .all(|m| m.author.kind != messaging::AuthorKind::Assistant),
+        "{thread:?}"
+    );
+    // 閉じられる（閉じたら一覧から消える）。
+    env.svc
+        .dismiss_agent_reply(&bob, replies[0].id)
+        .await
+        .unwrap();
+    assert!(env.svc.agent_replies(&bob, ch.id).await.unwrap().is_empty());
+}

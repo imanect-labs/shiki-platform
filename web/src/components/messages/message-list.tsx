@@ -11,7 +11,7 @@ import { dayLabel } from "./time";
 
 function DayDivider({ label }: { label: string }) {
   return (
-    <div className="sticky top-0 z-[5] flex items-center justify-center bg-background/95 py-2 backdrop-blur-sm" role="separator" aria-label={label}>
+    <div className="sticky top-0 z-[5] flex items-center justify-center bg-background py-2" role="separator" aria-label={label}>
       <span className="shiki-dash-x absolute inset-x-5 top-1/2 h-px" aria-hidden />
       <span className="relative rounded-full border border-border/60 bg-background px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
         {label}

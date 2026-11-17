@@ -149,8 +149,9 @@ CREATE TABLE channel_agent_reply (
     -- 呼び出しを書いた発言（スレッドの親を決める）。
     trigger_message_id uuid NOT NULL,
     invoked_by text NOT NULL,
-    -- public: チャンネルに返信した / private: 本人だけに表示中 / posted: 本人が投稿した。
-    visibility text NOT NULL CHECK (visibility IN ('public', 'private', 'posted')),
+    -- public: チャンネルに返信した / private: 本人だけに表示中 / posted: 本人が投稿した /
+    -- failed: 応答できなかったことを本人だけに知らせた（回答ではないので投稿できない）。
+    visibility text NOT NULL CHECK (visibility IN ('public', 'private', 'posted', 'failed')),
     blocks jsonb NOT NULL,
     -- 回答が参照した資料（file の node_id）。投稿前の「読めない参加者がいる」警告に使う。
     sources jsonb NOT NULL DEFAULT '[]'::jsonb,

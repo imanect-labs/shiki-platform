@@ -527,7 +527,10 @@ export function MessagesWorkspace() {
                 </div>
               ) : !ch.hasMore ? (
                 <p className="px-5 pb-2 pt-6 text-[12px] text-muted-foreground">
-                  {active.kind === "dm" ? `${active.name} との DM の始まりです。` : `#${active.name} の始まりです。`}
+                  {active.kind === "dm"
+                    ? `${active.name} との DM の始まりです。`
+                    : // # は一覧と同じく公開チャンネルの印。非公開・アナウンスは名前だけにする。
+                      `${active.kind === "public" && !active.announcement ? "#" : ""}${active.name} の始まりです。`}
                   {active.topic ? ` ${active.topic}` : ""}
                 </p>
               ) : null}
