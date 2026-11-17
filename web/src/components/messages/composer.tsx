@@ -418,7 +418,7 @@ export function Composer({
         </div>
       ) : null}
 
-      <div className="rounded-xl border border-border/70 bg-card shadow-xs transition-colors focus-within:border-ring/60 focus-within:shadow-sm">
+      <div className="rounded-2xl border border-border/80 bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_4px_16px_-6px_rgb(0_0_0/0.08)] transition-[border-color,box-shadow] focus-within:border-ring/50 focus-within:shadow-[0_1px_2px_rgb(0_0_0/0.05),0_8px_24px_-8px_rgb(0_0_0/0.14)]">
         {files.length > 0 ? (
           <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
             {files.map((f) => (
@@ -456,7 +456,7 @@ export function Composer({
           onKeyDown={onKeyDown}
           onClick={(e) => setMention(mentionQuery(text, e.currentTarget.selectionStart))}
           onBlur={() => setMention(null)}
-          className="scrollbar-subtle block max-h-[168px] w-full resize-none bg-transparent px-3 py-2.5 text-[13.5px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-0 focus-visible:ring-offset-0"
+          className="scrollbar-subtle block max-h-[168px] w-full resize-none bg-transparent px-4 pb-1.5 pt-3 text-[13.5px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-0 focus-visible:ring-offset-0"
         />
 
         <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
@@ -475,6 +475,33 @@ export function Composer({
             <TooltipContent side="top">
               {files.length >= MAX_ATTACHMENTS ? `添付は ${MAX_ATTACHMENTS} 件までです` : "ドライブの文書を共有"}
             </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                // カーソル位置に @ を入れて候補を開く（人・ロール・エージェントを選ぶ入口を見えるようにする）。
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  const el = ref.current;
+                  const at = el ? el.selectionStart : text.length;
+                  const before = text.slice(0, at);
+                  const insert = before.length === 0 || /\s$/.test(before) ? "@" : " @";
+                  const value = before + insert + text.slice(at);
+                  const caret = at + insert.length;
+                  sync(value, caret);
+                  requestAnimationFrame(() => {
+                    el?.focus();
+                    el?.setSelectionRange(caret, caret);
+                  });
+                }}
+                aria-label="メンションする"
+                className="flex size-8 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <AtSign className="size-4" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">人・ロール・{agentName} をメンション</TooltipContent>
           </Tooltip>
           {callsAgent ? (
             <label className="flex min-w-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-[11.5px] text-muted-foreground">
@@ -513,7 +540,7 @@ export function Composer({
             className={cn(
               "flex h-8 min-w-8 items-center justify-center gap-1 rounded-lg px-2 text-[12.5px] font-medium outline-none transition-[background-color,transform] duration-[var(--duration-fast)] ease-[var(--ease-standard)] focus-visible:ring-2 focus-visible:ring-ring active:scale-95",
               canSend
-                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                ? "bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
                 : "cursor-not-allowed bg-muted text-muted-foreground/60",
             )}
           >

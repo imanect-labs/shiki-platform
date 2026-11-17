@@ -1,6 +1,7 @@
 "use client";
 
-/// 自分だけに表示中のエージェントの回答（呼んだ発言の下に出す）。
+/// 自分だけに表示中のエージェントの回答（呼んだ発言の下に出す）。見た目は通常の発言の行と同じにし、
+/// 「あなただけに表示」の印・操作・注意書きを本文の下に添える。
 ///
 /// 「チャンネルに投稿」はまず確認なしで投げ、参照した資料のうち一部の参加者が読めないものがあれば
 /// サーバが `posted: false` と件数を返すので、それを見せて確認を取ってから `confirmed: true` で投げ直す
@@ -11,7 +12,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { AlertCircle, EyeOff, MessageSquareText, Send, X } from "lucide-react";
+import { AlertCircle, ArrowRight, EyeOff, MessageSquareText, Send, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +31,7 @@ import {
   type PublishResult,
 } from "@/lib/messaging-api";
 import { AgentAvatar, Blocks, useMessagingDisplay } from "./primitives";
+import { timeLabel } from "./time";
 
 export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; onChanged: () => void }) {
   const { me, agentName, agentHasIcon } = useMessagingDisplay();
@@ -68,60 +70,84 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
     }
   };
 
+  // 見た目は通常の発言と同じ行にする（アバター・名前・時刻・本文）。自分だけに見えていること・失敗したことは
+  // 名前の行の印で示し、操作と注意書きは本文の下に置く。
+  const author = { kind: "assistant" as const, user_id: me, display_name: agentName, owner_name: undefined, has_icon: agentHasIcon, active: true };
   return (
     <div
-      className={
-        failed
-          ? "mx-5 my-1.5 rounded-xl border border-dashed border-destructive/40 bg-destructive/5 px-3 py-2.5"
-          : "mx-5 my-1.5 rounded-xl border border-dashed border-border bg-card/40 px-3 py-2.5"
-      }
+      className="group/msg relative px-5 pb-1.5 pt-2.5 transition-colors hover:bg-accent/35"
       data-testid="agent-reply-card"
-      data-state={failed ? "failed" : "reply"}
+      data-state={failed ? "failed" : reply.chat_thread_id ? "chat" : "reply"}
     >
-      <div className="flex items-center gap-2">
-        <AgentAvatar ownerId={me} hasIcon={agentHasIcon} size="sm" />
-        <span className="text-[13px] font-semibold text-foreground">{agentName}</span>
-        {failed ? (
-          <span className="flex items-center gap-1 rounded-full bg-destructive/10 px-1.5 py-px text-[10.5px] font-medium leading-4 text-destructive">
-            <AlertCircle className="size-3" aria-hidden />
-            応答できませんでした
-          </span>
-        ) : (
-          <span className="flex items-center gap-1 rounded-full bg-muted px-1.5 py-px text-[10.5px] font-medium leading-4 text-muted-foreground">
-            <EyeOff className="size-3" aria-hidden />
-            自分だけに表示
-          </span>
-        )}
-      </div>
-      <div className="mt-1.5 pl-9">
-        <Blocks message={{ blocks: reply.blocks, files: [], author: { kind: "assistant", user_id: me, display_name: agentName, has_icon: agentHasIcon, active: true } }} />
-        {reply.chat_thread_id ? (
-          <Link
-            href={`/c/${encodeURIComponent(reply.chat_thread_id)}`}
-            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-card/40 px-2.5 py-1.5 text-[12px] font-medium text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <MessageSquareText className="size-3.5" aria-hidden />
-            チャットで続きを開く
-          </Link>
-        ) : null}
-        <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-          {failed
-            ? "この知らせはあなたにだけ見えています。もう一度呼ぶと、新しく答えます。"
-            : reply.chat_thread_id
-              ? "チャットはあなただけのものです。ほかの参加者には見えません。"
-              : "あなたの権限で答えています。チャンネルに投稿するまで、ほかの参加者には見えません。"}
-        </p>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {publishable ? (
-            <Button size="sm" onClick={() => void publish(false)} loading={busy === "publish"} disabled={busy !== null}>
-              <Send className="size-3.5" aria-hidden />
-              チャンネルに投稿
-            </Button>
+      <div className="flex gap-2.5">
+        <div className="w-8 shrink-0 pt-0.5">
+          <AgentAvatar ownerId={me} hasIcon={agentHasIcon} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-[13.5px] font-semibold text-foreground">{agentName}</span>
+            {failed ? (
+              <span className="inline-flex items-center gap-1 self-center rounded-full bg-destructive/10 px-1.5 py-px text-[10.5px] font-medium leading-4 text-destructive">
+                <AlertCircle className="size-3" aria-hidden />
+                応答できませんでした
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 self-center rounded-full bg-muted px-1.5 py-px text-[10.5px] font-medium leading-4 text-muted-foreground">
+                <EyeOff className="size-3" aria-hidden />
+                あなただけに表示
+              </span>
+            )}
+            <time dateTime={reply.created_at} className="text-[11px] text-muted-foreground">
+              {timeLabel(reply.created_at)}
+            </time>
+          </div>
+
+          <Blocks message={{ blocks: reply.blocks, files: [], author }} />
+
+          {reply.chat_thread_id ? (
+            // チャット画面の成果物カードと同じ作り（色付きのタイル・題名・説明・開くボタン）。
+            <div className="mt-2 flex max-w-xl items-center gap-3 rounded-xl border border-dashed border-border bg-card p-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--season-summer)_16%,transparent)] text-[color-mix(in_oklab,var(--season-summer)_60%,var(--foreground))]">
+                <MessageSquareText className="size-[18px]" aria-hidden />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-medium text-foreground">チャットで作業を続けています</span>
+                <span className="mt-0.5 block text-[11.5px] text-muted-foreground">持ち主はあなたで、ほかの参加者には見えません</span>
+              </span>
+              <Link
+                href={`/c/${encodeURIComponent(reply.chat_thread_id)}`}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1.5 text-[12px] font-medium outline-none transition-colors hover:border-ring/40 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                チャットを開く
+                <ArrowRight className="size-3.5" aria-hidden />
+              </Link>
+            </div>
           ) : null}
-          <Button size="sm" variant="ghost" onClick={() => void dismiss()} loading={busy === "dismiss"} disabled={busy !== null}>
-            <X className="size-3.5" aria-hidden />
-            閉じる
-          </Button>
+
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            {publishable ? (
+              <Button size="sm" variant="outline" className="h-7 rounded-full px-3 text-[12px]" onClick={() => void publish(false)} loading={busy === "publish"} disabled={busy !== null}>
+                <Send className="size-3.5" aria-hidden />
+                チャンネルに投稿
+              </Button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void dismiss()}
+              disabled={busy !== null}
+              className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
+              <X className="size-3.5" aria-hidden />
+              {busy === "dismiss" ? "閉じています…" : "閉じる"}
+            </button>
+            <p className="min-w-0 basis-full text-[11px] leading-snug text-muted-foreground sm:basis-auto sm:flex-1">
+              {failed
+                ? "もう一度呼ぶと、新しく答えます。"
+                : reply.chat_thread_id
+                  ? "チャットはあなたの承認モードで動き、権限は増えません。"
+                  : "あなたの権限で答えています。投稿するまで、ほかの参加者には見えません。"}
+            </p>
+          </div>
         </div>
       </div>
 

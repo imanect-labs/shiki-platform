@@ -178,6 +178,46 @@ export function ChannelIcon({
   return <Hash className={cls} aria-hidden />;
 }
 
+const TILE_SIZE = {
+  xs: "size-5 rounded-[6px] [&_svg]:size-3",
+  sm: "size-7 rounded-[8px] [&_svg]:size-3.5",
+  md: "size-9 rounded-[10px] [&_svg]:size-[18px]",
+  lg: "size-14 rounded-[16px] [&_svg]:size-7",
+} as const;
+
+/// チャンネルのタイル（チャンネルごとの季節色の地に種別のアイコン）。人のアバターと同じ色の作りにして、
+/// 一覧・ヘッダ・チャンネルの冒頭で同じチャンネルが同じ色で見分けられるようにする。
+export function ChannelTile({
+  channelId,
+  kind,
+  announcement,
+  agentDm,
+  size = "md",
+  className,
+}: {
+  channelId: string;
+  kind: ChannelKind;
+  announcement?: boolean;
+  agentDm?: boolean;
+  size?: keyof typeof TILE_SIZE;
+  className?: string;
+}) {
+  const tint = seasonVar(seasonOf(channelId));
+  return (
+    <span
+      aria-hidden
+      className={cn("flex shrink-0 items-center justify-center", TILE_SIZE[size], className)}
+      style={{
+        backgroundImage: `linear-gradient(140deg, color-mix(in oklab, ${tint} 34%, transparent), color-mix(in oklab, ${tint} 14%, transparent))`,
+        color: `color-mix(in oklab, ${tint} 50%, var(--foreground))`,
+        boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${tint} 30%, transparent)`,
+      }}
+    >
+      <ChannelIcon kind={kind} announcement={announcement} agentDm={agentDm} className="size-auto" />
+    </span>
+  );
+}
+
 /// `file_ref` の描画。**サーバが閲覧者の権限で評価した結果だけ**を受け取り、読めないものは名前も出さない。
 export function FileRefCard({ file }: { file: FileView | undefined }) {
   if (!file || !file.available || !file.node_id) {

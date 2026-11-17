@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { AlertCircle, Loader2, LogOut, MessageSquareText, PanelLeft, ShieldCheck, WifiOff } from "lucide-react";
+import { AlertCircle, Bell, Loader2, LogOut, MessageSquareText, PanelLeft, Settings2, ShieldCheck, UserPlus, WifiOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
@@ -50,7 +50,7 @@ import { Composer } from "./composer";
 import { CreateChannelDialog } from "./create-channel-dialog";
 import { MentionsView } from "./mentions-view";
 import { MessageList, type MessageActions } from "./message-list";
-import { MessagingDisplayContext, type MessagingDisplay } from "./primitives";
+import { ChannelTile, MessagingDisplayContext, UserAvatar, type MessagingDisplay } from "./primitives";
 import { SearchView } from "./search-view";
 import { ThreadPane } from "./thread-pane";
 import { useChannel } from "./use-channel";
@@ -474,6 +474,7 @@ export function MessagesWorkspace() {
       <div className="flex min-w-0 flex-1 flex-col" data-testid="channel-view">
         <ChannelHeader
           channel={active}
+          members={ch.members}
           leading={openList}
           onOpenSettings={(tab) => setSettings({ open: true, tab })}
           onHideDm={() => {
@@ -526,13 +527,7 @@ export function MessagesWorkspace() {
                   以前の発言を読み込んでいます
                 </div>
               ) : !ch.hasMore ? (
-                <p className="px-5 pb-2 pt-6 text-[12px] text-muted-foreground">
-                  {active.kind === "dm"
-                    ? `${active.name} との DM の始まりです。`
-                    : // # は一覧と同じく公開チャンネルの印。非公開・アナウンスは名前だけにする。
-                      `${active.kind === "public" && !active.announcement ? "#" : ""}${active.name} の始まりです。`}
-                  {active.topic ? ` ${active.topic}` : ""}
-                </p>
+                <ChannelIntro channel={active} onOpenSettings={(tab) => setSettings({ open: true, tab })} />
               ) : null}
               <MessageList
                 messages={ch.messages}
@@ -672,5 +667,65 @@ export function MessagesWorkspace() {
         ) : null}
       </div>
     </MessagingDisplayContext.Provider>
+  );
+}
+
+const INTRO_ACTION =
+  "inline-flex h-8 items-center gap-1.5 rounded-full border border-border/70 bg-card px-3 text-[12px] font-medium text-foreground/85 outline-none transition-colors hover:border-ring/40 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
+
+/// 履歴の先頭（これ以上古い発言が無いとき）に出す、チャンネルの紹介。何の場所か・誰がいるか・次に何をするかを示す。
+function ChannelIntro({ channel, onOpenSettings }: { channel: ChannelView; onOpenSettings: (tab: SettingsTab) => void }) {
+  const isDm = channel.kind === "dm";
+  const kindLabel = isDm
+    ? "ダイレクトメッセージ"
+    : channel.kind === "private"
+      ? "非公開チャンネル"
+      : channel.announcement
+        ? "アナウンス専用チャンネル"
+        : "公開チャンネル";
+  const lead = isDm
+    ? `${channel.name} との DM の始まりです。ここでの発言は 2 人だけが読めます。`
+    : channel.kind === "private"
+      ? "招待された参加者だけが読めるチャンネルです。"
+      : channel.announcement
+        ? "管理者と投稿者だけが投稿でき、参加者は読んでリアクションできます。"
+        : "組織のメンバーなら誰でも読めて、参加すると投稿できます。";
+  return (
+    <div className="px-5 pb-5 pt-10" data-testid="channel-intro">
+      {isDm ? (
+        <UserAvatar userId={channel.dm_peer ?? channel.id} name={channel.name} size="lg" className="size-14 rounded-[16px] text-[20px]" />
+      ) : (
+        <ChannelTile channelId={channel.id} kind={channel.kind} announcement={channel.announcement} size="lg" />
+      )}
+      <h2 className="mt-3 text-[21px] font-semibold tracking-tight text-foreground text-balance">{channel.name}</h2>
+      <p className="mt-0.5 text-[12px] font-medium text-muted-foreground">
+        {kindLabel}
+        {!isDm ? ` · 参加者 ${channel.member_count} 人` : ""}
+      </p>
+      <p className="mt-2 max-w-[62ch] text-[13px] leading-relaxed text-foreground/80">
+        {channel.topic ? `${channel.topic}${/[。．！？.!?]$/.test(channel.topic) ? "" : "。"}` : ""}
+        {lead}
+      </p>
+      {channel.joined && !channel.archived ? (
+        <div className="mt-3.5 flex flex-wrap gap-2">
+          {!isDm ? (
+            <button type="button" className={INTRO_ACTION} onClick={() => onOpenSettings("members")}>
+              <UserPlus className="size-3.5 text-muted-foreground" aria-hidden />
+              参加者を招待
+            </button>
+          ) : null}
+          <button type="button" className={INTRO_ACTION} onClick={() => onOpenSettings("notify")}>
+            <Bell className="size-3.5 text-muted-foreground" aria-hidden />
+            通知の受け方
+          </button>
+          {!isDm && channel.is_admin ? (
+            <button type="button" className={INTRO_ACTION} onClick={() => onOpenSettings("about")}>
+              <Settings2 className="size-3.5 text-muted-foreground" aria-hidden />
+              チャンネルの設定
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }

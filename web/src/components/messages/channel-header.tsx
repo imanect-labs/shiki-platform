@@ -13,8 +13,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { ChannelView } from "@/lib/messaging-api";
-import { AgentAvatar, ChannelIcon, UserAvatar, useMessagingDisplay } from "./primitives";
+import type { ChannelView, MemberView } from "@/lib/messaging-api";
+import { AgentAvatar, ChannelTile, UserAvatar, useMessagingDisplay } from "./primitives";
 import type { SettingsTab } from "./channel-settings-dialog";
 
 const ICON_BTN =
@@ -22,11 +22,14 @@ const ICON_BTN =
 
 export function ChannelHeader({
   channel,
+  members = [],
   leading,
   onOpenSettings,
   onHideDm,
 }: {
   channel: ChannelView;
+  /// 参加者（先頭の数人の顔を参加者ボタンに並べる）。
+  members?: MemberView[];
   /// 狭い画面の「一覧を開く」ボタン。
   leading?: React.ReactNode;
   onOpenSettings: (tab: SettingsTab) => void;
@@ -48,9 +51,9 @@ export function ChannelHeader({
             <UserAvatar userId={channel.dm_peer ?? channel.id} name={channel.name} size="sm" />
           )
         ) : (
-          <ChannelIcon kind={channel.kind} announcement={channel.announcement} className="shrink-0 text-muted-foreground" />
+          <ChannelTile channelId={channel.id} kind={channel.kind} announcement={channel.announcement} size="sm" />
         )}
-        <h1 className="min-w-0 truncate text-[15px] font-semibold text-foreground">{channel.name}</h1>
+        <h1 className="min-w-0 truncate text-[15.5px] font-semibold tracking-tight text-foreground">{channel.name}</h1>
         {channel.kind === "private" ? (
           <span className="shrink-0 rounded-full bg-muted px-1.5 py-px text-[10.5px] font-medium leading-4 text-muted-foreground">
             非公開
@@ -83,10 +86,28 @@ export function ChannelHeader({
           type="button"
           onClick={() => onOpenSettings("members")}
           aria-label={`参加者 ${channel.member_count} 名`}
-          className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-border/60 bg-card/40 px-2 text-[12px] font-medium text-foreground/80 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-border/60 bg-card/60 pl-1 pr-2.5 text-[12px] font-medium text-foreground/80 outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Users className="size-3.5 text-muted-foreground" aria-hidden />
-          {channel.member_count}
+          {/* 顔ぶれが分かるよう先頭の 3 人を重ねて並べる（読み込み前は人のアイコン）。 */}
+          {members.length > 0 ? (
+            <span className="flex -space-x-1.5" aria-hidden>
+              {members
+                .filter((m) => m.active)
+                .slice(0, 3)
+                .map((m) => (
+                  <UserAvatar
+                    key={m.user_id}
+                    userId={m.user_id}
+                    name={m.display_name}
+                    size="xs"
+                    className="rounded-full ring-2 ring-background [&>*]:rounded-full"
+                  />
+                ))}
+            </span>
+          ) : (
+            <Users className="ml-1 size-3.5 text-muted-foreground" aria-hidden />
+          )}
+          <span className="tabular-nums">{channel.member_count}</span>
         </button>
       ) : null}
 

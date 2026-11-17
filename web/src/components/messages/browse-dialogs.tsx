@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 import { browseChannels, joinChannel, openDm, type ChannelView } from "@/lib/messaging-api";
-import { ChannelIcon, UserAvatar } from "./primitives";
+import { ChannelTile, UserAvatar } from "./primitives";
 import { useUserSearch } from "./user-picker";
 
 export function BrowseChannelsDialog({
@@ -116,7 +116,7 @@ export function BrowseChannelsDialog({
           ) : (
             items.map((c, i) => (
               <div key={c.id} className={cn("flex items-center gap-3 px-4 py-2.5", i > 0 && "shiki-dash-top")}>
-                <ChannelIcon kind={c.kind} announcement={c.announcement} className="shrink-0 text-muted-foreground" />
+                <ChannelTile channelId={c.id} kind={c.kind} announcement={c.announcement} size="md" />
                 <button
                   type="button"
                   onClick={() => {

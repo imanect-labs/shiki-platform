@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ChannelView } from "@/lib/messaging-api";
-import { AgentAvatar, ChannelIcon, UserAvatar, useMessagingDisplay } from "./primitives";
+import { AgentAvatar, ChannelTile, UserAvatar, useMessagingDisplay } from "./primitives";
 
 export type SideView = "channel" | "search" | "mentions" | "approvals";
 
@@ -65,10 +65,12 @@ function Row({ channel, active, onSelect }: { channel: ChannelView; active: bool
           )}
         </span>
       ) : (
-        <ChannelIcon
+        <ChannelTile
+          channelId={channel.id}
           kind={channel.kind}
           announcement={channel.announcement}
-          className={cn("shrink-0", active ? "text-sidebar-foreground" : "text-sidebar-foreground/45")}
+          size="xs"
+          className={cn(muted && !active && "opacity-60")}
         />
       )}
       <span className="min-w-0 flex-1 truncate text-[13px]">{channel.name}</span>
