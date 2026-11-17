@@ -248,31 +248,40 @@ pub(crate) fn output_mostly_hidden(text: &str, completion_tokens: u64) -> bool {
     completion_tokens > 0 && (text.chars().count() as u64).saturating_mul(4) < completion_tokens
 }
 
-/// 本文の書き出しだけを残して思考で出力上限に達した応答への催促（**user 発話**として積む。
-/// 直前に切れた本文を assistant として積んだ後なので、user の連続にはならない）。
-/// 回数は思考だけの書き直しと合わせて数え、上限を超えたら `None`。
+/// 本文が短いまま思考で出力上限に達した応答への催促（**user 発話**として積む。直前に切れた
+/// 本文を assistant として積んだ後なので、user の連続にはならない）。上限を超えたら `None`。
+///
+/// 本文が短いことは「作業予告だけ」とは限らない（思考の後に回答を書き始め、表の途中で切れた
+/// こともあり得る）。そこで**本文の続きの催促でもある**形にする: 先頭に
+/// [`llm_gateway::CONTINUATION_MARK`] を置き（次の生成は思考を画面へ流さず、本文が直前と連結
+/// される・回数は続きの催促と合わせて数える）、[`llm_gateway::THINKING_EXHAUSTED_MARK`] も
+/// 含めて次の生成の effort を下げる。指示は「ツールの途中ならすぐ呼ぶ・本文の途中なら切れた
+/// 位置から続ける」の両方を書く。
 pub(crate) fn thinking_exhausted_after_text(
     messages: &[LlmMessage],
     max_tokens: Option<u32>,
 ) -> Option<LlmMessage> {
+    let continued = messages.iter().filter(|m| is_continuation_nudge(m)).count();
     let tried: usize = messages
         .iter()
         .flat_map(|m| &m.content)
         .filter_map(block_text)
         .map(|t| t.matches(llm_gateway::THINKING_EXHAUSTED_MARK).count())
         .sum();
-    if tried >= MAX_THINKING_RETRIES {
+    if continued >= MAX_TEXT_CONTINUATIONS || tried >= MAX_THINKING_RETRIES {
         return None;
     }
     let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
     Some(LlmMessage::text(
         llm_gateway::Role::User,
         format!(
-            "{} 直前の応答は思考に出力上限{limit}をほぼ使い切り、本文の書き出しだけで切れました\
-             （何も実行していません。利用者の発話ではなくシステムからの連絡です）。\
-             書いた本文は繰り返さず、思考は短く切り上げて、次のツール呼び出しをすぐに出してください。\
-             1 回の呼び出しで書く量（スライドの枚数・本文の長さ）は小さく分けてください。\
-             作業が終わっていれば回答の本文を書いてください。",
+            "{} {} 直前の応答は思考に出力上限{limit}の大半を使い、本文が短いまま切れました\
+             （利用者の発話ではなくシステムからの連絡です。何も実行していません）。\
+             思考は短く切り上げてください。ツールを呼ぶ前の説明だったなら、書いた本文は繰り返さず\
+             次のツール呼び出しをすぐに出してください（1 回の呼び出しで書く量は小さく分ける）。\
+             回答の本文の途中だったなら、切れた位置の直後から続きを書いてください\
+             （前置き・繰り返しは書かない。文・表の行・```ブロックの途中ならその続きの文字から）。",
+            llm_gateway::CONTINUATION_MARK,
             llm_gateway::THINKING_EXHAUSTED_MARK
         ),
     ))
@@ -467,6 +476,10 @@ mod tests {
             assert!(
                 thinking_was_exhausted(std::slice::from_ref(&nudge)),
                 "effort を下げる目印"
+            );
+            assert!(
+                is_text_continuation(std::slice::from_ref(&nudge)),
+                "本文の続きとして連結する"
             );
             let Block::Text { text } = &nudge.content[0] else {
                 panic!("本文ブロック: {nudge:?}");

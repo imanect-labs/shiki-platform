@@ -132,6 +132,16 @@ fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<
     });
     if nudged && rest.trim() != "forever" {
         let effort = req.effort.map_or("none", |e| e.as_str());
+        // 実プロバイダと同じく、書き直しも思考から始まる（`text` は続きの思考を流さないことを見る）。
+        if rest.trim() == "text" {
+            return Some(paced_thinking_then_text_stream(
+                "短く考える",
+                &format!("集計を終えました。回答です（effort={effort}）。"),
+                prompt_tokens,
+                64,
+                Duration::ZERO,
+            ));
+        }
         return Some(text_stream(
             &format!("集計を終えました。回答です（effort={effort}）。"),
             prompt_tokens,

@@ -468,16 +468,26 @@ async fn short_text_after_exhausting_thinking_is_retried_with_lower_effort() {
         text.contains("回答です（effort=low）"),
         "書き直しは effort を下げて生成する: {text}"
     );
-    // 本文の続きの催促は使わない（切れたのは本文ではない）。
+    // 催促は本文の続きとしても扱える形（思考を流さず連結する目印と、effort を下げる目印の両方）。
     assert!(
-        outcome.checkpoint.messages.iter().all(|m| {
-            m.content.iter().all(|b| {
-            !matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
-        })
-        }),
+        outcome
+            .checkpoint
+            .messages
+            .iter()
+            .any(|m| m.content.iter().any(|b| {
+                matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK)
+                && text.contains(llm_gateway::THINKING_EXHAUSTED_MARK))
+            })),
         "{:?}",
         outcome.checkpoint.messages
     );
+    // 続きの生成の思考は画面へ流さない（直前の本文と別ブロックにしない）。
+    let thinking_after_cut = sink
+        .events
+        .iter()
+        .skip_while(|e| !matches!(e, AgentEvent::Text(t) if t.contains("続きを追記します")))
+        .any(|e| matches!(e, AgentEvent::Thinking(_)));
+    assert!(!thinking_after_cut, "{:?}", sink.events);
     assert_eq!(
         outcome.checkpoint.spent.steps, 3,
         "呼び出し・書き出しだけで切れた応答・書き直し"
