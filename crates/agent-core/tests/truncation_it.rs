@@ -419,10 +419,67 @@ async fn thinking_only_retries_are_bounded() {
     .expect("run_agent 成功");
 
     assert_eq!(outcome.stop, AgentStop::Truncated);
-    // 呼び出し 1 + 思考だけ（初回＋書き直し 2 回）+ 空応答の催促 1 回。
+    // 呼び出し 1 + 思考だけ（初回＋書き直し 4 回）+ 空応答の催促 1 回。
     assert_eq!(
-        outcome.checkpoint.spent.steps, 5,
+        outcome.checkpoint.spent.steps, 7,
         "{:?}",
         outcome.checkpoint.spent
+    );
+}
+
+/// 本文の書き出しだけを残して**思考で**出力上限を使い切った応答は、本文の続きを促さず、思考を
+/// 絞って次の手を出させる（実測: 20 枚のスライドを足す途中、「9〜14枚目を追記します。」の 1 行で
+/// 切れ、本文の続きの催促でも同じく切れて「続けて」の案内で止まった）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_text_after_exhausting_thinking_is_retried_with_lower_effort() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let gateway = stub_gateway(pool);
+    let c = ctx(&tenant);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CountingTool(Arc::clone(&calls)))];
+    let mut sink = TestSink::default();
+    let mut opts = AgentOptions::autonomous(10, None, 1_000_000_000, 1_000_000_000);
+    opts.effort = Some(llm_gateway::Effort::High);
+
+    let outcome = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(LlmRole::User, "thinkonly:text")],
+        &run_context(&c),
+        &opts,
+        None,
+        None,
+        &mut sink,
+    )
+    .await
+    .expect("run_agent 成功");
+
+    assert_eq!(outcome.stop, AgentStop::Completed, "{:?}", sink.events);
+    let text: String = sink
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("回答です（effort=low）"),
+        "書き直しは effort を下げて生成する: {text}"
+    );
+    // 本文の続きの催促は使わない（切れたのは本文ではない）。
+    assert!(
+        outcome.checkpoint.messages.iter().all(|m| {
+            m.content.iter().all(|b| {
+            !matches!(b, Block::Text { text } if text.starts_with(llm_gateway::CONTINUATION_MARK))
+        })
+        }),
+        "{:?}",
+        outcome.checkpoint.messages
+    );
+    assert_eq!(
+        outcome.checkpoint.spent.steps, 3,
+        "呼び出し・書き出しだけで切れた応答・書き直し"
     );
 }
