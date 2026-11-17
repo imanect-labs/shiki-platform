@@ -105,9 +105,9 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
           <Blocks message={{ blocks: reply.blocks, files: [], author }} />
 
           {reply.chat_thread_id ? (
-            // チャット画面の成果物カードと同じ作り（色付きのタイル・題名・説明・開くボタン）。
+            // チャット画面の成果物カードと同じ作り（タイル・題名・説明・開くボタン）。色は付けない。
             <div className="mt-2 flex max-w-xl items-center gap-3 rounded-xl border border-dashed border-border bg-card p-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-[color-mix(in_oklab,var(--season-summer)_16%,transparent)] text-[color-mix(in_oklab,var(--season-summer)_60%,var(--foreground))]">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground ring-1 ring-inset ring-border">
                 <MessageSquareText className="size-[18px]" aria-hidden />
               </span>
               <span className="min-w-0 flex-1">
