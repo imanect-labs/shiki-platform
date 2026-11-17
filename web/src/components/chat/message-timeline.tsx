@@ -19,6 +19,7 @@ import { answerLinkSources } from "@/lib/answer-links";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
 import { PastWorkToggle } from "./past-work-toggle";
+import { usePreferences } from "@/lib/preferences";
 import type { ToolActivityItem } from "./tool-activity";
 
 /// 描画用の 1 区切り。
@@ -191,6 +192,8 @@ export function MessageTimeline({
 }) {
   const helpCitations = useHelpCitations();
   const [pastOpen, setPastOpen] = React.useState(false);
+  // 操作ログ「シンプル」では過去の操作は表示しないので、「これまでの N 件の操作」も出さない。
+  const simple = usePreferences().prefs.activity_detail === "simple";
   const collapsed = (i: number) => !pastOpen && i < collapseBefore && segments[i]?.kind === "work";
   const firstCollapsed = segments.findIndex((_, i) => collapsed(i));
   const pastTools = segments.reduce(
@@ -250,7 +253,7 @@ export function MessageTimeline({
           // 畳んだまとまりは、最初の 1 つの位置に 1 行だけ出す。
           // 開いたときと同じ要素（この区切りの Fragment の先頭）に置く。位置が変わるとボタンが作り直され、
           // キーボードで開閉したときにフォーカスが外れる。
-          return i === firstCollapsed ? (
+          return i === firstCollapsed && !simple ? (
             <React.Fragment key={s.key}>
               <PastWorkToggle tools={pastTools} open={false} onToggle={() => setPastOpen(true)} />
             </React.Fragment>
@@ -260,7 +263,7 @@ export function MessageTimeline({
           // 何番目の操作のまとまりか（生成中と確定後で同じ並び。区切りの key は本文も数える）。
           const nth = segments.slice(0, i).filter((x) => x.kind === "work").length;
           const closer =
-            pastOpen && i === segments.findIndex((x, j) => j < collapseBefore && x.kind === "work") ? (
+            !simple && pastOpen && i === segments.findIndex((x, j) => j < collapseBefore && x.kind === "work") ? (
               <PastWorkToggle tools={pastTools} open onToggle={() => setPastOpen(false)} />
             ) : null;
           return (

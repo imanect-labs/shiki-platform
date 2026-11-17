@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, setActivityDetail } from "./helpers";
 
 /// エージェントモードのツール（web_search / code_interpreter）E2E（Phase 4）。
 /// stub LLM は本文プレフィックスで対応ツールを 1 回呼ぶ（`websearch:`→web_search /
@@ -20,8 +20,16 @@ test.describe("agent tools (web_search / code_interpreter)", () => {
   /// 初回送信でスレッドを作り、会話画面の入力欄を返すヘルパ。
   /// 通常チャットがモデル裁量ループ（issue #102）になったため、ツール（web_search /
   /// code_interpreter）はトグルなしでモデルが自動発火する。
+  let restoreActivityDetail: (() => Promise<void>) | null = null;
+  test.afterEach(async () => {
+    await restoreActivityDetail?.();
+    restoreActivityDetail = null;
+  });
+
   async function openThreadInAgentMode(page: Page) {
     await loginViaKeycloak(page);
+    // 既定の「シンプル」は操作の行を残さないので、ツール名を確かめるため「詳細」にする。
+    restoreActivityDetail = await setActivityDetail(page, "detailed");
     await page.goto("/");
     const input = page.getByLabel("メッセージを入力");
     await input.fill("こんにちは");

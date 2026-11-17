@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 import type { components } from "@/generated/api";
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, setActivityDetail, uniqueName } from "./helpers";
 
 /// メッセージ一覧の応答型は **Rust の `chat::Message`（utoipa）から生成**したものを使う
 /// （手書きミラーを増やさない・codegen が正）。`invoked_actions` の必須性・名前・要素型が
@@ -79,6 +79,8 @@ test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポー
   page,
 }) => {
   await loginViaKeycloak(page);
+  // 既定の「シンプル」は操作の行を残さないので、取得した URL を確かめるため「詳細」にする。
+  const restoreActivityDetail = await setActivityDetail(page, "detailed");
   await page.goto("/");
   await createDeepResearchSkill(page);
   await page.reload();
@@ -156,6 +158,7 @@ test("deep research: 質問（ask）→ 計画（plan）→ 調査 → レポー
 
   // 承認カードは出ない（作業メモはシステム領域＝事前許可・#392）。
   await expect(page.getByText("承認が必要です")).toHaveCount(0);
+  await restoreActivityDetail();
 });
 
 /// 回答済み・開始済みの質問・計画が未操作へ巻き戻り、二度送信できてしまう回帰（#410）。

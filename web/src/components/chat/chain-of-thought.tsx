@@ -13,6 +13,7 @@ import type { Citation } from "@/lib/chat-api";
 import { useRememberedOpen } from "./disclosure-memory";
 import { isSkillInvocation, SkillInvocationRow } from "./skill-invocation-row";
 import { ToolActivity, type ToolActivityItem } from "./tool-activity";
+import { describeTool } from "@/lib/tool-display";
 
 /// まとまりの中の並び（起きた順）。スキルの読み込みは 1 件ずつ独立した行にし、それ以外の
 /// 連続する操作は従来どおり 1 行（ToolActivity）に束ねる。
@@ -60,6 +61,10 @@ export function ChainOfThought({
 
   const hasThinking = thinking.trim().length > 0;
   const hasTools = tools.length > 0;
+  // 操作ログ「シンプル」: IT に詳しくない人は「進んでいること」だけ分かればよい。生成中は平易な
+  // 1 行（「調べています…」）だけを出し、終わったら何も残さない。ツール名・件数・失敗・思考・出典の
+  // チップは出さない（分からない単語や「失敗」の文字が目に入るだけで不安になるため）。
+  if (activity_detail === "simple") return streaming ? <SimpleProgress tools={tools} thinking={hasThinking} /> : null;
   // citations は ToolActivity のチップに移した。hasContent から漏れるとチップ行ごと消える。
   const hasContent = hasThinking || hasTools || citations.length > 0;
   if (!hasContent && !streaming) return null;
@@ -141,7 +146,6 @@ export function ChainOfThought({
         phase={phase}
         waitingLabel={waitingLabel}
         memoryKey={memoryKey}
-        simple={activity_detail === "simple"}
       />
     </div>
   );
@@ -157,7 +161,6 @@ function ToolChunks({
   phase,
   waitingLabel,
   memoryKey,
-  simple,
 }: {
   tools: ToolActivityItem[];
   citations: Citation[];
@@ -165,8 +168,6 @@ function ToolChunks({
   phase: string | null;
   waitingLabel: string | null;
   memoryKey: string | null;
-  /// 操作ログ「シンプル」（設定）。各束の ToolActivity へそのまま渡す。
-  simple: boolean;
 }) {
   const chunks = chunkTools(tools);
   // 生きている表示を受け持つ位置（ツールがまだ無ければ、引用のチップだけを出す空の束）。
@@ -207,7 +208,6 @@ function ToolChunks({
             citations={i === firstTools ? citations : []}
             waitingLabel={live ? waitingLabel : null}
             memoryKey={memoryKey && (n === 0 ? `${memoryKey}:tools` : `${memoryKey}:tools${n}`)}
-            simple={simple}
           />
         );
       })}
@@ -222,6 +222,38 @@ function ToolChunks({
       ) : null}
     </>
   );
+}
+
+/// シンプル表示の 1 行。言うのは「何をしているかの種類」だけで、言い回しは平易な語に限る。
+function SimpleProgress({ tools, thinking }: { tools: ToolActivityItem[]; thinking: boolean }) {
+  const label = simpleProgressLabel(tools, thinking);
+  return (
+    <p
+      className="mb-2.5 flex items-center gap-2 py-1 text-[13px] text-muted-foreground"
+      data-testid="simple-progress"
+      aria-live="polite"
+    >
+      <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+      <span key={label} className="font-medium shiki-text-shimmer animate-in fade-in-0 duration-300">
+        {label}
+      </span>
+    </p>
+  );
+}
+
+export function simpleProgressLabel(tools: ToolActivityItem[], thinking: boolean): string {
+  const running = tools.filter((t) => t.running);
+  const current = running[running.length - 1];
+  if (!current) return tools.length > 0 || thinking ? "考えています…" : "準備しています…";
+  switch (describeTool(current).category) {
+    case "search":
+      return "調べています…";
+    case "read":
+    case "browse":
+      return "資料を読んでいます…";
+    default:
+      return "作業しています…";
+  }
 }
 
 /// 思考パネルの見出し。ツールの進行状況は ToolActivity のフェーズ行が受け持つので、

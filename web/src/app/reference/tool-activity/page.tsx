@@ -12,6 +12,7 @@
 
 import * as React from "react";
 
+import { ChainOfThought } from "@/components/chat/chain-of-thought";
 import { ToolActivity, type ToolActivityItem } from "@/components/chat/tool-activity";
 
 function Cell({
@@ -266,6 +267,55 @@ function RollingDemo() {
   );
 }
 
+/// 操作ログ「シンプル」（既定）の再生デモ。考える → 操作（途中に失敗を 1 件含む）→ 回答の順に進め、
+/// 生成中は平易な 1 行だけ、終わったら何も残らないこと（失敗やツール名が目に入らないこと）を目視する。
+/// 設定を読めない参照ページでは既定値（シンプル）で描かれる。
+function SimpleDemo() {
+  // 0: 考えている / 1..N: N 件目の操作が実行中 / N+1: 回答を書いている / N+2: 完了
+  const [tick, setTick] = React.useState(-1);
+  const steps = DEMO_STEPS.slice(0, 5).map((it, i) => (i === 2 ? { ...it, ok: false } : it));
+  React.useEffect(() => {
+    if (tick < 0 || tick > steps.length + 1) return;
+    const id = window.setTimeout(() => setTick((t) => t + 1), 1800);
+    return () => window.clearTimeout(id);
+  }, [tick, steps.length]);
+  const toolsShown = Math.max(0, Math.min(tick, steps.length));
+  const items = steps.slice(0, toolsShown).map((it, i) => ({
+    ...it,
+    running: tick <= steps.length && i === toolsShown - 1,
+    ok: tick <= steps.length && i === toolsShown - 1 ? undefined : (it.ok ?? true),
+  }));
+  const streaming = tick >= 0 && tick <= steps.length + 1;
+  const answering = tick > steps.length;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setTick(0)}
+        className="mb-3 rounded-md border border-border/60 px-2.5 py-1 text-[12px] transition-colors hover:bg-accent"
+      >
+        シンプル表示を再生
+      </button>
+      <div className="rounded-lg border border-border/60 p-4">
+        <p className="mb-3 text-[13px] text-muted-foreground">あなた: 国内 SaaS の市場規模を調べて</p>
+        {tick >= 0 ? (
+          <ChainOfThought
+            thinking={tick >= 0 ? "市場規模の公表値を探す" : ""}
+            tools={items}
+            citations={[]}
+            streaming={streaming && !answering}
+          />
+        ) : null}
+        {answering ? (
+          <p className="text-[15px] leading-relaxed">
+            国内 SaaS 市場は 2026 年に約 1.8 兆円規模で、前年から 17% 伸びています。
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 /// 再生デモで 1 件ずつ増えていくツール列（実際の deep research の進み方に寄せる）。
 const DEMO_STEPS: ToolActivityItem[] = [
   { key: "s1",
@@ -304,6 +354,10 @@ export default function ToolActivityGalleryPage() {
           （変わるたびに 1 行ぶん送る）、合間は待ちの文言、終わったら要約。クリックで全件のタイムラインを開く。
         </p>
       </header>
+
+      <Cell id="simple-demo" title="操作ログ「シンプル」（既定。進み具合の 1 行だけ・終わったら消える）">
+        <SimpleDemo />
+      </Cell>
 
       <Cell id="rolling-demo" title="1 行の送り（再生で 1 件ずつ増える）">
         <RollingDemo />
