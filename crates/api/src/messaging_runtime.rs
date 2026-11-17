@@ -139,7 +139,13 @@ fn parse_answer(text: &str, question: &str) -> (String, Option<String>) {
         if let Some(end) = rest.find("]]") {
             let mut title: String = rest[..end].trim().chars().take(80).collect();
             if title.is_empty() || title == "題名" || title.contains("20 字以内") {
-                title = question.trim().chars().take(30).collect();
+                // 依頼文の頭のメンション（`@`）と空白は題名にしない。
+                title = question
+                    .trim_start_matches(|c: char| c == '@' || c.is_whitespace())
+                    .trim_end()
+                    .chars()
+                    .take(30)
+                    .collect();
             }
             return (String::new(), Some(title));
         }
@@ -425,5 +431,10 @@ mod tests {
         for marker in ["[[CHAT:題名]]", "[[CHAT: ]]"] {
             assert_eq!(parse_answer(marker, q), (String::new(), Some(q.into())));
         }
+        // 依頼文の頭のメンションは題名に入れない。
+        assert_eq!(
+            parse_answer("[[CHAT:]]", "@ 提案書の構成案を作って"),
+            (String::new(), Some("提案書の構成案を作って".into()))
+        );
     }
 }
