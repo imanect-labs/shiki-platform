@@ -39,6 +39,11 @@ ignore = [
     { id = "RUSTSEC-2026-0391", reason = "影響は stream::raw::{Encoder,Decoder}::with_context のみ。tantivy は bulk API、wasmtime は encode_all/decode_all だけを使う。" },
     { id = "RUSTSEC-2026-0398", reason = "影響は seekable 機能の Seekable::decompress・AdvancedSeekable::decompress のみ。seekable 機能は無効。" },
     { id = "RUSTSEC-2026-0403", reason = "影響は DCtx::decompress_stream（stream::write::Decoder 経由）のみ。bulk API・decode_all は対象外と advisory に明記。" },
+    # chrono / chrono-tz は直接依存で、sqlx・utoipa・ts-rs も chrono の型を使う。unmaintained 通知で
+    # 既知脆弱性は無く、全版が対象で安全な更新先も無い（移行先候補は jiff）。API の型（OpenAPI / TS
+    # codegen）と sqlx の型対応に及ぶため、移行の可否と段階は #1325 で決める。脆弱性が出たら即対応する。
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained 通知。脆弱性ではない。jiff への移行可否を #1325 で決める。" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained 通知。脆弱性ではない。jiff への移行可否を #1325 で決める。" },
 ]
 
 [licenses]
