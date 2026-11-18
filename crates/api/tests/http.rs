@@ -362,6 +362,7 @@ fn base_config() -> AppConfig {
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
             audit_retention: api::config::AuditRetentionConfig::default(),
+            version_storage: storage::blob_storage::VersionStorageOptions::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -1368,3 +1369,6 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
 
 #[path = "http/bug_reports.rs"]
 mod bug_reports;
+
+#[path = "http/version_backup.rs"]
+mod version_backup;

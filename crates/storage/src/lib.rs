@@ -28,6 +28,7 @@ pub mod audit_action;
 pub mod audit_chain;
 pub mod audit_retention;
 pub mod audit_view;
+pub mod blob_storage;
 pub mod content_address;
 pub mod db_tenant;
 pub mod directory;
