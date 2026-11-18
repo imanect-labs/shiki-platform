@@ -304,7 +304,7 @@ async fn main() {
                 record["cost_usd_measured"] = measured.into();
                 writeln!(out, "{record}").unwrap();
                 println!(
-                    "{} {} {} rep{}: score={:.2} success={} stop={} steps={} peak={} compactions={} cost=${:.4} (group {} total ${:.3})",
+                    "{} {} {} rep{}: score={:.2} success={} stop={} steps={} peak={} compactions={}/{} cost=${:.4} (group {} total ${:.3})",
                     spec.key,
                     task_name,
                     args.variant,
@@ -315,6 +315,7 @@ async fn main() {
                     record["steps"],
                     record["peak_prompt_tokens"],
                     record["compactions"],
+                    record["compaction_attempts"],
                     add,
                     spec.group,
                     total
@@ -366,6 +367,7 @@ async fn run_one(
     .await;
     let elapsed = started.elapsed().as_secs_f64();
     let grade = task.grade();
+    let attempts = result.as_ref().map_or(0, |o| o.checkpoint.compactions);
     let (stop, steps, cost_micros, tokens, messages) = match &result {
         Ok(o) => (
             format!("{:?}", o.stop),
@@ -423,6 +425,8 @@ async fn run_one(
         "peak_prompt_tokens": sink.peak_prompt,
         "overflow": sink.overflowed,
         "compactions": sink.compactions,
+        // 要約を試みた回数（縮まずに捨てた分を含む）。
+        "compaction_attempts": attempts,
         "tool_calls": sink.tool_calls,
         "tool_errors": sink.tool_errors,
         "text_only_turns": sink.text_turns,

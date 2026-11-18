@@ -333,6 +333,17 @@ pub(crate) fn summarizer_prompt(messages: &[Message], split: Split, max_tokens: 
     s
 }
 
+/// 圧縮 1 回の量の決め方。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CompactBudget {
+    /// 有効窓（窓 − 1 応答の出力上限・実トークン）。
+    pub effective_window: usize,
+    /// 逐語で残す直近の量（有効窓に対する千分率）。
+    pub keep_permille: usize,
+    /// 実トークン ÷ 手元の見積り（[`crate::context::ContextGauge::ratio`]）。
+    pub scale: f64,
+}
+
 /// 圧縮 1 回の結果。
 pub(crate) struct Compacted {
     pub messages: Vec<Message>,
@@ -351,18 +362,29 @@ pub(crate) async fn compact(
     opts: &crate::profile::AgentOptions,
     messages: &[Message],
     plan: &Plan,
-    effective_window: usize,
-    keep_permille: usize,
+    budget: CompactBudget,
 ) -> Result<Option<Compacted>, llm_gateway::LlmError> {
+    let CompactBudget {
+        effective_window,
+        keep_permille,
+        scale,
+    } = budget;
     let c = &opts.compaction;
-    let Some(split) = plan_split(messages, effective_window * keep_permille / 1000) else {
+    // 窓は実トークン、履歴の量は手元の見積り。見積りの単位へ直してから切る（ContextGauge::ratio）。
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )] // トークン数の換算（正の小さな値）。
+    let to_est = |real: usize| (real as f64 / scale.max(1.0)) as usize;
+    let Some(split) = plan_split(messages, to_est(effective_window * keep_permille / 1000)) else {
         return Ok(None);
     };
     let max_summary = c
         .max_summary_tokens
         .min(u32::try_from(effective_window / 4).unwrap_or(u32::MAX))
         .max(512);
-    let prompt_budget = effective_window.saturating_sub(max_summary as usize + 1_500);
+    let prompt_budget = to_est(effective_window.saturating_sub(max_summary as usize + 1_500));
     let prompt = summarizer_prompt(messages, split, prompt_budget);
     let model = c.model.clone().or_else(|| opts.model.clone());
     // 思考するモデル（Qwen3.x 等）は、思考だけで出力上限を使い切って本文が空になることがある。
@@ -393,7 +415,7 @@ pub(crate) async fn compact(
             after_tokens: 0,
         }));
     }
-    let rebuilt = rebuild(messages, split, &text, plan, effective_window / 10);
+    let rebuilt = rebuild(messages, split, &text, plan, to_est(effective_window / 10));
     let before_tokens = estimate_prompt_tokens(messages);
     let after_tokens = estimate_prompt_tokens(&rebuilt);
     Ok(Some(Compacted {

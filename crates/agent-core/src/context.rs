@@ -444,6 +444,25 @@ impl ContextGauge {
         estimate_prompt_tokens(messages).saturating_add(self.overhead_tokens)
     }
 
+    /// 実トークンが手元の見積りの何倍か（トークナイザ比・1.0〜4.0）。`static_est` は system と
+    /// ツール定義の見積り（[`estimate_static_tokens`]）。
+    ///
+    /// 見積り（日本語 1 字 ≒ 1 トークン）は、日本語で重いトークナイザ（実測で Claude Haiku 5.5 は
+    /// 約 2 倍）を下回る。窓の判定は実測で補正済みの [`Self::tokens`] で行うので、見積りの単位で
+    /// 決める量（圧縮で残す直近・1 ステップの結果の上限）はこの比で割って揃える。揃えないと、閾値を
+    /// 超えても「直近」に全部が収まり、要約に回す部分が無いまま窓に近づく。1 未満（見積りより軽い
+    /// トークナイザ）は 1 に丸める（量を広げる方向には効かせない）。
+    #[must_use]
+    pub fn ratio(&self, messages: &[Message], static_est: usize) -> f64 {
+        let est = estimate_prompt_tokens(messages).saturating_add(static_est);
+        if est == 0 {
+            return 1.0;
+        }
+        #[allow(clippy::cast_precision_loss)] // トークン数は f64 の仮数に十分収まる。
+        let r = self.tokens(messages) as f64 / est as f64;
+        r.clamp(1.0, 4.0)
+    }
+
     /// 送った履歴の見積り（`sent_estimate`＝[`estimate_prompt_tokens`]）と、プロバイダが報告した
     /// prompt トークンで差を更新する。報告が無い（0）プロバイダでは補正しない。
     pub fn calibrate(&mut self, sent_estimate: usize, reported_prompt_tokens: u64) {
@@ -797,6 +816,20 @@ mod tests {
         assert!(msgs.iter().all(
             |m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content))
         ));
+    }
+
+    #[test]
+    fn ratio_tracks_a_heavier_tokenizer_but_never_shrinks_below_one() {
+        let msgs = vec![tool_result(&"報".repeat(1_000), false)];
+        let est = estimate_prompt_tokens(&msgs);
+        // 実測が見積り（履歴＋固定分 500）の 2 倍。
+        let mut g = ContextGauge::with_overhead(0);
+        g.calibrate(est, 2 * (est as u64 + 500));
+        assert!((g.ratio(&msgs, 500) - 2.0).abs() < 0.01);
+        // 見積りより軽いトークナイザは 1 に丸める。
+        let mut light = ContextGauge::with_overhead(0);
+        light.calibrate(est, 100);
+        assert!((light.ratio(&msgs, 0) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

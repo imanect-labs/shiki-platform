@@ -9,36 +9,21 @@ use crate::profile::AgentOptions;
 
 /// 圧縮を試みる。置き換えたら `true`。要約の失敗（LLM エラー・空・縮まない）はループを止めず
 /// `false` を返す（呼び出し側は剪定へ後退する）。
-///
-/// `forced` は窓あふれで拒否された直後の呼び出し（逐語で残す直近を小さくする）。
 pub(crate) async fn try_compact(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
-    effective_window: usize,
-    forced: bool,
+    budget: crate::compaction::CompactBudget,
 ) -> Result<bool, AgentError> {
     if sink.is_cancelled() {
         return Ok(false);
     }
-    let keep = if forced {
-        100
-    } else {
-        opts.compaction.keep_recent_permille
-    };
     let started_at = chrono::Utc::now();
-    let outcome = crate::compaction::compact(
-        gateway,
-        run.ctx,
-        opts,
-        &state.messages,
-        &state.plan,
-        effective_window,
-        keep,
-    )
-    .await;
+    let outcome =
+        crate::compaction::compact(gateway, run.ctx, opts, &state.messages, &state.plan, budget)
+            .await;
     let compacted = match outcome {
         Ok(Some(c)) => c,
         Ok(None) => return Ok(false),
@@ -94,37 +79,94 @@ pub(crate) async fn try_compact(
     Ok(true)
 }
 
+/// ステップの前に見る窓の状態（閾値・見積り・ツール定義の見積り）。
+#[derive(Clone, Copy)]
+pub(crate) struct WindowView<'a> {
+    pub limits: &'a crate::context::ContextLimits,
+    pub gauge: &'a crate::context::ContextGauge,
+    /// 文脈に載るツール定義の見積り（遅延ロード分を含む・このステップ時点）。
+    pub tool_est: usize,
+}
+
+impl<'a> WindowView<'a> {
+    pub(crate) fn new(
+        limits: &'a crate::context::ContextLimits,
+        gauge: &'a crate::context::ContextGauge,
+        tool_est: usize,
+    ) -> Self {
+        WindowView {
+            limits,
+            gauge,
+            tool_est,
+        }
+    }
+}
+
 /// ループをまたぐ圧縮の状態。
-#[derive(Default)]
 pub(crate) struct CompactionState {
-    /// 直近に圧縮したステップ（直後の 2 ステップは繰り返さない）。
+    /// system プロンプトの見積り（run 内で固定・トークナイザ比の分母に足す）。
+    system_est: usize,
+    /// 直近に圧縮したステップ（直後のステップは、非常閾値を超えない限り繰り返さない）。
     last_step: Option<usize>,
     /// 直近の圧縮が失敗した（soft の剪定を後ろ盾として戻す）。
     failing: bool,
+    /// 実トークン ÷ 手元の見積り（[`crate::context::ContextGauge::ratio`]・ステップごとに更新）。
+    ratio: f64,
+}
+
+impl CompactionState {
+    /// `system_est` = system プロンプトの見積り（[`crate::context::estimate_static_tokens`]）。
+    pub(crate) fn new(system_est: usize) -> Self {
+        CompactionState {
+            system_est,
+            last_step: None,
+            failing: false,
+            ratio: 1.0,
+        }
+    }
+
+    /// 実トークンで決めた量（1 ステップの結果の上限）を、手元の見積りの単位へ直す。
+    #[must_use]
+    pub(crate) fn to_estimate(&self, real: Option<usize>) -> Option<usize> {
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )] // トークン数の換算（正の小さな値）。
+        real.map(|r| (r as f64 / self.ratio) as usize)
+    }
 }
 
 /// ステップの前の文脈管理（自律版）: 窓を知っていて見積りが soft を超えていれば要約で置き換え、
 /// 残りを剪定する。
 ///
 /// 圧縮を使う run では、soft の畳み込みは圧縮が受け持つ（非常閾値だけ畳む）。直近の圧縮が
-/// 失敗していれば、従来どおり soft でも畳む。圧縮の直後 2 ステップは繰り返さない（尻尾そのものが
-/// 大きいときに毎ステップ要約しない。そのときは剪定が受け持つ）。
-#[allow(clippy::too_many_arguments)] // ループの状態をそのまま受け取る（束ねると呼び出し側が読みにくい）。
+/// 失敗していれば、従来どおり soft でも畳む。圧縮の直後のステップは、非常閾値を超えない限り
+/// 繰り返さない（尻尾そのものが大きいときに毎ステップ要約しない・要約の費用を抑える）。
 pub(crate) async fn before_step(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
-    limits: &crate::context::ContextLimits,
-    gauge: &crate::context::ContextGauge,
+    view: WindowView<'_>,
     cs: &mut CompactionState,
 ) -> Result<(), AgentError> {
+    let (limits, gauge) = (view.limits, view.gauge);
+    cs.ratio = gauge.ratio(&state.messages, cs.system_est + view.tool_est);
     if let Some(w) = limits.window.filter(|_| opts.compaction.enabled) {
         let cooled = cs.last_step.is_none_or(|s| state.spent.steps >= s + 2);
-        if cooled && gauge.tokens(&state.messages) > w.soft {
+        let tokens = gauge.tokens(&state.messages);
+        // 冷却中でも非常閾値を超えるなら要約する。待つと、この後の剪定が未要約の結果を畳む
+        // （要約が大きい・1 ステップの結果が多いと、圧縮の直後のステップで超える）。
+        if tokens > w.soft && (cooled || tokens > w.hard) {
             let steps = state.spent.steps;
-            let ok = try_compact(gateway, run, opts, state, sink, w.effective, false).await?;
+            let budget = crate::compaction::CompactBudget {
+                effective_window: w.effective,
+                keep_permille: opts.compaction.keep_recent_permille,
+                scale: cs.ratio,
+            };
+            let ok = try_compact(gateway, run, opts, state, sink, budget).await?;
             if ok {
                 cs.last_step = Some(steps);
             }
@@ -143,22 +185,35 @@ pub(crate) async fn before_step(
 ///
 /// 拒否は応答の前に起きるので、履歴にはそのステップの痕跡が無い（やり直して安全）。窓を
 /// 知らないモデルでは、今の見積りの 3/4 を窓とみなして要約する。
-#[allow(clippy::too_many_arguments)] // before_step と同じ理由。
 pub(crate) async fn recover_overflow(
     gateway: &LlmGateway,
     run: &RunContext<'_>,
     opts: &AgentOptions,
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
-    limits: &crate::context::ContextLimits,
-    gauge: &crate::context::ContextGauge,
+    view: WindowView<'_>,
     cs: &mut CompactionState,
 ) -> Result<bool, AgentError> {
+    let (limits, gauge) = (view.limits, view.gauge);
+    let scale = gauge.ratio(&state.messages, cs.system_est + view.tool_est);
     let effective = limits
         .window
         .map_or_else(|| gauge.tokens(&state.messages) * 3 / 4, |w| w.effective);
     let compacted = opts.compaction.enabled
-        && try_compact(gateway, run, opts, state, sink, effective, true).await?;
+        && try_compact(
+            gateway,
+            run,
+            opts,
+            state,
+            sink,
+            // 窓あふれの直後は、逐語で残す直近を小さくする（有効窓の 10%）。
+            crate::compaction::CompactBudget {
+                effective_window: effective,
+                keep_permille: 100,
+                scale,
+            },
+        )
+        .await?;
     if compacted {
         cs.last_step = Some(state.spent.steps);
     }

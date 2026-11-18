@@ -138,7 +138,9 @@ pub async fn run_agent(
     let mut gauge =
         crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
     // 直近に圧縮したステップ（連続して要約しない）と、窓あふれのやり直しを済ませたか。
-    let mut compaction = crate::agent_compact::CompactionState::default();
+    let mut compaction = crate::agent_compact::CompactionState::new(
+        crate::context::estimate_static_tokens(opts.system.as_deref(), []),
+    );
     let mut overflow_retried = false;
 
     let stop = loop {
@@ -167,16 +169,17 @@ pub async fn run_agent(
         // --- コンテキスト剪定（自律版のみ・古い大きなツール出力を畳む・Task 5.3）。 ---
         if opts.profile.is_autonomous() {
             // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
-            gauge.observe_tools(context_tool_tokens(&state.messages));
+            let tool_est = context_tool_tokens(&state.messages);
+            gauge.observe_tools(tool_est);
             // 窓を知っているモデルでは、**畳む前に**古いやり取りを要約で置き換え、残りを剪定する。
+            let view = crate::agent_compact::WindowView::new(&limits, &gauge, tool_est);
             crate::agent_compact::before_step(
                 gateway,
                 run,
                 opts,
                 &mut state,
                 sink,
-                &limits,
-                &gauge,
+                view,
                 &mut compaction,
             )
             .await?;
@@ -188,7 +191,7 @@ pub async fn run_agent(
             .is_autonomous()
             .then(|| crate::context::estimate_prompt_tokens(&state.messages));
         let steps_before = state.spent.steps;
-        let step_budget = limits.step_results(opts.aids.step_result_budget);
+        let step_budget = compaction.to_estimate(limits.step_results(opts.aids.step_result_budget));
         let step_outcome = match run_step(
             gateway,
             &tool_defs,
@@ -212,15 +215,11 @@ pub async fn run_agent(
                     && crate::agent_compact::is_context_overflow(&msg) =>
             {
                 overflow_retried = true;
+                let tool_est = context_tool_tokens(&state.messages);
+                let view = crate::agent_compact::WindowView::new(&limits, &gauge, tool_est);
+                let cs = &mut compaction;
                 if !crate::agent_compact::recover_overflow(
-                    gateway,
-                    run,
-                    opts,
-                    &mut state,
-                    sink,
-                    &limits,
-                    &gauge,
-                    &mut compaction,
+                    gateway, run, opts, &mut state, sink, view, cs,
                 )
                 .await?
                 {
