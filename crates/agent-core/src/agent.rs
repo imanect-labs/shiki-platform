@@ -138,7 +138,7 @@ pub async fn run_agent(
     let mut gauge =
         crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
     // 直近に圧縮したステップ（連続して要約しない）と、窓あふれのやり直しを済ませたか。
-    let mut last_compaction_step: Option<usize> = None;
+    let mut compaction = crate::agent_compact::CompactionState::default();
     let mut overflow_retried = false;
 
     let stop = loop {
@@ -168,7 +168,7 @@ pub async fn run_agent(
         if opts.profile.is_autonomous() {
             // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
             gauge.observe_tools(context_tool_tokens(&state.messages));
-            // 窓を知っているモデルでは、**畳む前に**古いやり取りを要約で置き換える（剪定は後ろ盾）。
+            // 窓を知っているモデルでは、**畳む前に**古いやり取りを要約で置き換え、残りを剪定する。
             crate::agent_compact::before_step(
                 gateway,
                 run,
@@ -177,11 +177,9 @@ pub async fn run_agent(
                 sink,
                 &limits,
                 &gauge,
-                &mut last_compaction_step,
+                &mut compaction,
             )
             .await?;
-            // 圧縮を使う run では、soft の畳み込みは圧縮が受け持つ（非常閾値だけ畳む）。
-            limits.apply_with(&mut state.messages, &gauge, !opts.compaction.enabled);
         }
 
         // 補正の基準（送る履歴の見積り）。剪定するのは自律版だけなので Chat では測らない。
@@ -222,7 +220,7 @@ pub async fn run_agent(
                     sink,
                     &limits,
                     &gauge,
-                    &mut last_compaction_step,
+                    &mut compaction,
                 )
                 .await?
                 {

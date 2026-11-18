@@ -94,10 +94,21 @@ pub(crate) async fn try_compact(
     Ok(true)
 }
 
-/// ステップの前の圧縮: 窓を知っていて、見積りが soft を超えていれば要約で置き換える。
+/// ループをまたぐ圧縮の状態。
+#[derive(Default)]
+pub(crate) struct CompactionState {
+    /// 直近に圧縮したステップ（直後の 2 ステップは繰り返さない）。
+    last_step: Option<usize>,
+    /// 直近の圧縮が失敗した（soft の剪定を後ろ盾として戻す）。
+    failing: bool,
+}
+
+/// ステップの前の文脈管理（自律版）: 窓を知っていて見積りが soft を超えていれば要約で置き換え、
+/// 残りを剪定する。
 ///
-/// 直前に圧縮したばかり（2 ステップ以内）なら繰り返さない（尻尾そのものが大きいときに
-/// 毎ステップ要約しない。そのときは剪定が受け持つ）。
+/// 圧縮を使う run では、soft の畳み込みは圧縮が受け持つ（非常閾値だけ畳む）。直近の圧縮が
+/// 失敗していれば、従来どおり soft でも畳む。圧縮の直後 2 ステップは繰り返さない（尻尾そのものが
+/// 大きいときに毎ステップ要約しない。そのときは剪定が受け持つ）。
 #[allow(clippy::too_many_arguments)] // ループの状態をそのまま受け取る（束ねると呼び出し側が読みにくい）。
 pub(crate) async fn before_step(
     gateway: &LlmGateway,
@@ -107,18 +118,24 @@ pub(crate) async fn before_step(
     sink: &mut dyn EventSink,
     limits: &crate::context::ContextLimits,
     gauge: &crate::context::ContextGauge,
-    last_compaction_step: &mut Option<usize>,
+    cs: &mut CompactionState,
 ) -> Result<(), AgentError> {
-    let Some(w) = limits.window.filter(|_| opts.compaction.enabled) else {
-        return Ok(());
-    };
-    let cooled = last_compaction_step.is_none_or(|s| state.spent.steps >= s + 2);
-    if cooled && gauge.tokens(&state.messages) > w.soft {
-        let steps = state.spent.steps;
-        if try_compact(gateway, run, opts, state, sink, w.effective, false).await? {
-            *last_compaction_step = Some(steps);
+    if let Some(w) = limits.window.filter(|_| opts.compaction.enabled) {
+        let cooled = cs.last_step.is_none_or(|s| state.spent.steps >= s + 2);
+        if cooled && gauge.tokens(&state.messages) > w.soft {
+            let steps = state.spent.steps;
+            let ok = try_compact(gateway, run, opts, state, sink, w.effective, false).await?;
+            if ok {
+                cs.last_step = Some(steps);
+            }
+            cs.failing = !ok;
         }
     }
+    limits.apply_with(
+        &mut state.messages,
+        gauge,
+        !opts.compaction.enabled || cs.failing,
+    );
     Ok(())
 }
 
@@ -135,7 +152,7 @@ pub(crate) async fn recover_overflow(
     sink: &mut dyn EventSink,
     limits: &crate::context::ContextLimits,
     gauge: &crate::context::ContextGauge,
-    last_compaction_step: &mut Option<usize>,
+    cs: &mut CompactionState,
 ) -> Result<bool, AgentError> {
     let effective = limits
         .window
@@ -143,7 +160,7 @@ pub(crate) async fn recover_overflow(
     let compacted = opts.compaction.enabled
         && try_compact(gateway, run, opts, state, sink, effective, true).await?;
     if compacted {
-        *last_compaction_step = Some(state.spent.steps);
+        cs.last_step = Some(state.spent.steps);
     }
     let folded = crate::context::emergency_fold(&mut state.messages);
     Ok(compacted || folded)

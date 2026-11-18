@@ -427,6 +427,33 @@ mod tests {
     use llm_gateway::Role as LlmRole;
 
     #[test]
+    fn unfinished_plan_is_checked_only_once() {
+        let mut plan = crate::plan::Plan::default();
+        plan.revise(vec![
+            crate::plan::SubtaskInput {
+                title: "読む".into(),
+                status: Some("done".into()),
+            },
+            crate::plan::SubtaskInput {
+                title: "提出する".into(),
+                status: Some("todo".into()),
+            },
+        ]);
+        let mut messages = vec![LlmMessage::text(LlmRole::User, "依頼")];
+        assert!(nudge_unfinished_plan(&mut messages, &plan));
+        let last = format!("{:?}", messages.last().unwrap());
+        assert!(last.contains("提出する") && !last.contains("読む /"));
+        // 2 度目は確かめない（余分な手は 1 ステップに留める）。
+        assert!(!nudge_unfinished_plan(&mut messages, &plan));
+        // 未完了が無ければ何もしない。
+        let mut fresh = vec![LlmMessage::text(LlmRole::User, "依頼")];
+        assert!(!nudge_unfinished_plan(
+            &mut fresh,
+            &crate::plan::Plan::default()
+        ));
+    }
+
+    #[test]
     fn complete_calls_with_a_non_tool_stop_are_run() {
         use StopReason::{EndTurn, MaxTokens, Other, ToolUse};
         assert_eq!(settle_stop(EndTurn, true, true), ToolUse);

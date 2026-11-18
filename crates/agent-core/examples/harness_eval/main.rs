@@ -235,6 +235,8 @@ async fn main() {
             prompt_price_micros_per_mtok: m.prompt_price,
             completion_price_micros_per_mtok: m.completion_price,
             context_window_tokens: Some(args.window),
+            // 思考するモデルには思考強度を送る（要約は low で頼む・OpenRouter は reasoning_effort を受ける）。
+            supports_effort: (m.key == "qwen").then_some(true),
             ..Default::default()
         })
         .collect();

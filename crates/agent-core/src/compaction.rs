@@ -365,29 +365,23 @@ pub(crate) async fn compact(
     let prompt_budget = effective_window.saturating_sub(max_summary as usize + 1_500);
     let prompt = summarizer_prompt(messages, split, prompt_budget);
     let model = c.model.clone().or_else(|| opts.model.clone());
-    let mut stream = gateway
-        .stream(
-            ctx,
-            GenerateRequest {
-                model: model.clone(),
-                system: Some(SUMMARIZER_SYSTEM.to_string()),
-                messages: vec![Message::text(Role::User, prompt)],
-                tools: Vec::new(),
-                effort: Some(llm_gateway::Effort::Low),
-                max_tokens: Some(max_summary),
-                temperature: None,
-                session_id: opts.session_id.clone(),
-            },
-        )
-        .await?;
-    let mut text = String::new();
+    // 思考するモデル（Qwen3.x 等）は、思考だけで出力上限を使い切って本文が空になることがある。
+    // そのときだけ、上限を倍（有効窓の 1/3 まで）にして 1 度だけ取り直す。
     let mut usage = Usage::default();
-    while let Some(delta) = futures::StreamExt::next(&mut stream).await {
-        match delta? {
-            StreamDelta::TextDelta { text: t } => text.push_str(&t),
-            StreamDelta::Done { usage: u, .. } => usage = u,
-            _ => {}
+    let mut text = String::new();
+    let mut budget = max_summary;
+    for attempt in 0..2 {
+        let (t, u, stop) =
+            summarize_once(gateway, ctx, opts, model.clone(), &prompt, budget).await?;
+        usage = add_usage(usage, u);
+        text = t;
+        let exhausted = stop == llm_gateway::StopReason::MaxTokens && text.trim().len() < 40;
+        if !exhausted || attempt == 1 {
+            break;
         }
+        budget = budget
+            .saturating_mul(2)
+            .min(u32::try_from(effective_window / 3).unwrap_or(u32::MAX));
     }
     let model = model.unwrap_or_else(|| gateway.default_model().to_string());
     if text.trim().len() < 40 {
@@ -413,6 +407,59 @@ pub(crate) async fn compact(
         before_tokens,
         after_tokens,
     }))
+}
+
+/// 要約を 1 回生成する（本文・消費・停止理由）。
+async fn summarize_once(
+    gateway: &LlmGateway,
+    ctx: &authz::AuthContext,
+    opts: &crate::profile::AgentOptions,
+    model: Option<String>,
+    prompt: &str,
+    max_tokens: u32,
+) -> Result<(String, Usage, llm_gateway::StopReason), llm_gateway::LlmError> {
+    let mut stream = gateway
+        .stream(
+            ctx,
+            GenerateRequest {
+                model,
+                system: Some(SUMMARIZER_SYSTEM.to_string()),
+                messages: vec![Message::text(Role::User, prompt.to_string())],
+                tools: Vec::new(),
+                effort: Some(llm_gateway::Effort::Low),
+                max_tokens: Some(max_tokens),
+                temperature: None,
+                session_id: opts.session_id.clone(),
+            },
+        )
+        .await?;
+    let mut text = String::new();
+    let mut usage = Usage::default();
+    let mut stop = llm_gateway::StopReason::EndTurn;
+    while let Some(delta) = futures::StreamExt::next(&mut stream).await {
+        match delta? {
+            StreamDelta::TextDelta { text: t } => text.push_str(&t),
+            StreamDelta::Done {
+                usage: u,
+                stop_reason,
+            } => {
+                usage = u;
+                stop = stop_reason;
+            }
+            _ => {}
+        }
+    }
+    Ok((text, usage, stop))
+}
+
+/// 2 回分の消費を足す（会計は呼んだ回数ぶん積む）。
+fn add_usage(a: Usage, b: Usage) -> Usage {
+    Usage {
+        prompt_tokens: a.prompt_tokens.saturating_add(b.prompt_tokens),
+        completion_tokens: a.completion_tokens.saturating_add(b.completion_tokens),
+        cache_read_tokens: a.cache_read_tokens.saturating_add(b.cache_read_tokens),
+        cache_write_tokens: a.cache_write_tokens.saturating_add(b.cache_write_tokens),
+    }
 }
 
 #[cfg(test)]

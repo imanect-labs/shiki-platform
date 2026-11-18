@@ -5,7 +5,7 @@
 //! 剪定は「古い結果」を畳む仕組みなので、**まだ一度も読まれていない直近の結果**には使えない
 //! （畳むと読み直し→また畳まれる、の空回りになった）。そこで結果を受け取った時点で、
 //!
-//! - 上限に収まる分は届いた順にそのまま返す（収まらない大きな 1 件は中ほどを削って返す）。
+//! - 上限に収まる分は届いた順にそのまま返す（単独でも上限を超える 1 件だけは中ほどを削って返す）。
 //! - 収まらない**読み取り系**（冪等）の結果は本文を返さず、「未表示。呼び直せば読める。
 //!   一度に呼ぶ数を減らす」と正直に伝える（読み取りは呼び直しても副作用が無い）。
 //! - **変更を伴うツール**の結果は既に実行済みなので落とさない（大きすぎるものだけ中ほどを削る）。
@@ -66,8 +66,6 @@ pub(crate) fn cap_step_results(
     }
     let mut used = 0usize;
     let mut deferred = 0usize;
-    // 1 件で上限を占めないよう、単独の結果は上限の 2/3 までに抑える（他の結果の席を残す）。
-    let single_cap = budget_tokens * 2 / 3;
     for b in blocks.iter_mut() {
         let Block::ToolResult {
             tool_use_id,
@@ -78,24 +76,24 @@ pub(crate) fn cap_step_results(
             continue;
         };
         let t = text_tokens(content);
-        let ro = read_only.contains(tool_use_id.as_str());
         if used + t <= budget_tokens {
             used += t;
             continue;
         }
         let room = budget_tokens.saturating_sub(used);
-        if !ro {
+        if !read_only.contains(tool_use_id.as_str()) {
             // 実行済みの変更は落とさない。収まらない分だけ削る。
-            let cap = room.max(budget_tokens / 10).min(t);
-            if cap < t {
-                *content = shorten(content, cap, false);
-            }
+            *content = shorten(content, room.max(budget_tokens / 10).min(t), false);
             used += text_tokens(content);
-        } else if used == 0 || room >= budget_tokens / 3 {
-            // 最初の 1 件（または十分な空き）は、削ってでも見せる。
-            *content = shorten(content, room.min(single_cap), true);
+        } else if used == 0 {
+            // 単独でも上限を超える 1 件だけは、削ってでも見せる（呼び直しても同じ大きさのため）。
+            // 収まる大きさなら削らない: 中ほどを削った文書は、要の部分（表など）が欠けたまま
+            // 読み違えられる（実測: 16k 窓で表の欠けた報告を「確認済み」と書き、読み直しを重ねた）。
+            // 省略の注記ぶんを空けておく。
+            *content = shorten(content, budget_tokens.saturating_sub(200), true);
             used += text_tokens(content);
         } else {
+            // 単独なら収まる結果は、削らずに「未表示・呼び直せる」にする（次は丸ごと読める）。
             *content = deferred_note();
             deferred += 1;
         }
@@ -160,6 +158,17 @@ mod tests {
         let c = &contents(&bs)[0];
         assert!(c.contains("中ほど") && c.contains("範囲や条件を絞って"));
         assert!(text_tokens(c) <= 9_000, "{}", text_tokens(c));
+    }
+
+    #[test]
+    fn a_read_that_fits_alone_is_deferred_not_cut() {
+        // 2 件目は単独なら収まる（4k ≦ 6k）が、1 件目の後には収まらない → 削らず未表示。
+        let mut bs = results(2, 4000);
+        let ro: HashSet<String> = ["r0", "r1"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(cap_step_results(&mut bs, &ro, 6_000), 1);
+        let c = contents(&bs);
+        assert_eq!(c[0].len(), 4000 * 3);
+        assert!(c[1].starts_with(DEFERRED_MARK));
     }
 
     #[test]

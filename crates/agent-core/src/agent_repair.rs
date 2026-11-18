@@ -319,4 +319,113 @@ mod tests {
             matches!(&blocks[0], Block::ToolResult { content, .. } if content.contains("読み替えて実行"))
         );
     }
+
+    struct Collect(Vec<AgentEvent>);
+
+    #[async_trait::async_trait]
+    impl EventSink for Collect {
+        async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+            self.0.push(event);
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn text_calls_become_tool_uses_and_events() {
+        let defs = vec![ToolDef::new("plan", "", json!({"type": "object"}))];
+        let mut ordered = vec![Block::Text {
+            text: "計画します。<call:plan>{\"subtasks\": []}</call:plan>".into(),
+        }];
+        let mut sink = Collect(Vec::new());
+        let calls = recover_text_calls(
+            &defs,
+            "計画します。<call:plan>{\"subtasks\": []}</call:plan>",
+            2,
+            &mut ordered,
+            &mut sink,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "text_call_2_0");
+        assert!(matches!(&ordered[0], Block::Text { text } if text == "計画します。"));
+        assert!(matches!(&ordered[1], Block::ToolUse { name, .. } if name == "plan"));
+        assert!(matches!(&sink.0[0], AgentEvent::ToolCall { step: 2, .. }));
+        // 呼び出しの無い本文は回収しない。
+        let mut none = vec![];
+        assert!(
+            recover_text_calls(&defs, "終わりました。", 3, &mut none, &mut sink)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_calls_are_inserted_in_call_order_and_counted_as_failures() {
+        let info = vec![
+            ("a".to_string(), "read".to_string(), json!({"p": 1}), true),
+            ("b".to_string(), "read".to_string(), json!({}), true),
+            ("c".to_string(), "read".to_string(), json!({"p": 3}), true),
+        ];
+        let mut blocks = vec![
+            Block::tool_result("a", "ok-a", false),
+            Block::tool_result("c", "ok-c", false),
+        ];
+        let invalid = vec![InvalidCall {
+            id: "b".into(),
+            message: "読めなかった".into(),
+        }];
+        let mut det = LoopDetector::default();
+        let mut sink = Collect(Vec::new());
+        let looping = merge_invalid(&mut blocks, &info, invalid, &mut det, &mut sink)
+            .await
+            .unwrap();
+        assert!(!looping);
+        let ids: Vec<&str> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+        assert!(matches!(
+            &blocks[1],
+            Block::ToolResult { is_error: true, .. }
+        ));
+        assert!(matches!(
+            &sink.0[0],
+            AgentEvent::ToolResult { ok: false, .. }
+        ));
+    }
+
+    #[test]
+    fn repeated_identical_results_get_a_note_but_deferred_ones_do_not() {
+        let info = vec![("x".to_string(), "run_tests".to_string(), json!({}), false)];
+        let mut tracker = RepeatTracker::default();
+        for i in 1..=3 {
+            let mut blocks = vec![Block::tool_result("x", "2 failed", false)];
+            note_repeats(&mut blocks, &info, &mut tracker);
+            let noted =
+                matches!(&blocks[0], Block::ToolResult { content, .. } if content.contains("回目"));
+            assert_eq!(noted, i >= 3, "{i} 回目");
+        }
+        let mut deferred = vec![Block::tool_result(
+            "x",
+            format!("{}…", crate::result_budget::DEFERRED_MARK),
+            false,
+        )];
+        let mut t = RepeatTracker::default();
+        for _ in 0..4 {
+            note_repeats(&mut deferred, &info, &mut t);
+        }
+        assert!(
+            matches!(&deferred[0], Block::ToolResult { content, .. } if !content.contains("回目"))
+        );
+    }
 }

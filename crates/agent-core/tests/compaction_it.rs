@@ -260,3 +260,85 @@ async fn compaction_disabled_keeps_pruning_only() {
     assert_eq!(out.checkpoint.compactions, 0);
     assert!(!format!("{:?}", out.checkpoint.messages[0]).contains("これまでの作業の要約"));
 }
+
+/// 1 度だけ窓あふれで拒否する sink（vLLM と同じ文言・eval の窓の模擬と同じ形）。
+struct RejectOnceSink {
+    events: Vec<AgentEvent>,
+    usages: usize,
+    reject_at: usize,
+}
+
+#[async_trait]
+impl EventSink for RejectOnceSink {
+    async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+        if matches!(event, AgentEvent::ContextUsage(_)) {
+            self.usages += 1;
+            if self.usages == self.reject_at {
+                return Err(AgentError::Llm(
+                    "openai 400: This model's maximum context length is 8000 tokens".into(),
+                ));
+            }
+        }
+        self.events.push(event);
+        Ok(())
+    }
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+    async fn save_checkpoint(&mut self, _c: &Checkpoint) -> Result<(), AgentError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn context_overflow_is_recovered_once_and_the_run_continues() {
+    let Some(pool) = setup().await else { return };
+    let gateway = small_window_gateway(pool);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(BigRead)];
+    for compaction in [true, false] {
+        let mut sink = RejectOnceSink {
+            events: Vec::new(),
+            usages: 0,
+            reject_at: 3,
+        };
+        let out = run_agent(
+            &gateway,
+            &tools,
+            vec![LlmMessage::text(LlmRole::User, "loop: 全部読んで")],
+            &run_context(&c),
+            &opts(compaction),
+            None,
+            None,
+            &mut sink,
+        )
+        .await
+        .expect("窓あふれは 1 度ならやり直して続く");
+        assert!(
+            sink.usages > 3,
+            "拒否の後もステップが進む（compaction={compaction}）"
+        );
+        // ツール呼び出しと結果の対応は保たれている。
+        assert_pairs_intact(&out.checkpoint.messages);
+    }
+    // 窓あふれのやり直しを切ると、拒否はそのままエラーになる。
+    let mut sink = RejectOnceSink {
+        events: Vec::new(),
+        usages: 0,
+        reject_at: 3,
+    };
+    let mut o = opts(true);
+    o.aids.overflow_retry = false;
+    let err = run_agent(
+        &gateway,
+        &tools,
+        vec![LlmMessage::text(LlmRole::User, "loop: 全部読んで")],
+        &run_context(&c),
+        &o,
+        None,
+        None,
+        &mut sink,
+    )
+    .await;
+    assert!(err.is_err());
+}
