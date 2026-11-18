@@ -11,6 +11,21 @@ import Link from "next/link";
 
 import { parseSlideDraft, slideDraftHref } from "@/lib/slides/draft";
 
+/// 1 回の回答で出す下書きカードの位置（同じ名前は最後の 1 枚だけ）。
+///
+/// save_slide を append で数回に分けて呼ぶと、そのたびに**全体の**下書きが付く（3 枚・5 枚・8 枚…）。
+/// 下書きストアは (会話, 名前) で 1 つなので、どのカードを開いても最新の下書きが開く。並べると
+/// 別々の下書きを作ったように見えるため、最後（＝全体がそろった版）の 1 枚だけを出す。形の崩れた
+/// ものは位置で残す（カード側で何も出さない）。
+export function latestSlideDraftIndices(raws: unknown[]): Set<number> {
+  const last = new Map<string, number>();
+  raws.forEach((raw, i) => {
+    const d = parseSlideDraft(raw);
+    last.set(d ? `name:${d.name}` : `#${i}`, i);
+  });
+  return new Set(last.values());
+}
+
 export function SlideDraftCard({ raw, threadId }: { raw: unknown; threadId: string }) {
   const draft = parseSlideDraft(raw);
   if (!draft) return null;

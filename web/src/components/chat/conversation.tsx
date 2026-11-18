@@ -102,7 +102,7 @@ import { BugReportActionContext, HelpResolutionCard, BugReportDraftCard } from "
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { TranslationBlock } from "./translation-block";
-import { SlideDraftCard } from "./slide-draft-card";
+import { latestSlideDraftIndices, SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
 import { LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
@@ -1828,6 +1828,13 @@ const AssistantRow = React.memo(function AssistantRow({
   const slideDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "slide_draft" }> => b.type === "slide_draft",
   );
+  // 同じ下書きを数回に分けて足したときは、最後（全体）の 1 枚だけ出す。
+  const visibleSlideDrafts = React.useMemo(
+    () => latestSlideDraftIndices(slideDrafts.map((b) => b.draft)),
+    // blocks が変わったときだけ数え直す（slideDrafts は毎回作り直す配列）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [blocks],
+  );
   const csvDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "csv_draft" }> => b.type === "csv_draft",
   );
@@ -1875,9 +1882,9 @@ const AssistantRow = React.memo(function AssistantRow({
           {noteDrafts.map((b, i) => (
             <NoteDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
-          {slideDrafts.map((b, i) => (
-            <SlideDraftCard key={i} raw={b.draft} threadId={threadId} />
-          ))}
+          {slideDrafts.map((b, i) =>
+            visibleSlideDrafts.has(i) ? <SlideDraftCard key={i} raw={b.draft} threadId={threadId} /> : null,
+          )}
           {csvDrafts.map((b, i) => (
             <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
@@ -1975,6 +1982,11 @@ function StreamingRow({
     () => (stream.assistantMessageId ? answerImageProxy(threadId, stream.assistantMessageId) : null),
     [threadId, stream.assistantMessageId],
   );
+  // 同じ下書きを数回に分けて足したときは、最後（全体）の 1 枚だけ出す。
+  const streamSlideDrafts = React.useMemo(
+    () => latestSlideDraftIndices(stream.slideDrafts),
+    [stream.slideDrafts],
+  );
   const last = segments[segments.length - 1];
   const waiting = useStreamWaiting({
     text: stream.text,
@@ -2032,9 +2044,9 @@ function StreamingRow({
           {stream.noteDrafts.map((draft, i) => (
             <NoteDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
-          {stream.slideDrafts.map((draft, i) => (
-            <SlideDraftCard key={i} raw={draft} threadId={threadId} />
-          ))}
+          {stream.slideDrafts.map((draft, i) =>
+            streamSlideDrafts.has(i) ? <SlideDraftCard key={i} raw={draft} threadId={threadId} /> : null,
+          )}
           {stream.csvDrafts.map((draft, i) => (
             <CsvDraftCard key={i} raw={draft} threadId={threadId} />
           ))}

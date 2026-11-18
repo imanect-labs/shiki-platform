@@ -71,3 +71,32 @@ test("下書き: 同じ会話で複数の下書きスライドをタブで切り
   await tabs.getByText(nameA).click();
   await expect(page.getByTestId("slide-filmstrip")).toBeVisible({ timeout: 15_000 });
 });
+
+test("下書き: 同じ回答で同じ下書きを数回に分けて足しても、カードは最後の 1 枚だけ（#1328）", async ({
+  page,
+}) => {
+  await loginViaKeycloak(page);
+  const slideName = uniqueName("分割");
+  await sendFromHome(page, `saveslide:${slideName}`);
+  await page.waitForURL(/\/slides\/draft/, { timeout: 25_000 });
+  const threadId = new URL(page.url()).searchParams.get("thread");
+  expect(threadId).toBeTruthy();
+
+  // save_slide を append で 3 回呼んだ回答を作る（同じ名前の全体の下書きが 3 つ付く）。
+  // stub は 1 回の回答で 1 回しか呼ばないので、会話の読み込みの応答で同じ下書きを 2 つ足す。
+  await page.route("**/api/threads/*/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const res = await route.fetch();
+    const data = (await res.json()) as { messages: { role: string; content: { type: string }[] }[] };
+    const last = [...data.messages].reverse().find((m) => m.role === "assistant");
+    const draft = last?.content.find((b) => b.type === "slide_draft");
+    if (last && draft) last.content.push(draft, draft);
+    await route.fulfill({ response: res, json: data });
+  });
+  await page.goto(`/c/${threadId}`);
+
+  const cards = page.getByTestId("slide-draft-card");
+  await expect(cards.first()).toBeVisible({ timeout: 20_000 });
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText(slideName);
+});
