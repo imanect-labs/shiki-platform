@@ -215,7 +215,8 @@ fn system_prompt(task_system: &str) -> String {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let args = parse_args();
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").expect("STORAGE_TEST_DATABASE_URL");
+    let db_url =
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL").expect("STORAGE_TEST_DATABASE_URL");
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)
