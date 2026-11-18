@@ -30,6 +30,7 @@ export type AdminChannel = S["AdminChannel"];
 export type AdminMessage = S["AdminMessage"];
 export type DirectoryUser = S["DirectoryUserResponse"];
 export type DirectoryRole = S["DirectoryRoleResponse"];
+export type ChannelFileEntry = S["ChannelFileEntry"];
 
 /// 本文で使えるブロック（text / file_ref / mention の部分集合・サーバの `validate_blocks`）。
 export type MessageBlock = Extract<ContentBlock, { type: "text" | "file_ref" | "mention" }>;
@@ -161,6 +162,26 @@ export async function setMemberRole(
 
 export async function setNotify(id: string, level: NotifyLevel): Promise<void> {
   return empty(await apiFetch(`/messaging/channels/${enc(id)}/notify`, send("PUT", { level })));
+}
+
+/// 一覧の上に固定する・外す（スター・自分だけの設定）。
+export async function setStarred(id: string, starred: boolean): Promise<void> {
+  return empty(await apiFetch(`/messaging/channels/${enc(id)}/star`, send("PUT", { starred })));
+}
+
+/// 発言をピン留めする・外す（チャンネルの参加者に共通）。
+export async function setPinned(id: string, pinned: boolean): Promise<MessageView> {
+  return json(await apiFetch(`/messaging/messages/${enc(id)}/pin`, send(pinned ? "PUT" : "DELETE")));
+}
+
+/// ピン留めした発言（新しくピン留めした順）。
+export async function listPins(channelId: string): Promise<MessageView[]> {
+  return json(await apiFetch(`/messaging/channels/${enc(channelId)}/pins`));
+}
+
+/// チャンネルに共有されている資料（自分が読めるものだけ・新しい順）。
+export async function listChannelFiles(channelId: string): Promise<ChannelFileEntry[]> {
+  return json(await apiFetch(`/messaging/channels/${enc(channelId)}/files`));
 }
 
 export async function hideDm(id: string): Promise<void> {

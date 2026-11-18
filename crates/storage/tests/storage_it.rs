@@ -6234,6 +6234,35 @@ async fn sharing_with_a_channel_reaches_its_members_only() {
         .is_empty());
     assert_eq!(audit_count(&pool, &org, "node.share", "allow").await, 1);
 
+    // チャンネルの資料の一覧: 参加者には共有したファイル・フォルダが出る。参加者でなければ一覧できない。
+    let folder = service
+        .create_folder(&owner, None, "提案資料", None)
+        .await
+        .expect("folder");
+    service
+        .share_node_with_channel(&owner, folder.id, channel, None)
+        .await
+        .expect("share folder with channel");
+    let listed: Vec<Uuid> = service
+        .channel_shared_nodes(&member, channel)
+        .await
+        .expect("list channel files")
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert!(
+        listed.contains(&file.id) && listed.contains(&folder.id),
+        "{listed:?}"
+    );
+    assert!(matches!(
+        service.channel_shared_nodes(&outsider, channel).await,
+        Err(StorageError::Forbidden)
+    ));
+    service
+        .unshare_node_from_channel(&owner, folder.id, channel, None)
+        .await
+        .expect("unshare folder");
+
     service
         .unshare_node_from_channel(&owner, file.id, channel, None)
         .await
@@ -6244,7 +6273,13 @@ async fn sharing_with_a_channel_reaches_its_members_only() {
         .await
         .unwrap()
         .is_empty());
-    assert_eq!(audit_count(&pool, &org, "node.unshare", "allow").await, 1);
+    assert_eq!(audit_count(&pool, &org, "node.unshare", "allow").await, 2);
+    // 解除した資料は一覧から消える。
+    assert!(service
+        .channel_shared_nodes(&member, channel)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 /// チャンネル共有の付与・解除は、同じノード・チャンネルの操作とセッションのロックで直列化する。

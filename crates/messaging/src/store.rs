@@ -53,6 +53,7 @@ pub struct MemberRow {
     pub visible_from: DateTime<Utc>,
     pub notify: String,
     pub hidden_at: Option<DateTime<Utc>>,
+    pub starred: bool,
 }
 
 /// 一覧の 1 行（自分が参加しているチャンネル＋未読）。
@@ -62,6 +63,9 @@ pub struct MyChannelRow {
     pub channel: ChannelRow,
     pub notify: String,
     pub hidden_at: Option<DateTime<Utc>>,
+    pub starred: bool,
+    /// DM の最新の発言の冒頭（一覧の 2 行目・DM 以外は `None`）。
+    pub last_excerpt: Option<String>,
     pub member_count: i64,
     pub unread: i64,
     pub mentions: i64,
@@ -394,7 +398,7 @@ pub async fn member(
     user: &str,
 ) -> Result<Option<MemberRow>, Error> {
     Ok(sqlx::query_as(
-        "SELECT user_id, visible_from, notify, hidden_at FROM channel_member \
+        "SELECT user_id, visible_from, notify, hidden_at, starred FROM channel_member \
          WHERE tenant_id = $1 AND org = $2 AND channel_id = $3 AND user_id = $4",
     )
     .bind(ctx.tenant_id())
@@ -411,7 +415,7 @@ pub async fn members(
     channel: Uuid,
 ) -> Result<Vec<MemberRow>, Error> {
     Ok(sqlx::query_as(
-        "SELECT user_id, visible_from, notify, hidden_at FROM channel_member \
+        "SELECT user_id, visible_from, notify, hidden_at, starred FROM channel_member \
          WHERE tenant_id = $1 AND org = $2 AND channel_id = $3 ORDER BY visible_from, user_id LIMIT 5000",
     )
     .bind(ctx.tenant_id())
@@ -419,6 +423,29 @@ pub async fn members(
     .bind(channel)
     .fetch_all(conn)
     .await?)
+}
+
+/// 一覧の上に固定する（スター）。参加していなければ `false`。
+pub async fn set_starred(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    channel: Uuid,
+    user: &str,
+    starred: bool,
+) -> Result<bool, Error> {
+    Ok(sqlx::query(
+        "UPDATE channel_member SET starred = $5 \
+         WHERE tenant_id = $1 AND org = $2 AND channel_id = $3 AND user_id = $4",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(channel)
+    .bind(user)
+    .bind(starred)
+    .execute(conn)
+    .await?
+    .rows_affected()
+        > 0)
 }
 
 pub async fn set_notify(
@@ -532,7 +559,12 @@ pub async fn my_channels(
     user: &str,
 ) -> Result<Vec<MyChannelRow>, Error> {
     Ok(sqlx::query_as(&format!(
-        "SELECT {CHANNEL_COLS}, m.notify, m.hidden_at, \
+        "SELECT {CHANNEL_COLS}, m.notify, m.hidden_at, m.starred, \
+           CASE WHEN c.kind = 'dm' THEN (SELECT left(msg.search_text, 80) FROM channel_message msg \
+              WHERE msg.tenant_id = c.tenant_id AND msg.org = c.org AND msg.channel_id = c.id \
+                AND msg.parent_id IS NULL AND msg.deleted_at IS NULL AND msg.expired_at IS NULL \
+                AND msg.created_at > m.visible_from \
+              ORDER BY msg.created_at DESC, msg.id DESC LIMIT 1) END AS last_excerpt, \
            (SELECT count(*) FROM channel_member x WHERE x.tenant_id = c.tenant_id AND x.org = c.org \
               AND x.channel_id = c.id) AS member_count, \
            (SELECT count(*) FROM (SELECT 1 FROM channel_message msg \

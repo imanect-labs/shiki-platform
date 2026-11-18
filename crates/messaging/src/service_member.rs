@@ -429,6 +429,26 @@ impl MessagingService {
         Ok(())
     }
 
+    /// 一覧の上に固定する・外す（スター・自分だけの設定・参加しているチャンネルだけ）。
+    ///
+    /// # Errors
+    ///
+    /// 読めない（`NotFound`）・参加していない（`Forbidden`）・DB の失敗。
+    pub async fn set_starred(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        starred: bool,
+    ) -> Result<(), Error> {
+        let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;
+        self.readable_channel(&mut tx, ctx, id).await?;
+        if !store::set_starred(&mut tx, ctx, id, &ctx.principal().id, starred).await? {
+            return Err(Error::Forbidden("参加していないチャンネルです"));
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// DM を一覧から隠す（新しい発言が来たら戻る）。
     pub async fn hide_dm(&self, ctx: &AuthContext, id: Uuid) -> Result<(), Error> {
         let mut tx = begin_tenant_tx(&self.pool, ctx.tenant()).await?;

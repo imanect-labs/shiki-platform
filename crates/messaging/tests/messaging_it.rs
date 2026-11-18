@@ -1873,3 +1873,98 @@ async fn ui_buttons_continue_the_thread_as_the_owner_only() {
         .unwrap_err();
     assert!(matches!(err, Error::Forbidden(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn stars_dm_excerpts_and_pins_follow_membership() {
+    let Some(env) = setup().await else { return };
+    let (alice, bob, carol) = (env.ctx("alice"), env.ctx("bob"), env.ctx("carol"));
+    env.org_member("carol").await;
+    let ch = env
+        .svc
+        .create_channel(&alice, create("ピンとスター", ChannelKind::Private), None)
+        .await
+        .unwrap();
+    env.svc
+        .invite(&alice, ch.id, vec!["bob".into()], None)
+        .await
+        .unwrap();
+
+    // スターは自分だけの設定（参加していないチャンネルには付けられない）。
+    env.svc.set_starred(&bob, ch.id, true).await.unwrap();
+    let bobs = env.svc.list_channels(&bob).await.unwrap();
+    assert!(bobs.iter().any(|c| c.id == ch.id && c.starred));
+    let alices = env.svc.list_channels(&alice).await.unwrap();
+    assert!(alices.iter().any(|c| c.id == ch.id && !c.starred));
+    assert!(matches!(
+        env.svc.set_starred(&carol, ch.id, true).await,
+        Err(Error::NotFound | Error::Forbidden(_))
+    ));
+
+    // DM は最新の発言の冒頭を一覧の 2 行目に持つ（削除した発言は出さない・チャンネルには付かない）。
+    let dm = env.svc.open_dm(&alice, "bob", None).await.unwrap();
+    env.svc
+        .post(&bob, dm.id, msg("明日の打ち合わせ"), None)
+        .await
+        .unwrap();
+    let last = env
+        .svc
+        .post(&bob, dm.id, msg("社外秘の話"), None)
+        .await
+        .unwrap();
+    let excerpt = |list: &[messaging::ChannelView], id| {
+        list.iter()
+            .find(|c| c.id == id)
+            .and_then(|c| c.last_excerpt.clone())
+    };
+    let list = env.svc.list_channels(&alice).await.unwrap();
+    assert_eq!(excerpt(&list, dm.id).as_deref(), Some("社外秘の話"));
+    assert_eq!(excerpt(&list, ch.id), None);
+    env.svc.delete(&bob, last.id, None).await.unwrap();
+    let list = env.svc.list_channels(&alice).await.unwrap();
+    assert_eq!(excerpt(&list, dm.id).as_deref(), Some("明日の打ち合わせ"));
+
+    // ピン留め: 投稿できる参加者が付け外しでき、一覧は参加者に共通。
+    let m = env
+        .svc
+        .post(&alice, ch.id, msg("見積もりは 3 年で"), None)
+        .await
+        .unwrap();
+    let pinned = env.svc.set_pinned(&bob, m.id, true, None).await.unwrap();
+    assert!(pinned.pinned);
+    let pins = env.svc.pinned_messages(&alice, ch.id).await.unwrap();
+    assert_eq!(pins.iter().map(|p| p.id).collect::<Vec<_>>(), vec![m.id]);
+    // 参加していない人は付けられず、一覧も読めない。
+    assert!(env.svc.set_pinned(&carol, m.id, true, None).await.is_err());
+    assert!(env.svc.pinned_messages(&carol, ch.id).await.is_err());
+    // 後から参加した人には、参加前のピン留めは見えない（境界は通常の読取と同じ）。
+    env.svc
+        .invite(&alice, ch.id, vec!["carol".into()], None)
+        .await
+        .unwrap();
+    assert!(env
+        .svc
+        .pinned_messages(&carol, ch.id)
+        .await
+        .unwrap()
+        .is_empty());
+    // 外すと一覧から消え、削除した発言はピン留めできない。
+    let unpinned = env.svc.set_pinned(&alice, m.id, false, None).await.unwrap();
+    assert!(!unpinned.pinned);
+    assert!(env
+        .svc
+        .pinned_messages(&alice, ch.id)
+        .await
+        .unwrap()
+        .is_empty());
+    env.svc.delete(&alice, m.id, None).await.unwrap();
+    assert!(env.svc.set_pinned(&alice, m.id, true, None).await.is_err());
+    // 付け外しは監査に残る。
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action IN ('messaging.message.pin', 'messaging.message.unpin')",
+    )
+    .bind(&env.tenant)
+    .fetch_one(&env.db)
+    .await
+    .unwrap();
+    assert_eq!(audits, 2);
+}

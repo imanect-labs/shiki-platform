@@ -210,8 +210,16 @@ test("ドライブの資料をチャンネルに閲覧で共有し、解除で�
   await expect(entry).toBeVisible();
   await expect(share.getByRole("button", { name: `${name} に共有済み` })).toBeDisabled();
 
-  // 閉じて開き直しても共有が残っている（サーバに保存されている）。
+  // チャンネルのヘッダの「資料」から、共有したフォルダが参加者に見える。
   await page.keyboard.press("Escape");
+  await openMessages(page);
+  await page.getByTestId("channel-row").filter({ hasText: name }).click();
+  await expect(page.getByTestId("pill-files")).toHaveAccessibleName("資料 1 件");
+  await page.getByTestId("pill-files").click();
+  await expect(page.getByTestId("channel-side-panel").getByTestId("channel-file").filter({ hasText: folder })).toBeVisible();
+
+  // 閉じて開き直しても共有が残っている（サーバに保存されている）。
+  await page.goto("/drive");
   await page.getByRole("button", { name: `「${folder}」の操作` }).click();
   await page.getByRole("menuitem", { name: "共有" }).click();
   await share.getByTestId("share-tab-channels").click();
@@ -220,6 +228,44 @@ test("ドライブの資料をチャンネルに閲覧で共有し、解除で�
   await share.getByRole("button", { name: `${name} への共有を解除` }).click();
   await expect(entry).toHaveCount(0);
   await expect(share.getByText("まだどのチャンネルにも共有していません。")).toBeVisible();
+});
+
+test("発言をピン留めして一覧から外せ、チャンネルにスターを付けると上に並ぶ", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-pin");
+  await createChannel(page, name, "公開");
+  const text = `大事な発言 ${name}`;
+  await send(page, text);
+  await expect(row(page, text)).toBeVisible();
+
+  // 発言の操作からピン留めすると、行に印が付き、ヘッダの件数とピンの一覧に出る。
+  await row(page, text).hover();
+  await row(page, text).getByRole("button", { name: "ピン留めする" }).click();
+  await expect(row(page, text).getByTestId("pinned-label")).toBeVisible();
+  await expect(page.getByTestId("pill-pins")).toHaveAccessibleName("ピン 1 件");
+  await page.getByTestId("pill-pins").click();
+  const panel = page.getByTestId("channel-side-panel");
+  await expect(panel.getByTestId("pinned-message").filter({ hasText: text })).toBeVisible();
+
+  // 一覧から外すと、行の印も消える（再読込しても戻らない）。
+  await panel.getByTestId("pinned-message").filter({ hasText: text }).getByRole("button", { name: "外す" }).click();
+  await expect(panel.getByTestId("pinned-message")).toHaveCount(0);
+  await expect(page.getByTestId("pill-pins")).toHaveAccessibleName("ピン 0 件");
+  await page.reload();
+  await expect(row(page, text)).toBeVisible();
+  await expect(row(page, text).getByTestId("pinned-label")).toHaveCount(0);
+
+  // スターを付けると「スター」の欄へ上がり、外すと戻る（再読込しても保たれる）。
+  const list = page.getByRole("complementary", { name: "チャンネル一覧" });
+  const chRow = list.getByTestId("channel-row").filter({ hasText: name });
+  await chRow.hover();
+  await list.getByRole("button", { name: `${name} にスターを付ける` }).click();
+  await expect(list.getByRole("button", { name: /^スター/ })).toBeVisible();
+  await page.reload();
+  await expect(list.getByRole("button", { name: `${name} のスターを外す` })).toHaveAttribute("aria-pressed", "true");
+  await list.getByRole("button", { name: `${name} のスターを外す` }).click();
+  await expect(list.getByRole("button", { name: `${name} にスターを付ける` })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("非公開チャンネルは参加していない人には見えず、DM を開ける", async ({ page, browser }) => {

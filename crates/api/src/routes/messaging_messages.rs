@@ -15,7 +15,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::{get, post, put},
     Json,
 };
 use chat::model::ContentBlock;
@@ -77,6 +77,18 @@ pub(crate) fn route_decls() -> Vec<RouteDecl> {
             &["GET", "PATCH", "DELETE"],
             AccessPolicy::Session,
             || get(get_message).patch(edit_message).delete(delete_message),
+        ),
+        RouteDecl::new(
+            "/messaging/messages/{id}/pin",
+            &["PUT", "DELETE"],
+            AccessPolicy::Session,
+            || put(set_pin).delete(clear_pin),
+        ),
+        RouteDecl::new(
+            "/messaging/channels/{id}/pins",
+            &["GET"],
+            AccessPolicy::Session,
+            || get(list_pins),
         ),
         RouteDecl::new(
             "/messaging/messages/{id}/ui-actions",
@@ -156,6 +168,61 @@ pub async fn post_message(
         spawn_agent(&state, &svc, ctx, view.id, private, trace.0);
     }
     Ok(Json(view))
+}
+
+/// 発言をピン留めする（投稿できる人・冪等）。
+#[utoipa::path(put, path = "/messaging/messages/{id}/pin", params(("id" = Uuid, Path)),
+    responses((status = 200, description = "ピン留めした発言", body = MessageView),
+        (status = 403, description = "投稿できない・削除済み"), (status = 404, description = "無い・読めない")),
+    security(("session" = [])))]
+pub async fn set_pin(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageView>, ApiError> {
+    Ok(Json(
+        service(&state)?
+            .set_pinned(&ctx, id, true, trace.0.as_deref())
+            .await
+            .map_err(error)?,
+    ))
+}
+
+/// ピン留めを外す（投稿できる人・冪等）。
+#[utoipa::path(delete, path = "/messaging/messages/{id}/pin", params(("id" = Uuid, Path)),
+    responses((status = 200, description = "ピン留めを外した発言", body = MessageView),
+        (status = 403, description = "投稿できない・削除済み"), (status = 404, description = "無い・読めない")),
+    security(("session" = [])))]
+pub async fn clear_pin(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<MessageView>, ApiError> {
+    Ok(Json(
+        service(&state)?
+            .set_pinned(&ctx, id, false, trace.0.as_deref())
+            .await
+            .map_err(error)?,
+    ))
+}
+
+/// ピン留めした発言（新しくピン留めした順・読める発言だけ）。
+#[utoipa::path(get, path = "/messaging/channels/{id}/pins", params(("id" = Uuid, Path)),
+    responses((status = 200, description = "成功", body = Vec<MessageView>), (status = 404, description = "無い・読めない")),
+    security(("session" = [])))]
+pub async fn list_pins(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<MessageView>>, ApiError> {
+    Ok(Json(
+        service(&state)?
+            .pinned_messages(&ctx, id)
+            .await
+            .map_err(error)?,
+    ))
 }
 
 /// エージェントの回答の図（```ui）のボタンを押す。

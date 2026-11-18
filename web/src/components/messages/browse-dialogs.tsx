@@ -115,7 +115,7 @@ export function BrowseChannelsDialog({
             <p className="px-4 py-10 text-center text-[12.5px] text-muted-foreground">該当する公開チャンネルはありません</p>
           ) : (
             items.map((c, i) => (
-              <div key={c.id} className={cn("flex items-center gap-3 px-4 py-2.5", i > 0 && "shiki-dash-top")}>
+              <div key={c.id} className={cn("flex items-center gap-3 px-4 py-2.5", i > 0 && "border-t border-border/60")}>
                 <ChannelTile channelId={c.id} kind={c.kind} announcement={c.announcement} size="md" />
                 <button
                   type="button"
@@ -218,7 +218,7 @@ export function NewDmDialog({
                 onClick={() => void start(u.id)}
                 className={cn(
                   "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60",
-                  i > 0 && "shiki-dash-top",
+                  i > 0 && "border-t border-border/60",
                 )}
               >
                 <UserAvatar userId={u.id} name={u.display_name || u.email} size="sm" />

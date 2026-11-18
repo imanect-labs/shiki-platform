@@ -532,6 +532,8 @@ impl MessagingService {
                 },
                 mentions: r.mentions,
                 notify: NotifyLevel::parse(&r.notify),
+                starred: r.starred,
+                last_excerpt: r.last_excerpt,
                 last_message_at: r.last_message_at,
                 created_at: c.created_at,
             });
@@ -569,6 +571,8 @@ impl MessagingService {
                 unread: 0,
                 mentions: 0,
                 notify: NotifyLevel::All,
+                starred: member.as_ref().is_some_and(|m| m.starred),
+                last_excerpt: None,
                 last_message_at: None,
                 created_at: c.created_at,
             });
@@ -620,9 +624,11 @@ impl MessagingService {
             member_count: count,
             unread: 0,
             mentions: 0,
+            starred: member.as_ref().is_some_and(|m| m.starred),
             notify: member
                 .map(|m| NotifyLevel::parse(&m.notify))
                 .unwrap_or_default(),
+            last_excerpt: None,
             last_message_at: None,
             created_at: c.created_at,
         })

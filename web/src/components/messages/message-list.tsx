@@ -12,7 +12,7 @@ import { dayLabel } from "./time";
 function DayDivider({ label }: { label: string }) {
   return (
     <div className="sticky top-0 z-[5] flex items-center justify-center bg-background py-2" role="separator" aria-label={label}>
-      <span className="shiki-dash-x absolute inset-x-5 top-1/2 h-px" aria-hidden />
+      <span className="absolute inset-x-6 top-1/2 h-px bg-border/70" aria-hidden />
       <span className="relative rounded-full border border-border/60 bg-background px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
         {label}
       </span>
@@ -32,6 +32,8 @@ function isGrouped(prev: MessageView | undefined, cur: MessageView): boolean {
 export type MessageActions = {
   onReact: (m: MessageView, emoji: string, on: boolean) => void;
   onOpenThread?: (m: MessageView) => void;
+  /// ピン留めの付け外し（投稿できないチャンネルでは渡さない）。
+  onPin?: (m: MessageView, pinned: boolean) => void;
   onEdit: (m: MessageView, blocks: MessageBlock[]) => Promise<boolean>;
   onDelete: (m: MessageView) => Promise<void>;
   onAgentReplyChanged: () => void;
@@ -92,6 +94,7 @@ export function MessageList({
                 compact={compact}
                 onReact={(e, on) => actions.onReact(m, e, on)}
                 onOpenThread={actions.onOpenThread ? () => actions.onOpenThread?.(m) : undefined}
+                onPin={actions.onPin ? (on) => actions.onPin?.(m, on) : undefined}
                 onEdit={(blocks) => actions.onEdit(m, blocks)}
                 onDelete={() => actions.onDelete(m)}
               >

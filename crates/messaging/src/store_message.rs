@@ -32,6 +32,7 @@ pub struct MessageRow {
     pub edited_at: Option<DateTime<Utc>>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub expired_at: Option<DateTime<Utc>>,
+    pub pinned_at: Option<DateTime<Utc>>,
     pub reply_count: i64,
     pub last_reply_at: Option<DateTime<Utc>>,
 }
@@ -57,6 +58,8 @@ pub enum MessageFilter<'a> {
     },
     /// 指定の発言（チャンネルを問わない・境界は掛かる）。
     Ids { ids: &'a [Uuid] },
+    /// ピン留めした発言（新しくピン留めした順・削除・期限切れは除く）。
+    Pinned { channel: Uuid },
     /// 全文検索（pre-filter = 指定チャンネルに限る・新しい順）。
     Search {
         channels: &'a [Uuid],
@@ -91,7 +94,7 @@ pub async fn fetch_messages(
         "SELECT m.id, m.channel_id, m.parent_id, m.author_kind, m.author_id, \
            CASE WHEN m.deleted_at IS NULL AND m.expired_at IS NULL THEN m.blocks ELSE '[]'::jsonb END AS blocks, \
            CASE WHEN m.deleted_at IS NULL AND m.expired_at IS NULL THEN m.link_previews ELSE '[]'::jsonb END AS link_previews, \
-           m.created_at, m.updated_at, m.edited_at, m.deleted_at, m.expired_at, \
+           m.created_at, m.updated_at, m.edited_at, m.deleted_at, m.expired_at, m.pinned_at, \
            (SELECT count(*) FROM channel_message r WHERE r.tenant_id = m.tenant_id AND r.org = m.org \
               AND r.channel_id = m.channel_id AND r.parent_id = m.id AND ",
     );
@@ -157,6 +160,12 @@ pub async fn fetch_messages(
             q.push(" AND m.id = ANY(")
                 .push_bind(ids.to_vec())
                 .push(") LIMIT 1000");
+        }
+        MessageFilter::Pinned { channel } => {
+            q.push(" AND m.channel_id = ").push_bind(channel).push(
+                " AND m.pinned_at IS NOT NULL AND m.deleted_at IS NULL AND m.expired_at IS NULL \
+                     ORDER BY m.pinned_at DESC, m.id DESC LIMIT 100",
+            );
         }
         MessageFilter::Search {
             channels,
@@ -506,6 +515,27 @@ pub async fn mark_mentions_read(
     .bind(ctx.org())
     .bind(user)
     .bind(ids)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// ピン留めを付ける・外す（`by` が `None` なら外す）。配信の差分に乗るよう `updated_at` も進める。
+pub async fn set_pinned(
+    conn: &mut PgConnection,
+    ctx: &AuthContext,
+    id: Uuid,
+    by: Option<&str>,
+) -> Result<(), Error> {
+    sqlx::query(
+        "UPDATE channel_message SET pinned_at = CASE WHEN $4::text IS NULL THEN NULL ELSE clock_timestamp() END, \
+           pinned_by = $4, updated_at = clock_timestamp() \
+         WHERE tenant_id = $1 AND org = $2 AND id = $3",
+    )
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(id)
+    .bind(by)
     .execute(conn)
     .await?;
     Ok(())

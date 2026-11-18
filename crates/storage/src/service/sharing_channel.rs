@@ -14,6 +14,9 @@ use super::*;
 use crate::audit::AuditAction;
 use crate::session_lock::SessionLock;
 
+/// チャンネルの資料の一覧に載せる件数の上限（種類ごと・全件取得を防ぐ）。
+const CHANNEL_SHARES_MAX: usize = 200;
+
 impl StorageService {
     /// ノードをチャンネルの参加者へ閲覧で共有する（owner かつチャンネルの参加者・冪等）。
     ///
@@ -90,6 +93,97 @@ impl StorageService {
         ids.sort_unstable();
         ids.dedup();
         Ok(ids)
+    }
+
+    /// チャンネルに共有されている資料（チャンネルの参加者だけが一覧できる・閲覧者が読めるものだけ）。
+    ///
+    /// `channel#member` が viewer のファイル・フォルダを ListObjects で引き、閲覧者本人の viewer で
+    /// 絞ってからメタデータを読む（一覧が持つのは共有の事実だけで、読めるかは呼び出した人の権限で決める）。
+    ///
+    /// # Errors
+    ///
+    /// チャンネルの参加者でない（`Forbidden`）・認可基盤や DB の失敗。
+    pub async fn channel_shared_nodes(
+        &self,
+        ctx: &AuthContext,
+        channel_id: Uuid,
+    ) -> Result<Vec<Node>, StorageError> {
+        let channel = ctx.ns().channel(&channel_id.to_string());
+        let member = self
+            .authz
+            .check(
+                &ctx.subject(),
+                Relation::Member,
+                &channel,
+                Consistency::HigherConsistency,
+            )
+            .await?;
+        if !member {
+            return Err(StorageError::Forbidden);
+        }
+        let subject = ctx.ns().channel_member(&channel_id.to_string());
+        let (files, folders) = tokio::try_join!(
+            self.authz
+                .list_objects(&subject, Relation::Viewer, ObjectType::File),
+            self.authz
+                .list_objects(&subject, Relation::Viewer, ObjectType::Folder),
+        )?;
+        let ns = ctx.ns();
+        let ids = |raw: Vec<String>| -> Vec<Uuid> {
+            raw.iter()
+                .filter_map(|o| o.split_once(':').map(|(_, id)| id))
+                .filter_map(|id| ns.strip_object_id(id))
+                .filter_map(|id| Uuid::parse_str(id).ok())
+                .take(CHANNEL_SHARES_MAX)
+                .collect()
+        };
+        let mut nodes = self
+            .readable_files_metadata(ctx, &ids(files), "channel_shares")
+            .await?;
+        nodes.extend(self.readable_folders(ctx, &ids(folders)).await?);
+        nodes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(nodes)
+    }
+
+    /// `ids` のうち閲覧者が読めるフォルダ（読めない・削除済みは含めない）。
+    async fn readable_folders(
+        &self,
+        ctx: &AuthContext,
+        ids: &[Uuid],
+    ) -> Result<Vec<Node>, StorageError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let items: Vec<authz::CheckTuple> = ids
+            .iter()
+            .map(|id| authz::CheckTuple {
+                subject: ctx.subject(),
+                relation: Relation::Viewer,
+                object: ctx.ns().folder(&id.to_string()),
+            })
+            .collect();
+        let ok = self
+            .authz
+            .batch_check(&items, Consistency::HigherConsistency)
+            .await?;
+        let readable: Vec<Uuid> = ids
+            .iter()
+            .zip(ok)
+            .filter_map(|(id, ok)| ok.then_some(*id))
+            .collect();
+        if readable.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<NodeRow> = sqlx::query_as(&format!(
+            "SELECT {NODE_COLS} FROM node WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 \
+               AND deleted_at IS NULL AND kind = 'folder'"
+        ))
+        .bind(&readable)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .fetch_all(&self.db)
+        .await?;
+        rows.into_iter().map(row_to_node).collect()
     }
 
     /// チャンネル共有の付与・解除と監査を、同じノード・チャンネルの操作と直列化して行う。

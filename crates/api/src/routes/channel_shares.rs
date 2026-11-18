@@ -117,3 +117,51 @@ pub async fn list_channel_shares(
     }
     Ok(Json(out))
 }
+
+/// チャンネルに共有されている資料 1 件。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChannelFileEntry {
+    pub node_id: Uuid,
+    /// `file` / `folder`。
+    pub kind: String,
+    pub name: String,
+    pub content_type: Option<String>,
+    pub size_bytes: Option<i64>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// チャンネルに共有されている資料（参加者だけ・自分が読めるものだけ・新しい順）。
+#[utoipa::path(
+    get,
+    path = "/messaging/channels/{id}/files",
+    params(("id" = Uuid, Path, description = "チャンネル ID")),
+    responses(
+        (status = 200, description = "共有されている資料", body = [ChannelFileEntry]),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "チャンネルの参加者でない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn list_channel_files(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ChannelFileEntry>>, ApiError> {
+    let nodes = state.storage.channel_shared_nodes(&ctx, id).await?;
+    Ok(Json(
+        nodes
+            .into_iter()
+            .map(|n| ChannelFileEntry {
+                node_id: n.id,
+                kind: match n.kind {
+                    storage::NodeKind::File => "file".into(),
+                    storage::NodeKind::Folder => "folder".into(),
+                },
+                name: n.name,
+                content_type: n.content_type,
+                size_bytes: n.size_bytes,
+                updated_at: n.updated_at,
+            })
+            .collect(),
+    ))
+}

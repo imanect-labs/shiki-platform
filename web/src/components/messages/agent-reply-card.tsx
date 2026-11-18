@@ -85,17 +85,17 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
   const author = { kind: "assistant" as const, user_id: me, display_name: agentName, owner_name: undefined, has_icon: agentHasIcon, active: true };
   return (
     <div
-      className="group/msg relative px-5 pb-1.5 pt-2.5 transition-colors hover:bg-accent/35"
+      className="group/msg relative px-6 pb-1.5 pt-[18px] transition-colors hover:bg-accent/35"
       data-testid="agent-reply-card"
       data-state={failed ? "failed" : reply.chat_thread_id ? "chat" : "reply"}
     >
-      <div className="flex gap-2.5">
-        <div className="w-8 shrink-0 pt-0.5">
-          <AgentAvatar ownerId={me} hasIcon={agentHasIcon} />
+      <div className="flex gap-3">
+        <div className="w-9 shrink-0 pt-0.5">
+          <AgentAvatar ownerId={me} hasIcon={agentHasIcon} className="size-9" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="text-[13.5px] font-semibold text-foreground">{agentName}</span>
+            <span className="text-[15px] font-bold text-foreground">{agentName}</span>
             <AiBadge />
             {failed ? (
               <span className="inline-flex items-center gap-1 self-center rounded-full bg-destructive/10 px-1.5 py-px text-[10.5px] font-medium leading-4 text-destructive">
@@ -108,7 +108,7 @@ export function AgentReplyCard({ reply, onChanged }: { reply: AgentReplyView; on
                 あなただけに表示
               </span>
             )}
-            <time dateTime={reply.created_at} className="text-[11px] text-muted-foreground">
+            <time dateTime={reply.created_at} className="text-[11.5px] text-muted-foreground/75">
               {timeLabel(reply.created_at)}
             </time>
           </div>

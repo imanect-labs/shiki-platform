@@ -74,7 +74,7 @@ export function SearchView({
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background" data-testid="message-search">
-      <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-1 pl-2 pr-3 lg:px-5">
+      <header className="border-b border-border/70 flex h-[60px] shrink-0 items-center gap-1 pl-2 pr-3 lg:px-5">
         {leading}
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2">
           <div className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-border/70 bg-card px-3 transition-colors focus-within:border-ring/60">
@@ -146,7 +146,7 @@ export function SearchView({
                       onClick={() => onJump(hit.channel_id, m.id, m.parent_id ?? null)}
                       className={cn(
                         "flex w-full gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                        i > 0 && "shiki-dash-top",
+                        i > 0 && "border-t border-border/60",
                       )}
                       data-testid="search-hit"
                     >

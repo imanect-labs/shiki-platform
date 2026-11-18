@@ -101,6 +101,12 @@ pub(crate) fn route_decls() -> Vec<RouteDecl> {
             || put(set_notify),
         ),
         RouteDecl::new(
+            "/messaging/channels/{id}/star",
+            &["PUT"],
+            AccessPolicy::Session,
+            || put(set_starred),
+        ),
+        RouteDecl::new(
             "/messaging/channels/{id}/hide",
             &["POST"],
             AccessPolicy::Session,
@@ -359,6 +365,28 @@ pub async fn set_notify(
 ) -> Result<StatusCode, ApiError> {
     service(&state)?
         .set_notify(&ctx, id, body.level)
+        .await
+        .map_err(error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StarBody {
+    pub starred: bool,
+}
+
+/// 一覧の上に固定する・外す（スター・自分だけの設定）。
+#[utoipa::path(put, path = "/messaging/channels/{id}/star", params(("id" = Uuid, Path)), request_body = StarBody,
+    responses((status = 204, description = "変更した"), (status = 403, description = "参加していない")),
+    security(("session" = [])))]
+pub async fn set_starred(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(id): Path<Uuid>,
+    Json(body): Json<StarBody>,
+) -> Result<StatusCode, ApiError> {
+    service(&state)?
+        .set_starred(&ctx, id, body.starred)
         .await
         .map_err(error)?;
     Ok(StatusCode::NO_CONTENT)

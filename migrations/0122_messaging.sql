@@ -41,6 +41,8 @@ CREATE TABLE channel_member (
     visible_from timestamptz NOT NULL DEFAULT now(),
     -- 通知の受け方（all / mentions / none）。
     notify text NOT NULL DEFAULT 'all' CHECK (notify IN ('all', 'mentions', 'none')),
+    -- 一覧の上に固定する（スター・その人だけの並び替え）。
+    starred boolean NOT NULL DEFAULT false,
     -- DM は退出できず非表示にするだけ。新しい発言が来たら表示に戻す。
     hidden_at timestamptz,
     PRIMARY KEY (tenant_id, org, channel_id, user_id),
@@ -74,6 +76,9 @@ CREATE TABLE channel_message (
     deleted_by text,
     -- 保存期間で消した時刻。本文と改訂履歴は消え、行だけが「保存期間を過ぎました」として残る。
     expired_at timestamptz,
+    -- ピン留め（チャンネルの参加者に共通・投稿できる人が付け外しする）。
+    pinned_at timestamptz,
+    pinned_by text,
     PRIMARY KEY (tenant_id, org, id),
     UNIQUE (tenant_id, org, channel_id, id),
     FOREIGN KEY (tenant_id, org, channel_id) REFERENCES channel (tenant_id, org, id) ON DELETE CASCADE,
@@ -84,6 +89,7 @@ CREATE INDEX channel_message_timeline ON channel_message (tenant_id, org, channe
 CREATE INDEX channel_message_thread ON channel_message (tenant_id, org, parent_id, created_at, id) WHERE parent_id IS NOT NULL;
 CREATE INDEX channel_message_changes ON channel_message (tenant_id, org, channel_id, updated_at);
 CREATE INDEX channel_message_expiry ON channel_message (tenant_id, org, created_at) WHERE expired_at IS NULL;
+CREATE INDEX channel_message_pins ON channel_message (tenant_id, org, channel_id, pinned_at) WHERE pinned_at IS NOT NULL;
 
 -- 編集前・削除前の本文（保存期間まで残し、管理者閲覧の手続でだけ読む・design §4.14 編集・削除）。
 CREATE TABLE channel_message_revision (

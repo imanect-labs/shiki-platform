@@ -111,6 +111,11 @@ pub struct ChannelView {
     pub unread: i64,
     pub mentions: i64,
     pub notify: NotifyLevel,
+    /// 一覧の上に固定している（スター・自分だけの設定）。
+    pub starred: bool,
+    /// DM の最新の発言の冒頭（一覧の 2 行目・DM 以外と、読める発言が無い DM は無し）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_excerpt: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
@@ -262,6 +267,8 @@ pub struct MessageView {
     pub state: MessageState,
     /// 「（編集済み）」の表示用（編集履歴は見せない）。
     pub edited: bool,
+    /// ピン留めされている（チャンネルの参加者に共通）。
+    pub pinned: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

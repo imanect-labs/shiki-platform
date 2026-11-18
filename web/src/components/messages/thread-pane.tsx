@@ -63,9 +63,9 @@ export function ThreadPane({
       aria-label="スレッド"
       data-testid="thread-pane"
     >
-      <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-2 px-4">
+      <header className="border-b border-border/70 flex h-[60px] shrink-0 items-center gap-2 px-5">
         <div className="min-w-0 flex-1">
-          <p className="text-[14px] font-semibold text-foreground">スレッド</p>
+          <p className="text-[16px] font-bold text-foreground">スレッド</p>
           <p className="flex items-center gap-1 truncate text-[11.5px] text-muted-foreground">
             <ChannelIcon kind={channel.kind} announcement={channel.announcement} agentDm={channel.agent_dm} className="size-3" />
             {channel.name}
@@ -107,7 +107,7 @@ export function ThreadPane({
               <span className="text-[11.5px] font-medium text-muted-foreground">
                 {replyCount > 0 ? `返信 ${replyCount} 件` : "まだ返信はありません"}
               </span>
-              <span className="shiki-dash-x h-px flex-1" aria-hidden />
+              <span className="h-px flex-1 bg-border/70" aria-hidden />
             </div>
             <MessageList
               messages={replies}

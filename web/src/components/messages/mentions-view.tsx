@@ -65,7 +65,7 @@ export function MentionsView({
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
-      <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-2 pl-2 pr-3 lg:px-5">
+      <header className="border-b border-border/70 flex h-[60px] shrink-0 items-center gap-2 pl-2 pr-3 lg:px-5">
         {leading}
         <h1 className="flex-1 text-[15px] font-semibold">メンション</h1>
         <Button size="sm" variant="ghost" onClick={() => void readAll()} loading={busy} disabled={unread === 0}>
@@ -95,7 +95,7 @@ export function MentionsView({
                     onClick={() => void open(m)}
                     className={cn(
                       "flex w-full gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                      i > 0 && "shiki-dash-top",
+                      i > 0 && "border-t border-border/60",
                       !m.read && "bg-accent/40",
                     )}
                   >

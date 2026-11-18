@@ -413,6 +413,57 @@ async fn messaging_http_routes_round_trip() {
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    // ピン留め（付ける → 一覧 → 外す）。
+    let (s, pinned) = call(
+        &app,
+        "sid-bob",
+        "PUT",
+        &format!("/messaging/messages/{mid}/pin"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(pinned["pinned"], true);
+    let (s, pins) = call(
+        &app,
+        "sid-bob",
+        "GET",
+        &format!("/messaging/channels/{id}/pins"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(pins.as_array().unwrap().len(), 1);
+    let (s, unpinned) = call(
+        &app,
+        "sid-bob",
+        "DELETE",
+        &format!("/messaging/messages/{mid}/pin"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(unpinned["pinned"], false);
+    // スター（自分だけの設定）と、チャンネルに共有した資料の一覧（まだ無い）。
+    let (s, _) = call(
+        &app,
+        "sid-bob",
+        "PUT",
+        &format!("/messaging/channels/{id}/star"),
+        json!({"starred": true}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, files) = call(
+        &app,
+        "sid-bob",
+        "GET",
+        &format!("/messaging/channels/{id}/files"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{files}");
+    assert!(files.as_array().unwrap().is_empty());
     let (s, mentions) = call(&app, "sid-bob", "GET", "/messaging/mentions", Value::Null).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(mentions.as_array().unwrap().len(), 1);

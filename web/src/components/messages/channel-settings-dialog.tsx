@@ -185,7 +185,7 @@ export function ChannelSettingsDialog({
                 ) : null}
               </form>
 
-              <div className="shiki-dash-top flex flex-col gap-2 pt-4">
+              <div className="border-t border-border/60 flex flex-col gap-2 pt-4">
                 {admin ? (
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-[12.5px] text-muted-foreground">
@@ -284,7 +284,7 @@ export function ChannelSettingsDialog({
 
               <ul className="rule-soft overflow-hidden rounded-xl border border-border/60" aria-label="参加者">
                 {members.map((m, i) => (
-                  <li key={m.user_id} className={cn("flex flex-wrap items-center gap-2 px-3 py-2", i > 0 && "shiki-dash-top")}>
+                  <li key={m.user_id} className={cn("flex flex-wrap items-center gap-2 px-3 py-2", i > 0 && "border-t border-border/60")}>
                     <UserAvatar userId={m.user_id} name={m.display_name} size="sm" />
                     <span className="min-w-0 flex-1">
                       <span className={cn("block truncate text-[13px] font-medium", !m.active && "text-muted-foreground")}>

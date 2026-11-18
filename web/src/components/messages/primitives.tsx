@@ -137,7 +137,7 @@ export function AuthorLabel({ author }: { author: AuthorView }) {
   if (author.kind === "assistant") {
     return (
       <>
-        <span className="text-[13.5px] font-semibold text-foreground">{author.display_name}</span>
+        <span className="text-[15px] font-bold text-foreground">{author.display_name}</span>
         <AiBadge />
         <span
           className="rounded-full border border-border/60 px-1.5 py-px text-[10.5px] font-medium leading-4 text-muted-foreground"
@@ -149,7 +149,7 @@ export function AuthorLabel({ author }: { author: AuthorView }) {
     );
   }
   return (
-    <span className={cn("text-[13.5px] font-semibold", author.active ? "text-foreground" : "text-muted-foreground")}>
+    <span className={cn("text-[15px] font-bold", author.active ? "text-foreground" : "text-muted-foreground")}>
       {authorName(author)}
     </span>
   );
@@ -241,7 +241,7 @@ export function MentionChip({ label, me }: { label: string; me: boolean }) {
   return (
     <span
       className={cn(
-        "mx-px inline-flex items-center rounded px-1 py-px text-[13.5px] font-medium",
+        "mx-px inline-flex items-center rounded-[5px] px-1.5 py-px text-[14.5px] font-medium",
         me
           ? "bg-[color-mix(in_oklab,var(--season-autumn)_34%,transparent)] font-semibold text-foreground"
           : "bg-accent text-foreground/80",
@@ -281,12 +281,12 @@ export function Blocks({ message }: { message: Pick<MessageView, "blocks" | "fil
       {agentText !== null ? (
         <Markdown
           linkSources={NO_LINK_SOURCES}
-          className="text-[13.5px] leading-[1.65] text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+          className="text-[15px] leading-[1.75] text-foreground/90 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
         >
           {agentText}
         </Markdown>
       ) : inline.length > 0 ? (
-        <p className="whitespace-pre-wrap break-words text-[13.5px] leading-[1.65] text-foreground/90">{inline}</p>
+        <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.75] text-foreground/90">{inline}</p>
       ) : null}
       {files.length > 0 ? <div className="flex flex-col items-start">{files}</div> : null}
     </>

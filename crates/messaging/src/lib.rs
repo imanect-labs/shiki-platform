@@ -28,6 +28,7 @@ pub mod retention;
 mod service;
 mod service_member;
 mod service_message;
+mod service_pin;
 mod service_ui;
 pub mod store;
 pub mod store_message;

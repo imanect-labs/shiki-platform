@@ -456,7 +456,7 @@ export function Composer({
           onKeyDown={onKeyDown}
           onClick={(e) => setMention(mentionQuery(text, e.currentTarget.selectionStart))}
           onBlur={() => setMention(null)}
-          className="scrollbar-subtle block max-h-[168px] w-full resize-none bg-transparent px-4 pb-1.5 pt-3 text-[13.5px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-0 focus-visible:ring-offset-0"
+          className="scrollbar-subtle block max-h-[168px] w-full resize-none bg-transparent px-4 pb-1.5 pt-3 text-[15px] leading-[1.65] text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-0 focus-visible:ring-offset-0"
         />
 
         <div className="flex flex-wrap items-center gap-1 px-2 pb-2">

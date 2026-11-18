@@ -3,7 +3,7 @@
 /// 1 発言の行。ホバー（とキーボードのフォーカス）で操作（リアクション・スレッド返信・編集・削除）が浮く。
 
 import * as React from "react";
-import { Link2, MessageSquareReply, Pencil, Smile, Trash2 } from "lucide-react";
+import { Link2, MessageSquareReply, Pencil, Pin, PinOff, Smile, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
@@ -72,16 +72,20 @@ export function ReactionPills({
 function HoverToolbar({
   onReact,
   onReply,
+  pinned,
+  onPin,
   onEdit,
   onDelete,
 }: {
   onReact?: (emoji: string) => void;
   onReply?: () => void;
+  pinned: boolean;
+  onPin?: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = React.useState(false);
-  if (!onReact && !onReply && !onEdit && !onDelete) return null;
+  if (!onReact && !onReply && !onPin && !onEdit && !onDelete) return null;
   return (
     <div
       role="toolbar"
@@ -133,6 +137,22 @@ function HoverToolbar({
             </button>
           </TooltipTrigger>
           <TooltipContent side="top">スレッドで返信</TooltipContent>
+        </Tooltip>
+      ) : null}
+      {onPin ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onPin}
+              aria-label={pinned ? "ピン留めを外す" : "ピン留めする"}
+              aria-pressed={pinned}
+              className={TOOL_BTN}
+            >
+              {pinned ? <PinOff className="size-4" aria-hidden /> : <Pin className="size-4" aria-hidden />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">{pinned ? "ピン留めを外す" : "ピン留め（参加者全員の一覧に載る）"}</TooltipContent>
         </Tooltip>
       ) : null}
       {onEdit ? (
@@ -203,6 +223,7 @@ export function MessageRow({
   canReact,
   onReact,
   onOpenThread,
+  onPin,
   onEdit,
   onDelete,
   children,
@@ -221,6 +242,8 @@ export function MessageRow({
   canReact: boolean;
   onReact: (emoji: string, on: boolean) => void;
   onOpenThread?: () => void;
+  /// ピン留めの付け外し（投稿できる人だけ。無ければ出さない）。
+  onPin?: (pinned: boolean) => void;
   onEdit: (blocks: MessageBlock[]) => Promise<boolean>;
   onDelete: () => Promise<void>;
   /// 行の下に差し込むもの（自分だけに表示の回答）。
@@ -264,7 +287,7 @@ export function MessageRow({
   return (
     <>
       {unreadBoundary ? (
-        <div className="relative my-2 flex items-center gap-2 px-5" role="separator" aria-label="ここから未読">
+        <div className="relative my-3 flex items-center gap-2 px-6" role="separator" aria-label="ここから未読">
           <span className="h-px flex-1 bg-[color-mix(in_oklab,var(--season-spring)_70%,transparent)]" />
           <span
             className="rounded-full px-2 py-0.5 text-[10.5px] font-semibold leading-none"
@@ -280,8 +303,9 @@ export function MessageRow({
 
       <div
         className={cn(
-          "group/msg relative px-5 outline-none transition-colors hover:bg-accent/35 focus-within:bg-accent/35",
-          grouped ? "py-0.5" : "pb-0.5 pt-2.5",
+          "group/msg relative px-6 outline-none transition-colors hover:bg-accent/35 focus-within:bg-accent/35",
+          // 話し手が替わる所だけ大きく空け、同じ人の続きは詰める（塊で読めるように）。
+          grouped ? "py-[3px]" : "pb-0.5 pt-[18px]",
         )}
         data-testid="message-row"
         data-message-id={message.id}
@@ -292,20 +316,28 @@ export function MessageRow({
           <HoverToolbar
             onReact={alive && canReact ? (e) => onReact(e, !message.reactions.some((r) => r.emoji === e && r.me)) : undefined}
             onReply={compact || !alive ? undefined : onOpenThread}
+            pinned={message.pinned}
+            onPin={alive && onPin ? () => onPin(!message.pinned) : undefined}
             onEdit={alive && mine ? () => setEditing(true) : undefined}
             onDelete={alive && (mine || canModerate) ? () => setConfirmDelete(true) : undefined}
           />
         ) : null}
+        {message.pinned && alive ? (
+          <p className={cn("flex items-center gap-1 pb-0.5 pl-12 text-[11.5px] font-medium text-muted-foreground", grouped && "pt-1")} data-testid="pinned-label">
+            <Pin className="size-3" aria-hidden />
+            ピン留め
+          </p>
+        ) : null}
         {/* 描画の省略（content-visibility）は本文側だけに掛ける。行に掛けると paint containment で
             絶対配置の操作バーが行の高さで切れる（1 行の連続発言・タッチ端末の大きいボタン）。 */}
-        <div className="flex gap-2.5 [contain-intrinsic-size:auto_48px] [content-visibility:auto]">
-          <div className="w-8 shrink-0 pt-0.5">
+        <div className="flex gap-3 [contain-intrinsic-size:auto_52px] [content-visibility:auto]">
+          <div className="w-9 shrink-0 pt-0.5">
             {grouped ? (
-              <span className="hidden select-none pt-1 text-[10.5px] leading-none text-muted-foreground/70 group-hover/msg:block">
+              <span className="hidden select-none pt-[7px] text-[10.5px] leading-none text-muted-foreground/70 group-hover/msg:block">
                 {time}
               </span>
             ) : (
-              <AuthorAvatar author={message.author} />
+              <AuthorAvatar author={message.author} className="size-9" />
             )}
           </div>
 
@@ -313,7 +345,7 @@ export function MessageRow({
             {!grouped ? (
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <AuthorLabel author={message.author} />
-                <time dateTime={message.created_at} className="text-[11px] text-muted-foreground">
+                <time dateTime={message.created_at} className="text-[11.5px] text-muted-foreground/75">
                   {time}
                 </time>
               </div>

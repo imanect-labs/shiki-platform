@@ -34,6 +34,8 @@ import {
   MessagingError,
   postMessage,
   react as reactTo,
+  setPinned,
+  setStarred,
   type AgentProfileView,
   type ChannelView,
   type MessageBlock,
@@ -46,6 +48,7 @@ import { BrowseChannelsDialog, NewDmDialog } from "./browse-dialogs";
 import { ChannelHeader } from "./channel-header";
 import { ChannelListPane, type SideView } from "./channel-list-pane";
 import { ChannelSettingsDialog, type SettingsTab } from "./channel-settings-dialog";
+import { ChannelSidePanel, SidePanelPills, useChannelExtras, type SidePanelTab } from "./channel-side-panel";
 import { Composer } from "./composer";
 import { CreateChannelDialog } from "./create-channel-dialog";
 import { MentionsView } from "./mentions-view";
@@ -132,6 +135,19 @@ export function MessagesWorkspace() {
   const ch = useChannel(activeId, listed);
   const { apply, expectAgent, refreshAgentReplies, hasMore, loadingOlder, loadOlder } = ch;
   const active = ch.channel;
+
+  // 右の一覧（資料・ピン・参加者）。スレッドと同じ場所に出すので、どちらか一方だけを開く。
+  const [panel, setPanel] = React.useState<SidePanelTab | null>(null);
+  React.useEffect(() => setPanel(null), [activeId]);
+  React.useEffect(() => {
+    if (ch.threadId) setPanel(null);
+  }, [ch.threadId]);
+  // 配信で届いた発言の `pinned` の変化（他の人の付け外し）でピンの一覧を読み直すための目印。
+  const pinSignature = React.useMemo(
+    () => [...ch.messages, ...ch.thread].filter((m) => m.pinned).map((m) => m.id).sort().join(","),
+    [ch.messages, ch.thread],
+  );
+  const extras = useChannelExtras(view === "channel" && active ? active.id : null, pinSignature);
 
   // 何も開いていなければ、最初のチャンネル（無ければ DM）を開く。
   React.useEffect(() => {
@@ -345,6 +361,17 @@ export function MessagesWorkspace() {
     </>
   );
 
+  // スターは楽観的に反映し、失敗したら戻す（自分だけの設定なので配信は待たない）。
+  const toggleStar = (id: string, starred: boolean) => {
+    const apply = (on: boolean) =>
+      setChannels((prev) => prev?.map((c) => (c.id === id ? { ...c, starred: on } : c)) ?? prev);
+    apply(starred);
+    setStarred(id, starred).catch((e: unknown) => {
+      apply(!starred);
+      toast({ title: "スターを変更できませんでした", description: errorText(e), variant: "destructive" });
+    });
+  };
+
   const list = (drawer: boolean) => (
     <ChannelListPane
       channels={channels}
@@ -364,6 +391,7 @@ export function MessagesWorkspace() {
       onCreateChannel={() => setCreateOpen(true)}
       onBrowse={() => setBrowseOpen(true)}
       onNewDm={() => setDmOpen(true)}
+      onToggleStar={toggleStar}
     />
   );
 
@@ -371,6 +399,25 @@ export function MessagesWorkspace() {
     setChannels((prev) => (prev ? [c, ...prev.filter((x) => x.id !== c.id)] : [c]));
     go({ c: c.id, v: "channel" });
     void loadChannels();
+  };
+
+  const openPanel = (tab: SidePanelTab) => {
+    if (panel === tab) return setPanel(null);
+    if (tab === "files") void extras.reloadFiles();
+    setPanel(tab);
+    if (ch.threadId) go({ t: null });
+  };
+
+  const togglePin = (m: MessageView, on: boolean) => {
+    setPinned(m.id, on)
+      .then((v) => {
+        // 一覧から外した古い発言（読み込んだ範囲の外）を本体に差し込まない。
+        if (ch.messages.some((x) => x.id === v.id) || ch.thread.some((x) => x.id === v.id)) apply(v);
+        void extras.reloadPins();
+      })
+      .catch((e: unknown) =>
+        toast({ title: on ? "ピン留めできませんでした" : "ピン留めを外せませんでした", description: errorText(e), variant: "destructive" }),
+      );
   };
 
   const jump = (channelId: string, messageId: string, parentId: string | null) =>
@@ -387,12 +434,14 @@ export function MessagesWorkspace() {
           : !active.can_post
             ? "このチャンネルに投稿できるのは管理者と投稿者だけです"
             : null;
+  // ピン留めは投稿できる人だけ（サーバも同じ条件で検査する）。
+  const channelActions: MessageActions = composerBlocked === null ? { ...actions, onPin: togglePin } : actions;
 
   let main: React.ReactNode;
   if (listError && channels === null) {
     main = (
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-14 items-center px-2 lg:hidden">{openList}</div>
+        <div className="flex h-[60px] items-center px-2 lg:hidden">{openList}</div>
         <div className="flex flex-1 items-center justify-center p-8">
           <EmptyState
             icon={AlertCircle}
@@ -414,7 +463,7 @@ export function MessagesWorkspace() {
   } else if (view === "approvals") {
     main = (
       <div className="flex h-full min-w-0 flex-1 flex-col bg-background">
-        <header className="shiki-dash-bottom flex h-14 shrink-0 items-center gap-2 pl-2 pr-3 lg:px-5">
+        <header className="border-b border-border/70 flex h-[60px] shrink-0 items-center gap-2 pl-2 pr-3 lg:px-5">
           {openList}
           <ShieldCheck className="size-4 text-muted-foreground" aria-hidden />
           <h1 className="flex-1 text-[15px] font-semibold">閲覧の申請と承認</h1>
@@ -434,7 +483,7 @@ export function MessagesWorkspace() {
     main =
       channels !== null && channels.length === 0 && !activeId ? (
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-14 items-center px-2 lg:hidden">{openList}</div>
+          <div className="flex h-[60px] items-center px-2 lg:hidden">{openList}</div>
           <div className="flex flex-1 items-center justify-center p-8">
             <EmptyState
               seasonal
@@ -463,7 +512,7 @@ export function MessagesWorkspace() {
   } else if (ch.error || !active) {
     main = (
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-14 items-center px-2 lg:hidden">{openList}</div>
+        <div className="flex h-[60px] items-center px-2 lg:hidden">{openList}</div>
         <div className="flex flex-1 items-center justify-center p-8">
           <EmptyState icon={AlertCircle} title="このチャンネルを開けません" description={ch.error ?? undefined} />
         </div>
@@ -474,8 +523,17 @@ export function MessagesWorkspace() {
       <div className="flex min-w-0 flex-1 flex-col" data-testid="channel-view">
         <ChannelHeader
           channel={active}
-          members={ch.members}
           leading={openList}
+          pills={
+            <SidePanelPills
+              channel={active}
+              fileCount={extras.files.items.length}
+              pinCount={extras.pins.items.length}
+              members={ch.members}
+              open={panel}
+              onOpen={openPanel}
+            />
+          }
           onOpenSettings={(tab) => setSettings({ open: true, tab })}
           onHideDm={() => {
             hideDm(active.id)
@@ -537,7 +595,7 @@ export function MessagesWorkspace() {
                 firstUnreadId={firstUnreadId}
                 activeThreadId={ch.threadId}
                 agentReplies={ch.agentReplies.filter((r) => ch.messages.some((m) => m.id === r.trigger_message_id))}
-                actions={actions}
+                actions={channelActions}
               />
             </div>
           )}
@@ -614,6 +672,27 @@ export function MessagesWorkspace() {
 
         {main}
 
+        {!threadOpen && panel && view === "channel" && active ? (
+          <div className={cn("absolute inset-0 z-30 flex justify-end bg-background/40 sm:inset-y-0 sm:left-auto sm:shadow-lg", "xl:static xl:z-auto xl:bg-transparent xl:shadow-none")}>
+            <ChannelSidePanel
+              channel={active}
+              tab={active.kind === "dm" && panel === "members" ? "files" : panel}
+              members={ch.members}
+              files={extras.files}
+              pins={extras.pins}
+              canPin={composerBlocked === null}
+              onTabChange={(t) => {
+                if (t === "files") void extras.reloadFiles();
+                setPanel(t);
+              }}
+              onClose={() => setPanel(null)}
+              onOpenThread={(id) => go({ t: id })}
+              onUnpin={(m) => togglePin(m, false)}
+              onOpenSettings={(tab) => setSettings({ open: true, tab })}
+            />
+          </div>
+        ) : null}
+
         {threadOpen && active ? (
           <div className={cn("absolute inset-0 z-30 flex justify-end bg-background/40 sm:inset-y-0 sm:left-auto sm:shadow-lg", "xl:static xl:z-auto xl:bg-transparent xl:shadow-none")}>
             <ThreadPane
@@ -625,7 +704,7 @@ export function MessagesWorkspace() {
               members={ch.members}
               agentReplies={ch.agentReplies.filter((r) => ch.thread.some((m) => m.id === r.trigger_message_id))}
               composerDisabledReason={composerBlocked}
-              actions={{ ...actions, onOpenThread: undefined }}
+              actions={{ ...channelActions, onOpenThread: undefined }}
               onClose={() => go({ t: null })}
               onReply={(blocks, opts) => send(blocks, opts, ch.threadId)}
             />

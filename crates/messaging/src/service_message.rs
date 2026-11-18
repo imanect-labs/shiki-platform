@@ -390,7 +390,7 @@ impl MessagingService {
     }
 
     /// 境界の内側の発言か（参加前の発言に書込で触らせない）。
-    async fn require_visible(
+    pub(crate) async fn require_visible(
         &self,
         conn: &mut PgConnection,
         ctx: &AuthContext,
@@ -813,6 +813,7 @@ impl MessagingService {
                     last_reply_at: r.last_reply_at,
                     state,
                     edited: r.edited_at.is_some() && state == MessageState::Normal,
+                    pinned: r.pinned_at.is_some() && state == MessageState::Normal,
                     created_at: r.created_at,
                     updated_at: r.updated_at,
                 }

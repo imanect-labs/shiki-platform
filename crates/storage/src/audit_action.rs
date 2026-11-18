@@ -282,7 +282,9 @@ audit_actions! {
     MessagingMemberRole = "messaging.member.role", "チャンネルの管理者・投稿者を変更", Message;
     MessagingMessageDelete = "messaging.message.delete", "発言を削除", Message;
     MessagingMessageEdit = "messaging.message.edit", "発言を編集", Message;
+    MessagingMessagePin = "messaging.message.pin", "発言をピン留め", Message;
     MessagingMessagePost = "messaging.message.post", "発言を投稿", Message;
+    MessagingMessageUnpin = "messaging.message.unpin", "発言のピン留めを外す", Message;
     MessagingRetentionPurge = "messaging.retention.purge", "保存期間を過ぎた発言を削除", System;
     MessagingSearch = "messaging.search", "発言を検索", Search;
     MessagingSettingsUpdate = "messaging.settings.update", "メッセージの設定を変更", Admin;

@@ -94,7 +94,7 @@ export function AccessRequestList({
         const st = STATUS[g.status] ?? { label: g.status, tone: "bg-muted text-muted-foreground" };
         const mine = g.requester === me;
         return (
-          <li key={g.id} className={cn("flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start", i > 0 && "shiki-dash-top")} data-testid="access-request">
+          <li key={g.id} className={cn("flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start", i > 0 && "border-t border-border/60")} data-testid="access-request">
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className={cn("rounded-full px-2 py-px text-[11px] font-medium", st.tone)}>{st.label}</span>

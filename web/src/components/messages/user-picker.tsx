@@ -117,7 +117,7 @@ export function UserMultiPicker({
                 onClick={() => toggle(u)}
                 className={cn(
                   "flex w-full items-center gap-2.5 px-3 py-2 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  i > 0 && "shiki-dash-top",
+                  i > 0 && "border-t border-border/60",
                   on && "bg-accent/60",
                 )}
               >

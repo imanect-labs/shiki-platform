@@ -204,6 +204,10 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .delete(routes::channel_shares::unshare_from_channel)
             },
         ),
+        // チャンネルに共有されている資料（参加者だけ・自分が読めるものだけ）。
+        r("/messaging/channels/{id}/files", &["GET"], Session, || {
+            get(routes::channel_shares::list_channel_files)
+        }),
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
