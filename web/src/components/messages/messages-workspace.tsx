@@ -534,6 +534,7 @@ export function MessagesWorkspace() {
               onOpen={openPanel}
             />
           }
+          onOpenPanel={openPanel}
           onOpenSettings={(tab) => setSettings({ open: true, tab })}
           onHideDm={() => {
             hideDm(active.id)

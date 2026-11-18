@@ -3,7 +3,7 @@
 /// 本体ペインの上端バー。チャンネル名・トピック・資料／ピン／参加者の入口・通知と設定の入口。
 
 import * as React from "react";
-import { Archive, Bell, BellOff, EyeOff, MoreHorizontal, Settings2, Users } from "lucide-react";
+import { Archive, Bell, BellOff, EyeOff, MoreHorizontal, Paperclip, Pin, Settings2, Users } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { ChannelView } from "@/lib/messaging-api";
 import { AgentAvatar, ChannelTile, UserAvatar, useMessagingDisplay } from "./primitives";
 import type { SettingsTab } from "./channel-settings-dialog";
+import type { SidePanelTab } from "./channel-side-panel";
 
 const ICON_BTN =
   "flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
@@ -24,6 +25,7 @@ export function ChannelHeader({
   channel,
   leading,
   pills,
+  onOpenPanel,
   onOpenSettings,
   onHideDm,
 }: {
@@ -32,6 +34,8 @@ export function ChannelHeader({
   leading?: React.ReactNode;
   /// 資料・ピン・参加者の入口（右の一覧を開く）。
   pills?: React.ReactNode;
+  /// 狭い画面では入口をメニューに移す（ヘッダに並べると名前が隠れる）。
+  onOpenPanel?: (tab: SidePanelTab) => void;
   onOpenSettings: (tab: SettingsTab) => void;
   onHideDm: () => void;
 }) {
@@ -81,7 +85,7 @@ export function ChannelHeader({
         ) : null}
       </div>
 
-      {pills}
+      {pills ? <div className="hidden md:flex">{pills}</div> : null}
 
       {channel.joined ? (
         <Tooltip>
@@ -101,6 +105,19 @@ export function ChannelHeader({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-[220px]">
+          {onOpenPanel ? (
+            <>
+              <DropdownMenuItem onSelect={() => onOpenPanel("files")} className="gap-2 md:hidden">
+                <Paperclip className="size-4" aria-hidden />
+                資料
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onOpenPanel("pins")} className="gap-2 md:hidden">
+                <Pin className="size-4" aria-hidden />
+                ピン留め
+              </DropdownMenuItem>
+              <DropdownMenuSeparator className="md:hidden" />
+            </>
+          ) : null}
           {!isDm ? (
             <DropdownMenuItem onSelect={() => onOpenSettings("about")} className="gap-2">
               <Settings2 className="size-4" aria-hidden />
