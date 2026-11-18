@@ -141,7 +141,7 @@ impl StorageService {
             .readable_files_metadata(ctx, &ids(files), "channel_shares")
             .await?;
         nodes.extend(self.readable_folders(ctx, &ids(folders)).await?);
-        nodes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        nodes.sort_by_key(|n| std::cmp::Reverse(n.updated_at));
         Ok(nodes)
     }
 
