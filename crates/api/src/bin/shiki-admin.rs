@@ -191,7 +191,7 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         .s3
         .as_ref()
         .context("storage.s3 が未設定です")?;
-    let store = S3ObjectStore::new(s3);
+    let store = std::sync::Arc::new(S3ObjectStore::new(s3));
 
     // --- 対象の列挙は「DB 行が既に属している tenant」から行う ---
     // legacy: DB は day-1 で tenant_id=to を持つ（識別子だけが旧形式）。rename: from の行。
@@ -228,6 +228,21 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             bail!(reason);
         }
     }
+
+    // 圧縮実体の copy→commit→delete 全体を worker/GC/backup と排他する。
+    // データプレーンの静止は引き続き必要。hold の拒否も外部副作用の前に行う。
+    let encoded_storage = storage::blob_storage::BlobStorage::new(db.clone(), store.clone());
+    let namespace_move = match (&from, execute) {
+        (FromNs::Tenant(f), true) => Some(
+            encoded_storage
+                .begin_namespace_move(
+                    authz::TenantId::parse(f.as_str())?,
+                    authz::TenantId::parse(to.as_str())?,
+                )
+                .await?,
+        ),
+        _ => None,
+    };
 
     // --- 1. FGA タプルの移行 ---
     let mut fga_moved: u32 = 0;
@@ -326,6 +341,9 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
         }
     }
     println!("objects: copied={objects_moved} skipped={objects_skipped}（blob 行 {blob_rows}）");
+    if let Some(movement) = &namespace_move {
+        println!("encoded objects: copied={}", movement.copy_objects().await?);
+    }
 
     // --- 3. DB の書き換え（1 txn） ---
     if execute {
@@ -395,6 +413,12 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
             }
         }
         println!("objects: 旧キー {objects_deleted} 件を削除");
+        if let Some(movement) = &namespace_move {
+            println!(
+                "encoded objects: 旧キー {} 件を削除",
+                movement.cleanup_old_objects().await?
+            );
+        }
 
         if let FromNs::Tenant(f) = &from {
             // リネームの監査エントリを**新テナントの chain へ連結**して記録する（forensics の

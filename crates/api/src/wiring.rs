@@ -59,6 +59,15 @@ pub(crate) async fn wire_storage(
         presign_put_ttl,
         config.storage.max_upload_size_bytes,
     ));
+    let mut version_options = config.storage.version_storage;
+    version_options.raw_grace_secs = version_options
+        .raw_grace_secs
+        .max(presign_get_ttl.as_secs())
+        .max(60);
+    storage::blob_storage::spawn_version_storage_worker(
+        storage::blob_storage::BlobStorage::new(db.clone(), object_store.clone()),
+        version_options,
+    );
     // 一般アクセス有効期限の失効タイマ（#338・イベント駆動・定期ポーリング無し）。
     storage::expiry_timer::spawn_share_link_expiry_timer(Arc::clone(&service));
     // outbox GC（#413）。`storage_event_outbox` は書込チョークポイントの真下にあり、GC が回らないと

@@ -14,6 +14,10 @@ yanked = "deny"
 ignore = [
     # smallstr は yrs（共同編集 CRDT）の推移依存。unmaintained 通知であり既知脆弱性は無い。
     # yrs 上流が置換（compact_str 等）するまで解消不可。上流更新で外す（要追跡）。
+    # chrono / chrono-tz は 2026-11 にメンテナンス終了が公開された（全バージョン・安全な更新先なし）。
+    # 既知脆弱性ではない。16 クレートが直接依存し、jiff への移行は #1322 で追う（移行したら外す）。
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained 通知。脆弱性ではなく jiff への移行待ち（#1322）。" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained 通知。脆弱性ではなく jiff への移行待ち（#1322）。" },
     { id = "RUSTSEC-2026-0215", reason = "yrs 推移依存の smallstr unmaintained 通知。脆弱性ではなく yrs 上流の置換待ち。" },
     # smartstring は swc_ecma_parser（shiki script の TS/JS パーサ）の推移依存。
     # smallstr と同型の unmaintained 通知で、既知脆弱性は無い。swc 上流が置換するまで

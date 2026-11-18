@@ -362,6 +362,7 @@ fn base_config() -> AppConfig {
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
             audit_retention: api::config::AuditRetentionConfig::default(),
+            version_storage: storage::blob_storage::VersionStorageOptions::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -1374,3 +1375,6 @@ mod bug_reports;
 mod messaging_http;
 #[path = "http/messaging_routes.rs"]
 mod messaging_routes;
+
+#[path = "http/version_backup.rs"]
+mod version_backup;

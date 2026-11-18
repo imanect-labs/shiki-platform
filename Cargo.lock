@@ -1840,6 +1840,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5832,12 +5838,15 @@ dependencies = [
  "async-trait",
  "aws-sdk-s3",
  "chrono",
+ "fastcdc",
+ "futures",
  "hex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-jobq",
  "shiki-testenv",
  "sqlx",
  "thiserror 2.0.18",
@@ -5845,6 +5854,7 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

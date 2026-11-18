@@ -135,6 +135,8 @@ aws-credential-types = "1"
 aws-smithy-types = "1"
 bytes = "1"
 futures = "0.3"
+zstd = "0.13"
+fastcdc = "3"
 hex = "0.4"
 
 # サンドボックス（所有フォーク secure-exec の薄いクライアント transport のみ依存）。

@@ -613,6 +613,16 @@ async fn run_step(
         && !text_acc.is_empty()
         && can_continue
     {
+        // 本文の書き出しだけで、出力の大半を思考に使い切った: 本文の続きではなく次の手を出させる。
+        if crate::agent_observation::output_mostly_hidden(&text_acc, usage.completion_tokens) {
+            if let Some(nudge) = crate::agent_observation::thinking_exhausted_after_text(
+                &state.messages,
+                opts.max_tokens,
+            ) {
+                state.messages.push(nudge);
+                return Ok(StepOutcome::Continue);
+            }
+        }
         if let Some(nudge) = crate::agent_observation::text_continuation(&state.messages) {
             state.messages.push(nudge);
             return Ok(StepOutcome::Continue);

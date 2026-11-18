@@ -255,6 +255,8 @@ flowchart TB
 ```
 
 - 実体=オブジェクトストア（コンテンツアドレッシングで重複排除＋バージョニング）。
+  論理版と物理保存表現を分離し、旧版の全文圧縮・独立基準版による圧縮・断片共有を選択できる。
+  署名付きURLのlease・物理参照・バックアップholdを含む詳細は [版の物理保存表現](./storage/version-storage.md)。
   論理ツリー/メタ=Postgres（closure table）。権限=OpenFGA。実体に直接権限を持たせない。
 - **FUSE仮想FS**: サンドボックス内で `/workspace` としてマウント。read/write は裏で StorageService を叩き、
   権限/監査/再索引を必ず通る。**API は FUSE 前提で設計**（初版実装は sync 妥協可、後で FUSE 差し替え）。

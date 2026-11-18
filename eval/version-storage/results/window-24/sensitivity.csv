@@ -1,0 +1,9 @@
+object_overhead_bytes,method,remaining_pct
+0,full-cas,100.0
+0,zanchor32,31.47804728473078
+64,full-cas,100.0
+64,zanchor32,31.481154868446758
+256,full-cas,100.0
+256,zanchor32,31.490475928616107
+1024,full-cas,100.0
+1024,zanchor32,31.52773482300763
