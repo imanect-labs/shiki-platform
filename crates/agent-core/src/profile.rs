@@ -69,6 +69,62 @@ pub struct AgentOptions {
     pub session_id: Option<String>,
     /// tool search（遅延ツールを検索して読み込む）の設定。
     pub tool_search: ToolSearchOptions,
+    /// LLM 要約による圧縮（自律版・窓を知っているモデルのみ・[`crate::compaction`]）。
+    pub compaction: crate::compaction::CompactionOptions,
+    /// 小さいモデルでも作業を完遂させるための補助（[`HarnessAids`]）。
+    pub aids: HarnessAids,
+}
+
+/// 小さいモデル（Gemma 4・Qwen 3.x の 30B 級・Claude Haiku）でも作業を完遂させるための補助
+/// （docs/agent/small-model-harness.md）。比較評価のため個別に切れる。既定はすべて有効。
+// 個別に切って比べる独立のスイッチなので、bool の束が正しい形（状態機械ではない）。
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HarnessAids {
+    /// 1 ステップのツール結果の総量に、窓から決めた上限をかける（[`crate::result_budget`]）。
+    pub step_result_budget: bool,
+    /// 同じ呼び出しが同じ結果を返し続けたら、結果に「変わっていない」と添える。
+    pub repeat_notes: bool,
+    /// 本文に書かれたツール呼び出し（`<tool_call>` 等）を回収して実行する（[`crate::call_repair`]）。
+    pub text_tool_calls: bool,
+    /// 引数の型の読み替え（"3" → 3 等）とツール名の近似一致（[`crate::call_repair`]）。
+    pub repair_calls: bool,
+    /// 窓あふれで拒否されたら、圧縮（または非常の剪定）をして 1 度だけやり直す。
+    pub overflow_retry: bool,
+    /// 自律版の system に、作業の作法（書き留める・計算は途中を書く・完了前に確かめる）を足す。
+    pub discipline_prompt: bool,
+    /// 計画に未完了を残したまま本文で終えたら、最後の操作を忘れていないか 1 度だけ確かめさせる。
+    pub completion_check: bool,
+}
+
+impl Default for HarnessAids {
+    fn default() -> Self {
+        HarnessAids {
+            step_result_budget: true,
+            repeat_notes: true,
+            text_tool_calls: true,
+            repair_calls: true,
+            overflow_retry: true,
+            discipline_prompt: true,
+            completion_check: true,
+        }
+    }
+}
+
+impl HarnessAids {
+    /// すべて無効（評価の比較用）。
+    #[must_use]
+    pub fn none() -> Self {
+        HarnessAids {
+            step_result_budget: false,
+            repeat_notes: false,
+            text_tool_calls: false,
+            repair_calls: false,
+            overflow_retry: false,
+            discipline_prompt: false,
+            completion_check: false,
+        }
+    }
 }
 
 /// tool search の設定（[`crate::tool_search`]）。
@@ -144,6 +200,9 @@ impl AgentOptions {
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
             session_id: None,
             tool_search: ToolSearchOptions::default(),
+            // 通常チャットは剪定しない（短ホライズン）。圧縮も同じく自律版だけ。
+            compaction: crate::compaction::CompactionOptions::disabled(),
+            aids: HarnessAids::default(),
         }
     }
 
@@ -172,6 +231,8 @@ impl AgentOptions {
             parallel_read_tools: DEFAULT_PARALLEL_READ_TOOLS,
             session_id: None,
             tool_search: ToolSearchOptions::default(),
+            compaction: crate::compaction::CompactionOptions::default(),
+            aids: HarnessAids::default(),
         }
     }
 }

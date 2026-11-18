@@ -119,7 +119,14 @@ pub(crate) async fn execute_tool(
     trace_id: Option<&str>,
 ) -> ToolOutcome {
     let Some(tool) = tool_map.get(call.name.as_str()) else {
-        return ToolOutcome::error(format!("unknown tool: {}", call.name));
+        // 使えるツールを並べる（小さいモデルは名前を言い換えがち。正しい名前で呼び直せるように）。
+        let mut names: Vec<&str> = tool_map.keys().copied().collect();
+        names.sort_unstable();
+        return ToolOutcome::error(format!(
+            "unknown tool: {}. 使えるツール: {}",
+            call.name,
+            names.join(", ")
+        ));
     };
     match tool.call(ctx, call.input.clone(), trace_id).await {
         Ok(o) => o,

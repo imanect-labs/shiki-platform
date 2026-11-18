@@ -24,14 +24,22 @@
 )]
 
 pub mod agent;
+/// 圧縮の実行（会計・イベント）。
+mod agent_compact;
 pub(crate) mod agent_gate;
 /// ステップ境界でモデルへ渡す観測（残り予算・空応答の催促）の組み立て。
 mod agent_observation;
+/// ツール呼び出しの回収・修復の配線と、結果への注記。
+mod agent_repair;
 pub(crate) mod agent_tools;
 pub mod approval;
 pub mod budget;
+/// ツール呼び出しの回収・修復（小さいモデル向け）。
+pub(crate) mod call_repair;
 pub mod checkpoint;
 pub mod cite;
+/// LLM 要約によるコンテキスト圧縮。
+pub mod compaction;
 pub mod context;
 pub mod context_replay;
 pub mod context_usage;
@@ -40,6 +48,8 @@ pub mod help_cite;
 pub mod loop_detect;
 pub mod plan;
 pub mod profile;
+/// 1 ステップのツール結果の総量の上限。
+pub(crate) mod result_budget;
 pub mod tool;
 /// tool search（遅延ツールを検索して読み込む `tool_search` メタツール）。
 mod tool_search;
@@ -52,6 +62,7 @@ pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
+pub use compaction::CompactionOptions;
 pub use context_usage::{ContextCategory, ContextCategoryUsage, ContextUsage};
 pub use event::{
     await_unless_cancelled, next_unless_cancelled, AgentError, AgentEvent, EventSink, NextDelta,
@@ -59,8 +70,8 @@ pub use event::{
 };
 pub use plan::{Plan, Subtask, SubtaskStatus};
 pub use profile::{
-    AgentOptions, AgentOutcome, AgentProfile, ToolSearchOptions, DEFAULT_PARALLEL_READ_TOOLS,
-    DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
+    AgentOptions, AgentOutcome, AgentProfile, HarnessAids, ToolSearchOptions,
+    DEFAULT_PARALLEL_READ_TOOLS, DEFAULT_TOOL_SEARCH_MIN_DEFERRED_TOKENS,
 };
 pub use tool::{
     ArtifactRef, ArtifactStore, AttachmentRef, AttachmentStore, Citation, CsvDraft, SlideDraft,

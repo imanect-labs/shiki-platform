@@ -15,6 +15,9 @@ pub enum RecoveryAction {
     Retry,
     /// 同一失敗のループを検出して安全停止した。
     StopLooping,
+    /// 文脈の上限に近づいた（または超えて拒否された）ため、古いやり取りを要約に置き換えた
+    /// （[`crate::compaction`]・継続）。
+    Compacted,
 }
 
 impl RecoveryAction {
@@ -24,6 +27,7 @@ impl RecoveryAction {
         match self {
             RecoveryAction::Retry => "retry",
             RecoveryAction::StopLooping => "stop_looping",
+            RecoveryAction::Compacted => "context_compacted",
         }
     }
 }

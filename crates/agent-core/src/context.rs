@@ -122,7 +122,7 @@ pub fn prune_history(
 fn fold_older_than(messages: &mut [Message], keep_recent: usize) -> bool {
     let cutoff = messages.len().saturating_sub(keep_recent);
     let dropped = drop_old_reasoning(messages, cutoff);
-    fold_results(messages, cutoff, None) | dropped
+    fold_results(messages, cutoff, &[]) | dropped
 }
 
 /// `messages[..cutoff]` の assistant メッセージから、プロバイダ固有の推論アイテムを落とす
@@ -151,14 +151,14 @@ fn drop_old_reasoning(messages: &mut [Message], cutoff: usize) -> bool {
 
 /// `messages[..cutoff]` の大きな `tool_result` 本文を畳む（`protect` の位置＝(メッセージ, ブロック)
 /// は畳まない）。戻り値は「畳んだか」。
-fn fold_results(messages: &mut [Message], cutoff: usize, protect: Option<(usize, usize)>) -> bool {
+fn fold_results(messages: &mut [Message], cutoff: usize, protect: &[(usize, usize)]) -> bool {
     let mut pruned = false;
     for (mi, msg) in messages.iter_mut().enumerate().take(cutoff) {
         if msg.role != Role::Tool {
             continue;
         }
         for (bi, block) in msg.content.iter_mut().enumerate() {
-            if Some((mi, bi)) == protect {
+            if protect.contains(&(mi, bi)) {
                 continue;
             }
             if let Block::ToolResult {
@@ -218,6 +218,9 @@ const FOLD_HINT: &str = "中身が無かったのではなく、文脈を空け�
 const SOFT_PERMILLE: usize = 600;
 /// 非常時の閾値（千分率）。超えたら最後のツール結果以外を全て畳む。
 const HARD_PERMILLE: usize = 850;
+/// 1 ステップのツール結果の合計の上限（千分率）。直前の要約・剪定で空けた分に収まり、
+/// 次のステップで soft を大きく超えない量。
+const STEP_RESULTS_PERMILLE: usize = 300;
 
 /// **最後のツール結果ブロック**の位置（剪定で守る対象）。
 ///
@@ -232,6 +235,40 @@ fn last_result_position(messages: &[Message]) -> Option<(usize, usize)> {
             .rposition(|b| matches!(b, Block::ToolResult { .. }))
             .map(|bi| (mi, bi))
     })
+}
+
+/// 剪定で守る位置。**最後のツールのターン（Tool メッセージ）の結果は、まだモデルが一度も
+/// 読んでいない**ので、1 ステップの結果の上限（[`WindowLimits::step_results`]）に収まって
+/// いれば全部守る。収まらないとき（上限を入れる前の履歴・上限の無い経路）だけ、従来どおり
+/// 最後の 1 件に絞る。
+///
+/// 並列で読んだ 12 件のうち 11 件を、モデルが見る前に畳むと、畳み注記が「呼び直せ」と促して
+/// 同じ 11 件を読み直し、また畳まれる——を窓が溢れるまで繰り返した（実測・
+/// docs/agent/small-model-harness.md）。
+fn protected_positions(messages: &[Message], step_results: usize) -> Vec<(usize, usize)> {
+    let Some((mi, _)) = last_result_position(messages) else {
+        return Vec::new();
+    };
+    let positions: Vec<(usize, usize)> = messages[mi]
+        .content
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| matches!(b, Block::ToolResult { .. }))
+        .map(|(bi, _)| (mi, bi))
+        .collect();
+    let tokens: usize = messages[mi]
+        .content
+        .iter()
+        .map(|b| match b {
+            Block::ToolResult { content, .. } => text_tokens(content),
+            _ => 0,
+        })
+        .sum();
+    if tokens <= step_results {
+        positions
+    } else {
+        last_result_position(messages).into_iter().collect()
+    }
 }
 
 /// 1 run の剪定閾値（設定値とモデルの窓から決める）。
@@ -256,6 +293,10 @@ pub struct WindowLimits {
     pub soft: usize,
     /// 超えたら最後のツール結果以外を全て畳む（有効窓の 0.85・溢れ直前の非常手段）。
     pub hard: usize,
+    /// 有効窓そのもの（窓 − 1 応答の出力上限）。
+    pub effective: usize,
+    /// 1 ステップで返すツール結果の合計の上限（有効窓の 0.3・[`crate::result_budget`]）。
+    pub step_results: usize,
 }
 
 impl ContextLimits {
@@ -276,6 +317,8 @@ impl ContextLimits {
             .map(|u| WindowLimits {
                 soft: u * SOFT_PERMILLE / 1000,
                 hard: u * HARD_PERMILLE / 1000,
+                effective: u,
+                step_results: u * STEP_RESULTS_PERMILLE / 1000,
             });
         ContextLimits {
             history_soft: soft_limit,
@@ -284,15 +327,38 @@ impl ContextLimits {
         }
     }
 
+    /// 1 ステップのツール結果の上限（窓を知らない・無効なら `None`・[`crate::result_budget`]）。
+    #[must_use]
+    pub fn step_results(&self, enabled: bool) -> Option<usize> {
+        self.window.filter(|_| enabled).map(|w| w.step_results)
+    }
+
     /// 履歴を閾値に収める。まず `keep_recent` を残して畳み、それでも非常閾値を超えるなら
     /// 最後のツール結果以外を全て畳む。戻り値は「畳んだか」。
     pub fn apply(&self, messages: &mut [Message], gauge: &ContextGauge) -> bool {
+        self.apply_with(messages, gauge, true)
+    }
+
+    /// [`Self::apply`] の段階を選べる版。`soft_fold = false` なら非常閾値（hard）の畳み込みだけを
+    /// 行う（窓を知らないモデルには影響しない）。
+    ///
+    /// 要約による圧縮（[`crate::compaction`]）を使う run では、soft での畳み込みは圧縮が受け持つ。
+    /// 畳み込みを残すと、圧縮の間隔（直後の 2 ステップ）に、まだ要約していない結果を畳んで
+    /// 値を失う（実測: 思考にだけ値を書いたモデルが、畳まれた報告を読み直し続けた）。
+    pub fn apply_with(
+        &self,
+        messages: &mut [Message],
+        gauge: &ContextGauge,
+        soft_fold: bool,
+    ) -> bool {
+        let soft_fold = soft_fold || self.window.is_none();
         if self.history_soft == 0 {
             return false;
         }
-        let over_history = estimate_tokens(messages) > self.history_soft;
+        let over_history = soft_fold && estimate_tokens(messages) > self.history_soft;
         let over_window = match self.window {
-            Some(w) => gauge.tokens(messages) > w.soft,
+            Some(w) if soft_fold => gauge.tokens(messages) > w.soft,
+            Some(w) => gauge.tokens(messages) > w.hard,
             None => false,
         };
         if !over_history && !over_window {
@@ -300,15 +366,29 @@ impl ContextLimits {
         }
         // 守る位置は畳む前に決める（`keep_recent = 0` でも最後の結果は残す）。窓を知らない
         // モデルでは保護しない（設定値だけの剪定は従来どおり・#529）。
-        let protect = self.window.and_then(|_| last_result_position(messages));
+        let protect = self
+            .window
+            .map(|w| protected_positions(messages, w.step_results))
+            .unwrap_or_default();
         let cutoff = messages.len().saturating_sub(self.keep_recent);
         let mut pruned = drop_old_reasoning(messages, cutoff);
-        pruned |= fold_results(messages, cutoff, protect);
+        if soft_fold {
+            pruned |= fold_results(messages, cutoff, &protect);
+        }
         if self.window.is_some_and(|w| gauge.tokens(messages) > w.hard) {
-            pruned |= fold_results(messages, messages.len(), protect);
+            pruned |= fold_results(messages, messages.len(), &protect);
         }
         pruned
     }
+}
+
+/// 窓あふれで拒否されたときの最後の手段: 最後のツール結果以外を全て畳み、古い推論アイテムを
+/// 落とす。戻り値は「畳んだか」。
+pub(crate) fn emergency_fold(messages: &mut [Message]) -> bool {
+    let protect: Vec<(usize, usize)> = last_result_position(messages).into_iter().collect();
+    let cutoff = messages.len().saturating_sub(2);
+    let dropped = drop_old_reasoning(messages, cutoff);
+    fold_results(messages, messages.len(), &protect) | dropped
 }
 
 /// prompt 全体の実トークン数の見積り。履歴の見積り（[`estimate_prompt_tokens`]）に、プロバイダ
@@ -557,7 +637,9 @@ mod tests {
             limits(24_000, Some(32_000), Some(4_000)).window,
             Some(WindowLimits {
                 soft: 16_800,
-                hard: 23_800
+                hard: 23_800,
+                effective: 28_000,
+                step_results: 8_400,
             })
         );
         // 窓が出力上限以下（設定ミス）は「知らない」扱い。
@@ -634,6 +716,60 @@ mod tests {
             .content
             .iter()
             .map(|b| matches!(b, Block::ToolResult { content, .. } if is_folded(content)))
+            .collect();
+        assert_eq!(folded, vec![true, true, false]);
+    }
+
+    #[test]
+    fn hard_limit_keeps_the_whole_latest_turn_when_it_fits_the_step_budget() {
+        // 直近のターンの結果はまだ読まれていない。1 ステップの上限（有効窓 30k の 0.3 = 9k）に
+        // 収まるなら、並列の結果を全部守る（畳むと読み直し→また畳む、の空回りになる）。
+        let old = "o".repeat(60_000); // ≒ 15k
+        let fresh = "f".repeat(12_000); // ≒ 3k × 2
+        let mut msgs = vec![
+            tool_result(&old, false),
+            Message {
+                role: Role::Tool,
+                content: vec![
+                    Block::tool_result("a", fresh.clone(), false),
+                    Block::tool_result("b", fresh.clone(), false),
+                ],
+            },
+        ];
+        let l = ContextLimits::resolve(24_000, 0, Some(30_000), None);
+        assert!(l.apply(&mut msgs, &ContextGauge::default()));
+        assert!(
+            matches!(&msgs[0].content[0], Block::ToolResult { content, .. } if is_folded(content))
+        );
+        assert!(msgs[1]
+            .content
+            .iter()
+            .all(|b| matches!(b, Block::ToolResult { content, .. } if !is_folded(content))));
+    }
+
+    #[test]
+    fn without_soft_fold_only_the_hard_limit_folds() {
+        // 窓 30k（soft 18k・hard 25.5k）。20k ぶん: soft は超えるが hard は超えない → 畳まない。
+        let mid = "m".repeat(20_000); // ≒ 5k × 4
+        let mut msgs: Vec<Message> = (0..4).map(|_| tool_result(&mid, false)).collect();
+        let l = ContextLimits::resolve(24_000, 1, Some(30_000), None);
+        assert!(!l.apply_with(&mut msgs, &ContextGauge::default(), false));
+        // 同じ履歴でも soft を使う版は畳む。
+        assert!(l.apply_with(&mut msgs, &ContextGauge::default(), true));
+        // hard を超えたら soft を使わない版でも畳む。
+        let big = "b".repeat(40_000);
+        let mut msgs: Vec<Message> = (0..4).map(|_| tool_result(&big, false)).collect();
+        assert!(l.apply_with(&mut msgs, &ContextGauge::default(), false));
+    }
+
+    #[test]
+    fn emergency_fold_keeps_only_the_last_result() {
+        let big = "e".repeat(8_000);
+        let mut msgs: Vec<Message> = (0..3).map(|_| tool_result(&big, false)).collect();
+        assert!(emergency_fold(&mut msgs));
+        let folded: Vec<bool> = msgs
+            .iter()
+            .map(|m| matches!(&m.content[0], Block::ToolResult { content, .. } if is_folded(content)))
             .collect();
         assert_eq!(folded, vec![true, true, false]);
     }

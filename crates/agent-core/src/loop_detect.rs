@@ -86,6 +86,52 @@ impl LoopDetector {
     }
 }
 
+/// 停滞の検出: **同じ呼び出しが同じ結果を返し続けている**（成功でも）。
+///
+/// [`LoopDetector`] は同じ失敗の反復だけを見る。小さいモデルは、結果の変わらない成功の
+/// 呼び出し（テスト実行・同じ一覧の取得）を何度も繰り返して予算を溶かすことがある（実測:
+/// 修正が効かない理由を探さず `run_tests` を 13 回続けて呼んだ）。止めはせず、3 回目から結果に
+/// 「変わっていない」と添えて別の手を促す。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RepeatTracker {
+    /// (呼び出しのハッシュ, 結果のハッシュ, 同じ結果が続いた回数)。新しい順に高々 32 件。
+    recent: Vec<(u64, u64, u32)>,
+}
+
+/// 停滞の注記を添え始める回数（同じ呼び出しが同じ結果を返した回数）。
+pub(crate) const REPEAT_NOTE_AT: u32 = 3;
+
+impl RepeatTracker {
+    /// 1 件の結果を観測し、同じ呼び出しが同じ結果を返した連続回数を返す。
+    pub fn observe(&mut self, name: &str, input: &serde_json::Value, result: &str) -> u32 {
+        let call = hash_str(name) ^ hash_json(input).rotate_left(17);
+        let res = hash_str(result);
+        let count = match self.recent.iter().position(|(c, _, _)| *c == call) {
+            Some(i) => {
+                let (_, r, n) = self.recent.remove(i);
+                if r == res {
+                    n + 1
+                } else {
+                    1
+                }
+            }
+            None => 1,
+        };
+        self.recent.insert(0, (call, res, count));
+        self.recent.truncate(32);
+        count
+    }
+}
+
+/// 停滞の注記。
+pub(crate) fn repeat_note(count: u32) -> String {
+    format!(
+        "\n［注: この呼び出しは同じ引数で {count} 回目で、結果は前回と同じです。繰り返しても変わりません。\
+         原因を別の方法で調べる（関係するファイルや値を読み直す・前提を疑う）か、できることが無ければ\
+         現状を報告して終えてください。］"
+    )
+}
+
 fn hash_str(s: &str) -> u64 {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
@@ -105,6 +151,20 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn repeat_tracker_counts_identical_results_only() {
+        let mut r = RepeatTracker::default();
+        let inp = json!({});
+        assert_eq!(r.observe("run_tests", &inp, "2 failed"), 1);
+        assert_eq!(r.observe("run_tests", &inp, "2 failed"), 2);
+        // 別の呼び出しを挟んでも数え続ける。
+        assert_eq!(r.observe("read_file", &json!({"path": "a"}), "x"), 1);
+        assert_eq!(r.observe("run_tests", &inp, "2 failed"), 3);
+        // 結果が変われば数え直す。
+        assert_eq!(r.observe("run_tests", &inp, "1 failed"), 1);
+        assert!(repeat_note(3).contains("3 回目"));
+    }
 
     #[test]
     fn detects_three_consecutive_identical_errors() {

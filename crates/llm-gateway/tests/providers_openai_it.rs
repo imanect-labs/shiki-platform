@@ -93,6 +93,41 @@ async fn openai_stream_yields_text_thinking_tool_and_done() {
     }
 }
 
+/// OpenRouter・新しい vLLM の `reasoning` も思考として流れ、読めない引数は `{}` に潰さず
+/// 生の文字列で渡る（agent-core が直すか、直し方の分かるエラーで返す）。
+#[tokio::test]
+async fn openai_reasoning_field_and_unreadable_arguments() {
+    const BODY: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"ponder\"}}]}\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\": \\\"a\"}}]}}]}\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"list\",\"arguments\":\"\"}}]}}]}\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n",
+        "data: [DONE]\n",
+    );
+    let base = spawn_mock(StatusCode::OK, BODY).await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "m");
+    let deltas = drain(
+        &provider,
+        &GenerateRequest::new(vec![Message::text(Role::User, "hi")]),
+    )
+    .await;
+    assert!(deltas.contains(&StreamDelta::ThinkingDelta {
+        text: "ponder".into()
+    }));
+    let inputs: std::collections::HashMap<String, serde_json::Value> = deltas
+        .iter()
+        .filter_map(|d| match d {
+            StreamDelta::ToolUseStop { id, input } => Some((id.clone(), input.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        inputs["c1"],
+        serde_json::Value::String("{\"path\": \"a".into())
+    );
+    assert_eq!(inputs["c2"], serde_json::json!({}));
+}
+
 #[tokio::test]
 async fn openai_client_error_maps_to_bad_request() {
     let base = spawn_mock(StatusCode::BAD_REQUEST, "bad model").await;

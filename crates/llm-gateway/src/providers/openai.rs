@@ -331,7 +331,15 @@ impl ToolAcc {
             .into_values()
             .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
             .map(|(id, name, args)| {
-                let input: Value = serde_json::from_str(args.trim()).unwrap_or(json!({}));
+                // 読めない引数は `{}` に潰さず、生の文字列のまま渡す（agent-core が直すか、
+                // 直し方の分かるエラーで返す）。`{}` だと「引数を渡さなかった」と区別できない。
+                // 空（引数なしの呼び出し）は `{}`。
+                let raw = args.trim();
+                let input: Value = if raw.is_empty() {
+                    json!({})
+                } else {
+                    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+                };
                 let _ = name; // name は id で参照済み（tool_use 側で保持）
                 StreamDelta::ToolUseStop { id, input }
             })
@@ -348,6 +356,15 @@ impl ToolAcc {
             })
             .collect()
     }
+}
+
+/// デルタの思考。vLLM・一部モデルは `reasoning_content`、OpenRouter・新しい vLLM は `reasoning`
+/// （Qwen3.x の思考はこちらで届く）。どちらも思考として流す。
+fn delta_thinking(delta: &Value) -> Option<&str> {
+    delta
+        .get("reasoning_content")
+        .or_else(|| delta.get("reasoning"))
+        .and_then(Value::as_str)
 }
 
 /// 本文から切り出した断片を中立デルタへ写す。
@@ -461,9 +478,7 @@ impl LlmProvider for OpenAiProvider {
                                 let _ = tx.unbounded_send(Ok(piece_delta(piece)));
                             }
                         }
-                        // vLLM / 一部モデルは reasoning_content で思考を返す。
-                        if let Some(think) = delta.get("reasoning_content").and_then(Value::as_str)
-                        {
+                        if let Some(think) = delta_thinking(delta) {
                             if !think.is_empty() {
                                 let _ = tx.unbounded_send(Ok(StreamDelta::ThinkingDelta {
                                     text: think.to_string(),

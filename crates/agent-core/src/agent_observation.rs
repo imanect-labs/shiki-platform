@@ -101,6 +101,17 @@ const MAX_TRUNCATED_RETRIES: usize = 3;
 /// （実測: エージェントモードで大きな表の編集・委譲の指示文が切れ、そのまま終わっていた）。
 /// 「切れた・小さく分けて呼び直せ」をツール結果として返し、次の生成で書き直させる。
 /// tool_use と対の tool_result にするのは、両プロバイダが確実に受け付ける形だから（冒頭の注記）。
+/// 出力上限で切れた呼び出しへ返す本文（実行していない・小さく分けて呼び直す）。
+pub(crate) fn truncated_call_message(name: &str, max_tokens: Option<u32>) -> String {
+    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
+    format!(
+        "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
+         実行していません（{name} は何も変更していません）。\
+         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
+         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
+    )
+}
+
 pub(crate) fn truncated_call_results(
     messages: &[LlmMessage],
     call_ids: &[(String, String)],
@@ -118,21 +129,11 @@ pub(crate) fn truncated_call_results(
     if retried >= MAX_TRUNCATED_RETRIES {
         return None;
     }
-    let limit = max_tokens.map_or_else(String::new, |n| format!("（{n} トークン）"));
     Some(
         call_ids
             .iter()
             .map(|(id, name)| {
-                Block::tool_result(
-                    id.clone(),
-                    format!(
-                        "{TRUNCATED_CALL_MARK}応答の出力上限{limit}に達して引数の途中で切れたため、\
-                         実行していません（{name} は何も変更していません）。\
-                         1 回の呼び出しを小さく分けて呼び直してください（例: 編集する範囲・操作を\
-                         数回に分ける、長い本文は複数回に分けて書く）。思考は短くしてください。"
-                    ),
-                    true,
-                )
+                Block::tool_result(id.clone(), truncated_call_message(name, max_tokens), true)
             })
             .collect(),
     )
@@ -303,6 +304,61 @@ fn block_text(b: &Block) -> Option<&str> {
         Block::Text { text } => Some(text),
         _ => None,
     }
+}
+
+/// 自律版の作業の作法（小さいモデル向け・docs/agent/small-model-harness.md）。
+///
+/// 実測で見えた崩れに対応する: 呼び出しを予告だけして終える、古い結果が畳まれ・要約されて
+/// 値を失う、数十個の数値を暗算でまとめて誤る、日付の差を数え違える、変わらない呼び出しを
+/// 繰り返す、確かめずに完了と言う。
+pub(crate) const DISCIPLINE_PROMPT: &str = "\n\n## 作業の作法\n\
+- ツールを使うと書いたら、その応答で実際に呼ぶ。予告だけで応答を終えない。\n\
+- 長いツール結果から後で使う値（数値・ID・パス・判断の根拠）は、読んだ直後に本文へ短く書き留める。\
+古い結果は文脈を空けるために省かれ、要約に置き換わることがある。思考（考え）に書いた内容は\
+次の応答では見えないので、残す値は必ず本文に書く。\n\
+- 多くの数値の合計・比較は、暗算で一度に済ませず、項目ごとに途中の値を書きながら計算する。\
+日付の差も、月ごとの日数を数えて確かめる。\n\
+- 同じ呼び出しを同じ引数で繰り返しても結果は変わらない。失敗や停滞したら、原因を調べてやり方を変える。\n\
+- 完了と報告する前に、依頼の項目をすべて満たしたかを結果で確かめる。";
+
+/// 未完了の計画を確かめさせる注記の目印（1 run で 1 度だけ・冪等判定）。
+const UNFINISHED_PLAN_MARK: &str = "［自動確認: 計画に未完了の項目が残っています］";
+
+/// 計画に未完了（todo / doing）が残ったまま本文で終えたら、利用者発話として 1 度だけ確かめさせる。
+/// 仕込んだら `true`（ループは続ける）。
+///
+/// 実測（Gemma 4 31B）: 集計の表まで本文に書いたところで終え、依頼された `submit_answer` を
+/// 呼ばなかった。計画を更新しないまま正しく終えるモデルも多いので、「終わっているなら最終回答を
+/// 書くだけでよい」と明記し、2 度目は止める（余分な手は 1 ステップに留める）。
+pub(crate) fn nudge_unfinished_plan(
+    messages: &mut Vec<LlmMessage>,
+    plan: &crate::plan::Plan,
+) -> bool {
+    use crate::plan::SubtaskStatus;
+    let open: Vec<&str> = plan
+        .subtasks
+        .iter()
+        .filter(|t| matches!(t.status, SubtaskStatus::Todo | SubtaskStatus::Doing))
+        .map(|t| t.title.as_str())
+        .collect();
+    let already = messages.iter().any(|m| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.starts_with(UNFINISHED_PLAN_MARK)))
+    });
+    if open.is_empty() || already {
+        return false;
+    }
+    messages.push(LlmMessage::text(
+        llm_gateway::Role::User,
+        format!(
+            "{UNFINISHED_PLAN_MARK}\n未完了: {}\n依頼された作業（提出・保存・処理などの操作を含む）で\
+             まだ実行していないものがあれば、今すぐツールで実行してください。すべて終わっているなら、\
+             計画は更新せずに最終回答だけを書いてください。",
+            open.join(" / ")
+        ),
+    ));
+    true
 }
 
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。

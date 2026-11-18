@@ -38,6 +38,13 @@ pub struct Checkpoint {
     /// 1 ステップも生成していない）で、実測の結果 0 になった `Some(0)` とは区別する。
     #[serde(default)]
     pub context_overhead_tokens: Option<usize>,
+    /// 停滞（同じ呼び出しが同じ結果を返し続ける）の観測（再開しても数え続ける）。
+    #[serde(default)]
+    pub repeats: crate::loop_detect::RepeatTracker,
+    /// この run で要約による圧縮（[`crate::compaction`]）を試みた回数（縮まずに捨てた要約も
+    /// 1 生成ぶん会計に積むので数える・会計の冪等キー）。
+    #[serde(default)]
+    pub compactions: u32,
 }
 
 impl Checkpoint {
@@ -53,6 +60,8 @@ impl Checkpoint {
             citations: crate::cite::CitationLedger::default(),
             help_citations: crate::help_cite::HelpCitationLedger::default(),
             context_overhead_tokens: None,
+            repeats: crate::loop_detect::RepeatTracker::default(),
+            compactions: 0,
         }
     }
 }

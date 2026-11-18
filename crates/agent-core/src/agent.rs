@@ -96,15 +96,7 @@ pub async fn run_agent(
     approver: Option<&dyn Approver>,
     sink: &mut dyn EventSink,
 ) -> Result<AgentOutcome, AgentError> {
-    // 上限は初回から知らせる。run 内で同じ system を使い、残量は観測に載せる。
-    // 呼び出し元の opts を変えず、resume でも指示を重複させない。
-    let mut run_opts = opts.clone();
-    let has_tools = !tools.is_empty() || (opts.profile.is_autonomous() && opts.offer_plan_tool);
-    run_opts.system = Some(budget_system_prompt(
-        opts.system.as_deref(),
-        &opts.budget,
-        has_tools,
-    ));
+    let run_opts = run_options(opts, tools);
     let opts = &run_opts;
     let tool_map: HashMap<&str, &Arc<dyn Tool>> = tools.iter().map(|t| (t.name(), t)).collect();
     // 出番の限られるツールは定義を遅延にし、`tool_search` で読み込ませる（候補は提示済みの
@@ -145,6 +137,9 @@ pub async fn run_agent(
     });
     let mut gauge =
         crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
+    // 直近に圧縮したステップ（連続して要約しない）と、窓あふれのやり直しを済ませたか。
+    let mut last_compaction_step: Option<usize> = None;
+    let mut overflow_retried = false;
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -173,7 +168,20 @@ pub async fn run_agent(
         if opts.profile.is_autonomous() {
             // tool_search で読み込んだ定義の増分を見積りに足す（次の実測で置き換わる）。
             gauge.observe_tools(context_tool_tokens(&state.messages));
-            limits.apply(&mut state.messages, &gauge);
+            // 窓を知っているモデルでは、**畳む前に**古いやり取りを要約で置き換える（剪定は後ろ盾）。
+            crate::agent_compact::before_step(
+                gateway,
+                run,
+                opts,
+                &mut state,
+                sink,
+                &limits,
+                &gauge,
+                &mut last_compaction_step,
+            )
+            .await?;
+            // 圧縮を使う run では、soft の畳み込みは圧縮が受け持つ（非常閾値だけ畳む）。
+            limits.apply_with(&mut state.messages, &gauge, !opts.compaction.enabled);
         }
 
         // 補正の基準（送る履歴の見積り）。剪定するのは自律版だけなので Chat では測らない。
@@ -182,7 +190,8 @@ pub async fn run_agent(
             .is_autonomous()
             .then(|| crate::context::estimate_prompt_tokens(&state.messages));
         let steps_before = state.spent.steps;
-        let step_outcome = run_step(
+        let step_budget = limits.step_results(opts.aids.step_result_budget);
+        let step_outcome = match run_step(
             gateway,
             &tool_defs,
             &tool_map,
@@ -193,8 +202,37 @@ pub async fn run_agent(
             &mut state,
             sink,
             &mut detector,
+            step_budget,
         )
-        .await?;
+        .await
+        {
+            // 窓あふれで拒否された: 圧縮（できなければ非常の剪定）をして、1 度だけやり直す。
+            // 拒否は応答の前に起きるので、履歴にはこのステップの痕跡が無い（やり直して安全）。
+            Err(AgentError::Llm(msg))
+                if opts.aids.overflow_retry
+                    && !overflow_retried
+                    && crate::agent_compact::is_context_overflow(&msg) =>
+            {
+                overflow_retried = true;
+                if !crate::agent_compact::recover_overflow(
+                    gateway,
+                    run,
+                    opts,
+                    &mut state,
+                    sink,
+                    &limits,
+                    &gauge,
+                    &mut last_compaction_step,
+                )
+                .await?
+                {
+                    return Err(AgentError::Llm(msg));
+                }
+                continue;
+            }
+            other => other?,
+        };
+        overflow_retried = false;
         // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
         if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
             gauge.calibrate(sent, state.spent.last_prompt_tokens());
@@ -220,6 +258,27 @@ pub async fn run_agent(
         stop,
         checkpoint: state,
     })
+}
+
+/// run 内で使う options（system に予算の説明と作業の作法を足す）。
+///
+/// 上限は初回から知らせる。run 内で同じ system を使い、残量は観測に載せる。
+/// 呼び出し元の opts を変えず、resume でも指示を重複させない。
+fn run_options(opts: &AgentOptions, tools: &[Arc<dyn Tool>]) -> AgentOptions {
+    let mut run_opts = opts.clone();
+    let has_tools = !tools.is_empty() || (opts.profile.is_autonomous() && opts.offer_plan_tool);
+    run_opts.system = Some(budget_system_prompt(
+        opts.system.as_deref(),
+        &opts.budget,
+        has_tools,
+    ));
+    // 小さいモデル向けの作業の作法（自律版・ツールあり）。run 内で固定（キャッシュを壊さない）。
+    if opts.profile.is_autonomous() && has_tools && opts.aids.discipline_prompt {
+        if let Some(system) = run_opts.system.as_mut() {
+            system.push_str(crate::agent_observation::DISCIPLINE_PROMPT);
+        }
+    }
+    run_opts
 }
 
 /// 1 ステップの結果（継続 or 停止）。
@@ -388,6 +447,7 @@ async fn run_step(
     state: &mut Checkpoint,
     sink: &mut dyn EventSink,
     detector: &mut LoopDetector,
+    step_budget: Option<usize>,
 ) -> Result<StepOutcome, AgentError> {
     let step = state.spent.steps;
     let req = GenerateRequest {
@@ -489,6 +549,21 @@ async fn run_step(
         }
     }
 
+    // 本文に書かれたツール呼び出し（Qwen の `<tool_call>`・Gemma の `call:` 等）を回収する
+    // （小さいモデル向け・call_repair.rs）。出力上限で切れた本文は対象にしない（途中かもしれない）。
+    if opts.aids.text_tool_calls
+        && calls.is_empty()
+        && final_stop != StopReason::MaxTokens
+        && !tool_defs.is_empty()
+    {
+        if let Some(recovered) =
+            crate::agent_repair::recover_text_calls(tool_defs, &text_acc, step, &mut ordered, sink)
+                .await?
+        {
+            calls = recovered;
+            final_stop = StopReason::ToolUse;
+        }
+    }
     // 揃った呼び出しがあるのに「自然終了」で届いた応答は、呼び出しを実行する（黙って畳まない）。
     // 出力上限で止まっても、引数が全部揃っている呼び出しは実行する（切れたのは `{}` で届く）。
     final_stop = crate::agent_observation::settle_stop(
@@ -564,11 +639,37 @@ async fn run_step(
         return Ok(StepOutcome::Continue);
     }
 
-    // assistant メッセージを履歴へ（届いた順のまま）。
-    state.messages.push(LlmMessage {
-        role: LlmRole::Assistant,
-        content: ordered,
-    });
+    // ツール名の読み替え・引数の型の修復（読めない引数は実行せずにエラーで返す・call_repair.rs）。
+    // 履歴の tool_use も直した形にする（厳格なプロバイダは履歴の名前・引数の形も検証する）。
+    // 出力上限で切れた応答でも、切れる前に書き終えた呼び出しは実行する（切れた末尾だけ
+    // 「書き直して」と返す）。全部を捨てると、実行していない処理を済んだと思い込むか、何も
+    // 進まないと諦める（実測: 22 件の処理を 1 応答で書いて末尾で切れ、全件未処理のまま終えた）。
+    let cut = if opts.aids.repair_calls && final_stop == StopReason::MaxTokens {
+        crate::agent_repair::truncated_tail(&calls)
+    } else {
+        Vec::new()
+    };
+    if !cut.is_empty() && cut.len() < calls.len() {
+        final_stop = StopReason::ToolUse;
+    }
+    let mut repairs = if opts.aids.repair_calls && final_stop == StopReason::ToolUse {
+        crate::agent_repair::repair_calls(tool_defs, &mut calls, &mut ordered)
+    } else {
+        crate::agent_repair::Repairs::default()
+    };
+    if final_stop == StopReason::ToolUse {
+        repairs.mark_truncated(&cut, &calls, opts.max_tokens);
+    }
+
+    // assistant メッセージを履歴へ（届いた順のまま）。空の応答（催促しても本文も呼び出しも
+    // 無かった）は積まない: content が空のメッセージを拒否するプロバイダがあり、続けて未完了の
+    // 確認を入れると、次の要求がそのまま拒否される。
+    if !ordered.is_empty() {
+        state.messages.push(LlmMessage {
+            role: LlmRole::Assistant,
+            content: ordered,
+        });
+    }
 
     // ツール呼び出しの途中で出力上限に達した: 引数が切れているので実行せず、書き直させる。
     if final_stop == StopReason::MaxTokens && !calls.is_empty() {
@@ -631,6 +732,16 @@ async fn run_step(
 
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
+        // 計画に未完了が残ったまま本文で終えた: 提出・保存などの最後の操作を忘れていないか
+        // 1 度だけ確かめさせる（自律版・予算が残っているときだけ・agent_observation.rs）。
+        if final_stop != StopReason::MaxTokens
+            && opts.profile.is_autonomous()
+            && opts.aids.completion_check
+            && can_continue
+            && crate::agent_observation::nudge_unfinished_plan(&mut state.messages, &state.plan)
+        {
+            return Ok(StepOutcome::Continue);
+        }
         return Ok(StepOutcome::Stop(if final_stop == StopReason::MaxTokens {
             AgentStop::Truncated
         } else {
@@ -647,6 +758,18 @@ async fn run_step(
         opts,
         approver,
     };
+    // 結果の後処理に使う（読み取り系か・呼び出しの名前と引数）。
+    let call_info: Vec<(String, String, serde_json::Value, bool)> = calls
+        .iter()
+        .map(|c| {
+            let ro = tool_map
+                .get(c.name.as_str())
+                .is_some_and(|t| t.is_read_only());
+            (c.id.clone(), c.name.clone(), c.input.clone(), ro)
+        })
+        .collect();
+    // 読めない引数の呼び出しは実行しない（結果は修復側で作り、呼び出し順に差し込む）。
+    let (calls, invalid) = repairs.split_invalid(calls);
     let (mut result_blocks, looping, external) = match crate::agent_tools::run_tool_calls(
         &phase,
         calls,
@@ -682,6 +805,24 @@ async fn run_step(
             external.fresh_tokens,
             external.cost_usd_micros,
         );
+    }
+    let looping =
+        crate::agent_repair::merge_invalid(&mut result_blocks, &call_info, invalid, detector, sink)
+            .await?
+            || looping;
+    repairs.annotate(&mut result_blocks);
+    // 1 ステップの結果の総量を窓に収める（読み取り系の超過分は「未表示・呼び直せる」と返す）。
+    if let Some(budget) = step_budget {
+        let read_only: std::collections::HashSet<String> = call_info
+            .iter()
+            .filter(|c| c.3)
+            .map(|c| c.0.clone())
+            .collect();
+        crate::result_budget::cap_step_results(&mut result_blocks, &read_only, budget);
+    }
+    // 同じ呼び出しが同じ結果を返し続けていたら、変わっていないと添える（停滞・loop_detect.rs）。
+    if opts.aids.repeat_notes {
+        crate::agent_repair::note_repeats(&mut result_blocks, &call_info, &mut state.repeats);
     }
     // 残り予算を**観測として**添える（#407）。`BudgetWarning` は sink 専用でモデルに届かず、
     // エージェントは残量を知らないまま上限で切られていた（実測: 委譲 7 体中 6 体が Budget(Steps)）。
@@ -735,7 +876,10 @@ fn preview(s: &str) -> String {
 
 /// 会計の利用元（管理画面の利用元別集計・#553）。ミニアプリ経由はミニアプリ、
 /// チャット制約版はチャット、自律版はエージェントとして数える。
-fn usage_source(opts: &AgentOptions, app_id: Option<uuid::Uuid>) -> llm_gateway::UsageSource {
+pub(crate) fn usage_source(
+    opts: &AgentOptions,
+    app_id: Option<uuid::Uuid>,
+) -> llm_gateway::UsageSource {
     if app_id.is_some() {
         llm_gateway::UsageSource::MiniApp
     } else if opts.profile.is_autonomous() {
