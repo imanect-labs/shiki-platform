@@ -266,6 +266,9 @@ export function DriveBrowser() {
         versionTargetRef.current = node;
         versionInputRef.current?.click();
         break;
+      case "copyid":
+        void copyNodeId(node);
+        break;
       default:
         setActiveNode(node);
         setDialog(action);
@@ -660,6 +663,16 @@ export function DriveBrowser() {
 
 /// 空フォルダ。マウスの端末は D&D を案内し、タッチ（D&D が無い）はその場で追加できる
 /// ボタンを出す（スマホでは「＋ 新規」と同じ操作）。
+/// ノードの ID をクリップボードへ写す（3 点メニューの「ID をコピー」）。
+async function copyNodeId(node: NodeResponse) {
+  try {
+    await navigator.clipboard.writeText(node.id);
+    toast({ description: `「${node.name}」の ID をコピーしました。` });
+  } catch {
+    toast({ variant: "destructive", description: "ID をコピーできませんでした。" });
+  }
+}
+
 function EmptyFolder({ onUpload, onNewFolder }: { onUpload: () => void; onNewFolder: () => void }) {
   return (
     <EmptyState

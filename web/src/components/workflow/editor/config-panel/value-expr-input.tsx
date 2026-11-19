@@ -121,10 +121,17 @@ export function ValueExprInput({
       <div className="flex items-center justify-between gap-2">
         <label className="text-xs font-medium text-foreground">{label}</label>
         <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-          <SelectTrigger className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
+          {/* 枠と「入れ方」の前置きで、押すと入れ方を選べるボタンだと分かる見た目にする（#1337）。
+              薄い文字だけだと、初めて見た人がメニューが開けると気づけなかった。 */}
+          <SelectTrigger
+            aria-label="値の入れ方"
+            className="h-6 w-auto shrink-0 gap-1 rounded-full border-border bg-muted/50 px-2 text-[11px] text-foreground shadow-none transition-colors hover:bg-accent data-[state=open]:bg-accent pointer-coarse:h-8"
+          >
+            <span className="text-muted-foreground">入れ方:</span>
             <SelectValue />
           </SelectTrigger>
-          <SelectContent align="end">
+          {/* 選択肢を折り返さない（既定では幅が切り替えのボタンにそろい、「前の結果から」が 2 行に割れる）。 */}
+          <SelectContent align="end" className="w-auto min-w-[10.5rem]">
             <SelectItem value="literal">固定値</SelectItem>
             <SelectItem value="from">前の結果から</SelectItem>
             <SelectItem value="template">文章を組み立て</SelectItem>

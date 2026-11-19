@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  Copy,
   Download,
   Eye,
   FilePlus2,
@@ -38,12 +39,16 @@ export type NodeAction =
   | "move"
   | "share"
   | "versions"
+  | "copyid"
   | "delete";
 
 /// シェルの浮いたクロームと同じ切替幅（md 未満をスマホとして扱う）。
 export const MOBILE_QUERY = "(max-width: 767.98px)";
 
 type ActionDef = { action: NodeAction; label: string; icon: LucideIcon };
+
+/// ワークフローのファイル欄・API・スクリプトに渡す ID を、開いて URL から拾わずに取れるようにする。
+const COPY_ID: ActionDef = { action: "copyid", label: "ID をコピー", icon: Copy };
 
 /// ノードに出せる操作を、スマホのアクションシートの段組み（大きなタイル 4 つ／行／破壊的操作）
 /// に分けて返す。PC のドロップダウンも同じ定義から並べる（項目の増減を 1 箇所で済ませる）。
@@ -57,7 +62,7 @@ function actionGroups(node: NodeResponse): { tiles: ActionDef[]; rows: ActionDef
         { action: "rename", label: "名前を変更", icon: Pencil },
         { action: "move", label: "移動", icon: FolderInput },
       ],
-      rows: [],
+      rows: [COPY_ID],
     };
   }
   return {
@@ -71,6 +76,7 @@ function actionGroups(node: NodeResponse): { tiles: ActionDef[]; rows: ActionDef
       { action: "move", label: "移動", icon: FolderInput },
       { action: "newversion", label: "新しいバージョン", icon: FilePlus2 },
       { action: "versions", label: "版履歴", icon: History },
+      COPY_ID,
     ],
   };
 }
@@ -222,6 +228,7 @@ const DESKTOP_ORDER: NodeAction[] = [
   "share",
   "newversion",
   "versions",
+  "copyid",
 ];
 
 function SheetRow({
