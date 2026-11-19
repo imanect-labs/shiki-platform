@@ -187,6 +187,7 @@ shiki は **LLMチャットとストレージを核とするエンタープラ�
 
 ### FR-10 監視基盤
 - **インフラ可観測性**: OpenTelemetry ＋ Grafana スタック（Tempo/Loki/Prometheus）。
+- **外部監視送信**: 顧客内の観測とOpsへの外部exportは別の許可。本文を含むtrace/logを暗黙に転送しない（FR-20）。
 - **LLM可視化**: Langfuse（プロンプト/補完/トークン/コスト/ツール/レイテンシ/引用チャンク）。
 - **監査ログと Langfuse トレースを trace_id で突合**（「誰が・どの権限で・どのチャンクを引用した回答を得たか」）。
 
@@ -316,6 +317,21 @@ FR-6 の generative UI を土台に、「社内業務アプリが自然増殖す
 - **外部ユーザーの参加機能は設けない。** 利用者はテナントに登録された principal に限る
   （Phase 13 の匿名 `PrincipalKind` を messaging へ流さない）。
 - 規模の前提: 登録利用者と同数の同時接続（オンプレ構成の目安は 1,000 接続）。発言の保存期間は監査と同じ。
+
+### FR-19 Shiki Connect（設計先行・製品未実装）
+
+- Shikiと顧客内データ/システムを接続する共通基盤。最初はRust常駐daemonによるファイルコネクターに限定する。
+- 原本を移動せずDrive/RAG/AI/Workflowへ公開。StorageService/OpenFGA/llm-gatewayと既存RAG二段認可を維持し、利用者自身の原本ACLも確認する。
+- 通常共有はread-only。条件付き書込みはソース側で単独writer等を強制できる領域だけ許可し、保証条件を表示する。
+- Opsの運用権限から業務本文へ到達させない。設計と検証限界は[Connect設計](./shiki-connect.md)と[PoC記録](./connect-poc-evidence.md)。
+
+### FR-20 Shiki Ops（設計先行・未実装）
+
+- オンプレ版の任意導入機能。弊社LLM/Web検索proxy、許可済み監視データ送信、セキュリティ状態評価、poll型署名更新/rollback、複数顧客管理を提供する。
+- Connectと製品/責務/permissionを分離し、外向きTLS等の実装部品だけ再利用する。Ops未加入/障害時もローカルコアと顧客内Connectは独立稼働する。
+- 外部送信はカテゴリー・用途・宛先・保持条件ごとに顧客が許可する。監視設定から本文/secret送信へ昇格させず、外部LLM許可とデータ参照権限も分ける。
+- 外部通信なしの配備ではpoll/export/proxyを無効化し、ローカル監視・ローカル推論・署名bundleの手動搬入で成立させる（NFR-2）。
+- 既存FR-9の管理画面/時限support、FR-10のローカル観測、Phase 8.10〜8.12の鍵/DR/更新を拡張する。[Ops設計](./shiki-ops.md)を正とする。
 
 ## 4. 非機能要件（NFR）
 

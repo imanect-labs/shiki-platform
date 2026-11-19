@@ -219,3 +219,18 @@
   - [ ] 同時実行×モデル×コンテキスト長から必要VRAMを見積もれる
   - [ ] 推論以外（DB/ベクタ/ストレージ）の容量も概算できる
   - [ ] 小/中/大のリファレンス構成が提示されている
+
+
+## Shiki Ops設計との対応（追加実装は別タスク）
+
+[COトラック](./parallel-tracks.md#connect-ops-track)は、本フェーズの実装を置き換えたり完了扱いにしたりしない。
+
+| 既存Task | Opsで再利用/拡張するもの | 追加で必要な検証 |
+| --- | --- | --- |
+| 8.1/8.2 監査 | 顧客内の監査正本・閲覧境界 | 弊社操作との相関と顧客データ非送信 |
+| 8.5 監視 | 顧客内OTel/Grafana | export allowlist、欠測/unknown、送信先断でコア継続 |
+| 8.8/8.9 配備・provisioning | compose/k8sと顧客環境の識別 | Ops専用enrollment/権限。SaaS tenant作成をオンプレfleet登録と同一化しない |
+| 8.10 secret | 顧客内の鍵保管/rotation | Connect/Ops/proxy/release署名鍵の分離 |
+| 8.11 DR | 整合点backup/restore | updater中断時の回復、実restore、Ops停止時の独立稼働 |
+| 8.12 upgrade | 互換matrix、expand/contract、offline更新 | 署名poll提案、顧客承認、限定updater、互換rollback、anti-replay |
+| 8.13 sizing | 顧客側のHW条件 | agent/queue/scan/更新のリソース上限の実測 |
