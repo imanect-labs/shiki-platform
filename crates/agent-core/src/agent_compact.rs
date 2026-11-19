@@ -125,6 +125,10 @@ pub(crate) struct CompactionState {
     failing: bool,
     /// 実トークン ÷ 手元の見積り（[`crate::context::ContextGauge::ratio`]・ステップごとに更新）。
     ratio: f64,
+    /// 窓あふれのやり直しを済ませたか（生成まで進んだステップで戻す）。
+    pub(crate) overflow_retried: bool,
+    /// 引き上げた出力上限が窓を超えて拒否された（このステップは引き上げずにやり直す）。
+    pub(crate) boost_refused: bool,
 }
 
 impl CompactionState {
@@ -135,7 +139,29 @@ impl CompactionState {
             last_step: None,
             failing: false,
             ratio: 1.0,
+            overflow_retried: false,
+            boost_refused: false,
         }
+    }
+
+    /// このステップに使う設定（出力上限で呼び出しが切れた直後だけ上限を引き上げる・
+    /// [`crate::agent_observation::boosted_options`]）。引き上げないなら `None`。
+    pub(crate) fn step_options(
+        &self,
+        opts: &AgentOptions,
+        messages: &[llm_gateway::Message],
+        view: WindowView<'_>,
+    ) -> Option<AgentOptions> {
+        if self.boost_refused {
+            return None;
+        }
+        crate::agent_observation::boosted_options(opts, messages, view.limits, view.gauge)
+    }
+
+    /// 生成まで進んだステップの後に、やり直しの印を戻す。
+    pub(crate) fn step_done(&mut self) {
+        self.overflow_retried = false;
+        self.boost_refused = false;
     }
 
     /// 実トークンで決めた量（1 ステップの結果の上限）を、手元の見積りの単位へ直す。
@@ -195,6 +221,7 @@ pub(crate) async fn before_step(
 }
 
 /// 窓あふれで拒否された直後の立て直し: 圧縮（できなければ非常の剪定）。やり直せる形にできたか。
+/// やり直しは 1 度だけ（`cs.overflow_retried` を立てる。生成まで進んだら [`CompactionState::step_done`] で戻す）。
 ///
 /// 拒否は応答の前に起きるので、履歴にはそのステップの痕跡が無い（やり直して安全）。窓を
 /// 知らないモデルでは、今の見積りの 3/4 を窓とみなして要約する。
@@ -207,6 +234,7 @@ pub(crate) async fn recover_overflow(
     view: WindowView<'_>,
     cs: &mut CompactionState,
 ) -> Result<bool, AgentError> {
+    cs.overflow_retried = true;
     let (limits, gauge) = (view.limits, view.gauge);
     let scale = gauge.ratio(&state.messages, cs.system_est + view.tool_est);
     let effective = limits

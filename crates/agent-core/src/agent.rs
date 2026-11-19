@@ -8,6 +8,7 @@
 //! ツール自動選択ポリシ（Task 3.9）: 利用可能ツールを全提示し、モデルが自動選択する。
 //! `requires_confirmation()` なツール（破壊/権限/高コスト系）は事前許可が無ければ実行しない。
 
+use crate::agent_compact::{recover_overflow, WindowView};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -137,11 +138,10 @@ pub async fn run_agent(
     });
     let mut gauge =
         crate::context::ContextGauge::with_overhead(initial_overhead).with_tool_tokens(tool_tokens);
-    // 直近に圧縮したステップ（連続して要約しない）と、窓あふれのやり直しを済ませたか。
+    // 直近に圧縮したステップ（連続して要約しない）と、窓あふれ・出力上限の引き上げのやり直し。
     let mut compaction = crate::agent_compact::CompactionState::new(
         crate::context::estimate_static_tokens(opts.system.as_deref(), []),
     );
-    let mut overflow_retried = false;
 
     let stop = loop {
         if sink.is_cancelled() {
@@ -172,7 +172,7 @@ pub async fn run_agent(
             let tool_est = context_tool_tokens(&state.messages);
             gauge.observe_tools(tool_est);
             // 窓を知っているモデルでは、**畳む前に**古いやり取りを要約で置き換え、残りを剪定する。
-            let view = crate::agent_compact::WindowView::new(&limits, &gauge, tool_est);
+            let view = WindowView::new(&limits, &gauge, tool_est);
             crate::agent_compact::before_step(
                 gateway,
                 run,
@@ -194,7 +194,7 @@ pub async fn run_agent(
         let step_budget = compaction.to_estimate(limits.step_results(opts.aids.step_result_budget));
         // 出力上限で呼び出しが切れた直後は、そのステップだけ上限を引き上げる（窓の残りまで）。
         let boosted =
-            crate::agent_observation::boosted_options(opts, &state.messages, &limits, &gauge);
+            compaction.step_options(opts, &state.messages, WindowView::new(&limits, &gauge, 0));
         let step_outcome = match run_step(
             gateway,
             &tool_defs,
@@ -210,29 +210,31 @@ pub async fn run_agent(
         )
         .await
         {
+            // 引き上げた出力上限のぶん窓を超えて拒否された（窓の残りの見積りは、直近の実測より
+            // 後に足された分を手元の見積りで数えるので甘くなりうる）: 引き上げずにやり直す。
+            Err(AgentError::Llm(msg))
+                if boosted.is_some() && crate::agent_compact::is_context_overflow(&msg) =>
+            {
+                compaction.boost_refused = true;
+                continue;
+            }
             // 窓あふれで拒否された: 圧縮（できなければ非常の剪定）をして、1 度だけやり直す。
             // 拒否は応答の前に起きるので、履歴にはこのステップの痕跡が無い（やり直して安全）。
             Err(AgentError::Llm(msg))
                 if opts.aids.overflow_retry
-                    && !overflow_retried
+                    && !compaction.overflow_retried
                     && crate::agent_compact::is_context_overflow(&msg) =>
             {
-                overflow_retried = true;
-                let tool_est = context_tool_tokens(&state.messages);
-                let view = crate::agent_compact::WindowView::new(&limits, &gauge, tool_est);
+                let view = WindowView::new(&limits, &gauge, context_tool_tokens(&state.messages));
                 let cs = &mut compaction;
-                if !crate::agent_compact::recover_overflow(
-                    gateway, run, opts, &mut state, sink, view, cs,
-                )
-                .await?
-                {
+                if !recover_overflow(gateway, run, opts, &mut state, sink, view, cs).await? {
                     return Err(AgentError::Llm(msg));
                 }
                 continue;
             }
             other => other?,
         };
-        overflow_retried = false;
+        compaction.step_done();
         // 生成まで進んだステップだけ実測で補正する（途中キャンセルは報告が無い）。
         if let Some(sent) = sent_estimate.filter(|_| state.spent.steps > steps_before) {
             gauge.calibrate(sent, state.spent.last_prompt_tokens());
