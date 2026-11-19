@@ -122,6 +122,28 @@ macro_rules! reclaim_leases_sql {
     };
 }
 
+/// 次に claim できる ready step の `next_retry_at` までの秒数（ワーカーが眠る時間・#1334）。
+///
+/// claim と同じ並び（`step_ready_global_idx` / `step_ready_idx`）の先頭 1 件だけを見る。キャンセル要求済み
+/// run の step は claim が取らないので、ここでも除く（除かないと、回収されるまで下限の間隔で空振りする）。
+macro_rules! next_ready_sql {
+    ($tenant_pred:literal) => {
+        concat!(
+            // tenant-sql: allow(全テナント横断ワーカーの待機時間の算出・時刻 1 つだけを返す)
+            "SELECT extract(epoch from (s2.next_retry_at - now()))::float8 \
+               FROM step_execution s2 \
+               JOIN workflow_run r2 \
+                 ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
+              WHERE s2.status = 'ready' AND NOT r2.cancel_requested",
+            $tenant_pred,
+            " ORDER BY s2.next_retry_at LIMIT 1"
+        )
+    };
+}
+
+const NEXT_READY_GLOBAL: &str = next_ready_sql!(" ");
+const NEXT_READY_SCOPED: &str = next_ready_sql!(" AND s2.tenant_id = $1 ");
+
 const RECLAIM_LEASES_GLOBAL: &str = reclaim_leases_sql!(" ");
 const RECLAIM_LEASES_SCOPED: &str = reclaim_leases_sql!(" AND s2.tenant_id = $1 ");
 
@@ -149,6 +171,29 @@ impl RunStore {
                 .bind(lease_secs),
         };
         query.fetch_optional(&self.db).await.map_err(map_db)
+    }
+
+    /// 次に claim できる ready step までの時間（無ければ `None`・既に可視なら 0）。
+    ///
+    /// ワーカーが空振りしたあと眠る時間の算出に使う（通知が来なければこの時刻に起きる・#1334）。
+    pub async fn next_ready_step_due(
+        &self,
+        tenant_scope: Option<&str>,
+    ) -> Result<Option<std::time::Duration>, sqlx::Error> {
+        let secs: Option<f64> = match tenant_scope {
+            Some(tenant_id) => {
+                sqlx::query_scalar(NEXT_READY_SCOPED)
+                    .bind(tenant_id)
+                    .fetch_optional(&self.db)
+                    .await?
+            }
+            None => {
+                sqlx::query_scalar(NEXT_READY_GLOBAL)
+                    .fetch_optional(&self.db)
+                    .await?
+            }
+        };
+        Ok(secs.map(|s| std::time::Duration::from_secs_f64(s.max(0.0))))
     }
 
     /// claim クエリの実行計画をテキストで返す（回帰テスト・運用診断用・実行はしない）。

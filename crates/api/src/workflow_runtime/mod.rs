@@ -198,6 +198,8 @@ pub struct RuntimeDeps {
     pub data: Arc<data::DataStore>,
     /// data.transition の FSM 定義の解決。
     pub fsms: Arc<data::FsmStore>,
+    /// run ワーカーが空振りしたときに眠る部品（step が ready になった通知で起きる・#1334）。
+    pub jobq_waker: jobq::Waker,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -282,6 +284,8 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
             ..WorkerConfig::default()
         },
     )
+    // 空振りしたら step が ready になった通知か次の再試行時刻まで眠る（#1334）。
+    .with_jobq_waker(deps.jobq_waker.clone())
     .with_concurrency(
         concurrency_store.clone(),
         workflow_engine::ConcurrencyLimits {

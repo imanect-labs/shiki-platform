@@ -281,6 +281,7 @@ async fn run() -> anyhow::Result<()> {
         &tabular,
         &artifacts,
         (&data_store, &fsms),
+        &jobq_waker,
     )
     .await?;
 

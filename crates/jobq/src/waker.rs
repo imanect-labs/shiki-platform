@@ -104,6 +104,32 @@ impl Waker {
     /// [`Waker::wait`] に眠る上限 `cap` を付けた版。ジョブの消費と別の周期処理（スイープ等）を
     /// 同じループで回すワーカーが、次の周期処理の時刻までしか眠らないために使う。
     pub async fn wait_at_most(&self, queue: &str, poll: Duration, cap: Duration) {
+        let inner = self.inner.clone();
+        self.wait_until_due(queue, poll, cap, || async move {
+            match inner {
+                Some(i) => i.next_due(queue).await,
+                None => Ok(None),
+            }
+        })
+        .await;
+    }
+
+    /// jobq 以外の取り出し（workflow の step など）を同じ仕組みで待つ版。
+    ///
+    /// `queue` は通知のペイロード（投入側が `pg_notify('jobq', queue)` を送ること。トリガでもよい）。
+    /// `next_due` は「次に取り出せるようになるまでの時間（無ければ `None`）」を引く問い合わせで、
+    /// 通知の登録の**後**に呼ぶ（引いた後・眠る前の投入を取りこぼさない）。LISTEN が使えないときは
+    /// 呼ばずに `poll` だけ眠る。
+    pub async fn wait_until_due<F, Fut>(
+        &self,
+        queue: &str,
+        poll: Duration,
+        cap: Duration,
+        next_due: F,
+    ) where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Option<Duration>, sqlx::Error>>,
+    {
         let Some(inner) = self.inner.as_ref().filter(|i| i.healthy()) else {
             tokio::time::sleep(poll.min(cap)).await;
             return;
@@ -113,7 +139,7 @@ impl Waker {
         tokio::pin!(notified);
         // 可視時刻を引く**前に**登録する: 引いた後・眠る前に積まれたジョブの通知を取りこぼさない。
         notified.as_mut().enable();
-        let sleep_for = match inner.next_due(queue).await {
+        let sleep_for = match next_due().await {
             Ok(Some(due)) => due.max(DUE_FLOOR).min(cap),
             Ok(None) => cap,
             Err(e) => {

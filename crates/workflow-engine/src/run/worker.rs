@@ -15,6 +15,9 @@ use super::{NodeContext, NodeExecutor, NodeResult};
 use crate::concurrency::{ConcurrencyStore, Slot};
 use crate::ir::WorkflowIr;
 
+/// step が ready になったときの通知のペイロード（`migrations/0123_step_ready_notify.sql` のトリガと一致させる）。
+pub const STEP_READY_WAKE: &str = "workflow_step_ready";
+
 /// リース期間の既定（秒）。`RunStore` の resume 猶予もこの値から導出する（[`crate::run::store`]）。
 pub const DEFAULT_LEASE_SECS: i64 = 30;
 
@@ -23,7 +26,8 @@ pub const DEFAULT_LEASE_SECS: i64 = 30;
 pub struct WorkerConfig {
     /// リース期間（秒）。
     pub lease_secs: i64,
-    /// claim が空振りしたときのポーリング間隔。
+    /// claim が空振りしたときのポーリング間隔（LISTEN が使えないときだけ。使えるときは step が
+    /// ready になった通知か、次の ready step の再試行時刻で起きる・#1334）。
     pub idle_poll: Duration,
 }
 
@@ -64,6 +68,8 @@ pub struct WorkflowWorker {
     tenant_scope: Option<String>,
     /// 3 階層並行制御（None=未結線・実効上限はワーカー並列数のみ）。
     concurrency: Option<(ConcurrencyStore, ConcurrencyLimits)>,
+    /// 空振りしたときに眠る部品。既定は `idle_poll` ごとのポーリング。
+    waker: jobq::Waker,
 }
 
 impl WorkflowWorker {
@@ -74,6 +80,7 @@ impl WorkflowWorker {
             config,
             tenant_scope: None,
             concurrency: None,
+            waker: jobq::Waker::polling(),
         }
     }
 
@@ -81,6 +88,14 @@ impl WorkflowWorker {
     #[must_use]
     pub fn with_concurrency(mut self, store: ConcurrencyStore, limits: ConcurrencyLimits) -> Self {
         self.concurrency = Some((store, limits));
+        self
+    }
+
+    /// 空振りしたときの待ち方（[`jobq::Waker`]）。LISTEN を張った Waker を渡すと、step が ready に
+    /// なった通知（`step_execution` のトリガ）か次の再試行時刻まで眠る。
+    #[must_use]
+    pub fn with_jobq_waker(mut self, waker: jobq::Waker) -> Self {
+        self.waker = waker;
         self
     }
 
@@ -106,13 +121,24 @@ impl WorkflowWorker {
         loop {
             match self.claim_and_run_once(worker_id).await {
                 Ok(true) => {} // 1 件処理した。すぐ次を試す。
-                Ok(false) => tokio::time::sleep(self.config.idle_poll).await,
+                Ok(false) => self.wait_idle().await,
                 Err(e) => {
                     tracing::warn!(error = %e, "worker step 処理でエラー");
                     tokio::time::sleep(self.config.idle_poll).await;
                 }
             }
         }
+    }
+
+    /// 空振りしたあと、step が ready になる通知か次の再試行時刻まで眠る。
+    async fn wait_idle(&self) {
+        let scope = self.tenant_scope.as_deref();
+        let cap = jobq::DEFAULT_IDLE_MAX;
+        self.waker
+            .wait_until_due(STEP_READY_WAKE, self.config.idle_poll, cap, || {
+                self.store.next_ready_step_due(scope)
+            })
+            .await;
     }
 
     /// 1 件だけ claim して実行・前進する（テストからも直接呼べる）。戻り値は「処理したか」。
