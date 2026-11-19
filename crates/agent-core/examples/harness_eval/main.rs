@@ -142,6 +142,9 @@ fn parse_args() -> Args {
     if a.tasks == ["all"] {
         a.tasks = tasks::ALL.iter().map(|s| (*s).to_string()).collect();
     }
+    if a.tasks == ["diverse"] {
+        a.tasks = tasks::DIVERSE.iter().map(|s| (*s).to_string()).collect();
+    }
     a
 }
 
@@ -341,6 +344,11 @@ async fn run_one(
     // 評価では tool search を使わない（ツール数が少ない）。
     opts.tool_search.enabled = false;
     apply_variant(&mut opts, &args.variant);
+    // 元に戻せる圧縮と最終ツールの催促（`full` のみ）。保存先は run ごとに新しく作る。
+    if args.variant == "full" {
+        opts.archive = Some(std::sync::Arc::new(agent_core::InMemoryArchive::new()));
+        opts.final_tool = Some(task.final_tool().to_string());
+    }
 
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let c = ctx(&tenant);
@@ -428,6 +436,8 @@ async fn run_one(
         // 要約を試みた回数（縮まずに捨てた分を含む）。
         "compaction_attempts": attempts,
         "tool_calls": sink.tool_calls,
+        "recalls": result.as_ref().map_or(0, |o| o.checkpoint.recalls),
+        "archived": result.as_ref().map_or(0, |o| o.checkpoint.archive_seq),
         "tool_errors": sink.tool_errors,
         "text_only_turns": sink.text_turns,
         "cost_usd_est": cost_micros as f64 / 1e6,
@@ -447,7 +457,7 @@ fn apply_variant(opts: &mut AgentOptions, variant: &str) {
             opts.compaction = agent_core::CompactionOptions::disabled();
             opts.aids = agent_core::HarnessAids::none();
         }
-        "improved" => {}
+        "improved" | "full" => {}
         // 機能ごとの寄与（ablation）。
         "no-compaction" => opts.compaction = agent_core::CompactionOptions::disabled(),
         "no-budget" => opts.aids.step_result_budget = false,

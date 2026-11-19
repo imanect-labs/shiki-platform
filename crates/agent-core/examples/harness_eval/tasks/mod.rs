@@ -1,8 +1,15 @@
 //! 評価課題（決定的に採点できる、メモリ上のツールだけで閉じた課題）。
 
 mod codefix;
+mod config;
+mod csvq;
+mod docedit;
 mod ledger;
+mod logs;
+mod refactor;
+mod sales;
 mod tickets;
+mod vfs;
 
 use std::sync::Arc;
 
@@ -10,6 +17,16 @@ use agent_core::{Tool, ToolError, ToolOutcome};
 use authz::AuthContext;
 
 pub(crate) const ALL: &[&str] = &["ledger", "codefix", "tickets", "tickets-long"];
+
+/// 多様な課題（ファイル編集・データ分析）。`--task diverse` で選ぶ。
+pub(crate) const DIVERSE: &[&str] = &[
+    "csv-sales",
+    "csv-join",
+    "refactor",
+    "config",
+    "logs",
+    "docedit",
+];
 
 pub(crate) struct Grade {
     /// 0.0〜1.0 の部分点。
@@ -25,6 +42,10 @@ pub(crate) trait Task: Send + Sync {
     fn max_steps(&self) -> usize;
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
     fn grade(&self) -> Grade;
+    /// 最後に呼ぶべきツール（`full` の variant で `AgentOptions::final_tool` に渡す）。
+    fn final_tool(&self) -> &'static str {
+        "submit_answer"
+    }
 }
 
 pub(crate) fn make(name: &str, seed: u64) -> Box<dyn Task> {
@@ -33,6 +54,12 @@ pub(crate) fn make(name: &str, seed: u64) -> Box<dyn Task> {
         "codefix" => Box::new(codefix::CodeFix::new()),
         "tickets" => Box::new(tickets::Tickets::new()),
         "tickets-long" => Box::new(tickets::Tickets::long(seed)),
+        "csv-sales" => Box::new(sales::Sales::new(seed, false)),
+        "csv-join" => Box::new(sales::Sales::new(seed, true)),
+        "refactor" => Box::new(refactor::Refactor::new(seed)),
+        "config" => Box::new(config::Config::new(seed)),
+        "logs" => Box::new(logs::Logs::new(seed)),
+        "docedit" => Box::new(docedit::DocEdit::new(seed)),
         other => panic!("unknown task {other}"),
     }
 }
