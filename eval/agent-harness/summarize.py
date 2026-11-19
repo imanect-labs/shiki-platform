@@ -20,14 +20,16 @@ def main(paths: list[str]) -> None:
                 continue
             r = json.loads(line)
             rows[(version, r["model"], r["task"], r["variant"], r["window"])].append(r)
-    print("| 版 | モデル | 課題 | variant | 窓 | 成功 | 平均点 | 溢れ | 平均ステップ | 平均圧縮 | 平均読み戻し | 平均費用 |")
-    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    print("| 版 | モデル | 課題 | variant | 窓 | 成功 | 平均点 | 溢れ | 障害 | 平均ステップ | 平均圧縮 | 平均読み戻し | 平均費用 |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for key in sorted(rows):
         rs = rows[key]
         n = len(rs)
         ok = sum(1 for r in rs if r["success"])
         score = sum(r["score"] for r in rs) / n
         overflow = sum(1 for r in rs if r.get("overflow"))
+        # プロバイダの一時障害（ストリームの切断など）で止まった run。ハーネスの失敗と分けて数える。
+        infra = sum(1 for r in rs if "provider unavailable" in r.get("stop", ""))
         steps = sum(r["steps"] for r in rs) / n
         comp = sum(r.get("compactions", 0) for r in rs) / n
         cost = sum(r.get("cost_usd_est", 0.0) for r in rs) / n
@@ -35,7 +37,7 @@ def main(paths: list[str]) -> None:
         version, model, task, variant, window = key
         print(
             f"| {version} | {model} | {task} | {variant} | {window // 1024}k | {ok}/{n} | "
-            f"{score:.2f} | {overflow} | {steps:.1f} | {comp:.1f} | {recalls:.1f} | ${cost:.4f} |"
+            f"{score:.2f} | {overflow} | {infra} | {steps:.1f} | {comp:.1f} | {recalls:.1f} | ${cost:.4f} |"
         )
 
 
