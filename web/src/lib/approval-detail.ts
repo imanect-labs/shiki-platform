@@ -89,14 +89,13 @@ function opsOf(o: Input): Input[] {
 }
 
 /// 操作ごとに 1 行へ写し、上限で切る。
-function stepsOf(ops: Input[], one: (op: Input) => ApprovalStep): { steps: ApprovalStep[]; more: number } {
-  const all = ops.map(one);
+function stepsOf(all: ApprovalStep[]): { steps: ApprovalStep[]; more: number } {
   return { steps: all.slice(0, STEP_LIMIT), more: Math.max(0, all.length - STEP_LIMIT) };
 }
 
 /// 消す操作が入っていれば、起きることの先頭に注意を足す（上限で畳んだ分も数える）。
-function destructiveEffect(ops: Input[], one: (op: Input) => ApprovalStep): ApprovalEffect[] {
-  const n = ops.map(one).filter((s) => s.destructive).length;
+function destructiveEffect(all: ApprovalStep[]): ApprovalEffect[] {
+  const n = all.filter((s) => s.destructive).length;
   return n > 0 ? [{ tone: "warn", text: `内容を消す操作が ${n} 件あります（することの赤字）。` }] : [];
 }
 
@@ -118,8 +117,10 @@ function noteStep(op: Input): ApprovalStep {
   switch (str(op, "op")) {
     case "replace_text": {
       const rep = typeof op.replace === "string" ? op.replace : "";
-      return rep.trim() === ""
-        ? { text: `${within}${q(find)}を削除（段落・項目ごと消える）`, destructive: true }
+      // 空の置換は語句の削除。語句が段落・項目の全体のときだけ段落・項目ごと消える（提案モードを除く・
+      // `crates/collab/src/note/ai_text.rs`）。
+      return rep === ""
+        ? { text: `${within}${q(find)}を削除（それだけの段落・項目なら、段落・項目ごと消える）`, destructive: true }
         : { text: `${within}${q(find)}を${q(rep)}に置き換え` };
     }
     case "replace_block":
@@ -154,10 +155,10 @@ function documentEdit(o: Input): ApprovalDetail {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: null,
-    ...stepsOf(ops, noteStep),
+    ...stepsOf(ops.map(noteStep)),
     code: null,
     effects: [
-      ...destructiveEffect(ops, noteStep),
+      ...destructiveEffect(ops.map(noteStep)),
       suggest
         ? { tone: "info", text: "提案として入ります。ノートを開いた人が採用するまで、本文は変わりません。" }
         : { tone: "info", text: "ノートの本文に直接反映され、開いている人の画面にもすぐ出ます。" },
@@ -198,10 +199,10 @@ function slideEdit(o: Input): ApprovalDetail {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: null,
-    ...stepsOf(ops, slideStep),
+    ...stepsOf(ops.map(slideStep)),
     code: null,
     effects: [
-      ...destructiveEffect(ops, slideStep),
+      ...destructiveEffect(ops.map(slideStep)),
       { tone: "info", text: "スライドに直接反映され、開いている人の画面にもすぐ出ます（同時に編集していても壊れません）。" },
       { tone: "info", text: SHARED_SEE },
     ],
@@ -250,10 +251,10 @@ function officeEdit(o: Input): ApprovalDetail {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: null,
-    ...stepsOf(ops, officeStep),
+    ...stepsOf(ops.map(officeStep)),
     code: null,
     effects: [
-      ...destructiveEffect(ops, officeStep),
+      ...destructiveEffect(ops.map(officeStep)),
       { tone: "info", text: "新しい版として保存されます（前の版は版の履歴に残ります）。" },
       {
         tone: "info",
@@ -290,7 +291,7 @@ function officeLiveEdit(o: Input): ApprovalDetail {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: null,
-    ...stepsOf(ops, liveStep),
+    ...stepsOf(ops.map(liveStep)),
     code: null,
     effects: [
       { tone: "info", text: "開いている人の編集画面にすぐ反映され、新しい版として保存されます。" },
@@ -311,6 +312,29 @@ function rangeOf(op: Input, key = "range"): string | null {
   }
   return null;
 }
+
+/// Excel の操作の対象シートを前に付ける（同じ「行 3:5 を削除」でもシートで消える行が違う）。
+/// 範囲にシート名があればそれに従い（"'集計'!A1"）、無ければ操作の sheet、入力の sheet、作業中のシートの順。
+/// add_sheet の後の操作は（sheet を書かなければ）新しいシートに、rename_sheet の後は新しい名前に書く（エンジンと同じ）。
+/// 状態を持つので、ops の上から順に 1 回だけ呼ぶ。
+function excelStepIn(defaultSheet: string | null) {
+  let current = defaultSheet;
+  return (op: Input): ApprovalStep => {
+    const step = excelStep(op);
+    const kind = str(op, "op") ?? "";
+    if (kind === "add_sheet") current = str(op, "name") ?? current;
+    if (kind === "rename_sheet" && current !== null && str(op, "sheet") === current) current = str(op, "name");
+    if (SHEET_LEVEL_OPS.has(kind)) return step;
+    const r = rangeOf(op);
+    if (r?.includes("!")) return step;
+    const sheet = str(op, "sheet") ?? current;
+    const sep = /^[A-Za-z0-9]/.test(step.text) ? " " : "";
+    return { ...step, text: `${sheet ? `シート${q(sheet)}の` : "作業中のシートの"}${sep}${step.text}` };
+  };
+}
+
+/// シートそのものを指す操作（対象シートは本文に書く・前置きを付けない）。
+const SHEET_LEVEL_OPS = new Set(["add_sheet", "rename_sheet", "delete_sheet", "move_sheet", "sheet_props", "define_name"]);
 
 function at(r: string | null): string {
   return r ? `${r} ` : "";
@@ -411,7 +435,7 @@ function wordStep(op: Input): ApprovalStep {
     case "replace_text": {
       const rep = typeof op.replace === "string" ? op.replace : "";
       const all = op.all === true ? "（すべての箇所）" : "";
-      return rep.trim() === ""
+      return rep === ""
         ? { text: `${q(str(op, "find"))}を削除${all}`, destructive: true }
         : { text: `${q(str(op, "find"))}を${q(rep)}に置き換え${all}` };
     }
@@ -460,19 +484,34 @@ function wordStep(op: Input): ApprovalStep {
   }
 }
 
-function engineEdit(o: Input, one: (op: Input) => ApprovalStep): ApprovalDetail {
+/// 「元に戻す」に乗らない操作（失敗時だけ自前で戻す・`crates/office/engine/{calc,writer}_apply.js`）。
+/// これを含む編集は「元に戻す」1 回で戻るとは言えない（戻らないうえ、直前の別の編集を取り消しうる）。
+const OUTSIDE_UNDO_OPS: Record<"excel" | "word", ReadonlySet<string>> = {
+  excel: new Set(["freeze", "page_setup"]),
+  word: new Set(["set_style", "title_page", "page_setup", "header", "footer", "track_changes"]),
+};
+
+function engineEdit(o: Input, kind: "excel" | "word"): ApprovalDetail {
   const ops = opsOf(o);
+  // Excel は前の操作で既定のシートが変わる（add_sheet・rename_sheet）ので、上から順に 1 回だけ写す。
+  const all = ops.map(kind === "excel" ? excelStepIn(str(o, "sheet")) : wordStep);
+  const outside = ops.filter((op) => OUTSIDE_UNDO_OPS[kind].has(str(op, "op") ?? "")).length;
   return {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: str(o, "summary"),
-    ...stepsOf(ops, one),
+    ...stepsOf(all),
     code: null,
     effects: [
-      ...destructiveEffect(ops, one),
+      ...destructiveEffect(all),
       { tone: "info", text: "開いている人の画面にすぐ反映され、版として保存されます。" },
       { tone: "info", text: "操作はすべて適用されるか、1 つも適用されないかのどちらかです。" },
-      { tone: "info", text: "編集画面の「元に戻す」1 回で取り消せます。" },
+      outside > 0
+        ? {
+            tone: "warn",
+            text: `編集画面の「元に戻す」では戻らない設定の変更が ${outside} 件あります（戻すときは手で設定し直します）。`,
+          }
+        : { tone: "info", text: "編集画面の「元に戻す」1 回で取り消せます。" },
       { tone: "info", text: SHARED_SEE },
     ],
   };
@@ -512,10 +551,10 @@ function csvPatch(o: Input): ApprovalDetail {
     nodeId: str(o, "node_id"),
     folder: null,
     summary: null,
-    ...stepsOf(ops, csvStep),
+    ...stepsOf(ops.map(csvStep)),
     code: null,
     effects: [
-      ...destructiveEffect(ops, csvStep),
+      ...destructiveEffect(ops.map(csvStep)),
       { tone: "info", text: "新しい版として保存されます（前の版は版の履歴に残ります）。" },
       { tone: "info", text: "AI が読んだ後に誰かが更新していたら、上書きせずに失敗します。" },
       { tone: "info", text: "編集の後、会話に出るファイルのカードから元に戻せます。" },
@@ -699,8 +738,8 @@ const DETAIL: Partial<Record<ToolName, (input: Input) => ApprovalDetail>> = {
   "slide.edit": slideEdit,
   "office.edit": officeEdit,
   "office.live_edit": officeLiveEdit,
-  "office.excel_edit": (o) => engineEdit(o, excelStep),
-  "office.word_edit": (o) => engineEdit(o, wordStep),
+  "office.excel_edit": (o) => engineEdit(o, "excel"),
+  "office.word_edit": (o) => engineEdit(o, "word"),
   "csv.patch": csvPatch,
   "csv.write": csvWrite,
   save_document: saveDocument,
