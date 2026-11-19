@@ -23,6 +23,8 @@ tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 chrono.workspace = true
+# 稼働状況のメトリクス（exporter は api 側が設定する・無ければ no-op）。
+opentelemetry.workspace = true
 uuid.workspace = true
 # ChatGPT プラン接続（#854）の PKCE・ID トークンの読み取り。
 base64.workspace = true

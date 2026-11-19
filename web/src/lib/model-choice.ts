@@ -150,6 +150,11 @@ function refreshLlmModels(): Promise<void> {
   return inflight;
 }
 
+/// 一定時間たっていれば取り直す（モデル選択を開いたときにも呼ぶ。プロバイダの状態も新しくなる）。
+export function refreshLlmModelsIfStale(): void {
+  if (!modelsCache || Date.now() - modelsCache.at > STALE_MS) void refreshLlmModels();
+}
+
 /// 選べるモデルの一覧を古いものとして取り直す（管理画面で AI の設定を保存した後に呼ぶ）。
 export function invalidateLlmModels(): void {
   if (modelsCache) modelsCache.at = 0;
@@ -163,12 +168,9 @@ export function useLlmModels(): LlmModelsResponse | null {
     const sync = () => setData(modelsCache?.data ?? null);
     modelListeners.add(sync);
     sync();
-    const refreshIfStale = () => {
-      if (!modelsCache || Date.now() - modelsCache.at > STALE_MS) void refreshLlmModels();
-    };
-    refreshIfStale();
+    refreshLlmModelsIfStale();
     const onVisible = () => {
-      if (document.visibilityState === "visible") refreshIfStale();
+      if (document.visibilityState === "visible") refreshLlmModelsIfStale();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {

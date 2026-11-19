@@ -43,6 +43,7 @@ pub mod me_today;
 pub mod mini_apps;
 pub mod office;
 pub mod org_admin_ai;
+pub mod org_admin_ai_health;
 pub mod org_admin_data;
 pub mod org_admin_insights;
 pub mod org_audit;

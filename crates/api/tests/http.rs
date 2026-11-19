@@ -698,6 +698,7 @@ async fn org_admin_routes_reject_non_admin_members() {
     ));
     for uri in [
         "/org-admin/ai/providers",
+        "/org-admin/ai/providers/status",
         "/org-admin/ai/models",
         "/org-admin/ai/settings",
         "/org-admin/ai/usage",
@@ -1372,3 +1373,98 @@ mod bug_reports;
 
 #[path = "http/version_backup.rs"]
 mod version_backup;
+
+// --- プロバイダの稼働状況（/org-admin/ai/providers/status・/llm/models の注意） -------------
+
+/// 実 DB の gateway を載せる（稼働状況の集計を読むため）。プロバイダ ID はテストごとに一意にする
+/// （集計表は全テナント共有なので、他のテストの行と混ざらないように）。
+async fn state_with_health(
+    sessions: Arc<dyn SessionStore>,
+    authz: Arc<dyn AuthzClient>,
+) -> Option<(AppState, sqlx::PgPool, String)> {
+    let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let db = PgPoolOptions::new().connect(&url).await.unwrap();
+    sqlx::migrate!("../../migrations").run(&db).await.unwrap();
+    let provider = format!("p-{}", uuid::Uuid::new_v4());
+    let gateway_config = llm_gateway::GatewayConfig {
+        provider: llm_gateway::ProviderConfig {
+            id: provider.clone(),
+            display_name: Some("社内 GPU".into()),
+            kind: llm_gateway::ProviderKind::Stub,
+            ..Default::default()
+        },
+        catalog: llm_gateway::ModelCatalog {
+            default_model: "m".into(),
+            models: vec![llm_gateway::ModelEntry {
+                id: "m".into(),
+                provider: Some(provider.clone()),
+                ..Default::default()
+            }],
+        },
+        ..Default::default()
+    };
+    let mut state = state_with_authz(sessions, authz);
+    state.llm = Some(Arc::new(
+        llm_gateway::LlmGateway::build(db.clone(), reqwest::Client::new(), gateway_config).unwrap(),
+    ));
+    Some((state, db, provider))
+}
+
+#[tokio::test]
+async fn provider_status_reports_rates_and_users_see_only_the_state() {
+    use llm_gateway::health::{HealthRecorder, Outcome};
+    let store = store_with_valid_session().await;
+    let Some((state, db, provider)) = state_with_health(
+        store,
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
+    )
+    .await
+    else {
+        return;
+    };
+    let app = build_router(state);
+
+    // 利用が無いうちは「利用なし」で、利用者には何も出さない。
+    let (status, body) = get_with_session(app.clone(), "/org-admin/ai/providers/status").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["providers"][0]["id"], provider.as_str());
+    assert_eq!(body["providers"][0]["state"], "idle");
+    assert_eq!(body["providers"][0]["hours"].as_array().unwrap().len(), 24);
+
+    // 5 成功・15 障害 → 停止。
+    let rec = HealthRecorder::new();
+    for _ in 0..5 {
+        rec.record(&provider, Outcome::Ok, Some(Duration::from_millis(900)));
+    }
+    for _ in 0..15 {
+        rec.record(&provider, Outcome::Failed, None);
+    }
+    rec.flush(&db).await.unwrap();
+
+    let (status, body) = get_with_session(app.clone(), "/org-admin/ai/providers/status").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let p = &body["providers"][0];
+    assert_eq!(p["label"], "社内 GPU");
+    assert_eq!(p["state"], "down");
+    assert_eq!(p["reasons"], serde_json::json!(["errors"]));
+    assert_eq!(p["failure_rate"], 0.75);
+    assert_eq!(p["ttft_p95_ms"], 1000);
+    assert_eq!(body["window_minutes"], 5);
+    // 件数は返さない（他テナントの利用規模が透けるため）。
+    let text = body.to_string();
+    assert!(
+        !text.contains("\"ok\"") && !text.contains("\"failed\""),
+        "{text}"
+    );
+
+    // 利用者のモデル一覧には状態だけが載る。
+    let (status, models) = get_with_session(app, "/llm/models").await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    assert_eq!(models["models"][0]["provider_notice"], "down");
+}

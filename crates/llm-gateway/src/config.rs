@@ -415,6 +415,12 @@ pub struct GatewayConfig {
     /// 共有する（リフレッシュの直列化のため。gateway を何度組んでも同じものを渡す）。
     #[serde(skip)]
     pub chatgpt: Option<std::sync::Arc<crate::chatgpt::ChatGptAccount>>,
+    /// 稼働状況の記録先（プロセスで 1 つを共有する）。`None` なら計測しない（テスト等）。
+    #[serde(skip)]
+    pub health: Option<std::sync::Arc<crate::health::HealthRecorder>>,
+    /// 稼働状況の判定の閾値。
+    #[serde(default)]
+    pub health_thresholds: crate::health::HealthThresholds,
 }
 
 #[cfg(test)]
