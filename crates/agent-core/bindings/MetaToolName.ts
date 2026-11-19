@@ -5,4 +5,4 @@
  *
  * モデルには通常のツールとして見えるため、UI の表示辞書もこの名前で引く（TS へ生成する）。
  */
-export type MetaToolName = "plan" | "tool_search";
+export type MetaToolName = "plan" | "tool_search" | "recall_read" | "recall_search";

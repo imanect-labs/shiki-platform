@@ -24,7 +24,7 @@ pub(crate) async fn try_compact(
     let outcome =
         crate::compaction::compact(gateway, run.ctx, opts, &state.messages, &state.plan, budget)
             .await;
-    let compacted = match outcome {
+    let mut compacted = match outcome {
         Ok(Some(c)) => c,
         Ok(None) => return Ok(false),
         Err(e) => {
@@ -66,6 +66,19 @@ pub(crate) async fn try_compact(
     if compacted.messages.is_empty() {
         tracing::warn!("文脈の圧縮で要約が得られなかった（剪定で続行）");
         return Ok(false);
+    }
+    // 要約に回した区間の原本を保存し、要約に索引を足す（元に戻せる圧縮・[`crate::archive`]）。
+    if let Some(archive) = opts.archive.as_deref() {
+        let split = compacted.split;
+        let middle = state.messages[split.head_end..split.tail_start].to_vec();
+        crate::agent_archive::archive_history(
+            archive,
+            run.ctx,
+            state,
+            &middle,
+            &mut compacted.messages,
+        )
+        .await;
     }
     state.messages = compacted.messages;
     sink.emit(AgentEvent::FailureRecovery {

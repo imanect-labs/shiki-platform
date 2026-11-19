@@ -388,6 +388,8 @@ pub(crate) struct Compacted {
     pub model: String,
     pub before_tokens: usize,
     pub after_tokens: usize,
+    /// 要約に回した区間（`messages` が空なら意味を持たない）。
+    pub split: Split,
 }
 
 /// 圧縮を試みる（LLM を 1 回呼ぶ）。分け目が無い・要約が空・縮まないときは `Ok(None)`。
@@ -450,6 +452,7 @@ pub(crate) async fn compact(
             model,
             before_tokens: 0,
             after_tokens: 0,
+            split,
         }));
     }
     let rebuilt = rebuild(messages, split, &text, plan, to_est(effective_window / 10));
@@ -465,6 +468,7 @@ pub(crate) async fn compact(
         model,
         before_tokens,
         after_tokens,
+        split,
     }))
 }
 

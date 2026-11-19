@@ -754,6 +754,7 @@ async fn run_step(
         trace_id: run.trace_id.as_deref(),
         opts,
         approver,
+        recall: crate::agent_archive::RecallAllowance::for_step(state, step_budget),
     };
     // 結果の後処理に使う（読み取り系か・呼び出しの名前と引数）。
     let call_info: Vec<(String, String, serde_json::Value, bool)> = calls
@@ -815,8 +816,32 @@ async fn run_step(
             .filter(|c| c.3)
             .map(|c| c.0.clone())
             .collect();
+        // 元に戻せる圧縮: 外した・削った結果は原本を保存し、参照に差し替える（[`crate::archive`]）。
+        let before = opts
+            .archive
+            .is_some()
+            .then(|| crate::agent_archive::snapshot(&result_blocks));
         crate::result_budget::cap_step_results(&mut result_blocks, &read_only, budget);
+        if let (Some(archive), Some(before)) = (opts.archive.as_deref(), before) {
+            crate::agent_archive::spill_step_results(
+                archive,
+                run.ctx,
+                state,
+                &mut result_blocks,
+                &before,
+                &call_info,
+                budget,
+            )
+            .await;
+        }
     }
+    let recalls = call_info
+        .iter()
+        .filter(|c| crate::agent_archive::is_recall(&c.1))
+        .count();
+    state.recalls = state
+        .recalls
+        .saturating_add(u32::try_from(recalls).unwrap_or(u32::MAX));
     // 同じ呼び出しが同じ結果を返し続けていたら、変わっていないと添える（停滞・loop_detect.rs）。
     if opts.aids.repeat_notes {
         crate::agent_repair::note_repeats(&mut result_blocks, &call_info, &mut state.repeats);
@@ -854,6 +879,9 @@ fn build_tool_defs(tools: &[Arc<dyn Tool>], opts: &AgentOptions) -> Vec<ToolDef>
             計画は UI に表示され進捗が追跡される。",
             plan::plan_tool_schema(),
         ));
+    }
+    if opts.profile.is_autonomous() && opts.archive.is_some() {
+        defs.extend(crate::archive::recall_tool_defs());
     }
     defs
 }

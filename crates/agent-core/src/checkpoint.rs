@@ -45,6 +45,12 @@ pub struct Checkpoint {
     /// 1 生成ぶん会計に積むので数える・会計の冪等キー）。
     #[serde(default)]
     pub compactions: u32,
+    /// 保存した原本に振った参照の通し番号（[`crate::archive`]・再開しても重ならない）。
+    #[serde(default)]
+    pub archive_seq: u32,
+    /// この run で実行した読み戻し（`recall_read` / `recall_search`）の回数。
+    #[serde(default)]
+    pub recalls: u32,
 }
 
 impl Checkpoint {
@@ -62,6 +68,8 @@ impl Checkpoint {
             context_overhead_tokens: None,
             repeats: crate::loop_detect::RepeatTracker::default(),
             compactions: 0,
+            archive_seq: 0,
+            recalls: 0,
         }
     }
 }

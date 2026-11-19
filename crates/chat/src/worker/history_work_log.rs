@@ -50,11 +50,11 @@ impl Detail {
     };
 }
 
-/// 記録しないメタツール（計画の更新・定義の読み込みは、続きの作業の材料にならない）。
+/// 記録しないメタツール（計画の更新・定義の読み込み・保存済みの記録の読み戻しは、続きの作業の
+/// 材料にならない。読み戻しの参照はその run の中でだけ意味を持つ）。
 /// 名前は正本の語彙から引く（手書きの対応物を作らない）。
 fn is_skipped(name: &str) -> bool {
-    use agent_core::MetaToolName as M;
-    name == M::Plan.as_str() || name == M::ToolSearch.as_str()
+    agent_core::MetaToolName::parse(name).is_some()
 }
 
 /// assistant メッセージの本文ブロックから作業記録を組む。記録する呼び出しが無ければ `None`。

@@ -171,6 +171,7 @@ async fn tool_internal_usage_is_reported_on_every_axis() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let calls = vec![call("1", "subagent", "a"), call("2", "subagent", "b")];
     let mut sink = NullSink { events: Vec::new() };
@@ -214,6 +215,7 @@ async fn reads_run_in_parallel_and_keep_call_order() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let calls = vec![
         call("1", "doc_search", "a"),
@@ -272,6 +274,7 @@ async fn reads_do_not_block_on_approval() {
         trace_id: None,
         opts: &opts,
         approver: Some(&approver),
+        recall: Default::default(),
     };
     // 破壊系が**先頭**でも、後続の read はその承認待ちと並行して進む。
     let calls = vec![
@@ -331,6 +334,7 @@ async fn unapproved_write_is_rejected_in_place() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let calls = vec![call("1", "doc_search", "a"), call("2", "fs_write", "w")];
     let mut sink = NullSink { events: Vec::new() };
@@ -373,6 +377,7 @@ async fn same_host_web_fetch_is_serialized() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let url_call = |id: &str, url: &str| PendingCall {
         id: id.into(),
@@ -429,6 +434,7 @@ async fn concurrency_limit_is_honoured() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let calls = vec![call("1", "doc_search", "a"), call("2", "web_search", "b")];
     let mut sink = NullSink { events: Vec::new() };
@@ -464,6 +470,7 @@ async fn pre_authorized_write_runs_without_approver() {
         trace_id: None,
         opts: &opts,
         approver: None,
+        recall: Default::default(),
     };
     let mut sink = NullSink { events: Vec::new() };
     let mut plan = Plan::default();
@@ -517,6 +524,7 @@ async fn cancellation_still_reports_completed_reads() {
         trace_id: None,
         opts: &opts,
         approver: Some(&approver),
+        recall: Default::default(),
     };
     let calls = vec![call("1", "doc_search", "a"), call("2", "fs_write", "w")];
     let mut sink = NullSink { events: Vec::new() };

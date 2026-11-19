@@ -588,6 +588,23 @@ const META_DISPLAY: Record<MetaToolName, ToolDisplay> = {
       return q && !q.startsWith("select:") ? q : null;
     },
   },
+  // 文脈から外して保存した記録（過去のツール結果・要約したやり取り）を読み戻す。
+  // 参照（r17 / h3）は利用者に意味が無いので見せない。
+  recall_read: {
+    icon: NotebookPen,
+    category: "meta",
+    lead: () => "保存した記録を",
+    verb: "読み返し",
+    failed: "読み返せませんでした",
+  },
+  recall_search: {
+    icon: Search,
+    category: "meta",
+    lead: (t) => (t ? `保存した記録から「${t}」を` : "保存した記録を"),
+    verb: "検索",
+    suru: true,
+    target: (input) => str(input, "pattern"),
+  },
 };
 
 const UNKNOWN_DISPLAY: ToolDisplay = {

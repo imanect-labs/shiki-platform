@@ -166,6 +166,10 @@ vocab_enum! {
         Plan => "plan",
         /// 遅延ツールの検索と読み込み（[`crate::tool_search`]）。
         ToolSearch => "tool_search",
+        /// 文脈から外して保存した記録を行範囲で読む（[`crate::archive`]・元に戻せる圧縮）。
+        RecallRead => "recall_read",
+        /// 保存した記録を文字列で探す（[`crate::archive`]）。
+        RecallSearch => "recall_search",
     }
 }
 

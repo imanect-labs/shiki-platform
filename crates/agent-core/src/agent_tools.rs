@@ -39,6 +39,8 @@ pub(crate) struct ToolPhase<'a> {
     pub(crate) trace_id: Option<&'a str>,
     pub(crate) opts: &'a AgentOptions,
     pub(crate) approver: Option<&'a dyn Approver>,
+    /// このステップで許す読み戻し（`opts.archive` がある run のみ効く・[`crate::archive`]）。
+    pub(crate) recall: crate::agent_archive::RecallAllowance,
 }
 
 /// ツール実行フェーズの結果。
@@ -245,8 +247,38 @@ async fn run_sequential(
     sink: &mut dyn EventSink,
 ) -> Result<SequentialRun, AgentError> {
     let mut results = Vec::new();
+    let mut recalled = 0usize;
     for (i, call) in calls.iter().enumerate() {
         if parallel.contains(&i) {
+            continue;
+        }
+        // 読み戻し（保存済みの記録を読む・[`crate::archive`]）: 副作用は無く、承認ゲートの対象外。
+        // 回数と 1 回の量はステップの枠で絞る。
+        if let Some(archive) = phase
+            .opts
+            .archive
+            .as_deref()
+            .filter(|_| crate::agent_archive::is_recall(&call.name))
+        {
+            let outcome = if recalled < phase.recall.left {
+                recalled += 1;
+                crate::archive::handle_recall(
+                    archive,
+                    phase.ctx,
+                    &call.name,
+                    &call.input,
+                    phase.recall.max_tokens,
+                )
+                .await
+            } else {
+                ToolOutcome::error(crate::agent_archive::recall_limit_message())
+            };
+            results.push(Processed {
+                index: i,
+                outcome,
+                disposition: Disposition::Executed,
+                references: Vec::new(),
+            });
             continue;
         }
         if phase.opts.profile.is_autonomous() && call.name == PLAN_TOOL {

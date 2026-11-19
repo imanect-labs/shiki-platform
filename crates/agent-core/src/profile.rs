@@ -73,6 +73,10 @@ pub struct AgentOptions {
     pub compaction: crate::compaction::CompactionOptions,
     /// 小さいモデルでも作業を完遂させるための補助（[`HarnessAids`]）。
     pub aids: HarnessAids,
+    /// 文脈から外した原本の保存先（自律版・[`crate::archive`]）。`Some` なら、1 ステップの結果の
+    /// 上限で外した結果と要約に置き換えた区間を保存し、`recall_read` / `recall_search` で読み
+    /// 戻させる。run ごとに新しく作る（参照は run 内でだけ意味を持つ）。`None` は従来どおり。
+    pub archive: Option<std::sync::Arc<dyn crate::archive::ContextArchive>>,
 }
 
 /// 小さいモデル（Gemma 4・Qwen 3.x の 30B 級・Claude Haiku）でも作業を完遂させるための補助
@@ -203,6 +207,7 @@ impl AgentOptions {
             // 通常チャットは剪定しない（短ホライズン）。圧縮も同じく自律版だけ。
             compaction: crate::compaction::CompactionOptions::disabled(),
             aids: HarnessAids::default(),
+            archive: None,
         }
     }
 
@@ -233,6 +238,7 @@ impl AgentOptions {
             tool_search: ToolSearchOptions::default(),
             compaction: crate::compaction::CompactionOptions::default(),
             aids: HarnessAids::default(),
+            archive: None,
         }
     }
 }

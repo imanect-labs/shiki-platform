@@ -24,6 +24,8 @@
 )]
 
 pub mod agent;
+/// 元に戻せる圧縮をループにつなぐ。
+pub(crate) mod agent_archive;
 /// 圧縮の実行（会計・イベント）。
 mod agent_compact;
 pub(crate) mod agent_gate;
@@ -33,6 +35,8 @@ mod agent_observation;
 mod agent_repair;
 pub(crate) mod agent_tools;
 pub mod approval;
+/// 元に戻せる圧縮（文脈から外した原本の保存先と読み戻しのメタツール）。
+pub mod archive;
 pub mod budget;
 /// ツール呼び出しの回収・修復（小さいモデル向け）。
 pub(crate) mod call_repair;
@@ -59,6 +63,7 @@ pub mod workspace;
 
 pub use agent::{run_agent, AgentStop, RunContext};
 pub use approval::{ApprovalDecision, ApprovalPolicy, Approver};
+pub use archive::{ArchiveKind, ArchivedItem, ContextArchive, InMemoryArchive};
 pub use budget::{Budget, BudgetCheck, BudgetKind, Spent};
 pub use checkpoint::Checkpoint;
 pub use cite::CitationLedger;
