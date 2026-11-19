@@ -45,13 +45,19 @@ impl RecallAllowance {
     }
 }
 
-/// 上限に達したときの返答。
-pub(crate) fn recall_limit_message() -> String {
-    format!(
-        "読み戻しの上限です（1 ステップ {RECALL_PER_STEP} 回・run 全体で {RECALL_PER_RUN} 回まで）。\
-         このステップでは読み戻していません。今ある情報で進めるか、次のステップで本当に要る\
-         部分だけを読んでください。"
-    )
+/// 上限に達したときの返答（`run_exhausted` = run 全体の上限に達した）。
+pub(crate) fn recall_limit_message(run_exhausted: bool) -> String {
+    if run_exhausted {
+        format!(
+            "読み戻しは run 全体で {RECALL_PER_RUN} 回までで、上限に達しました。これ以上は読み戻せません。\
+             確認を重ねず、今ある情報で結論を出して作業を終えてください（提出・保存がまだなら今すぐ）。"
+        )
+    } else {
+        format!(
+            "読み戻しは 1 ステップ {RECALL_PER_STEP} 回までです。この呼び出しは実行していません。\
+             本当に要る部分だけを、次のステップで読んでください。"
+        )
+    }
 }
 
 fn next_ref(state: &mut Checkpoint, kind: ArchiveKind) -> String {
@@ -368,5 +374,7 @@ mod tests {
         assert_eq!(RecallAllowance::for_step(&state, None).left, 1);
         state.recalls = RECALL_PER_RUN + 3;
         assert_eq!(RecallAllowance::for_step(&state, None).left, 0);
+        assert!(recall_limit_message(true).contains("結論を出して"));
+        assert!(recall_limit_message(false).contains("1 ステップ 2 回まで"));
     }
 }

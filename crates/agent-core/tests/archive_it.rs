@@ -378,7 +378,7 @@ async fn spilled_results_and_summarized_history_can_be_recalled() {
             searched.contains("> 報告 1-0: 売上 1234 万円"),
             "{searched}"
         );
-        assert!(searched.contains("読み戻しの上限です"), "{searched}");
+        assert!(searched.contains("1 ステップ 2 回まで"), "{searched}");
         assert_eq!(out.checkpoint.recalls, 4, "上限で返したものも数える");
         // 保存先には外した結果と要約した区間の両方がある。
     }

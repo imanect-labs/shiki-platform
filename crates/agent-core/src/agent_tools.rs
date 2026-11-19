@@ -271,7 +271,10 @@ async fn run_sequential(
                 )
                 .await
             } else {
-                ToolOutcome::error(crate::agent_archive::recall_limit_message())
+                // このステップの枠が 1 ステップの上限より小さいなら、run 全体の上限で尽きた。
+                ToolOutcome::error(crate::agent_archive::recall_limit_message(
+                    phase.recall.left < crate::archive::RECALL_PER_STEP,
+                ))
             };
             results.push(Processed {
                 index: i,

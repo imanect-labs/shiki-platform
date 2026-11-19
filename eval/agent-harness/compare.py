@@ -3,8 +3,8 @@
 使い方: python3 eval/agent-harness/compare.py eval/agent-harness/results/v10-w*.jsonl eval/agent-harness/results/v11-w*.jsonl
 
 行は (窓, 課題)、列は (版, variant)。各マスは「成功 / run 数（平均点）」。プロバイダの一時障害
-（ストリームの切断など）で止まった run は分母から除き、件数を `障害 n` として添える（ハーネスの
-失敗ではないため）。最後に窓ごとの合計行を付ける。
+（ストリームの切断など）で止まった run と、利用枠が尽きて止まった run（402）は分母から除き、
+件数を `障害 n`・`中断 n` として添える（ハーネスの失敗ではないため）。最後に窓ごとの合計行を付ける。
 """
 
 import json
@@ -17,18 +17,22 @@ def is_infra(r: dict) -> bool:
     return "provider unavailable" in r.get("stop", "")
 
 
+def is_halted(r: dict) -> bool:
+    """利用枠（クレジット）が尽きて止まった run（402）。"""
+    return "402 Payment Required" in r.get("stop", "")
+
+
 def cell(rs: list[dict]) -> str:
-    ok_runs = [r for r in rs if not is_infra(r)]
-    infra = len(rs) - len(ok_runs)
+    ok_runs = [r for r in rs if not is_infra(r) and not is_halted(r)]
+    infra = sum(1 for r in rs if is_infra(r))
+    halted = sum(1 for r in rs if is_halted(r))
+    note = (f" 障害 {infra}" if infra else "") + (f" 中断 {halted}" if halted else "")
     if not ok_runs:
-        return f"—（障害 {infra}）" if infra else ""
+        return f"—{note}" if note else ""
     n = len(ok_runs)
     ok = sum(1 for r in ok_runs if r["success"])
     score = sum(r["score"] for r in ok_runs) / n
-    s = f"{ok}/{n}（{score:.2f}）"
-    if infra:
-        s += f" 障害 {infra}"
-    return s
+    return f"{ok}/{n}（{score:.2f}）{note}"
 
 
 def main(paths: list[str]) -> None:
