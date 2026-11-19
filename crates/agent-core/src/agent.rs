@@ -729,16 +729,23 @@ async fn run_step(
 
     // 終了判定: ツール呼び出しが無ければ終わり。ただし **max_tokens で切れたのは完了ではない**。
     if final_stop != StopReason::ToolUse || calls.is_empty() {
-        // 計画に未完了が残ったまま本文で終えた: 提出・保存などの最後の操作を忘れていないか
-        // 1 度だけ確かめさせる（自律版・予算が残っているときだけ・agent_observation.rs）。
+        // 提出・保存などの最後の操作を忘れていないか 1 度だけ確かめさせる（自律版・予算が残って
+        // いるときだけ・agent_observation.rs）。最後に呼ぶツールが決まっていればそれで判定し、
+        // 決まっていなければ計画の未完了で判定する（提出済みなのに計画を更新していないだけの run で
+        // 余分な 1 ステップを使わない）。
         if final_stop != StopReason::MaxTokens
             && opts.profile.is_autonomous()
             && opts.aids.completion_check
             && can_continue
-            && (crate::agent_observation::nudge_unfinished_plan(&mut state.messages, &state.plan)
-                || opts.final_tool.as_deref().is_some_and(|t| {
+            && match opts.final_tool.as_deref() {
+                Some(t) => {
                     crate::agent_observation::nudge_missing_final_tool(&mut state.messages, t)
-                }))
+                }
+                None => crate::agent_observation::nudge_unfinished_plan(
+                    &mut state.messages,
+                    &state.plan,
+                ),
+            }
         {
             return Ok(StepOutcome::Continue);
         }

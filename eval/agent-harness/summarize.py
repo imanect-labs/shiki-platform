@@ -20,8 +20,8 @@ def main(paths: list[str]) -> None:
                 continue
             r = json.loads(line)
             rows[(version, r["model"], r["task"], r["variant"], r["window"])].append(r)
-    print("| 版 | モデル | 課題 | variant | 窓 | 成功 | 平均点 | 溢れ | 平均ステップ | 平均圧縮 | 平均費用 |")
-    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    print("| 版 | モデル | 課題 | variant | 窓 | 成功 | 平均点 | 溢れ | 平均ステップ | 平均圧縮 | 平均読み戻し | 平均費用 |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for key in sorted(rows):
         rs = rows[key]
         n = len(rs)
@@ -31,10 +31,11 @@ def main(paths: list[str]) -> None:
         steps = sum(r["steps"] for r in rs) / n
         comp = sum(r.get("compactions", 0) for r in rs) / n
         cost = sum(r.get("cost_usd_est", 0.0) for r in rs) / n
+        recalls = sum(r.get("recalls", 0) for r in rs) / n
         version, model, task, variant, window = key
         print(
             f"| {version} | {model} | {task} | {variant} | {window // 1024}k | {ok}/{n} | "
-            f"{score:.2f} | {overflow} | {steps:.1f} | {comp:.1f} | ${cost:.4f} |"
+            f"{score:.2f} | {overflow} | {steps:.1f} | {comp:.1f} | {recalls:.1f} | ${cost:.4f} |"
         )
 
 

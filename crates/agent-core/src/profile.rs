@@ -78,7 +78,8 @@ pub struct AgentOptions {
     /// 戻させる。run ごとに新しく作る（参照は run 内でだけ意味を持つ）。`None` は従来どおり。
     pub archive: Option<std::sync::Arc<dyn crate::archive::ContextArchive>>,
     /// 最後に必ず呼ぶツール（提出・保存など）。`Some` なら、それを成功させずに本文で終えたとき
-    /// 1 度だけ呼ぶよう促す（自律版・`aids.completion_check` が有効なとき）。`None` は従来どおり。
+    /// 1 度だけ呼ぶよう促す（自律版・`aids.completion_check` が有効なとき）。計画の未完了による
+    /// 確認の代わりに使う（成功していれば計画が未更新でも促さない）。`None` は従来どおり計画で見る。
     pub final_tool: Option<String>,
 }
 
