@@ -6,6 +6,11 @@ export type LlmModelsResponse = components["schemas"]["LlmModelsResponse"];
 export type LlmModelOption = components["schemas"]["LlmModelOption"];
 export type EffortLevel = components["schemas"]["EffortLevel"];
 export type AdminProvider = components["schemas"]["AdminProvider"];
+export type ProviderStatusResponse = components["schemas"]["ProviderStatusResponse"];
+export type AdminProviderHealth = components["schemas"]["AdminProviderHealth"];
+export type ProviderHealthState = components["schemas"]["ProviderHealthState"];
+export type ProviderHealthReason = components["schemas"]["ProviderHealthReason"];
+export type ProviderNotice = components["schemas"]["ProviderNotice"];
 export type AdminModel = components["schemas"]["AdminModel"];
 export type AdminModelsResponse = components["schemas"]["AdminModelsResponse"];
 export type AiSettings = components["schemas"]["AiSettings"];
@@ -50,6 +55,11 @@ export async function fetchLlmModels(): Promise<LlmModelsResponse> {
 
 export async function fetchAdminProviders(): Promise<AdminProvider[]> {
   return json(await apiFetch("/org-admin/ai/providers"));
+}
+
+/// プロバイダの稼働状況（組織管理者）。
+export async function fetchProviderStatus(): Promise<ProviderStatusResponse> {
+  return json(await apiFetch("/org-admin/ai/providers/status"));
 }
 
 export async function fetchAdminModels(): Promise<AdminModelsResponse> {

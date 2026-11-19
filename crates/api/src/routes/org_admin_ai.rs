@@ -1,6 +1,7 @@
 //! 管理コンソールの AI（`/org-admin/ai/*`・組織管理者のみ・#553）。
 //!
-//! - プロバイダ: デプロイ設定で接続したプロバイダの表示（秘密は出さない・追加/キー登録は範囲外）。
+//! - プロバイダ: デプロイ設定で接続したプロバイダの表示（秘密は出さない・追加/キー登録は範囲外）と
+//!   稼働状況（[`super::org_admin_ai_health`]）。
 //! - モデル: プラットフォームのカタログと、テナントでの有効/無効・既定・Auto・円換算レート。
 //! - 利用量: 会計（`llm_usage`）をそのまま集計して出す（課金と同じ数字）。
 //!
@@ -37,6 +38,12 @@ pub(crate) fn org_admin_ai_route_decls() -> Vec<RouteDecl> {
             &["GET"],
             AccessPolicy::OrgAdmin,
             || get(list_providers),
+        ),
+        r(
+            "/org-admin/ai/providers/status",
+            &["GET"],
+            AccessPolicy::OrgAdmin,
+            || get(super::org_admin_ai_health::provider_status),
         ),
         r(
             "/org-admin/ai/models",

@@ -6,16 +6,22 @@
 ///   モデルの切替と思考の深さ（3 段のスライダー）を変えられる。Auto に戻すのも一覧から。
 ///   スマホで既定のまま（モデルを選んでいない）ときは入力欄に出さず、「＋」のシートから開く。
 /// - 一覧はプロバイダごとの見出しで分け、1 モデル 1 行（名前・国外処理・選択中の印を列で揃える）。
+///   プロバイダが不安定・停止中なら見出しに注意を出す（状態だけ・数値は出さない）。
 ///   モデルが多いときは検索欄を出し、高さは画面に残っている分で抑えてスクロールさせる。
 /// - 狭い画面では横に開くポップオーバーが画面からはみ出すので、下からのシートで出す。
 /// 選べるのは組織の管理者が公開したモデルだけ（サーバも投稿時に検証する）。
 
 import * as React from "react";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, Search, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { EffortLevel, LlmModelOption, LlmModelsResponse } from "@/lib/admin-ai-api";
+import type {
+  EffortLevel,
+  LlmModelOption,
+  LlmModelsResponse,
+  ProviderNotice,
+} from "@/lib/admin-ai-api";
 import { useLlmModels, useModelChoice, type ModelChoice } from "@/lib/model-choice";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -106,6 +112,29 @@ function AbroadBadge() {
   return (
     <span className="shrink-0 rounded bg-[oklch(0.94_0.06_80)] px-1.5 py-px text-[10.5px] font-medium leading-4 text-[oklch(0.4_0.1_70)] dark:bg-[oklch(0.32_0.06_80)] dark:text-[oklch(0.87_0.09_85)]">
       国外処理
+    </span>
+  );
+}
+
+/// プロバイダが不安定・停止中のときの注意（見出しに出す・数値は出さない）。
+const NOTICE_TEXT: Record<ProviderNotice, string> = {
+  degraded: "応答が不安定",
+  down: "停止中",
+};
+
+function NoticeBadge({ notice }: { notice: ProviderNotice }) {
+  return (
+    <span
+      data-testid="provider-notice"
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-px text-[10.5px] font-medium leading-4",
+        notice === "down"
+          ? "bg-[oklch(0.93_0.05_25)] text-[oklch(0.4_0.14_25)] dark:bg-[oklch(0.3_0.08_25)] dark:text-[oklch(0.85_0.09_25)]"
+          : "bg-[oklch(0.94_0.06_80)] text-[oklch(0.4_0.1_70)] dark:bg-[oklch(0.32_0.06_80)] dark:text-[oklch(0.87_0.09_85)]",
+      )}
+    >
+      <TriangleAlert className="size-3" aria-hidden />
+      {NOTICE_TEXT[notice]}
     </span>
   );
 }
@@ -324,12 +353,15 @@ function ModelList({
         {groups.map((g) => {
           // 国外処理はふつうプロバイダ単位で決まるので、全部そうなら見出しに 1 つだけ出す。
           const allAbroad = g.models.every((m) => m.processed_abroad);
+          // 状態はプロバイダ単位なので、見出しに 1 つだけ出す（読み上げはグループ名に含める）。
+          const notice = g.models.find((m) => m.provider_notice)?.provider_notice ?? null;
+          const groupLabel = [
+            g.provider,
+            allAbroad ? "（国外処理）" : "",
+            notice ? `（${NOTICE_TEXT[notice]}）` : "",
+          ].join("");
           return (
-            <div
-              key={g.provider}
-              role="group"
-              aria-label={allAbroad ? `${g.provider}（国外処理）` : g.provider}
-            >
+            <div key={g.provider} role="group" aria-label={groupLabel}>
               {/* 見出しはスクロールしても上に残す（いまどのプロバイダの中かが分かるように）。
                   右端の余白は行の「選択中の印」の列に揃える。 */}
               <div
@@ -340,6 +372,7 @@ function ModelList({
                 aria-hidden
               >
                 <span className="min-w-0 flex-1 truncate">{g.provider}</span>
+                {notice ? <NoticeBadge notice={notice} /> : null}
                 {allAbroad ? <AbroadBadge /> : null}
               </div>
               {g.models.map((m) =>

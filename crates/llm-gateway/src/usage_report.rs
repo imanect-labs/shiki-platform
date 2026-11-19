@@ -95,6 +95,11 @@ pub struct UsageReporter {
 }
 
 impl UsageReporter {
+    /// 同じ接続プールを他の読み取り（稼働状況）でも使う。
+    pub(crate) fn db(&self) -> &PgPool {
+        &self.db
+    }
+
     pub fn new(db: PgPool) -> Self {
         UsageReporter { db }
     }

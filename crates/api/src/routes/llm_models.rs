@@ -54,6 +54,29 @@ impl From<EffortLevel> for llm_gateway::Effort {
     }
 }
 
+/// プロバイダの今の状態（利用者への注意表示用・正常なら出さない）。
+///
+/// 管理コンソールと同じ判定だが、利用者には状態だけを返す（率や時間は出さない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderNotice {
+    /// 応答が遅い・失敗しやすい。
+    Degraded,
+    /// ほとんど応答していない。
+    Down,
+}
+
+impl ProviderNotice {
+    fn of(state: Option<&llm_gateway::health::HealthState>) -> Option<Self> {
+        match state? {
+            llm_gateway::health::HealthState::Degraded => Some(Self::Degraded),
+            llm_gateway::health::HealthState::Down => Some(Self::Down),
+            llm_gateway::health::HealthState::Operational
+            | llm_gateway::health::HealthState::Idle => None,
+        }
+    }
+}
+
 /// 選べるモデル 1 件。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LlmModelOption {
@@ -67,6 +90,8 @@ pub struct LlmModelOption {
     pub processed_abroad: bool,
     /// 思考の深さを選べるか。
     pub supports_effort: bool,
+    /// プロバイダが不安定・停止中なら、その状態（正常・判定できないときは `null`）。
+    pub provider_notice: Option<ProviderNotice>,
 }
 
 /// Auto の振り先（「Auto は何を使うか」の表示用）。
@@ -129,6 +154,7 @@ pub async fn list_models(
         .await
         .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
     let catalog = gw.catalog();
+    let states = gw.provider_states().await;
     let models = settings
         .enabled_models(catalog)
         .into_iter()
@@ -139,6 +165,7 @@ pub async fn list_models(
             provider_label: provider_label(gw, m.provider_id()),
             processed_abroad: m.processed_abroad,
             supports_effort: gw.supports_effort(m),
+            provider_notice: ProviderNotice::of(states.get(m.provider_id())),
         })
         .collect();
     let auto = gw.auto_target(&settings).map(|(model, effort)| AutoTarget {

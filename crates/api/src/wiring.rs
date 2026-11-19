@@ -309,6 +309,8 @@ pub(crate) fn build_gateway(
         timeouts: llm.timeouts(),
         limits: llm.usage_limits(),
         chatgpt,
+        health: Some(health_recorder(db)),
+        health_thresholds: llm.health,
     };
     LlmGateway::build(db.clone(), http.clone(), gateway_config)
         .map_err(|e| anyhow::anyhow!("llm-gateway 構築に失敗: {e}"))
@@ -338,6 +340,21 @@ fn chatgpt_account(
             llm_gateway::ChatGptSettings::new(&llm.chatgpt.credential_path),
         ))
     })))
+}
+
+/// プロバイダの稼働状況の記録先（プロセスで 1 つ）。初めて作るときに書き出しタスクを起こす。
+///
+/// gateway は経路ごとに組まれるので、記録先を共有しないとインスタンス内で数が割れる。
+fn health_recorder(db: &sqlx::PgPool) -> Arc<llm_gateway::health::HealthRecorder> {
+    static RECORDER: std::sync::OnceLock<Arc<llm_gateway::health::HealthRecorder>> =
+        std::sync::OnceLock::new();
+    Arc::clone(RECORDER.get_or_init(|| {
+        let recorder = Arc::new(llm_gateway::health::HealthRecorder::new());
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(Arc::clone(&recorder).run_flusher(db.clone()));
+        }
+        recorder
+    }))
 }
 
 /// 設定の backend をプロバイダ種別へ写す（未実装の枠は起動を止める）。

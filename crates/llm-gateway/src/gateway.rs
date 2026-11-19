@@ -16,6 +16,7 @@ use crate::config::{
     AutoConfig, GatewayConfig, LlmTimeouts, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
     DEFAULT_PROVIDER_ID,
 };
+use crate::health::Monitored;
 use crate::langfuse::{GenerationTrace, LangfuseClient};
 use crate::limits::{LimitError, MonthUsage, UsageLimiter};
 use crate::model::{Effort, GenerateRequest, Usage};
@@ -34,6 +35,7 @@ use std::sync::Arc;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
+mod health_gate;
 mod user_provider_gate;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
@@ -123,6 +125,8 @@ struct Inner {
     langfuse: Option<LangfuseClient>,
     /// ChatGPT プランのアダプタ（生成は呼び出し主体に結び付けて行う・#854）。
     chatgpt_plan: Option<Arc<ChatGptPlanProvider>>,
+    /// 利用者向けの状態の短い間のキャッシュ（モデル一覧の取得ごとに DB を引かない）。
+    states: health_gate::StateCache,
 }
 
 impl LlmGateway {
@@ -149,13 +153,17 @@ impl LlmGateway {
             if providers.contains_key(&id) {
                 return Err(LlmError::Config(format!("duplicate llm provider id: {id}")));
             }
-            let provider = build_provider(
+            let mut provider = build_provider(
                 http.clone(),
                 pc,
                 &config.catalog,
                 config.timeouts,
                 chatgpt_plan.as_ref(),
             )?;
+            // 連携者個人のプラン枠（ChatGPT）は呼び出し主体ごとの枠なので、プロバイダの稼働状況には数えない。
+            if let (Some(h), false) = (&config.health, pc.kind == ProviderKind::ChatgptPlan) {
+                provider = Monitored::wrap(provider, &id, Arc::clone(h));
+            }
             providers.insert(
                 id,
                 ProviderSlot {
@@ -217,6 +225,7 @@ impl LlmGateway {
                 langfuse,
                 chatgpt_plan,
                 config,
+                states: health_gate::StateCache::default(),
             }),
         })
     }
