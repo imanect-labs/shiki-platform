@@ -120,18 +120,23 @@ pub(crate) struct Refactor {
     done: Arc<Mutex<Option<String>>>,
 }
 
-fn build(rng_seed: u64, n: &Names) -> BTreeMap<String, String> {
+fn build(rng_seed: u64, n: &Names, xl: bool) -> BTreeMap<String, String> {
+    let scale = if xl { 2 } else { 1 };
+    let mut modules: Vec<String> = MODULES.iter().map(|m| (*m).to_string()).collect();
+    if xl {
+        modules.extend((1..=14).map(|k| format!("plugins/plugin_{k:02}.py")));
+    }
     let mut rng = Rng::new(rng_seed);
     let mut files = BTreeMap::new();
     files.insert(
         "billing/core.py".to_string(),
-        render(&format!("{CORE}{}", filler(&mut rng, 6)), n),
+        render(&format!("{CORE}{}", filler(&mut rng, 6 * scale)), n),
     );
-    for (i, path) in MODULES.iter().enumerate() {
+    for (i, path) in modules.iter().enumerate() {
         let mut t = String::new();
-        if *path == "billing/__init__.py" {
+        if path == "billing/__init__.py" {
             t.push_str("from billing.core import {CT}, calc_totals_by_day, recalc_total, apply_fee\n\n__all__ = [\"{CT}\", \"calc_totals_by_day\", \"recalc_total\", \"apply_fee\"]\n");
-            files.insert((*path).to_string(), render(&t, n));
+            files.insert(path.clone(), render(&t, n));
             continue;
         }
         let test = path.starts_with("tests/");
@@ -140,24 +145,24 @@ fn build(rng_seed: u64, n: &Names) -> BTreeMap<String, String> {
             "\"\"\"{path} の処理。\"\"\"\nimport logging\n\nfrom billing.core import {{CT}}, recalc_total, calc_totals_by_day, format_receipt\n{}\nlog = logging.getLogger(__name__)\n\n\n",
             if test { "from models import Item, Order\n" } else { "" }
         );
-        t.push_str(&filler(&mut rng, 4 + i % 3));
+        t.push_str(&filler(&mut rng, (4 + i % 3) * scale));
         let pool = if test { TEST_CALLS } else { CALLS };
         // 各ファイルに 2 つの呼び出しを、補助関数の間に挟む。
         for k in 0..2 {
             t.push_str(pool[(i + k) % pool.len()]);
-            t.push_str(&filler(&mut rng, 3));
+            t.push_str(&filler(&mut rng, 3 * scale));
         }
-        files.insert((*path).to_string(), render(&t, n));
+        files.insert(path.clone(), render(&t, n));
     }
     files.insert("docs/billing.md".to_string(), render(DOC, n));
     files
 }
 
 impl Refactor {
-    pub(crate) fn new(seed: u64) -> Self {
-        let mut original = build(seed ^ 0xfac7, &OLD);
+    pub(crate) fn new(seed: u64, xl: bool) -> Self {
+        let mut original = build(seed ^ 0xfac7, &OLD, xl);
         original.insert("CHANGELOG.md".into(), CHANGELOG_OLD.into());
-        let expected = build(seed ^ 0xfac7, &NEW);
+        let expected = build(seed ^ 0xfac7, &NEW, xl);
         Refactor {
             files: vfs::files(original.clone()),
             original,
@@ -360,7 +365,7 @@ mod tests {
 
     #[test]
     fn expected_state_passes_and_original_fails() {
-        let r = Refactor::new(3);
+        let r = Refactor::new(3, false);
         let (parts, _) = check(&r.original, &r);
         assert!(!parts[0].1 && parts[1].1);
         let mut done = r.expected.clone();

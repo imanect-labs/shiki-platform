@@ -76,13 +76,17 @@ pub(crate) fn parse(body: &str) -> BTreeMap<String, String> {
 }
 
 impl Config {
-    pub(crate) fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64, xl: bool) -> Self {
         let mut rng = Rng::new(seed ^ 0xc0f1);
         let mut files = BTreeMap::new();
         let mut expected = BTreeMap::new();
         let mut comments = Vec::new();
         files.insert("docs/config-v2.md".to_string(), DOC.to_string());
-        for (i, svc) in SERVICES.iter().enumerate() {
+        let mut services: Vec<String> = SERVICES.iter().map(|s| (*s).to_string()).collect();
+        if xl {
+            services.extend((9..=20).map(|k| format!("svc{k:02}")));
+        }
+        for (i, svc) in services.iter().enumerate() {
             let path = format!("services/{svc}.yaml");
             let mut v1 = format!(
                 "# {svc} サービスの設定（担当: チーム{}）\n",
@@ -91,7 +95,7 @@ impl Config {
             let mut want = BTreeMap::new();
             want.insert("version".to_string(), "2".to_string());
             v1.push_str(&format!("name: {svc}\n"));
-            want.insert("name".into(), (*svc).to_string());
+            want.insert("name".into(), svc.clone());
             // DB: 無い（2 サービス）/ ホストだけ（2）/ 両方。
             match i % 4 {
                 0 => {}
@@ -208,10 +212,9 @@ impl Task for Config {
     }
 
     fn prompt(&self) -> String {
-        "services/ 以下の 8 つの設定ファイルを、v1 の形式から v2 の形式に移行してください。\
+        format!("services/ 以下の {} 個の設定ファイルを、v1 の形式から v2 の形式に移行してください。\
          移行の規則は docs/config-v2.md にあります（例外の扱いもそこに書いてあるので、必ず読んでください）。\
-         各ファイルを書き換えたら validate_config で確かめ、全ファイルが通ったら finish を呼んでください。"
-            .into()
+         各ファイルを書き換えたら validate_config で確かめ、全ファイルが通ったら finish を呼んでください。", self.expected.len())
     }
 
     fn max_steps(&self) -> usize {
@@ -290,7 +293,7 @@ mod tests {
         let m = parse("# c\nversion: 2\ndatabase:\n  host: a\n  port: 1\nreplicas: 2\n");
         assert_eq!(m["database.host"], "a");
         assert_eq!(m["replicas"], "2");
-        let c = Config::new(1);
+        let c = Config::new(1, true);
         let snap = c.files.lock().unwrap().clone();
         let (ok, comments, _, _) = c.check(&snap);
         assert_eq!(ok, 0);

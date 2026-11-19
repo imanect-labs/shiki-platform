@@ -28,6 +28,9 @@ pub(crate) const DIVERSE: &[&str] = &[
     "docedit",
 ];
 
+/// 多様な課題の大きい版（ファイル数・文書の長さを約 2〜3 倍）。`--task xl` で選ぶ。
+pub(crate) const XL: &[&str] = &["refactor-xl", "config-xl", "logs-xl", "docedit-xl"];
+
 pub(crate) struct Grade {
     /// 0.0〜1.0 の部分点。
     pub(crate) score: f64,
@@ -56,10 +59,14 @@ pub(crate) fn make(name: &str, seed: u64) -> Box<dyn Task> {
         "tickets-long" => Box::new(tickets::Tickets::long(seed)),
         "csv-sales" => Box::new(sales::Sales::new(seed, false)),
         "csv-join" => Box::new(sales::Sales::new(seed, true)),
-        "refactor" => Box::new(refactor::Refactor::new(seed)),
-        "config" => Box::new(config::Config::new(seed)),
-        "logs" => Box::new(logs::Logs::new(seed)),
-        "docedit" => Box::new(docedit::DocEdit::new(seed)),
+        "refactor" => Box::new(refactor::Refactor::new(seed, false)),
+        "refactor-xl" => Box::new(refactor::Refactor::new(seed, true)),
+        "config" => Box::new(config::Config::new(seed, false)),
+        "config-xl" => Box::new(config::Config::new(seed, true)),
+        "logs" => Box::new(logs::Logs::new(seed, 8)),
+        "logs-xl" => Box::new(logs::Logs::new(seed, 16)),
+        "docedit" => Box::new(docedit::DocEdit::new(seed, false)),
+        "docedit-xl" => Box::new(docedit::DocEdit::new(seed, true)),
         other => panic!("unknown task {other}"),
     }
 }

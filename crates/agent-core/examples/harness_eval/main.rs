@@ -145,6 +145,9 @@ fn parse_args() -> Args {
     if a.tasks == ["diverse"] {
         a.tasks = tasks::DIVERSE.iter().map(|s| (*s).to_string()).collect();
     }
+    if a.tasks == ["xl"] {
+        a.tasks = tasks::XL.iter().map(|s| (*s).to_string()).collect();
+    }
     a
 }
 

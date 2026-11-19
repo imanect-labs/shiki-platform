@@ -41,6 +41,28 @@ const SENTENCES: &[&str] = &[
     "申請内容に誤りがあった場合は、速やかに訂正してください。",
 ];
 
+/// `-xl` で足す節（文書を約 3 倍にする）。
+const EXTRA_SECTIONS: &[&str] = &[
+    "健康診断",
+    "育児休業",
+    "介護休業",
+    "慶弔休暇",
+    "社内表彰",
+    "服務規律",
+    "ハラスメントの防止",
+    "個人情報の取り扱い",
+    "社用車の利用",
+    "名刺の発注",
+    "郵便物の取り扱い",
+    "会議室の予約",
+    "入館証の管理",
+    "災害時の対応",
+    "社内システムの利用",
+    "ソフトウェアの導入",
+    "契約書の管理",
+    "広報への問い合わせ",
+];
+
 const NEW_SECTION: &str = "## 在宅勤務手当\n\n在宅勤務を月 10 日以上行った月は、在宅勤務手当として 3,000円を支給します。\n申請は不要で、勤怠の記録から自動で計算します。\n";
 
 pub(crate) struct DocEdit {
@@ -55,8 +77,15 @@ fn anchor(title: &str) -> String {
 }
 
 /// 文書を組み立てる。`edited` なら 4 つの編集を入れた形。
-fn build(seed: u64, edited: bool) -> String {
+fn build(seed: u64, edited: bool, xl: bool) -> String {
     let mut rng = Rng::new(seed);
+    let mut sections: Vec<&str> = SECTIONS.to_vec();
+    if xl {
+        // 退職の手続きの前に差し込む（編集する節の位置関係は変えない）。
+        let at = sections.len() - 1;
+        sections.splice(at..at, EXTRA_SECTIONS.iter().copied());
+    }
+    let paragraphs = if xl { 6 } else { 4 };
     let title = |t: &str| -> String {
         if edited && t == "経費精算" {
             "経費の精算手続き".into()
@@ -75,7 +104,7 @@ fn build(seed: u64, edited: bool) -> String {
     let mut doc = String::from(
         "# 社内規程ハンドブック\n\nこの文書は社内の各種規程をまとめたものです。\n\n## 目次\n\n",
     );
-    for s in SECTIONS {
+    for s in &sections {
         if edited && *s == "FAX による申請" {
             continue;
         }
@@ -85,10 +114,10 @@ fn build(seed: u64, edited: bool) -> String {
         }
     }
     doc.push('\n');
-    for (i, s) in SECTIONS.iter().enumerate() {
+    for (i, s) in sections.iter().enumerate() {
         let body = {
             let mut b = String::new();
-            for p in 0..4 {
+            for p in 0..paragraphs {
                 for _ in 0..rng.range(4, 7) {
                     b.push_str(rng.pick(SENTENCES));
                 }
@@ -135,9 +164,9 @@ fn norm(s: &str) -> String {
 }
 
 impl DocEdit {
-    pub(crate) fn new(seed: u64) -> Self {
-        let original = build(seed ^ 0xd0c, false);
-        let expected = build(seed ^ 0xd0c, true);
+    pub(crate) fn new(seed: u64, xl: bool) -> Self {
+        let original = build(seed ^ 0xd0c, false, xl);
+        let expected = build(seed ^ 0xd0c, true, xl);
         DocEdit {
             files: vfs::files([(PATH.to_string(), original.clone())].into()),
             expected,
@@ -250,7 +279,7 @@ mod tests {
 
     #[test]
     fn expected_passes_original_fails() {
-        let d = DocEdit::new(5);
+        let d = DocEdit::new(5, true);
         assert!(d.parts(&d.expected).iter().all(|p| p.1));
         assert!(d.parts(&d.original).iter().all(|p| !p.1));
         assert!(d.original.lines().count() > 60);

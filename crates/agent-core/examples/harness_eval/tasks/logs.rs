@@ -31,6 +31,7 @@ const MSGS: &[&str] = &[
 ];
 
 pub(crate) struct Logs {
+    n_files: usize,
     five_xx: BTreeMap<String, usize>,
     top_ip: (String, usize),
     refused: (String, String),
@@ -40,7 +41,7 @@ pub(crate) struct Logs {
 }
 
 impl Logs {
-    pub(crate) fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64, n_files: usize) -> Self {
         let mut rng = Rng::new(seed ^ 0x10c5);
         let mut files = BTreeMap::new();
         let mut five_xx: BTreeMap<String, usize> =
@@ -50,7 +51,7 @@ impl Logs {
         let mut billing_warn = 0;
         let bad_ip = format!("10.0.{}.{}", rng.range(1, 9), rng.range(10, 250));
         let mut sec: u64 = 8 * 3600;
-        for f in 0..8 {
+        for f in 0..n_files {
             let mut body = String::new();
             for _ in 0..500 {
                 sec += rng.range(1, 9);
@@ -101,6 +102,7 @@ impl Logs {
         }
         let top_ip = ips.into_iter().max_by_key(|(_, c)| *c).unwrap();
         Logs {
+            n_files,
             five_xx,
             top_ip,
             refused: (
@@ -145,15 +147,14 @@ impl Task for Logs {
     }
 
     fn prompt(&self) -> String {
-        "logs/ 以下の 8 本のログ（2026-03-14 の 1 日分・時刻順）から障害を調べ、`report.md` に次の形でレポートを書いてください。\
+        format!("logs/ 以下の {} 本のログ（2026-03-14 の 1 日分・時刻順）から障害を調べ、`report.md` に次の形でレポートを書いてください。\
          ログの 1 行は `時刻 レベル svc=サービス status=ステータス path=… ms=… ip=… msg=\"…\" req=…` の形です。\
          ログは大きいので、全部は読まずに search（一致件数を返す）を使ってください。\n\n\
          ```\n# 障害調査レポート\n\n## 5xx の件数\n- api: <件数>\n- auth: <件数>\n- billing: <件数>\n- search: <件数>\n\n\
          ## 5xx が最も多い IP\n- <IP>（<件数> 件）\n\n## connection refused\n- 最初: <時刻>\n- 最後: <時刻>\n\n\
          ## billing の WARN\n- <件数> 件\n```\n\n\
          5xx は status が 500〜599 の行です。時刻はログに書かれた形（例: 2026-03-14T09:15:02Z）のまま書いてください。\
-         書き終えたら finish を呼んでください。"
-            .into()
+         書き終えたら finish を呼んでください。", self.n_files)
     }
 
     fn max_steps(&self) -> usize {
@@ -227,7 +228,7 @@ mod tests {
 
     #[test]
     fn a_correct_report_scores_full() {
-        let l = Logs::new(2);
+        let l = Logs::new(2, 8);
         let mut r = String::from("# 障害調査レポート\n\n## 5xx の件数\n");
         for (s, n) in &l.five_xx {
             r.push_str(&format!("- {s}: {n}\n"));
