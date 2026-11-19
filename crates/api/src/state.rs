@@ -93,6 +93,8 @@ pub struct AppState {
     pub directory: Arc<DirectoryStore>,
     /// テナントレジストリ（プロビジョニング/削除のライフサイクル・SAAS.2）。
     pub tenants: Arc<TenantStore>,
+    /// jobq の DLQ の運用窓口（provisioner プレーンの一覧・再投入・#1335）。
+    pub dead_letters: Arc<jobq::DeadLetterAdmin>,
     /// permission-aware 検索（Phase 2）。`rag.enabled=false` では `None`（/search は 503）。
     pub search: Option<Arc<rag::SearchService>>,
     /// チャット（Phase 3）。`chat.enabled=false` では `None`（/threads 系は 503）。

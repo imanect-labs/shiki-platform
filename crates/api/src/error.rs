@@ -137,6 +137,12 @@ impl IntoResponse for ApiError {
     }
 }
 
+impl From<jobq::JobqError> for ApiError {
+    fn from(err: jobq::JobqError) -> Self {
+        ApiError::Internal(format!("jobq: {err}"))
+    }
+}
+
 impl From<authz::AuthzError> for ApiError {
     fn from(err: authz::AuthzError) -> Self {
         ApiError::Internal(format!("authz: {err}"))

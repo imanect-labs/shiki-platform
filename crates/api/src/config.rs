@@ -62,6 +62,65 @@ pub struct AppConfig {
     /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
     #[serde(default)]
     pub insights: crate::insights::InsightsConfig,
+    /// jobq の DLQ の監視と保持期間（#1335）。
+    #[serde(default)]
+    pub jobq: JobqConfig,
+}
+
+/// jobq の DLQ の監視と保持期間（`SHIKI__JOBQ__*`・#1335）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobqConfig {
+    /// DLQ に落ちた行を残す日数（1〜3650・既定 30）。過ぎた行は監視の周期で消す。
+    #[serde(default = "default_dead_retention_days")]
+    pub dead_retention_days: u32,
+    /// DLQ の件数の集計（メトリクス）と期限切れの削除の間隔（秒・10〜3600・既定 60）。
+    #[serde(default = "default_dead_monitor_interval_secs")]
+    pub dead_monitor_interval_secs: u64,
+}
+
+impl Default for JobqConfig {
+    fn default() -> Self {
+        JobqConfig {
+            dead_retention_days: default_dead_retention_days(),
+            dead_monitor_interval_secs: default_dead_monitor_interval_secs(),
+        }
+    }
+}
+
+fn default_dead_retention_days() -> u32 {
+    30
+}
+
+fn default_dead_monitor_interval_secs() -> u64 {
+    60
+}
+
+impl JobqConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=3650).contains(&self.dead_retention_days) {
+            return Err(ConfigError::Invalid(format!(
+                "jobq.dead_retention_days は 1〜3650 で指定してください（指定値: {}）",
+                self.dead_retention_days
+            )));
+        }
+        if !(10..=3600).contains(&self.dead_monitor_interval_secs) {
+            return Err(ConfigError::Invalid(format!(
+                "jobq.dead_monitor_interval_secs は 10〜3600 で指定してください（指定値: {}）",
+                self.dead_monitor_interval_secs
+            )));
+        }
+        Ok(())
+    }
+
+    /// 保持期間。
+    pub fn dead_retention(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.dead_retention_days) * 86_400)
+    }
+
+    /// 監視の間隔。
+    pub fn dead_monitor_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.dead_monitor_interval_secs)
+    }
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
@@ -414,6 +473,15 @@ impl AppConfig {
                     .into(),
             ));
         }
+        // jobq の待機（LISTEN・#1332）がプールから 1 本を占有し続けるので、1 本では他の問い合わせが
+        // 永久に接続を待つ。
+        if self.database.max_connections < 2 {
+            return Err(ConfigError::Invalid(
+                "jobq の待機（LISTEN）が接続を 1 本占有するため database.max_connections は2以上必要です"
+                    .into(),
+            ));
+        }
+        self.jobq.validate()?;
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;

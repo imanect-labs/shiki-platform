@@ -5565,6 +5565,7 @@ name = "shiki-jobq"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "opentelemetry",
  "rand 0.8.6",
  "serde_json",
  "shiki-testenv",

@@ -1,0 +1,29 @@
+# Prometheus のアラートルール（deploy/otel/prometheus.yml の rule_files から読む）。
+# 通知先（Alertmanager）は配備ごとに設定する。ここではルールの評価だけを定義する。
+groups:
+  - name: jobq
+    rules:
+      # DLQ に行がある＝試行上限に達したか恒久エラーで、原因を直して再投入するまで処理されないジョブがある
+      # （#1335）。件数・最古の経過時間はキュー別。テナントはラベルに入れていない。
+      # 確認と再投入: GET /admin/jobq/dead ・ POST /admin/jobq/dead/{id}/requeue（provisioner プレーン）。
+      # メトリクスはレプリカごとに同じ値を出すので max で束ねる。
+      - alert: JobqDeadLetters
+        expr: max by (queue) (jobq_dead_jobs) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "jobq の DLQ にジョブがあります（queue={{ $labels.queue }}・{{ $value }} 件）"
+          description: >-
+            試行上限に達したジョブが DLQ（job_queue_dead）に落ちています。last_error で原因を確認し、
+            直してから /admin/jobq/dead/{id}/requeue で戻してください。
+      # 放置されている DLQ（1 日以上）。保持期間（jobq.dead_retention_days・既定 30 日）を過ぎると消える。
+      - alert: JobqDeadLettersStale
+        expr: max by (queue) (jobq_dead_oldest_age_seconds) > 86400
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "jobq の DLQ が 1 日以上放置されています（queue={{ $labels.queue }}）"
+          description: >-
+            保持期間を過ぎると DLQ の行は削除され、再投入できなくなります。

@@ -250,6 +250,7 @@ fn base_config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        jobq: api::config::JobqConfig::default(),
     }
 }
 
@@ -346,6 +347,7 @@ fn state_with(pool: PgPool, sessions: Arc<dyn SessionStore>) -> AppState {
         bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
+        dead_letters: Arc::new(jobq::DeadLetterAdmin::new(vec![db.clone()])),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,

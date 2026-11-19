@@ -1,6 +1,7 @@
 //! HTTP ルートハンドラ群。
 
 pub mod admin;
+pub mod admin_jobq;
 pub mod app_install;
 pub mod app_platform;
 pub mod artifacts;

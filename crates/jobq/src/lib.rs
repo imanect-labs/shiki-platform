@@ -49,9 +49,15 @@
 //! デッドロックし得る。上振れは「同時に投入しているトランザクション数」倍で有界なので、公平性の
 //! 近似として受け入れる（rag の relay / consumer はリーダー選出で 1 プロセス・並列 2）。
 
+mod dead;
 mod waker;
 
-pub use waker::{Waker, CHANNEL, DEFAULT_IDLE_MAX, DUE_FLOOR};
+pub use dead::{
+    dead_queue_stats, list_dead, purge_dead_older_than, DeadJobSummary, DeadLetterAdmin,
+    DeadLetterMonitor, DeadQueueStats, DEFAULT_DEAD_RETENTION, DEFAULT_MONITOR_INTERVAL,
+};
+
+pub use waker::{Waker, CHANNEL, DEFAULT_IDLE_MAX, DUE_FLOOR, WAKE_MIN_GAP};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;

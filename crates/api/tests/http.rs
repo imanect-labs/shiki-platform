@@ -390,6 +390,7 @@ fn base_config() -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        jobq: api::config::JobqConfig::default(),
     }
 }
 
@@ -499,6 +500,7 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
         bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
+        dead_letters: Arc::new(jobq::DeadLetterAdmin::new(vec![db.clone()])),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,

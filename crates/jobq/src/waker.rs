@@ -45,6 +45,11 @@ pub const DEFAULT_IDLE_MAX: Duration = Duration::from_mins(5);
 /// 次に見えるようになるジョブまで眠るときの下限（モジュール冒頭）。
 pub const DUE_FLOOR: Duration = Duration::from_secs(1);
 
+/// 通知で起きるときの最小間隔（眠り始めからの時間）。書込の多い間は通知がコミットのたびに届くので、
+/// これが無いと待機中の consumer がコミットの数だけ起きて問い合わせる（ポーリングより重くなる）。
+/// 同じ間隔の中で届いた通知は 1 回の起床にまとまる。
+pub const WAKE_MIN_GAP: Duration = Duration::from_millis(200);
+
 /// LISTEN の張り直しに失敗したときの待ちの上限。
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 
@@ -134,6 +139,7 @@ impl Waker {
             tokio::time::sleep(poll.min(cap)).await;
             return;
         };
+        let started = tokio::time::Instant::now();
         let notify = inner.notify_for(queue);
         let notified = notify.notified();
         tokio::pin!(notified);
@@ -148,7 +154,10 @@ impl Waker {
             }
         };
         tokio::select! {
-            () = &mut notified => {}
+            () = &mut notified => {
+                // 起床の最小間隔まで待ってから返す（その間の通知は 1 回にまとまる）。
+                tokio::time::sleep_until(started + WAKE_MIN_GAP.min(cap)).await;
+            }
             () = tokio::time::sleep(sleep_for) => {}
         }
     }

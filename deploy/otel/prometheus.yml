@@ -1,6 +1,10 @@
 global:
   scrape_interval: 10s
 
+# アラートルール（jobq の DLQ など）。通知先（Alertmanager）は配備ごとに足す。
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   # otel-collector が公開する Prometheus エンドポイント（shiki-server のメトリクスを中継）。
   - job_name: otel-collector

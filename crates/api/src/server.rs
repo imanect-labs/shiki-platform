@@ -582,6 +582,7 @@ pub fn route_table() -> Vec<RouteDecl> {
             || put(routes::admin::set_tenant_audit_retention),
         ),
     ];
+    table.extend(routes::admin_jobq::route_decls());
     table.extend(routes::collab::collab_route_decls());
     table.extend(routes::documents::documents_route_decls());
     table.extend(routes::tabular::tabular_route_decls());

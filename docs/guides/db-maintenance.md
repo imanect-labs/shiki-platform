@@ -160,6 +160,14 @@ SELECT id, attempts, max_attempts, visible_at FROM job_queue WHERE queue = 'work
 SELECT id, attempts, enqueued_at, last_error FROM job_queue_dead WHERE queue = 'workflow_gc';
 ```
 
+DLQ は全キュー共通で、次の手段でも見られる（#1335）。
+
+- **メトリクス**: `jobq_dead_jobs{queue}`（件数）と `jobq_dead_oldest_age_seconds{queue}`（最古の経過秒）。
+  アラートルールは `deploy/otel/alerts.yml`（DLQ に行がある・1 日以上放置）。
+- **運用 API（provisioner トークン）**: `GET /admin/jobq/dead?queue=&limit=` でキュー別件数と直近の行
+  （payload は返さない）、原因を直してから `POST /admin/jobq/dead/{id}/requeue` で戻す。
+- **保持期間**: `jobq.dead_retention_days`（既定 30 日）を過ぎた DLQ の行は自動で消える（再投入できなくなる）。
+
 削除件数は `実行履歴 GC を実行しました` のログ（`runs_deleted` / `journal_deleted` /
 `truncated`）に出る。`truncated=true` が続く場合はバッチ上限に張り付いている＝流入が削除を
 上回っているので、保持日数か `MAX_BATCHES`（`crates/workflow-engine/src/run/store/gc.rs`）を

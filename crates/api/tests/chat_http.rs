@@ -254,6 +254,7 @@ fn base_config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        jobq: api::config::JobqConfig::default(),
     }
 }
 
@@ -396,6 +397,7 @@ async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>
         bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(pool.clone())),
+        dead_letters: Arc::new(jobq::DeadLetterAdmin::new(vec![pool.clone()])),
         db: api::state::ReadinessProbe::new(pool),
         authz: Arc::new(AllowAll),
         jwks,

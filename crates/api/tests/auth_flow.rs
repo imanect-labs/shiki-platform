@@ -364,6 +364,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        jobq: api::config::JobqConfig::default(),
     }
 }
 
@@ -467,6 +468,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         bug_report: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
+        dead_letters: Arc::new(jobq::DeadLetterAdmin::new(vec![db.clone()])),
         db: api::state::ReadinessProbe::new(db),
         authz: Arc::new(AllowAll),
         jwks,
@@ -2137,4 +2139,144 @@ async fn account_action_callback_rejects_a_different_user() {
         store.get(old_tenant, old_id).await.unwrap().is_some(),
         "旧セッションは残る"
     );
+}
+
+/// jobq の DLQ の運用 API（#1335）: provisioner だけが一覧・再投入でき、一覧は payload を返さない。
+/// 実 Postgres が必要（`STORAGE_TEST_DATABASE_URL` 設定時のみ）。
+#[tokio::test]
+async fn admin_jobq_dead_letters_list_and_requeue() {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .expect("Postgres 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migration 適用");
+
+    // DLQ に 1 件落とす（テストごとに一意なキュー）。
+    let queue = format!("dlq-api-{}", uuid::Uuid::new_v4().simple());
+    let payload = serde_json::json!({"secret": "payload-must-not-leak"});
+    let id = {
+        let mut conn = pool.acquire().await.unwrap();
+        let id = jobq::enqueue_on(
+            &mut conn,
+            jobq::NewJob {
+                queue: &queue,
+                tenant_id: "a-corp",
+                payload: &payload,
+                trace_id: None,
+                max_attempts: 3,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(jobq::kill(&mut conn, id, "parse error: boom")
+            .await
+            .unwrap());
+        id
+    };
+
+    let idp = spawn_idp_with_admin().await;
+    let mut config = config_with(&idp, vec![]);
+    config.database.url = db_url;
+    config.auth.provisioner_client_id = Some("shiki-provisioner".into());
+    config.auth.provisioner_client_secret = Some("dev-secret".into());
+    let app = build_router(state_with(config));
+    let token = provisioner_token("shiki-provisioner");
+    let get = |uri: String, bearer: Option<String>| {
+        let mut b = Request::builder().method(Method::GET).uri(uri);
+        if let Some(t) = bearer {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        b.body(Body::empty()).unwrap()
+    };
+
+    // --- 認可: トークン無し・別 client のトークンは 401。 ---
+    for bearer in [None, Some(provisioner_token("shiki-web"))] {
+        let resp = app
+            .clone()
+            .oneshot(get("/admin/jobq/dead".into(), bearer))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // --- 一覧: キュー別件数と行。payload は返さない。 ---
+    let resp = app
+        .clone()
+        .oneshot(get(
+            format!("/admin/jobq/dead?queue={queue}&limit=10"),
+            Some(token.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let jobs = body["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["id"], id);
+    assert_eq!(jobs[0]["tenant_id"], "a-corp");
+    assert_eq!(jobs[0]["last_error"], "parse error: boom");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("payload-must-not-leak"),
+        "payload は返さない"
+    );
+    let stats = body["queues"].as_array().unwrap();
+    let mine = stats.iter().find(|q| q["queue"] == queue.as_str()).unwrap();
+    assert_eq!(mine["count"], 1);
+
+    // --- limit の範囲外は 400。 ---
+    for bad in ["0", "201", "-1"] {
+        let resp = app
+            .clone()
+            .oneshot(get(
+                format!("/admin/jobq/dead?limit={bad}"),
+                Some(token.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "limit={bad}");
+    }
+
+    // --- 再投入: 204 で元のキューへ戻り、二度目は 404。 ---
+    let requeue = |bearer: String| {
+        Request::builder()
+            .method(Method::POST)
+            .uri(format!("/admin/jobq/dead/{id}/requeue"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(requeue(provisioner_token("shiki-web")))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "別 client は戻せない"
+    );
+    let resp = app.clone().oneshot(requeue(token.clone())).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let back: i64 = sqlx::query_scalar("SELECT count(*) FROM job_queue WHERE queue = $1")
+        .bind(&queue)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(back, 1, "元のキューへ戻る");
+    let resp = app.clone().oneshot(requeue(token)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    sqlx::query("DELETE FROM job_queue WHERE queue = $1")
+        .bind(&queue)
+        .execute(&pool)
+        .await
+        .unwrap();
 }

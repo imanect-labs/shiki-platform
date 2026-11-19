@@ -20,7 +20,8 @@ fn version_optimization_defaults_on_and_can_be_disabled() {
 #[test]
 fn version_optimization_rejects_invalid_resource_limits_at_startup() {
     let mut cfg = valid_config();
-    cfg.database.max_connections = 1;
+    // 2 本（jobq の LISTEN 1 本 ＋ 1 本）では版最適化の要件（3 本）に足りない。
+    cfg.database.max_connections = 2;
     assert!(cfg
         .validate()
         .unwrap_err()
@@ -28,10 +29,11 @@ fn version_optimization_rejects_invalid_resource_limits_at_startup() {
         .contains("max_connections"));
     cfg.storage.version_storage.enabled = false;
     assert!(cfg.validate().is_ok());
+    // 1 本はテナンシーに依らず jobq の LISTEN で拒否される（config/tests/jobq.rs）。
     cfg.auth.tenancy = Tenancy::Multi;
-    assert!(cfg.validate().is_err());
-    cfg.database.max_connections = 2;
     assert!(cfg.validate().is_ok());
+    cfg.database.max_connections = 1;
+    assert!(cfg.validate().is_err());
     for (key, value) in [
         ("raw_grace_secs", 0),
         ("max_optimize_bytes", 67108865),

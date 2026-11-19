@@ -78,6 +78,11 @@ async fn run() -> anyhow::Result<()> {
     // jobq の待機中ワーカーを投入の通知で起こす（LISTEN/NOTIFY・#1332）。LISTEN 接続はプールから
     // 1 本借りて持ち続けるので、ワーカーごとに作らずプロセスで 1 つを共有する。
     let jobq_waker = jobq::Waker::listen(vec![db.clone()]);
+    // DLQ の件数のメトリクスと保持期間での削除（#1335）。全レプリカで動かしてよい。
+    jobq::DeadLetterMonitor::new(vec![db.clone()])
+        .with_interval(config.jobq.dead_monitor_interval())
+        .with_retention(config.jobq.dead_retention())
+        .spawn();
 
     // 汎用 HTTP クライアント（LLM gateway・Office editor・その他 AppState 経由の外部呼び出し）。
     // **timeout を付けない**: LLM のストリーミングや Office の編集は正常系で数十秒〜かかるため、
@@ -352,6 +357,7 @@ async fn run() -> anyhow::Result<()> {
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には
         // readiness 専用の newtype で載せる（#91 M-2・ハンドラの生 SQL を型で防ぐ）。
+        dead_letters: Arc::new(jobq::DeadLetterAdmin::new(vec![db.clone()])),
         db: api::state::ReadinessProbe::new(db),
         authz,
         jwks,
