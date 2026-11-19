@@ -387,6 +387,7 @@ async fn setup(parser: FakeParser) -> Option<TestEnv> {
         vector: Arc::new(FakeVectorStore::default()),
         fulltext: Arc::new(TantivyFulltext::new(tmp.path())),
         indexer_storage: Arc::new(IndexerStorage::new(pool.clone(), Arc::new(FakeObjectStore))),
+        waker: jobq::Waker::polling(),
     });
     Some(TestEnv {
         pool,

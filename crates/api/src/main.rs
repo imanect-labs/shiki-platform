@@ -75,6 +75,9 @@ async fn run() -> anyhow::Result<()> {
     // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。
     run_migrations(&config.database, &db).await?;
     tracing::info!("DB マイグレーション適用完了");
+    // jobq の待機中ワーカーを投入の通知で起こす（LISTEN/NOTIFY・#1332）。LISTEN 接続はプールから
+    // 1 本借りて持ち続けるので、ワーカーごとに作らずプロセスで 1 つを共有する。
+    let jobq_waker = jobq::Waker::listen(vec![db.clone()]);
 
     // 汎用 HTTP クライアント（LLM gateway・Office editor・その他 AppState 経由の外部呼び出し）。
     // **timeout を付けない**: LLM のストリーミングや Office の編集は正常系で数十秒〜かかるため、
@@ -137,13 +140,20 @@ async fn run() -> anyhow::Result<()> {
     // RAG（Phase 2）: enabled のときのみインジェスト・パイプラインと検索を配線する。
     // parser は web_fetch の PDF/Office 経路にも渡す（同一インスタンス共有・#405）。
     let (search, rag_admin, doc_parser) =
-        wiring::wire_rag(&config, &http, &db, &object_store, &authz)?;
+        wiring::wire_rag(&config, &http, &db, &object_store, &authz, &jobq_waker)?;
 
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
     // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
-    let (data_store, data_views, fsms) =
-        wire_data(&config, &db, &authz, &directory, &storage, &artifacts)?;
+    let (data_store, data_views, fsms) = wire_data(
+        &config,
+        &db,
+        &authz,
+        &directory,
+        &storage,
+        &artifacts,
+        &jobq_waker,
+    )?;
     // ミニアプリ基盤（Task 9.1/9.13a）: マニフェスト store ＋汎用レジストリ。
     let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
         Arc::clone(&artifacts),
@@ -253,6 +263,7 @@ async fn run() -> anyhow::Result<()> {
         &skill_installs,
         &data_store,
         bug_report.clone(),
+        &jobq_waker,
     )
     .await?;
 
@@ -479,6 +490,7 @@ fn wire_data(
     directory: &std::sync::Arc<DirectoryStore>,
     storage: &std::sync::Arc<storage::StorageService>,
     artifacts: &std::sync::Arc<artifact::ArtifactStore>,
+    jobq_waker: &jobq::Waker,
 ) -> anyhow::Result<DataStores> {
     // 参照整合（user/role/file）は directory / StorageService のチョークポイントへ委譲する。
     // 接続プールは PoolRouter 経由（tenant → pool の継ぎ目・Task 15.1。現状は単一プール）。
@@ -498,9 +510,13 @@ fn wire_data(
     // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
     data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
     // pivot 索引の台帳初期化＋オンラインバックフィル＋parity 検証（jobq・チャンク・冪等・常駐）。
-    data::IndexBackfillWorker::new((*data_store).clone()).spawn();
+    data::IndexBackfillWorker::new((*data_store).clone())
+        .with_jobq_waker(jobq_waker.clone())
+        .spawn();
     // 一括取込（ステージング → 検証 → チャンク適用 → 索引の仕上げ・jobq・冪等・中断再開）。
-    data::BulkImportWorker::new((*data_store).clone()).spawn();
+    data::BulkImportWorker::new((*data_store).clone())
+        .with_jobq_waker(jobq_waker.clone())
+        .spawn();
     // レコード変更の outbox → テーブルのストリームへの採番（SSE 差分配信・スナップショット読取の
     // 基準位置・Task 15.6）。購読が無くても回し、outbox の GC を止めない。
     data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();

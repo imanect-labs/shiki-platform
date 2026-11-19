@@ -5248,6 +5248,7 @@ dependencies = [
  "shiki-collab",
  "shiki-data",
  "shiki-gui",
+ "shiki-jobq",
  "shiki-llm-gateway",
  "shiki-office",
  "shiki-rag",
@@ -5564,11 +5565,13 @@ name = "shiki-jobq"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "rand 0.8.6",
  "serde_json",
  "shiki-testenv",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

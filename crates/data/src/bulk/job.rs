@@ -180,6 +180,8 @@ impl DataStore {
 pub struct BulkImportWorker {
     store: DataStore,
     poll: Duration,
+    /// キューが空のときに眠る部品（投入の通知で起きる・#1332）。既定は `poll` ごとのポーリング。
+    waker: jobq::Waker,
 }
 
 impl BulkImportWorker {
@@ -187,7 +189,15 @@ impl BulkImportWorker {
         BulkImportWorker {
             store,
             poll: Duration::from_secs(2),
+            waker: jobq::Waker::polling(),
         }
+    }
+
+    /// キューが空のときの待ち方。LISTEN を張った Waker を渡すと、次のスイープまで通知を待って眠る。
+    #[must_use]
+    pub fn with_jobq_waker(mut self, waker: jobq::Waker) -> Self {
+        self.waker = waker;
+        self
     }
 
     /// バックグラウンドで回す。
@@ -214,7 +224,11 @@ impl BulkImportWorker {
                     }
                 }
             }
-            tokio::time::sleep(self.poll).await;
+            // 次のスイープ（ジョブを失った取込の積み直し）の時刻までしか眠らない。
+            let until_sweep = sweep_at.saturating_duration_since(tokio::time::Instant::now());
+            self.waker
+                .wait_at_most(BULK_IMPORT_QUEUE, self.poll, until_sweep)
+                .await;
         }
     }
 }

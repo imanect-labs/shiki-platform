@@ -57,6 +57,9 @@ pub struct PipelineDeps {
     pub vector: Arc<dyn VectorStore>,
     pub fulltext: Arc<dyn FulltextIndex>,
     pub indexer_storage: Arc<IndexerStorage>,
+    /// キューが空のときに眠る部品（relay の投入の通知で起きる・#1332）。テストは
+    /// [`jobq::Waker::polling`]（`relay_poll_ms` ごとのポーリング）でよい。
+    pub waker: jobq::Waker,
 }
 
 /// relay ＋ consumer をバックグラウンド起動する（shiki-server の main から呼ぶ）。
@@ -138,7 +141,7 @@ async fn run_as_leader(deps: &Arc<PipelineDeps>) -> Result<(), crate::error::Rag
             match consumer::consume_once(&consume_deps).await {
                 // バッチが満杯だった場合は待たずに続けて取りに行く。
                 Ok(n) if n >= consume_deps.config.consumer_concurrency => {}
-                Ok(_) => tokio::time::sleep(idle).await,
+                Ok(_) => consume_deps.waker.wait(RAG_INGEST_QUEUE, idle).await,
                 Err(e) => {
                     tracing::error!(error = %e, "consumer ループに失敗（次周期で再試行）");
                     tokio::time::sleep(idle).await;

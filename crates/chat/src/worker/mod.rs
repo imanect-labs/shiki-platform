@@ -62,6 +62,9 @@ pub use yui::with_yui_guide;
 /// （`defer` は attempts を消費しないので、何度見直しても DLQ には影響しない）。
 const QUEUE_WAIT_POLL: Duration = Duration::from_secs(2);
 
+/// キューが空のときのポーリング間隔（LISTEN が使えないときだけ。使えるときは投入の通知で起きる）。
+const IDLE_POLL: Duration = Duration::from_millis(300);
+
 /// チャット生成ワーカー。複数タスクで並行消費できる（各タスクが claim ループを回す）。
 #[derive(Clone)]
 pub struct ChatWorker {
@@ -107,6 +110,8 @@ pub struct ChatWorker {
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
     /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
     data: Option<data::DataStore>,
+    /// キューが空のときに眠る部品（投入の通知で起きる・#1332）。既定は従来どおり短い間隔のポーリング。
+    waker: jobq::Waker,
     config: Arc<WorkerConfig>,
 }
 
@@ -157,6 +162,7 @@ impl ChatWorker {
             data: None,
             bug_report: None,
             help_search: None,
+            waker: jobq::Waker::polling(),
             config: Arc::new(config),
         }
     }
@@ -183,6 +189,14 @@ impl ChatWorker {
     #[must_use]
     pub fn with_data(mut self, data: data::DataStore) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    /// キューが空のときの待ち方（[`jobq::Waker`]）。LISTEN を張った Waker を渡すと、投入の通知で
+    /// 起きるまで長く眠る（未指定なら [`IDLE_POLL`] ごとのポーリング）。
+    #[must_use]
+    pub fn with_jobq_waker(mut self, waker: jobq::Waker) -> Self {
+        self.waker = waker;
         self
     }
 
@@ -238,8 +252,8 @@ impl ChatWorker {
             let r = self.claim_and_process(&worker_id, &slot).await;
             drop(slot); // 処理を終えたら枠を返す（保留中に返していれば何もしない）
             match r {
-                Ok(true) => {}                                                     // 1 件処理した
-                Ok(false) => tokio::time::sleep(Duration::from_millis(300)).await, // 空
+                Ok(true) => {}                                                        // 1 件処理した
+                Ok(false) => self.waker.wait(CHAT_GENERATION_QUEUE, IDLE_POLL).await, // 空
                 Err(e) => {
                     tracing::error!(error = %e, "chat worker loop error");
                     tokio::time::sleep(Duration::from_millis(500)).await;

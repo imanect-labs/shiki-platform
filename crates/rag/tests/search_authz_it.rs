@@ -149,6 +149,7 @@ async fn setup() -> Option<Env> {
         vector: Arc::clone(&vector) as _,
         fulltext: Arc::clone(&fulltext) as _,
         indexer_storage: Arc::new(IndexerStorage::new(pool.clone(), Arc::new(FakeObjectStore))),
+        waker: jobq::Waker::polling(),
     });
     let search = SearchService::new(
         pool.clone(),

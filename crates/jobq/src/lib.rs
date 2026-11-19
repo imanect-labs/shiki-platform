@@ -49,6 +49,10 @@
 //! デッドロックし得る。上振れは「同時に投入しているトランザクション数」倍で有界なので、公平性の
 //! 近似として受け入れる（rag の relay / consumer はリーダー選出で 1 プロセス・並列 2）。
 
+mod waker;
+
+pub use waker::{Waker, CHANNEL, DEFAULT_IDLE_MAX, DUE_FLOOR};
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::PgConnection;
@@ -130,13 +134,14 @@ pub struct DeadJob {
 
 /// ジョブを 1 件投入する。ドメイン書込と同一トランザクション上で呼べる。
 ///
-/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。
+/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振り、待機中の consumer への通知
+/// （[`Waker`]・`pg_notify`）も同じ文で送る。通知はコミット時に配られる（ロールバックなら届かない）。
 pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64, JobqError> {
     let id: i64 = sqlx::query_scalar(concat!(
         "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
          values ($1, $2, $3, $4, $5, ",
         fair_seq_expr!("$1", "$2"),
-        ") returning id"
+        ") returning id, pg_notify('jobq', $1)"
     ))
     .bind(job.queue)
     .bind(job.tenant_id)
@@ -351,14 +356,14 @@ pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool,
 /// DLQ の 1 件を元キューへ再投入する（attempts はリセット）。無ければ `false`。
 ///
 /// `fair_seq` は [`enqueue_on`] と同じ式で振り直す（新規投入と同じ扱い。DLQ に落ちた時点の
-/// 古い値で割り込ませない）。
+/// 古い値で割り込ませない）。待機中の consumer への通知も [`enqueue_on`] と同じく送る。
 pub async fn requeue_dead(conn: &mut PgConnection, id: i64) -> Result<bool, JobqError> {
     let requeued = sqlx::query_scalar::<_, i64>(concat!(
         "with revived as (delete from job_queue_dead where id = $1 returning *) \
          insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
          select r.queue, r.tenant_id, r.payload, r.max_attempts, r.trace_id, ",
         fair_seq_expr!("r.queue", "r.tenant_id"),
-        " from revived r returning id"
+        " from revived r returning id, pg_notify('jobq', queue)"
     ))
     .bind(id)
     .fetch_optional(conn)
@@ -411,11 +416,25 @@ pub async fn has_pending(conn: &mut PgConnection, queue: &str) -> Result<bool, J
     Ok(exists)
 }
 
-/// 指数バックオフ（30s → 2m → 8m → 32m → …、上限 1h）。consumer の既定リトライ方針。
+/// 指数バックオフ（30s → 2m → 8m → 32m → …、上限 1h）に ±10% のジッターを乗せる。consumer の
+/// 既定リトライ方針。
+///
+/// ジッターが無いと、同じ障害（下流の停止など）でまとめて失敗したジョブが毎回同じ時刻に揃って
+/// 再試行され、復旧直後の下流へ一斉に押し寄せる。
 pub fn backoff_for(attempts: i32) -> Duration {
+    jittered(base_backoff(attempts), rand::random::<f64>())
+}
+
+/// ジッター前のバックオフ。
+fn base_backoff(attempts: i32) -> Duration {
     let exp = u32::try_from(attempts.saturating_sub(1).clamp(0, 6)).unwrap_or(0);
     let secs = 30u64.saturating_mul(4u64.saturating_pow(exp));
     Duration::from_secs(secs.min(3600))
+}
+
+/// `base` を `[0.9, 1.1)` 倍する（`unit` は `[0, 1)` の一様乱数）。
+fn jittered(base: Duration, unit: f64) -> Duration {
+    base.mul_f64(0.9 + 0.2 * unit.clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -424,12 +443,31 @@ mod tests {
 
     #[test]
     fn backoff_is_exponential_and_capped() {
-        assert_eq!(backoff_for(1), Duration::from_secs(30));
-        assert_eq!(backoff_for(2), Duration::from_mins(2));
-        assert_eq!(backoff_for(3), Duration::from_mins(8));
-        assert_eq!(backoff_for(10), Duration::from_hours(1));
+        assert_eq!(base_backoff(1), Duration::from_secs(30));
+        assert_eq!(base_backoff(2), Duration::from_mins(2));
+        assert_eq!(base_backoff(3), Duration::from_mins(8));
+        assert_eq!(base_backoff(10), Duration::from_hours(1));
         // 0 以下でも安全（初回相当）。
-        assert_eq!(backoff_for(0), Duration::from_secs(30));
-        assert_eq!(backoff_for(-5), Duration::from_secs(30));
+        assert_eq!(base_backoff(0), Duration::from_secs(30));
+        assert_eq!(base_backoff(-5), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn jitter_stays_within_ten_percent() {
+        let base = Duration::from_mins(8);
+        assert_eq!(jittered(base, 0.0), base.mul_f64(0.9));
+        assert_eq!(jittered(base, 0.5), base);
+        assert!(jittered(base, 0.999_999) < base.mul_f64(1.1));
+        // 範囲外の乱数でも ±10% を超えない。
+        assert_eq!(jittered(base, -1.0), base.mul_f64(0.9));
+        assert_eq!(jittered(base, 2.0), base.mul_f64(1.1));
+        for attempts in [1, 3, 10] {
+            let b = backoff_for(attempts);
+            let base = base_backoff(attempts);
+            assert!(
+                b >= base.mul_f64(0.9) && b <= base.mul_f64(1.1),
+                "{b:?} vs {base:?}"
+            );
+        }
     }
 }

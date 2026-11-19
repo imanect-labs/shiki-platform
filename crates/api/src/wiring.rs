@@ -137,6 +137,7 @@ pub(crate) fn wire_rag(
     db: &sqlx::PgPool,
     object_store: &Arc<dyn ObjectStore>,
     authz: &Arc<dyn AuthzClient>,
+    jobq_waker: &jobq::Waker,
 ) -> anyhow::Result<RagWiring> {
     if !config.rag.enabled {
         tracing::info!("rag.enabled=false: インジェスト・検索は無効（/search は 503）");
@@ -218,6 +219,7 @@ pub(crate) fn wire_rag(
         vector: Arc::clone(&vector),
         fulltext: Arc::clone(&fulltext),
         indexer_storage,
+        waker: jobq_waker.clone(),
     });
     tracing::info!(
         worker = %rag_cfg.worker_base_url, qdrant = %rag_cfg.qdrant_url,
@@ -388,6 +390,7 @@ pub(crate) async fn wire_chat(
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
     bug_report: Option<Arc<shiki_bug_report::BugReportService>>,
+    jobq_waker: &jobq::Waker,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -540,7 +543,9 @@ pub(crate) async fn wire_chat(
     .with_data((**data).clone())
     // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
     // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
-    .with_workflow_directory(workflow_directory(skill_artifacts, db));
+    .with_workflow_directory(workflow_directory(skill_artifacts, db))
+    // キューが空の間は投入の通知を待って眠る（#1332）。
+    .with_jobq_waker(jobq_waker.clone());
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
     worker.spawn(config.chat.worker_concurrency);
     tracing::info!(
