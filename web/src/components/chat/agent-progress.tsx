@@ -11,6 +11,7 @@ import type * as React from "react";
 
 import { DataWriteSummary } from "./data-approval-summary";
 import { DriveMoveSummary } from "./drive-move-approval-summary";
+import { ToolApprovalSummary } from "./tool-approval-summary";
 import type { ApprovalRequest } from "@/lib/chat-api";
 
 /** 予算警告バナー（上限接近）。 */
@@ -73,13 +74,17 @@ export function ApprovalCard({
         </>
       ) : (
         <>
-          <p className="mb-1 text-[13px] text-foreground/80 [overflow-wrap:anywhere]">
-            ツール <code className="rounded bg-secondary px-1 py-0.5 text-[12px]">{request.name}</code> の実行に承認が必要です。
-          </p>
-          <p className="mb-2 text-[12px] text-muted-foreground">{request.reason}</p>
-          <pre className="mb-2 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-[11px] text-foreground/70">
-            {safeJson(request.input)}
-          </pre>
+          {/* どのファイルに・何をして・何が起きるかを読める形で（生のツール名と JSON は畳んでおく・#1339）。 */}
+          <ToolApprovalSummary request={request} />
+          <details className="mb-2 text-[11px] text-muted-foreground">
+            <summary className="cursor-pointer select-none">送る内容（JSON）</summary>
+            <p className="mt-1">
+              ツール <code className="rounded bg-secondary px-1 py-0.5">{request.name}</code>
+            </p>
+            <pre className="mt-1 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-foreground/70">
+              {safeJson(request.input)}
+            </pre>
+          </details>
         </>
       )}
       {/* スマホは親指で押しやすいよう幅いっぱいの 2 分割（誤タップしないよう間隔を空ける）。 */}
