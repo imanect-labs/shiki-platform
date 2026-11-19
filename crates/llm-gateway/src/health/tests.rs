@@ -153,3 +153,35 @@ fn restore_adds_back_to_counts_taken_meanwhile() {
     assert_eq!((b.ok, b.failed), (1, 1));
     assert_eq!(b.ttft[0], 1);
 }
+
+/// アダプタの中で 429 を待って送り直すプロバイダ（openai 互換の `send_waiting_out_rate_limit`）。
+struct WaitsOnce;
+
+#[async_trait::async_trait]
+impl LlmProvider for WaitsOnce {
+    fn name(&self) -> &'static str {
+        "waits"
+    }
+    async fn stream(&self, _req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
+        note_rate_limit_wait(Duration::from_millis(400));
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        Ok(Box::pin(futures::stream::iter(vec![text(), done()])))
+    }
+}
+
+#[tokio::test]
+async fn an_in_adapter_rate_limit_wait_counts_as_its_own_attempt() {
+    let h = Arc::new(HealthRecorder::new());
+    let p = Monitored::wrap(Arc::new(WaitsOnce), "p", Arc::clone(&h));
+    let s = p.stream(&GenerateRequest::new(Vec::new())).await.unwrap();
+    let _ = s.collect::<Vec<_>>().await;
+    let b = pending(&h);
+    assert_eq!((b.ok, b.failed, b.rate_limited), (1, 0, 1));
+    // 待った 400ms は TTFT に入れない（最初の区間＝250ms 以内に入る）。
+    assert_eq!(b.ttft[0], 1);
+}
+
+#[test]
+fn a_wait_outside_monitoring_is_ignored() {
+    note_rate_limit_wait(Duration::from_secs(1));
+}

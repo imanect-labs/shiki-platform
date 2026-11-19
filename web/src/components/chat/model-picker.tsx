@@ -22,7 +22,12 @@ import type {
   LlmModelsResponse,
   ProviderNotice,
 } from "@/lib/admin-ai-api";
-import { useLlmModels, useModelChoice, type ModelChoice } from "@/lib/model-choice";
+import {
+  refreshLlmModelsIfStale,
+  useLlmModels,
+  useModelChoice,
+  type ModelChoice,
+} from "@/lib/model-choice";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
@@ -353,8 +358,11 @@ function ModelList({
         {groups.map((g) => {
           // 国外処理はふつうプロバイダ単位で決まるので、全部そうなら見出しに 1 つだけ出す。
           const allAbroad = g.models.every((m) => m.processed_abroad);
-          // 状態はプロバイダ単位なので、見出しに 1 つだけ出す（読み上げはグループ名に含める）。
-          const notice = g.models.find((m) => m.provider_notice)?.provider_notice ?? null;
+          // 状態はプロバイダ単位なので、ふつうは見出しに 1 つだけ出す（読み上げはグループ名に含める）。
+          // 表示名が同じ別プロバイダが 1 つの見出しにまとまり状態が食い違うときは、行ごとに出す。
+          const first = g.models[0]?.provider_notice ?? null;
+          const sameNotice = g.models.every((m) => (m.provider_notice ?? null) === first);
+          const notice = sameNotice ? first : null;
           const groupLabel = [
             g.provider,
             allAbroad ? "（国外処理）" : "",
@@ -378,9 +386,14 @@ function ModelList({
               {g.models.map((m) =>
                 row(
                   m.id,
-                  <span className="min-w-0 flex-1 truncate" data-label>
-                    {m.label}
-                  </span>,
+                  <>
+                    <span className="min-w-0 flex-1 truncate" data-label>
+                      {m.label}
+                    </span>
+                    {!sameNotice && m.provider_notice ? (
+                      <NoticeBadge notice={m.provider_notice} />
+                    ) : null}
+                  </>,
                   { abroad: m.processed_abroad, badge: !allAbroad },
                   `model-option-${m.id}`,
                 ),
@@ -569,6 +582,10 @@ export function ModelButton({
   const [openState, setOpenState] = React.useState(false);
   const open = openProp ?? openState;
   const setOpen = onOpenChange ?? setOpenState;
+  // 開くたびに古ければ取り直す（開いたままの画面でもプロバイダの状態を新しく保つ）。
+  React.useEffect(() => {
+    if (open) refreshLlmModelsIfStale();
+  }, [open]);
   if (!data || !data.allow_user_choice || data.models.length === 0) return null;
 
   const { name, effort, summary, fallback, effective, currentEffort } = summarize(

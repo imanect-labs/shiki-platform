@@ -270,6 +270,28 @@ fn record_metrics(provider: &str, outcome: Outcome, ttft: Option<Duration>) {
     }
 }
 
+/// アダプタの中で 429 を待って送り直した分（[`note_rate_limit_wait`]）。
+#[derive(Debug, Default, Clone, Copy)]
+struct RateLimitWaits {
+    count: u32,
+    waited: Duration,
+}
+
+tokio::task_local! {
+    static RATE_LIMIT_WAITS: std::cell::Cell<RateLimitWaits>;
+}
+
+/// アダプタが 429 の待ち指示に従って送り直す前に呼ぶ。外の [`Monitored`] はその 429 を
+/// 1 回の試行（レート制限）として数え、待った時間を TTFT から除く。包まれていなければ何もしない。
+pub(crate) fn note_rate_limit_wait(wait: Duration) {
+    let _ = RATE_LIMIT_WAITS.try_with(|c| {
+        let mut w = c.get();
+        w.count += 1;
+        w.waited += wait;
+        c.set(w);
+    });
+}
+
 /// プロバイダを包み、試行ごとの結果と TTFT を数える。
 pub(crate) struct Monitored {
     inner: Arc<dyn LlmProvider>,
@@ -298,8 +320,20 @@ impl LlmProvider for Monitored {
     }
 
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
-        let started = Instant::now();
-        match self.inner.stream(req).await {
+        let begun = Instant::now();
+        let (result, waits) = RATE_LIMIT_WAITS
+            .scope(std::cell::Cell::default(), async {
+                let r = self.inner.stream(req).await;
+                (r, RATE_LIMIT_WAITS.with(std::cell::Cell::get))
+            })
+            .await;
+        // 中で待って送り直した 429 も 1 回の試行として数える（送り直した側は下で数える）。
+        for _ in 0..waits.count {
+            self.health.record(&self.id, Outcome::RateLimited, None);
+        }
+        // 待った時間はプロバイダの応答の遅さではないので TTFT に含めない。
+        let started = begun + waits.waited;
+        match result {
             Ok(s) => Ok(Box::pin(Watched {
                 inner: s,
                 id: self.id.clone(),

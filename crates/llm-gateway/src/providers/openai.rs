@@ -558,6 +558,8 @@ async fn send_waiting_out_rate_limit(
     {
         Some(wait) => {
             tracing::warn!(?wait, "プロバイダが 429 で待ちを指示した（待って送り直す）");
+            // 稼働状況では待つ前の 429 も 1 回の試行として数える（待ちは TTFT から除く）。
+            crate::health::note_rate_limit_wait(wait);
             tokio::time::sleep(wait).await;
             clock.send(again).await
         }
