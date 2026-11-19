@@ -354,6 +354,42 @@ async fn openai_stream_cut_midway_is_unavailable_not_a_clean_end() {
     }
 }
 
+/// 本文の途中で接続を切られた（宣言した長さに届かないまま閉じた）ストリームは、相手が切った
+/// 一時障害として印を付ける（まだ何も確定していなければ gateway が送り直す・retry.rs）。
+#[tokio::test]
+async fn openai_connection_dropped_mid_body_is_marked_as_cut_by_provider() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 8192];
+        let _ = sock.read(&mut buf).await;
+        let part = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"考え\"}}]}\n\n";
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n",
+            part.len() + 500
+        );
+        sock.write_all(head.as_bytes()).await.unwrap();
+        sock.write_all(part.as_bytes()).await.unwrap();
+        // 宣言した長さに届かないまま閉じる。
+        drop(sock);
+    });
+    let provider = OpenAiProvider::new(reqwest::Client::new(), format!("http://{addr}"), None, "m");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
+    let mut stream = provider.stream(&req).await.expect("stream should start");
+    let mut last = None;
+    while let Some(item) = stream.next().await {
+        last = Some(item);
+    }
+    match last {
+        Some(Err(LlmError::Unavailable(msg))) => {
+            assert!(msg.starts_with("cut by provider: stream: "), "{msg}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// 429 が短い待ちを指示したら、その分だけ待って 1 度だけ送り直す（長い待ち・2 度目の 429 は
 /// いつもどおり上限の誤り）。
 #[tokio::test]

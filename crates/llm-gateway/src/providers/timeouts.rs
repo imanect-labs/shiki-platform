@@ -203,7 +203,14 @@ impl RequestClock {
             read = self.within(self.timeouts.idle, Kind::Idle, body.next()) => match read {
                 Ok(None) => None,
                 Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
-                Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!("stream: {e}")))),
+                // 本文の読み取りの失敗（接続を切られた・チャンクの途中で途切れた）は、こちらの
+                // タイムアウトではなく相手側（プロバイダ・中継）が切ったもの。まだ何も確定して
+                // いなければ送り直せるよう印を付ける（retry.rs・実測: OpenRouter 経由の Claude Haiku で
+                // `error decoding response body` が並列 9 本の評価の約 8% で起き、run ごと失敗した）。
+                Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!(
+                    "{}stream: {e}",
+                    crate::provider::CUT_BY_PROVIDER
+                )))),
                 Err(e) => Some(Err(e)),
             },
             () = abandoned => None,
