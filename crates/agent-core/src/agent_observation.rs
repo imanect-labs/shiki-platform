@@ -361,6 +361,45 @@ pub(crate) fn nudge_unfinished_plan(
     true
 }
 
+/// 最後に呼ぶべきツール（[`crate::profile::AgentOptions::final_tool`]）を呼ばずに本文で終えたときの目印。
+const MISSING_FINAL_MARK: &str = "［自動確認: 最後の操作がまだです］";
+
+/// 最後に呼ぶべきツールを成功させないまま本文で終えたら、1 度だけ呼ぶよう促す。仕込んだら `true`。
+///
+/// 実測（Gemma 4 31B・Claude Haiku 5.5）: 答えを本文に書いて終え、依頼された提出ツールを
+/// 呼ばなかった。計画を使わない run では [`nudge_unfinished_plan`] が効かないので、ツール名で見る。
+pub(crate) fn nudge_missing_final_tool(messages: &mut Vec<LlmMessage>, final_tool: &str) -> bool {
+    let mut ids: Vec<&str> = Vec::new();
+    for b in messages.iter().flat_map(|m| m.content.iter()) {
+        if let Block::ToolUse { id, name, .. } = b {
+            if name == final_tool {
+                ids.push(id.as_str());
+            }
+        }
+    }
+    let succeeded = messages.iter().flat_map(|m| m.content.iter()).any(|b| {
+        matches!(b, Block::ToolResult { tool_use_id, is_error: false, .. }
+            if ids.contains(&tool_use_id.as_str()))
+    });
+    let already = messages.iter().any(|m| {
+        m.content
+            .iter()
+            .any(|b| matches!(b, Block::Text { text } if text.starts_with(MISSING_FINAL_MARK)))
+    });
+    if succeeded || already {
+        return false;
+    }
+    messages.push(LlmMessage::text(
+        llm_gateway::Role::User,
+        format!(
+            "{MISSING_FINAL_MARK}\n依頼では、結果を `{final_tool}` ツールで提出することになっていますが、\
+             まだ成功していません。本文に書いただけでは提出されません。作業が終わっているなら、今すぐ \
+             `{final_tool}` を呼んでください。まだ終わっていないなら、残りの作業を続けてから呼んでください。"
+        ),
+    ));
+    true
+}
+
 /// 空応答の催促を仕込む。既に催促済み、または添える先が無ければ `false`（＝諦めて畳む）。
 pub(crate) fn nudge_empty_response(messages: &mut [LlmMessage]) -> bool {
     let already = last_tool_result(messages).is_some_and(|c| c.contains(EMPTY_RESPONSE_NUDGE));
@@ -425,6 +464,37 @@ pub(crate) fn has_args(input: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use llm_gateway::Role as LlmRole;
+
+    #[test]
+    fn missing_final_tool_is_nudged_once_until_it_succeeds() {
+        let call = |id: &str| LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![Block::ToolUse {
+                id: id.into(),
+                name: "submit_answer".into(),
+                input: serde_json::json!({}),
+            }],
+        };
+        let result = |id: &str, err: bool| LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![Block::tool_result(id, "r", err)],
+        };
+        // 失敗した提出だけでは、まだ提出していない。
+        let mut msgs = vec![
+            LlmMessage::text(LlmRole::User, "集計して submit_answer で提出"),
+            call("a"),
+            result("a", true),
+            LlmMessage::text(LlmRole::Assistant, "答えは 42 です"),
+        ];
+        assert!(nudge_missing_final_tool(&mut msgs, "submit_answer"));
+        assert!(matches!(&msgs.last().unwrap().content[0],
+            Block::Text { text } if text.contains("`submit_answer` を呼んで")));
+        // 2 度目は促さない。
+        assert!(!nudge_missing_final_tool(&mut msgs, "submit_answer"));
+        // 成功していれば促さない。
+        let mut done = vec![call("b"), result("b", false)];
+        assert!(!nudge_missing_final_tool(&mut done, "submit_answer"));
+    }
 
     #[test]
     fn unfinished_plan_is_checked_only_once() {

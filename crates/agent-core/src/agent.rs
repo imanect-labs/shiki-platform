@@ -735,7 +735,10 @@ async fn run_step(
             && opts.profile.is_autonomous()
             && opts.aids.completion_check
             && can_continue
-            && crate::agent_observation::nudge_unfinished_plan(&mut state.messages, &state.plan)
+            && (crate::agent_observation::nudge_unfinished_plan(&mut state.messages, &state.plan)
+                || opts.final_tool.as_deref().is_some_and(|t| {
+                    crate::agent_observation::nudge_missing_final_tool(&mut state.messages, t)
+                }))
         {
             return Ok(StepOutcome::Continue);
         }

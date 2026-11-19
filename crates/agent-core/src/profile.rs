@@ -77,6 +77,9 @@ pub struct AgentOptions {
     /// 上限で外した結果と要約に置き換えた区間を保存し、`recall_read` / `recall_search` で読み
     /// 戻させる。run ごとに新しく作る（参照は run 内でだけ意味を持つ）。`None` は従来どおり。
     pub archive: Option<std::sync::Arc<dyn crate::archive::ContextArchive>>,
+    /// 最後に必ず呼ぶツール（提出・保存など）。`Some` なら、それを成功させずに本文で終えたとき
+    /// 1 度だけ呼ぶよう促す（自律版・`aids.completion_check` が有効なとき）。`None` は従来どおり。
+    pub final_tool: Option<String>,
 }
 
 /// 小さいモデル（Gemma 4・Qwen 3.x の 30B 級・Claude Haiku）でも作業を完遂させるための補助
@@ -208,6 +211,7 @@ impl AgentOptions {
             compaction: crate::compaction::CompactionOptions::disabled(),
             aids: HarnessAids::default(),
             archive: None,
+            final_tool: None,
         }
     }
 
@@ -239,6 +243,7 @@ impl AgentOptions {
             compaction: crate::compaction::CompactionOptions::default(),
             aids: HarnessAids::default(),
             archive: None,
+            final_tool: None,
         }
     }
 }
