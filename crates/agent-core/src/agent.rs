@@ -192,13 +192,16 @@ pub async fn run_agent(
             .then(|| crate::context::estimate_prompt_tokens(&state.messages));
         let steps_before = state.spent.steps;
         let step_budget = compaction.to_estimate(limits.step_results(opts.aids.step_result_budget));
+        // 出力上限で呼び出しが切れた直後は、そのステップだけ上限を引き上げる（窓の残りまで）。
+        let boosted =
+            crate::agent_observation::boosted_options(opts, &state.messages, &limits, &gauge);
         let step_outcome = match run_step(
             gateway,
             &tool_defs,
             &tool_map,
             tool_search.as_ref(),
             run,
-            opts,
+            boosted.as_ref().unwrap_or(opts),
             approver,
             &mut state,
             sink,

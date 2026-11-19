@@ -288,6 +288,39 @@ pub(crate) fn thinking_exhausted_after_text(
     ))
 }
 
+/// 出力上限で呼び出しが切れた直後のステップに使う設定（出力上限を 2 倍・窓の残りまで）。
+/// 引き上げられない（切れていない・窓を知らない・残りが無い）なら `None`。
+///
+/// 実測（Claude Haiku 5.5・refactor-xl・32k）: 1 応答に編集を 4〜5 件と思考を書いて 4096 トークンで
+/// 末尾が切れ、「小さく分けて」と返しても同じ形で 3 回続けて切れ、ループ検出で止まった。切れた
+/// 直後の 1 ステップだけ上限を上げる（Claude Code の出力上限の引き上げと同じ考え方）。
+pub(crate) fn boosted_options(
+    opts: &crate::profile::AgentOptions,
+    messages: &[LlmMessage],
+    limits: &crate::context::ContextLimits,
+    gauge: &crate::context::ContextGauge,
+) -> Option<crate::profile::AgentOptions> {
+    let truncated = messages.last().is_some_and(|m| {
+        m.content.iter().any(
+            |b| matches!(b, Block::ToolResult { content, .. } if content.starts_with(TRUNCATED_CALL_MARK)),
+        )
+    });
+    if !opts.aids.repair_calls || !truncated {
+        return None;
+    }
+    let base = opts.max_tokens?;
+    let window = limits.window?;
+    // 窓の残り（実トークン）。見積りの誤差ぶん余白を取る。
+    let room = (window.effective + base as usize).saturating_sub(gauge.tokens(messages) + 512);
+    let boosted = base
+        .saturating_mul(2)
+        .min(u32::try_from(room).unwrap_or(u32::MAX));
+    (boosted > base).then(|| crate::profile::AgentOptions {
+        max_tokens: Some(boosted),
+        ..opts.clone()
+    })
+}
+
 /// 次の生成が「思考だけで上限に達した」直後の書き直しか（履歴の最後に催促がある）。
 pub(crate) fn thinking_was_exhausted(messages: &[LlmMessage]) -> bool {
     messages.last().is_some_and(|m| {
@@ -464,6 +497,41 @@ pub(crate) fn has_args(input: &serde_json::Value) -> bool {
 mod tests {
     use super::*;
     use llm_gateway::Role as LlmRole;
+
+    #[test]
+    fn output_limit_is_raised_only_right_after_a_truncated_call() {
+        let mut opts = crate::profile::AgentOptions::autonomous(10, None, 1_000_000, 1_000_000);
+        opts.max_tokens = Some(4_096);
+        let limits = crate::context::ContextLimits::resolve(24_000, 6, Some(32_768), Some(4_096));
+        let gauge = crate::context::ContextGauge::with_overhead(0);
+        let cut = vec![LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![Block::tool_result(
+                "a",
+                truncated_call_message("edit_file", Some(4_096)),
+                true,
+            )],
+        }];
+        let boosted = boosted_options(&opts, &cut, &limits, &gauge).unwrap();
+        assert_eq!(boosted.max_tokens, Some(8_192));
+        // 切れていなければ引き上げない。
+        let ok = vec![LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![Block::tool_result("a", "ok", false)],
+        }];
+        assert!(boosted_options(&opts, &ok, &limits, &gauge).is_none());
+        // 窓の残りまでに抑える（残りが少なければ引き上げない）。
+        let mut busy = cut.clone();
+        busy.insert(0, LlmMessage::text(LlmRole::User, "字".repeat(26_000)));
+        let partial = boosted_options(&opts, &busy, &limits, &gauge).unwrap();
+        assert!(partial.max_tokens.unwrap() > 4_096 && partial.max_tokens.unwrap() < 8_192);
+        let mut full = cut.clone();
+        full.insert(0, LlmMessage::text(LlmRole::User, "字".repeat(30_000)));
+        assert!(boosted_options(&opts, &full, &limits, &gauge).is_none());
+        // 窓を知らないモデルでは引き上げない。
+        let unknown = crate::context::ContextLimits::resolve(24_000, 6, None, Some(4_096));
+        assert!(boosted_options(&opts, &cut, &unknown, &gauge).is_none());
+    }
 
     #[test]
     fn missing_final_tool_is_nudged_once_until_it_succeeds() {
