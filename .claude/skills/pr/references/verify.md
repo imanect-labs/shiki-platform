@@ -222,22 +222,38 @@ preview に載っているのはデプロイした版で、**作業中のブラ�
 
 ```bash
 H=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
-curl -s -o /dev/null -w '%{http_code}\n' "${H[@]}" https://shiki-preview.imanect.app/login
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "${H[@]}" https://shiki-preview.imanect.app/login
 ```
 
-`200`（または shiki 側のリダイレクトで `302` / `307`）なら通れている。`Location` が Cloudflare Access のログイン画面なら、ヘッダが付いていないか、トークンが違う。
+`200`、または shiki 側へのリダイレクト（`302` / `307` で、2 列目が `shiki-preview` のホスト）なら通れている。2 列目が Cloudflare Access のログイン画面なら、ヘッダが付いていないか、トークンが違う。
 
-Playwright では**コンテキストの `extraHTTPHeaders` に付ける。** ログインの途中で `shiki-preview-auth` へリダイレクトするので、ページ単位で付けると認証側で止まる。
+Playwright では、**トークンを preview の 2 ホストへのリクエストにだけ付ける。** コンテキストの `extraHTTPHeaders` は使わない（外部のリンク・画像・スクリプトなど、**全ホスト**へのリクエストにトークンが付いて漏れる）。
+`context.route` でホストを見て付ける。ログインの途中で `shiki-preview-auth` へリダイレクトするので、ページ単位ではなくコンテキスト単位で設定する。
 
 ```ts
-const context = await browser.newContext({
-  baseURL: "https://shiki-preview.imanect.app",
-  locale: "ja-JP",
-  extraHTTPHeaders: {
-    "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID!,
-    "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET!,
-  },
+const PREVIEW_HOSTS = new Set(["shiki-preview.imanect.app", "shiki-preview-auth.imanect.app"]);
+const ACCESS_HEADERS = {
+  "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID!,
+  "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET!,
+};
+
+const context = await browser.newContext({ baseURL: "https://shiki-preview.imanect.app", locale: "ja-JP" });
+await context.route("**/*", (route) => {
+  const req = route.request();
+  if (PREVIEW_HOSTS.has(new URL(req.url()).hostname)) {
+    return route.continue({ headers: { ...req.headers(), ...ACCESS_HEADERS } });
+  }
+  return route.continue();
 });
+// 確認: preview 以外のホストへのリクエストにトークンが付いていたら止める
+context.on("request", async (req) => {
+  if (PREVIEW_HOSTS.has(new URL(req.url()).hostname)) return;
+  const h = await req.allHeaders();
+  if (h["cf-access-client-id"] || h["cf-access-client-secret"]) {
+    throw new Error(`Access のトークンが preview 以外へ送られた: ${new URL(req.url()).hostname}`);
+  }
+});
+
 const page = await context.newPage();
 await page.goto("/login");
 await page.waitForURL(/shiki-preview-auth\.imanect\.app\/realms\/shiki\//);
@@ -246,6 +262,8 @@ await page.locator("#password").fill(process.env.SHIKI_PREVIEW_PASS!);
 await page.locator("#kc-login").click();
 await page.waitForURL((u) => u.hostname === "shiki-preview.imanect.app" && !u.pathname.startsWith("/login"));
 ```
+
+`route.continue` で付けたヘッダは、そのリクエストが起こしたリダイレクトにも引き継がれる。preview の 2 ホストから外部へリダイレクトする操作（外部サービスへのログイン・連携など）は、この設定のまま行わない。
 
 **preview は共有の環境。** 他の人も同じテストユーザーで、実際の業務に近い使い方をしている。
 
