@@ -40,6 +40,19 @@ pub enum Relation {
     /// 監査閲覧者（組織の監査ログを検索・書き出しできる・#634）。admin とは独立で、互いに
     /// 含意しない（管理者でない監査担当者を置ける）。閲覧権にも連鎖しない（PIT-65）。
     AuditViewer,
+    /// 公開チャンネルの組織読者（`org_reader@organization#member`・Task 14.2）。公開チャンネルの
+    /// 作成時だけ書かれ、参加していない組織メンバーにも閲覧・参加を許す。非公開と DM には書かない。
+    OrgReader,
+    /// チャンネルの投稿者（Task 14.2）。通常は `poster@channel#member`、アナウンス専用は個別の user。
+    Poster,
+    /// チャンネルを読める（`member or org_reader`・Task 14.2）。
+    CanRead,
+    /// 公開チャンネルに参加できる（`org_reader`・Task 14.2）。
+    CanJoin,
+    /// チャンネルへ投稿できる（`poster and member`・退出で失う・Task 14.2）。
+    CanPost,
+    /// チャンネルを管理できる（`admin`・org 管理者から継承しない・Task 14.2）。
+    CanManage,
 }
 
 impl Relation {
@@ -57,6 +70,12 @@ impl Relation {
             Relation::CanUse => "can_use",
             Relation::Admin => "admin",
             Relation::AuditViewer => "audit_viewer",
+            Relation::OrgReader => "org_reader",
+            Relation::Poster => "poster",
+            Relation::CanRead => "can_read",
+            Relation::CanJoin => "can_join",
+            Relation::CanPost => "can_post",
+            Relation::CanManage => "can_manage",
         }
     }
 
@@ -77,6 +96,12 @@ impl Relation {
             "can_use" => Some(Relation::CanUse),
             "admin" => Some(Relation::Admin),
             "audit_viewer" => Some(Relation::AuditViewer),
+            "org_reader" => Some(Relation::OrgReader),
+            "poster" => Some(Relation::Poster),
+            "can_read" => Some(Relation::CanRead),
+            "can_join" => Some(Relation::CanJoin),
+            "can_post" => Some(Relation::CanPost),
+            "can_manage" => Some(Relation::CanManage),
             _ => None,
         }
     }
@@ -120,6 +145,8 @@ pub enum ObjectType {
     /// 全行をタプルにしない原則の唯一の例外で、明示共有した行だけがスパースに載る
     /// （タプル数は共有件数に比例・design §4.10）。
     DataRecord,
+    /// 職員間メッセージのチャンネル（公開／非公開／DM・Task 14.2・design §4.14）。
+    Channel,
 }
 
 impl ObjectType {
@@ -138,6 +165,7 @@ impl ObjectType {
             ObjectType::MiniApp => "miniapp",
             ObjectType::DataTable => "data_table",
             ObjectType::DataRecord => "data_record",
+            ObjectType::Channel => "channel",
         }
     }
 }
@@ -163,6 +191,22 @@ mod tests {
         assert_eq!(Relation::parse("admin"), Some(Relation::Admin));
         assert_eq!(Relation::AuditViewer.as_str(), "audit_viewer");
         assert_eq!(Relation::parse("audit_viewer"), Some(Relation::AuditViewer));
+    }
+
+    #[test]
+    fn channel_vocab_roundtrips() {
+        // channel 型の語彙（Task 14.2）は as_str と parse が往復する。
+        for r in [
+            Relation::OrgReader,
+            Relation::Poster,
+            Relation::CanRead,
+            Relation::CanJoin,
+            Relation::CanPost,
+            Relation::CanManage,
+        ] {
+            assert_eq!(Relation::parse(r.as_str()), Some(r));
+        }
+        assert_eq!(ObjectType::Channel.as_str(), "channel");
     }
 
     #[test]

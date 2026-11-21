@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
-import { isEditorRoute } from "@/lib/nav-config";
+import { collapsesSidebar, hidesShellHeader, ownsMobileChrome } from "@/lib/nav-config";
 import { installInAppHistoryTracking } from "@/lib/in-app-history";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { SidebarProvider, useSidebar } from "./sidebar/sidebar-context";
@@ -23,26 +23,26 @@ function ShellSearch() {
   return <SidebarSearch open={searchOpen} onOpenChange={setSearchOpen} />;
 }
 
-/// 没入エディタに入ったらサイドバーを畳み、離れたら元に戻す。編集中の集中体験のため
-/// （human 要望）。ユーザーが編集中に手動で開いた場合はその状態を尊重し、離脱時に
-/// 「入った時の状態」へ復元する。手動 pref を恒久的に書き換えない。
+/// 没入エディタとメッセージ画面に入ったらサイドバーを畳み、離れたら元に戻す（human 要望）。
+/// ユーザーが滞在中に手動で開いた場合はその状態を尊重し、離脱時に「入った時の状態」へ
+/// 復元する。手動 pref を恒久的に書き換えない。
 function ImmersiveController() {
   const pathname = usePathname();
   const { setRouteImmersive } = useSidebar();
-  // 没入エディタのルートにいる間だけ一時折りたたみ（手動 pref は不変・離脱で自動復元）。
+  // 対象ルートにいる間だけ一時折りたたみ（手動 pref は不変・離脱で自動復元）。
   React.useEffect(() => {
-    setRouteImmersive(isEditorRoute(pathname));
+    setRouteImmersive(collapsesSidebar(pathname));
   }, [pathname, setRouteImmersive]);
   return null;
 }
 
-/// PC の上部バーの表示制御。没入エディタでは既定の現在地バー（📁 現在地）を出さず縦の作業
+/// PC の上部バーの表示制御。没入エディタとメッセージ画面では既定の現在地バー（📁 現在地）を出さず縦の作業
 /// 領域を最大化する。ただしエディタが usePageChrome でクロームを登録している場合はそれを唯一の
 /// バーとして表示する。スマホはバーを出さず `MobileChrome` が角に操作を浮かせる。
 function ShellHeader() {
   const pathname = usePathname();
   const spec = usePageChromeValue();
-  if (isEditorRoute(pathname) && !spec) return null;
+  if (hidesShellHeader(pathname) && !spec) return null;
   return <Header />;
 }
 
@@ -50,13 +50,14 @@ function ShellHeader() {
 /// aria-label が二重になる（支援技術・E2E の strict 選択で衝突）。mount 後は画面幅に合う
 /// 片方だけを置く。SSR と hydration 直後は幅が分からないため両方を置き、CSS（md:）で隠す。
 function ShellChrome() {
+  const pathname = usePathname();
   const desktop = useMediaQuery("(min-width: 768px)");
   const mobile = useMediaQuery("(max-width: 767.98px)");
   const known = desktop || mobile;
   return (
     <>
       {(!known || desktop) && <ShellHeader />}
-      {(!known || mobile) && <MobileChrome />}
+      {(!known || mobile) && !ownsMobileChrome(pathname) && <MobileChrome />}
     </>
   );
 }
@@ -64,12 +65,13 @@ function ShellChrome() {
 /// 本文のスクロール領域。スマホでは浮いたボタンの分だけ上端を空ける（会話のように本文を
 /// ボタンの下まで流すページは `flowUnder` で外す）。
 function ShellMain({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   const spec = usePageChromeValue();
   return (
     <main
       className={cn(
         "min-h-0 flex-1 overflow-y-auto overscroll-y-contain",
-        !spec?.flowUnder && "max-md:pt-[calc(4rem+env(safe-area-inset-top))]",
+        !spec?.flowUnder && !ownsMobileChrome(pathname) && "max-md:pt-[calc(4rem+env(safe-area-inset-top))]",
       )}
     >
       {children}

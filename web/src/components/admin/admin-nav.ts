@@ -3,6 +3,7 @@ import {
   Database,
   Home,
   type LucideIcon,
+  MessagesSquare,
   ScrollText,
   Sparkles,
   Users,
@@ -152,12 +153,30 @@ export const ADMIN_SECTIONS: AdminSection[] = [
     ],
   },
   {
+    key: "messaging",
+    label: "メッセージ",
+    icon: MessagesSquare,
+    href: "/admin/messaging/settings",
+    // 監査担当者の閲覧（/admin/messaging/audit）は「監査ログ」のセクションに属する。
+    prefix: "/admin/messaging/settings",
+    access: "admin",
+  },
+  {
     key: "audit",
     label: "監査ログ",
     icon: ScrollText,
     href: "/admin/audit",
-    prefix: "/admin/audit",
+    prefix: "/admin/(audit|messaging/audit)",
     access: "audit",
+    menu: [
+      {
+        label: "監査",
+        items: [
+          { label: "監査ログ", href: "/admin/audit", exact: true },
+          { label: "メッセージの閲覧", href: "/admin/messaging/audit" },
+        ],
+      },
+    ],
   },
 ];
 

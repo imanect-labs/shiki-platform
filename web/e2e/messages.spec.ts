@@ -1,0 +1,320 @@
+import { test, expect, type Page } from "@playwright/test";
+
+import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// 職員間メッセージ（Phase 14・design §4.14）。実サーバ（compose の shiki-server）に対して、
+/// チャンネルの作成・投稿・スレッド・リアクション・編集・削除・検索と、非公開チャンネルが他人に見えないこと、
+/// DM を開けることを確かめる。権限の網羅は Rust の結合テスト（crates/messaging・crates/api）が担う。
+
+test.use({ viewport: { width: 1440, height: 900 } });
+
+async function openMessages(page: Page) {
+  await page.goto("/messages");
+  await expect(page.getByRole("complementary", { name: "チャンネル一覧" })).toBeVisible();
+}
+
+async function createChannel(page: Page, name: string, kind: "公開" | "非公開", invite?: string) {
+  await page.getByRole("button", { name: "新規作成" }).click();
+  await page.getByRole("menuitem", { name: "チャンネルを作成" }).click();
+  const dialog = page.getByRole("dialog", { name: "チャンネルを作成" });
+  await dialog.getByRole("radio", { name: new RegExp(`^${kind} `) }).click();
+  await dialog.getByLabel("名前").fill(name);
+  if (invite) {
+    await dialog.getByRole("textbox", { name: "招待する人" }).fill(invite);
+    await dialog.getByRole("option", { name: new RegExp(invite, "i") }).first().click();
+  }
+  await dialog.getByRole("button", { name: "作成する" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+}
+
+async function send(page: Page, text: string, where = "#") {
+  const box = page.getByRole("combobox", { name: new RegExp(`^${where === "#" ? "#" : ""}.*へメッセージを送る$`) });
+  await box.fill(text);
+  await box.press("Enter");
+}
+
+function row(page: Page, text: string) {
+  return page.getByTestId("channel-view").getByTestId("message-row").filter({ hasText: text });
+}
+
+test("チャンネルを作って投稿し、スレッド・リアクション・編集・削除・検索ができる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-ch");
+  await createChannel(page, name, "公開");
+
+  // 投稿。
+  const first = `最初の発言 ${name}`;
+  await send(page, first);
+  await expect(row(page, first)).toBeVisible();
+
+  // リアクション（ホバーで出る操作）。
+  await row(page, first).hover();
+  await row(page, first).getByRole("button", { name: "リアクションを付ける" }).click();
+  await page.getByRole("button", { name: "👍" }).click();
+  await expect(row(page, first).getByRole("button", { name: /👍 1 件/ })).toHaveAttribute("aria-pressed", "true");
+
+  // スレッドで返信。
+  await row(page, first).hover();
+  await row(page, first).getByRole("button", { name: "スレッドで返信" }).click();
+  const thread = page.getByTestId("thread-pane");
+  await expect(thread).toBeVisible();
+  const reply = `スレッドの返信 ${name}`;
+  const replyBox = thread.getByRole("combobox", { name: "スレッドに返信…" });
+  await replyBox.fill(reply);
+  await replyBox.press("Enter");
+  await expect(thread.getByTestId("message-row").filter({ hasText: reply })).toBeVisible();
+  await expect(row(page, first).getByRole("button", { name: /返信 1 件/ })).toBeVisible();
+  await thread.getByRole("button", { name: "スレッドを閉じる" }).click();
+  await expect(thread).toBeHidden();
+
+  // 編集（本人だけ）。
+  const second = `二つ目 ${name}`;
+  await send(page, second);
+  await row(page, second).hover();
+  await row(page, second).getByRole("button", { name: "編集" }).click();
+  const editor = row(page, second).getByRole("combobox", { name: "発言を編集" });
+  await editor.fill(`${second} 直しました`);
+  await editor.press("Enter");
+  await expect(row(page, `${second} 直しました`)).toContainText("（編集済み）");
+
+  // 削除（確認してから）。
+  const third = `消す発言 ${name}`;
+  await send(page, third);
+  await row(page, third).hover();
+  await row(page, third).getByRole("button", { name: "削除" }).click();
+  await page.getByRole("dialog", { name: "発言を削除しますか？" }).getByRole("button", { name: "削除する" }).click();
+  await expect(page.getByText("この発言は削除されました")).toBeVisible();
+  await expect(row(page, third)).toHaveCount(0);
+
+  // 検索（参加しているチャンネルの発言が当たる）。
+  await page.getByRole("button", { name: "発言を検索" }).click();
+  await page.getByRole("textbox", { name: "発言を検索" }).fill(first);
+  const hit = page.getByTestId("search-hit").filter({ hasText: name });
+  await expect(hit.first()).toBeVisible();
+  await hit.first().click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+});
+
+test("送信の応答を待つ間に書き足した下書きは消えず、そのまま送ったときだけ空になる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-draft");
+  await createChannel(page, name, "公開");
+  const box = page.getByRole("combobox", { name: /へメッセージを送る$/ });
+
+  // 投稿のリクエストを止めておき、その間に書き足してから流す。
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let seen: () => void = () => undefined;
+  const posted = new Promise<void>((r) => (seen = r));
+  await page.route("**/api/messaging/channels/*/messages", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    seen();
+    await held;
+    await route.continue();
+  });
+  const sent = `送った本文 ${name}`;
+  await box.fill(sent);
+  await box.press("Enter");
+  await posted;
+  await box.press("End");
+  await box.pressSequentially(" 追記");
+  const done = page.waitForResponse((r) => r.request().method() === "POST" && /\/messages$/.test(r.url()));
+  release();
+  await done;
+  await expect(row(page, sent)).toBeVisible();
+  // 送信の後始末（応答を受けて送信中を解く）が終わってから下書きを見る。
+  await expect(page.getByRole("button", { name: "送信" })).toBeEnabled();
+  await expect(box).toHaveValue(`${sent} 追記`);
+  await page.unroute("**/api/messaging/channels/*/messages");
+
+  // 書き足さずに送れば空になる。
+  await box.fill(`次の発言 ${name}`);
+  await box.press("Enter");
+  await expect(row(page, `次の発言 ${name}`)).toBeVisible();
+  await expect(box).toHaveValue("");
+});
+
+test("送信の応答を待つ間に添付だけを外しても、下書きは消えない", async ({ page }) => {
+  await loginViaKeycloak(page);
+  // 添付する文書をドライブに置く。
+  await page.goto("/drive");
+  const fileName = `${uniqueName("添付")}.txt`;
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from("添付の本文"),
+  });
+  await expect(page.getByRole("button", { name: `「${fileName}」の操作` })).toBeVisible({ timeout: 20_000 });
+
+  await openMessages(page);
+  const name = uniqueName("e2e-attach");
+  await createChannel(page, name, "公開");
+  const box = page.getByRole("combobox", { name: /へメッセージを送る$/ });
+  await page.getByRole("button", { name: "ドライブの文書を共有" }).click();
+  const picker = page.getByRole("dialog", { name: "ドライブの文書を共有" });
+  await picker.getByRole("button", { name: fileName }).click();
+  await expect(picker).toBeHidden();
+  const detach = page.getByRole("button", { name: `${fileName} の添付を外す` });
+  await expect(detach).toBeVisible();
+
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((r) => (release = r));
+  let seen: () => void = () => undefined;
+  const posted = new Promise<void>((r) => (seen = r));
+  await page.route("**/api/messaging/channels/*/messages", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    seen();
+    await held;
+    await route.continue();
+  });
+  const sent = `添付つきの発言 ${name}`;
+  await box.fill(sent);
+  await box.press("Enter");
+  await posted;
+  // 応答を待つ間に添付だけを外す。
+  await detach.click();
+  const done = page.waitForResponse((r) => r.request().method() === "POST" && /\/messages$/.test(r.url()));
+  release();
+  await done;
+  await expect(row(page, sent)).toBeVisible();
+  await expect(page.getByRole("button", { name: "送信" })).toBeEnabled();
+  // 下書きは送った内容と違うので残る（本文は消えず、外した添付は戻らない）。
+  await expect(box).toHaveValue(sent);
+  await expect(detach).toHaveCount(0);
+  await page.unroute("**/api/messaging/channels/*/messages");
+});
+
+test("ドライブの資料をチャンネルに閲覧で共有し、解除できる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-docs");
+  await createChannel(page, name, "公開");
+
+  await page.goto("/drive");
+  const folder = uniqueName("チャンネル共有");
+  await page.getByRole("button", { name: "新規フォルダ" }).click();
+  const create = page.getByRole("dialog");
+  await create.getByRole("textbox").fill(folder);
+  await create.getByRole("button", { name: "作成" }).click();
+  await expect(page.getByText(folder, { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  const share = page.getByRole("dialog");
+  await share.getByTestId("share-tab-channels").click();
+  await share.getByRole("button", { name: `${name} に共有`, exact: true }).click();
+  const entry = share.getByTestId("share-channel-entry").filter({ hasText: name });
+  await expect(entry).toBeVisible();
+  await expect(share.getByRole("button", { name: `${name} に共有済み` })).toBeDisabled();
+
+  // チャンネルのヘッダの「資料」から、共有したフォルダが参加者に見える。
+  await page.keyboard.press("Escape");
+  await openMessages(page);
+  await page.getByTestId("channel-row").filter({ hasText: name }).click();
+  await expect(page.getByTestId("pill-files")).toHaveAccessibleName("資料 1 件");
+  await page.getByTestId("pill-files").click();
+  await expect(page.getByTestId("channel-side-panel").getByTestId("channel-file").filter({ hasText: folder })).toBeVisible();
+
+  // 閉じて開き直しても共有が残っている（サーバに保存されている）。
+  await page.goto("/drive");
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  await share.getByTestId("share-tab-channels").click();
+  await expect(entry).toBeVisible();
+
+  await share.getByRole("button", { name: `${name} への共有を解除` }).click();
+  await expect(entry).toHaveCount(0);
+  await expect(share.getByText("まだどのチャンネルにも共有していません。")).toBeVisible();
+});
+
+test("発言をピン留めして一覧から外せ、チャンネルにスターを付けると上に並ぶ", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-pin");
+  await createChannel(page, name, "公開");
+  const text = `大事な発言 ${name}`;
+  await send(page, text);
+  await expect(row(page, text)).toBeVisible();
+
+  // 発言の操作からピン留めすると、行に印が付き、ヘッダの件数とピンの一覧に出る。
+  await row(page, text).hover();
+  await row(page, text).getByRole("button", { name: "ピン留めする" }).click();
+  await expect(row(page, text).getByTestId("pinned-label")).toBeVisible();
+  await expect(page.getByTestId("pill-pins")).toHaveAccessibleName("ピン 1 件");
+  await page.getByTestId("pill-pins").click();
+  const panel = page.getByTestId("channel-side-panel");
+  await expect(panel.getByTestId("pinned-message").filter({ hasText: text })).toBeVisible();
+
+  // 一覧から外すと、行の印も消える（再読込しても戻らない）。
+  await panel.getByTestId("pinned-message").filter({ hasText: text }).getByRole("button", { name: "外す" }).click();
+  await expect(panel.getByTestId("pinned-message")).toHaveCount(0);
+  await expect(page.getByTestId("pill-pins")).toHaveAccessibleName("ピン 0 件");
+  await page.reload();
+  await expect(row(page, text)).toBeVisible();
+  await expect(row(page, text).getByTestId("pinned-label")).toHaveCount(0);
+
+  // スターを付けると「スター」の欄へ上がり、外すと戻る（再読込しても保たれる）。
+  const list = page.getByRole("complementary", { name: "チャンネル一覧" });
+  const chRow = list.getByTestId("channel-row").filter({ hasText: name });
+  await chRow.hover();
+  await list.getByRole("button", { name: `${name} にスターを付ける` }).click();
+  await expect(list.getByRole("button", { name: /^スター/ })).toBeVisible();
+  await page.reload();
+  await expect(list.getByRole("button", { name: `${name} のスターを外す` })).toHaveAttribute("aria-pressed", "true");
+  await list.getByRole("button", { name: `${name} のスターを外す` }).click();
+  await expect(list.getByRole("button", { name: `${name} にスターを付ける` })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("非公開チャンネルは参加していない人には見えず、DM を開ける", async ({ page, browser }) => {
+  await loginViaKeycloak(page);
+  await openMessages(page);
+  const name = uniqueName("e2e-private");
+  await createChannel(page, name, "非公開");
+  const secret = `内緒の発言 ${name}`;
+  await send(page, secret);
+  await expect(row(page, secret)).toBeVisible();
+  const channelId = new URL(page.url()).searchParams.get("c");
+  expect(channelId).toBeTruthy();
+
+  // Bob（同じテナント・招待していない）には一覧にも検索にも出ず、直接開いても読めない。
+  const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const bob = await bobCtx.newPage();
+  await loginAs(bob, "bob");
+  await openMessages(bob);
+  await expect(bob.getByTestId("channel-row").filter({ hasText: name })).toHaveCount(0);
+  const direct = await bob.request.get(`/api/messaging/channels/${channelId}`);
+  expect(direct.status()).toBe(404);
+  await bob.goto(`/messages?c=${channelId}`);
+  await expect(bob.getByText("このチャンネルを開けません")).toBeVisible();
+  await bob.getByRole("button", { name: "発言を検索" }).click();
+  await bob.getByRole("textbox", { name: "発言を検索" }).fill(secret);
+  await expect(bob.getByText("一致する発言がありません")).toBeVisible();
+
+  // DM を開く（同じ 2 人の DM は 1 つ）。Alice が送ると Bob の一覧に出る。
+  await page.getByRole("button", { name: "新規作成" }).click();
+  await page.getByRole("menuitem", { name: "ダイレクトメッセージ" }).click();
+  const dm = page.getByRole("dialog", { name: "ダイレクトメッセージ" });
+  await dm.getByRole("textbox", { name: "相手を探す" }).fill("bob");
+  await dm.getByRole("button", { name: /bob/i }).first().click();
+  await expect(dm).toBeHidden();
+  const hello = `こんにちは ${name}`;
+  const dmBox = page.getByRole("combobox", { name: /へメッセージを送る$/ });
+  await dmBox.fill(hello);
+  await dmBox.press("Enter");
+  await expect(row(page, hello)).toBeVisible();
+
+  await bob.goto("/messages");
+  await bob.getByTestId("channel-row").filter({ hasText: /alice/i }).first().click();
+  await expect(bob.getByTestId("channel-view").getByTestId("message-row").filter({ hasText: hello })).toBeVisible();
+
+  // Bob の返信は、開いたままの Alice の画面に配信（SSE）で届く（読み直さない）。
+  const answer = `お返事です ${name}`;
+  const bobBox = bob.getByRole("combobox", { name: /へメッセージを送る$/ });
+  await bobBox.fill(answer);
+  await bobBox.press("Enter");
+  await expect(row(page, answer)).toBeVisible({ timeout: 15_000 });
+  await bobCtx.close();
+});

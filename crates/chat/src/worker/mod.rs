@@ -56,7 +56,7 @@ use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
 pub use config::{WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
-pub use yui::with_yui_guide;
+pub use yui::{with_yui_guide, yui_inline_reference};
 
 /// 順番待ちのジョブを見直す間隔。先行 run の完了はイベントで通知されないため短くポーリングする
 /// （`defer` は attempts を消費しないので、何度見直しても DLQ には影響しない）。

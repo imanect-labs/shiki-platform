@@ -69,9 +69,11 @@ type folder
     define editor_via_link: [user]
     define viewer_via_link: [user]
     define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
+    define viewer: [user, user:*, role#member, organization#member, channel#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # ストレージ: ファイル（ツリーの葉・認可の最小オブジェクト）。
+# folder / file の viewer は channel#member も受理する（チャンネルへの資料共有・design §4.14）。
+# 共有は閲覧だけ（editor には入れない）で、共有した資料はチャンネルへの公開返信の根拠に使える。
 # ルート直下のファイルは parent を持たず、作成者の owner タプルのみで到達する。
 # 共有先は user 直接付与 ＋ role#member（#76・folder と同一ポリシ）。
 type file
@@ -82,7 +84,7 @@ type file
     define editor_via_link: [user]
     define viewer_via_link: [user]
     define editor: [user, role#member, organization#member, workflow] or owner or editor from parent or editor_via_link
-    define viewer: [user, user:*, role#member, organization#member, workflow] or editor or viewer from parent or viewer_via_link
+    define viewer: [user, user:*, role#member, organization#member, channel#member, workflow] or editor or viewer from parent or viewer_via_link
 
 # チャット: スレッド（会話・#37）。ツリー継承は持たず、作成者 owner ＋明示共有のみ。
 # 共有語彙は viewer / commenter / editor（owner の横展開は防ぐため付与しない）。
@@ -138,3 +140,28 @@ type data_record
   relations
     define editor: [user, role#member]
     define viewer: [user, role#member] or editor
+
+# 職員間メッセージのチャンネル（Phase 14・Task 14.2・design §4.14）。DM も kind=Dm のチャンネルとして
+# 同じ型に乗る（グループ DM も同型）。識別子は他の型と同じく channel:<tenant>|<id> で名前空間化する。
+# 公開／非公開の違いは、作成時に org_reader タプルを書くかどうかだけで表す（属性で分岐させない）。
+# 管理者権限は organization#admin から継承しない（organization 型のコメントと同じ方針・PIT-65）。
+# 参加前の発言を読めない制約（非公開・DM）は FGA では表せないため、messaging の読取経路が
+# channel_member.visible_from で担う（PIT-63）。
+type channel
+  relations
+    define parent: [organization]
+    # 作成者が admin になる。明示付与のみ。
+    define admin: [user]
+    # 参加者。参加・招待で明示タプルを書き、退出で消す（公開チャンネルも同じ）。
+    define member: [user] or admin
+    # 公開チャンネルだけ、作成時に org_reader@organization:<tenant>|<org>#member を書く。
+    # 参加していない組織メンバーも読める・一覧に出る・参加できる。非公開と DM には書かない。
+    define org_reader: [organization#member]
+    # 投稿者。通常は poster@channel:<id>#member（参加者全員）を書く。
+    # アナウンス専用チャンネルは poster@user:<id> を個別に書く。
+    define poster: [user, channel#member]
+    define can_read: member or org_reader
+    define can_join: org_reader
+    # 退出すれば投稿もできなくなるよう、member との積集合にする。
+    define can_post: poster and member
+    define can_manage: admin

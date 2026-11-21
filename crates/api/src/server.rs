@@ -191,6 +191,23 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .get(routes::shares::list_shares)
             },
         ),
+        // 資料のチャンネル共有（design §4.14・閲覧だけ・owner かつチャンネルの参加者）。
+        r("/nodes/{id}/channel-shares", &["GET"], Session, || {
+            get(routes::channel_shares::list_channel_shares)
+        }),
+        r(
+            "/nodes/{id}/channel-shares/{channel_id}",
+            &["PUT", "DELETE"],
+            Session,
+            || {
+                put(routes::channel_shares::share_with_channel)
+                    .delete(routes::channel_shares::unshare_from_channel)
+            },
+        ),
+        // チャンネルに共有されている資料（参加者だけ・自分が読めるものだけ）。
+        r("/messaging/channels/{id}/files", &["GET"], Session, || {
+            get(routes::channel_shares::list_channel_files)
+        }),
         r("/shares/shared-with-me", &["GET"], Session, || {
             get(routes::shares::shared_with_me)
         }),
@@ -596,6 +613,10 @@ pub fn route_table() -> Vec<RouteDecl> {
     table.extend(routes::office::office_route_decls());
     table.extend(routes::llm_models::llm_model_route_decls());
     table.extend(routes::bug_reports::route_decls());
+    table.extend(routes::messaging::route_decls());
+    table.extend(routes::messaging_messages::route_decls());
+    table.extend(routes::messaging_agent::route_decls());
+    table.extend(routes::messaging_admin::route_decls());
     table.extend(routes::chat_help_cases::route_decls());
     table.extend(routes::org_admin_bug_reports::route_decls());
     table.extend(routes::org_admin_ai::org_admin_ai_route_decls());
