@@ -71,4 +71,31 @@ test("ドライブの項目を D&D でフォルダへ移動・パンくずで戻
   // 作業フォルダへ戻ると、ファイルがある。
   await crumbs.getByRole("button", { name: work }).click();
   await expect(page.getByText(fileName, { exact: true })).toBeVisible();
+
+  // --- OS のファイルをフォルダ行へ落とす → そのフォルダへアップロード。同名衝突の
+  // 「両方残す」も、現在フォルダではなく落としたフォルダへ保存される ---
+  const dup = `${uniqueName("DnD投入")}.txt`;
+  await dropOsFile(page, page.getByText(folderA, { exact: true }), dup);
+  await expect(page.getByText("アップロードが完了しました", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  await dropOsFile(page, page.getByText(folderA, { exact: true }), dup);
+  const conflict = page.getByRole("dialog");
+  await conflict.getByRole("button", { name: "両方残す" }).click();
+  await expect(conflict).toBeHidden();
+  // 現在フォルダ（作業フォルダ）には入らない。
+  await expect(page.getByText(dup, { exact: true })).toHaveCount(0);
+  await page.getByText(folderA, { exact: true }).click();
+  await expect(page.getByText(dup, { exact: true })).toBeVisible();
+  await expect(page.getByText(dup.replace(/\.txt$/, " (1).txt"), { exact: true })).toBeVisible({ timeout: 20_000 });
 });
+
+/// OS からのファイルのドロップを再現する（dataTransfer に File を載せて dragenter→dragover→drop）。
+async function dropOsFile(page: Page, target: ReturnType<Page["getByText"]>, name: string) {
+  const dt = await page.evaluateHandle((n) => {
+    const d = new DataTransfer();
+    d.items.add(new File(["dropped from os\n"], n, { type: "text/plain" }));
+    return d;
+  }, name);
+  for (const type of ["dragenter", "dragover", "drop"]) {
+    await target.dispatchEvent(type, { dataTransfer: dt });
+  }
+}
