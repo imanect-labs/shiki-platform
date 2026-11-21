@@ -44,7 +44,7 @@ import { Breadcrumbs, ListHeader, LoadingRow, MobileBreadcrumbs } from "./primit
 import { ShareDialog } from "./share-dialog";
 import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
 import { UploadConflictDialog } from "./upload-conflict-dialog";
-import { isFileDrag, type DraggedNode, type DropHandlers } from "./use-drive-dnd";
+import { endDrag, isFileDrag, type DraggedNode, type DropHandlers } from "./use-drive-dnd";
 import { useDriveUploads } from "./use-drive-uploads";
 import { VersionsDialog } from "./versions-dialog";
 
@@ -243,6 +243,8 @@ export function DriveBrowser() {
 
   // --- D&D で移動（マウス端末のみ。タッチは長押しメニューの「移動」） ---
   const fine = useMediaQuery("(pointer: fine)");
+  // ドラッグ中に画面を離れても、浮くカードと document のリスナーを残さない。
+  React.useEffect(() => endDrag, []);
   const moveNode = async (node: DraggedNode, dest: string | null) => {
     const destName =
       dest === null

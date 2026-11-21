@@ -37,7 +37,7 @@ export function DriveDragLayer() {
         {drag.target ? (
           <div className="flex min-w-0 items-center gap-1 pl-0.5 text-[12px] text-primary">
             <CornerDownRight className="size-3.5 shrink-0" />
-            <span className="truncate">「{drag.target}」へ移動</span>
+            <span className="truncate">「{drag.target.name}」へ移動</span>
           </div>
         ) : null}
       </div>

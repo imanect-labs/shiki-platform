@@ -4,12 +4,17 @@
 ///
 /// - ドラッグ元は行・カード。運ぶのは独自 MIME（`DRIVE_NODE_MIME`）の JSON で、OS のファイル
 ///   ドロップ（`Files`）と区別する。外部アプリへ落としても意味を持たない値にする。
-/// - ドロップ先はフォルダの行・カードとパンくず。自分自身・今いるフォルダ（=現在の親）へは
-///   受けない（何も起きない移動を成功に見せない）。自身の配下への移動はクライアントでは
+/// - ドロップ先はフォルダの行・カードとパンくず。自分自身・今の親フォルダへは受けない
+///   （何も起きない移動を成功に見せない。検索結果は親が混在するので親 id で判定する）。自身の配下への移動はクライアントでは
 ///   祖先を知らないため判定せず、サーバの拒否（400）をそのまま伝える。
 /// - フォルダ行には OS のファイルも落とせる（そのフォルダへアップロード）。
 /// - 掴んでいる物は、ブラウザ既定のドラッグイメージ（横長の行の薄い写し）ではなく、
 ///   カーソルに付いて浮くカード（`DriveDragLayer`）で見せる。既定の像は透明にして消す。
+/// - 何を動かすかは**このページで始まったドラッグの状態**だけを正とする。dataTransfer の独自 MIME は
+///   「ドライブ内のドラッグか」の判別にだけ使い、中身（id）は信用しない。別ページが同じ MIME の
+///   値を作って落とせば、利用者の権限で任意のノードを動かせてしまうため（confused deputy）。
+/// - ドラッグ元の行は途中でアンマウントされうる（アップロード完了で一覧を再読込する等）。その行の
+///   dragend は React に届かないので、document の drop/dragend と画面のアンマウントでも後始末する。
 /// - 認可はサーバ（StorageService）が判定する。ここは操作の入口だけで権限を推測しない。
 
 import * as React from "react";
@@ -25,11 +30,13 @@ export type DraggedNode = Pick<NodeResponse, "id" | "kind" | "name">;
 export type DragState = {
   node: DraggedNode;
   contentType?: string | null;
+  /// 今の親フォルダ（null=ドライブ直下、undefined=不明）。そこへの移動は受けない。
+  parentId?: string | null;
   /// カーソル位置（ビューポート座標）。ウィンドウの外に出たら null（カードを隠す）。
   x: number | null;
   y: number | null;
-  /// いま乗っているドロップ先の名前（「→ ○○へ移動」に出す）。
-  target: string | null;
+  /// いま乗っているドロップ先（名前は「→ ○○へ移動」に出す。key は同名の別フォルダの区別用）。
+  target: { key: string; name: string } | null;
 };
 
 let state: DragState | null = null;
@@ -78,15 +85,29 @@ function onDocDragOver(e: DragEvent) {
   });
 }
 function onDocDragLeave(e: DragEvent) {
-  // ウィンドウの外へ出た（relatedTarget が無い）時だけ隠す。
-  if (!e.relatedTarget) patch({ x: null, y: null, target: null });
+  // ウィンドウの外へ出た時だけ隠す。Safari は dragleave の relatedTarget が常に null なので、
+  // 要素間の移動と区別できるよう座標で判定する（外へ出た時は境界上か外の座標になる）。
+  const { clientX: x, clientY: y } = e;
+  if (x <= 0 || y <= 0 || x >= window.innerWidth || y >= window.innerHeight) {
+    patch({ x: null, y: null, target: null });
+  }
 }
-function endDrag() {
+/// ドラッグを終える（行の dragend・document の drop/dragend・画面のアンマウントから呼ぶ。冪等）。
+export function endDrag() {
   if (raf) cancelAnimationFrame(raf);
   raf = 0;
-  document.removeEventListener("dragover", onDocDragOver, true);
-  document.removeEventListener("dragleave", onDocDragLeave, true);
-  set(null);
+  if (typeof document !== "undefined") {
+    document.removeEventListener("dragover", onDocDragOver, true);
+    document.removeEventListener("dragleave", onDocDragLeave, true);
+    document.removeEventListener("drop", onDocEnd, true);
+    document.removeEventListener("dragend", onDocEnd, true);
+    document.removeEventListener("mousemove", onDocEnd, true);
+  }
+  if (state) set(null);
+}
+// ドロップ処理（各ドロップ先の onDrop）が state を読み終えてから片付ける。
+function onDocEnd() {
+  setTimeout(endDrag, 0);
 }
 
 export function isFileDrag(e: React.DragEvent): boolean {
@@ -109,9 +130,22 @@ export function nodeDragSource(node: NodeResponse, onEnd?: () => void) {
       e.dataTransfer.setData("text/plain", node.name);
       const img = blankImage();
       if (img) e.dataTransfer.setDragImage(img, 0, 0);
-      set({ node: payload, contentType: node.content_type, x: e.clientX, y: e.clientY, target: null });
+      endDrag(); // 前回の取り残しがあれば片付けてから始める
+      set({
+        node: payload,
+        contentType: node.content_type,
+        parentId: node.parent_id,
+        x: e.clientX,
+        y: e.clientY,
+        target: null,
+      });
       document.addEventListener("dragover", onDocDragOver, true);
       document.addEventListener("dragleave", onDocDragLeave, true);
+      document.addEventListener("drop", onDocEnd, true);
+      document.addEventListener("dragend", onDocEnd, true);
+      // ドラッグ中は mousemove が発火しない。ドラッグ元が外れて drop/dragend が届かなかった時も、
+      // 終わった後の最初のマウス移動で片付く。
+      document.addEventListener("mousemove", onDocEnd, true);
     },
     onDragEnd: () => {
       endDrag();
@@ -140,9 +174,12 @@ export function useDropTarget(
   // 子要素の出入りで dragleave が連発するため、入った回数で数える。
   const depth = React.useRef(0);
 
+  // dest が null（ドライブ直下）でも区別できるキー。
+  const key = dest ?? "\u0000root";
   const accepts = (e: React.DragEvent) => {
     if (!handlers || opts.disabled) return false;
-    if (isNodeDrag(e)) return state?.node.id !== dest;
+    // このページで始まったドラッグだけを受ける（別ページ由来の同じ MIME は無視）。
+    if (isNodeDrag(e)) return state !== null && state.node.id !== dest && state.parentId !== dest;
     return Boolean(handlers.onDropFiles) && isFileDrag(e);
   };
 
@@ -158,7 +195,7 @@ export function useDropTarget(
       e.stopPropagation();
       depth.current += 1;
       setOver(true);
-      if (isNodeDrag(e)) patch({ target: name });
+      if (isNodeDrag(e)) patch({ target: { key, name } });
     },
     onDragOver: (e: React.DragEvent) => {
       if (!accepts(e)) return;
@@ -172,7 +209,7 @@ export function useDropTarget(
       depth.current = Math.max(0, depth.current - 1);
       if (depth.current === 0) {
         setOver(false);
-        if (state?.target === name) patch({ target: null });
+        if (state?.target?.key === key) patch({ target: null });
       }
     },
     onDrop: (e: React.DragEvent) => {
@@ -181,8 +218,8 @@ export function useDropTarget(
       e.stopPropagation();
       reset();
       if (isNodeDrag(e)) {
-        const node = parseDragged(e.dataTransfer.getData(DRIVE_NODE_MIME));
-        if (node && node.id !== dest) handlers.onMoveNode(node, dest);
+        // 動かす対象はページ内の状態から取る（dataTransfer の id は信用しない）。
+        if (state) handlers.onMoveNode(state.node, dest);
         return;
       }
       const files = Array.from(e.dataTransfer.files);
@@ -191,18 +228,6 @@ export function useDropTarget(
   };
 
   return { over, props };
-}
-
-function parseDragged(raw: string): DraggedNode | null {
-  try {
-    const v = JSON.parse(raw) as Partial<DraggedNode>;
-    if (typeof v.id === "string" && typeof v.name === "string" && (v.kind === "file" || v.kind === "folder")) {
-      return { id: v.id, name: v.name, kind: v.kind };
-    }
-  } catch {
-    /* 別ページ・別アプリ由来の壊れた値は無視する */
-  }
-  return null;
 }
 
 /// ドロップ先として乗っている間の見た目（行・カード・パンくず共通）。
