@@ -993,6 +993,7 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
 ### 4.9 監視
 
 - OTel計装（axum/tonic/agent-core）→ Tempo/Loki/Prometheus（クラウドはエクスポータ差し替え）。
+- SLO（SLI の定義・目標・エラーバジェット・計測の現状）は [slo.md](./slo.md)。SLI は Prometheus の recording rule で一度だけ定義し、Grafana・アラート・ベンダーコンソール（§4.12）が同じ rule を読む。
 - Langfuse で LLM 可視化。**監査ログ（権限・引用chunk）と Langfuse を trace_id で突合**（早期に種を蒔く）。
 - **監査ログの保持期間**（#831・human 判断 2026-10-22）: 既定 365 日、運用者がテナントごとに 90〜3650 日で設定
   （`tenant.audit_retention_days`・`PUT /admin/tenants/{id}/audit-retention`／`shiki-admin audit-retention`）。
