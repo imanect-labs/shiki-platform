@@ -199,6 +199,79 @@ grep -rl '<変更した画面に出る文言>' web/e2e/
 bash deploy/compose/smoke-bff.sh     # /healthz → /auth/login → Keycloak → callback → /me（+ Cookie 無しで 401）
 ```
 
+## 4.5 preview（共有のプレビュー環境）で確かめる
+
+ローカルで起動できないとき（クラウド環境で compose を立てられない等）や、**デプロイ済みの版**の挙動を確かめたいとき（不具合の再現など）に使う。
+preview に載っているのはデプロイした版で、**作業中のブランチではない。** 未マージの変更はここでは確かめられない。
+
+入口は 2 枚ある。
+
+| 壁 | 通り方 |
+| --- | --- |
+| Cloudflare Access（`shiki-preview.imanect.app` と `shiki-preview-auth.imanect.app`） | サービストークンのヘッダ 2 つを**全リクエスト**に付ける |
+| shiki のログイン（Keycloak） | テストユーザーでログインフォームを通す |
+
+資格情報は環境変数で受け取る。**値をコード・ログ・PR・コメントに書かない。** 無ければ human に頼む（推測で探さない）。
+
+| 変数 | 中身 |
+| --- | --- |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | エージェント用のサービストークン |
+| `SHIKI_PREVIEW_USER` / `SHIKI_PREVIEW_PASS` | テストユーザー。別テナントが要るときは、別のテストユーザーを human から受け取る |
+
+疎通確認:
+
+```bash
+H=(-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET")
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "${H[@]}" https://shiki-preview.imanect.app/login
+```
+
+`200`、または shiki 側へのリダイレクト（`302` / `307` で、2 列目が `shiki-preview` のホスト）なら通れている。2 列目が Cloudflare Access のログイン画面なら、ヘッダが付いていないか、トークンが違う。
+
+Playwright では、**トークンを preview の 2 ホストへのリクエストにだけ付ける。** コンテキストの `extraHTTPHeaders` は使わない（外部のリンク・画像・スクリプトなど、**全ホスト**へのリクエストにトークンが付いて漏れる）。
+`context.route` でホストを見て付ける。ログインの途中で `shiki-preview-auth` へリダイレクトするので、ページ単位ではなくコンテキスト単位で設定する。
+
+```ts
+const PREVIEW_HOSTS = new Set(["shiki-preview.imanect.app", "shiki-preview-auth.imanect.app"]);
+const ACCESS_HEADERS = {
+  "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID!,
+  "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET!,
+};
+
+const context = await browser.newContext({ baseURL: "https://shiki-preview.imanect.app", locale: "ja-JP" });
+await context.route("**/*", (route) => {
+  const req = route.request();
+  if (PREVIEW_HOSTS.has(new URL(req.url()).hostname)) {
+    return route.continue({ headers: { ...req.headers(), ...ACCESS_HEADERS } });
+  }
+  return route.continue();
+});
+// 確認: preview 以外のホストへのリクエストにトークンが付いていたら止める
+context.on("request", async (req) => {
+  if (PREVIEW_HOSTS.has(new URL(req.url()).hostname)) return;
+  const h = await req.allHeaders();
+  if (h["cf-access-client-id"] || h["cf-access-client-secret"]) {
+    throw new Error(`Access のトークンが preview 以外へ送られた: ${new URL(req.url()).hostname}`);
+  }
+});
+
+const page = await context.newPage();
+await page.goto("/login");
+await page.waitForURL(/shiki-preview-auth\.imanect\.app\/realms\/shiki\//);
+await page.locator("#username").fill(process.env.SHIKI_PREVIEW_USER!);
+await page.locator("#password").fill(process.env.SHIKI_PREVIEW_PASS!);
+await page.locator("#kc-login").click();
+await page.waitForURL((u) => u.hostname === "shiki-preview.imanect.app" && !u.pathname.startsWith("/login"));
+```
+
+`route.continue` で付けたヘッダは、そのリクエストが起こしたリダイレクトにも引き継がれる。preview の 2 ホストから外部へリダイレクトする操作（外部サービスへのログイン・連携など）は、この設定のまま行わない。
+
+**preview は共有の環境。** 他の人も同じテストユーザーで、実際の業務に近い使い方をしている。
+
+- 既存のファイル・テーブル・設定を消したり変えたりしない。組織の設定・AI 設定は触らない。
+- 作るものは名前を `agent-` で始め、確認が終わったら消す。
+- 渡されたテストユーザー以外でログインしない。
+- 画面や応答に、テスト用でないデータ（利用者の文書・会話）が見えたら、スクリーンショットや PR に載せない。
+
 ## 5. PR への反映
 
 最終スクリーンショットと、実行した E2E spec ＋ 結果を PR 本文の「## 検証」に書く。
