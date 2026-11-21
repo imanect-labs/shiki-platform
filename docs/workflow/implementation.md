@@ -25,14 +25,16 @@
 - **青（チョークポイント）**: `StorageService` / `SearchService`(RAG) / `LlmGateway` /
   `Sandbox` / `SecretStore`。ワークフロー専用の権限チェックは存在せず、既存チョークポイントに
   合流するだけである。
-- **オレンジ（認可）**: OpenFGA。**ただし通るのは `storage`/`rag`/`secret`/`skill`/`csv`/`data` の系統のみ**
+- **オレンジ（認可）**: OpenFGA。**ただし通るのは `storage`/`rag`/`secret`/`skill`/`csv`/`data`/`workflow.start` の系統のみ**
   （`ProdNodePorts` が `AuthContext` を組んで渡す経路。`crates/api/src/workflow_runtime/ports.rs`
-  の `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`、および `data_*` が使う
-  `workflow_runtime/data_port.rs` の `DataPort::actor`。`AuthContext` の組み立ては
-  `workflow_runtime/auth.rs` の `auth_ctx`）。`llm.invoke`/`agent.invoke`/`http.request`
+  の `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`/`workflow_start`
+  （`WorkflowRunLauncher::start_interactive` → `WorkflowStore::get_latest` が `ArtifactStore` で認可）、
+  および `data_*` が使う `workflow_runtime/data_port.rs` の `DataPort::actor`。`AuthContext` の
+  組み立ては `workflow_runtime/auth.rs` の `auth_ctx`）。`llm.invoke`/`agent.invoke`/`http.request`
   は OpenFGA を経由せず、`scope_ceiling`・レート制限・宛先束縛（secret 経由の allowlist）・
-  sandbox 制約でそれぞれ守られる（同ファイル `llm_invoke`/`agent_invoke`/`http_send` は
-  `auth_ctx` を呼ばない）。図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は
+  sandbox 制約でそれぞれ守られる（同ファイルの `agent_invoke`/`http_send` は `auth_ctx` を呼ばない。
+  `llm_invoke` は `auth_ctx` で組んだ `AuthContext` を `LlmGateway` に渡すが、これはテナント単位の
+  制限・利用量の記録のためで、OpenFGA check は行わない）。図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は
   一様ではない点に注意。
 - **ピンク（script-runtime）**: QuickJS on wasmtime のエンジン自体は `crates/script-runtime` に
   gRPC over UDS サーバ実装（`server.rs`）を持つが、**Stage A の本番配線はこれを使っていない**。
@@ -64,7 +66,7 @@ UNIQUE 制約だけで実装している。これは「部品点数を増やす�
 | `workflow_run` | `0016_workflow_run.sql:9` | run の正。`trigger_kind`（interactive/schedule/event）・`principal`・開始時にピンした `ir_snapshot` を持つ。 | PK `(tenant_id, run_id)`。version は開始時に固定し、実行中の IR 編集の影響を受けない。 |
 | `step_execution` | `0016_workflow_run.sql:47` | step の正＝**チェックポイントの粒度**。`status`/`attempt`/`next_retry_at`/`wake_at`/`lease_owner`/`lease_expires_at`/`fencing_token`/`output`/`taken_ports` を持つ。 | PK `(tenant_id, run_id, step_path)`。`idempotency_key` 列に `wf:{tenant_id}:{run_id}:{step_path}` を保持。 |
 | `run_event` | `0016_workflow_run.sql:95` | run の追記ログ（監査・再生用）。 | PK `(tenant_id, run_id, seq)` で `seq` 単調増加を強制し追記を exactly-once に潰す。 |
-| `effect_journal` | `0016_workflow_run.sql:109`（`0020` で `reserved_at` 追加） | **チョークポイント側**の冪等記録。副作用を「高々 1 回」にする（PIT-31）が、対象は **書込系の能力のみ**: `storage.write`（in-TX・`write_file_internal_idempotent`）と、cross-TX の `workflow.start`（`nodes/capability.rs:261-301` の `do_workflow_start`）・`csv.patch`・`csv.write`（同ファイル）・`data.write`（`nodes/capability_data.rs` の `journaled_data_write`）。`llm.invoke`/`agent.invoke`/`http.request` はこの journal を通らず at-least-once のまま（リース失効時に LLM 生成や sandbox 実行が再実行され得る）。 | PK `(tenant_id, idempotency_key)`。`result_summary` が NULL の間は「予約済み・実行中」を表す。 |
+| `effect_journal` | `0016_workflow_run.sql:109`（`0020` で `reserved_at` 追加） | **チョークポイント側**の冪等記録。副作用の重複を抑える（PIT-31）。対象は **書込系の能力のみ**: `storage.write`（in-TX・`write_file_internal_idempotent`）と、cross-TX の `workflow.start`（`nodes/capability.rs:261-301` の `do_workflow_start`）・`csv.patch`・`csv.write`（同ファイル）・`data.write`（`nodes/capability_data.rs` の `journaled_data_write`）。「高々 1 回」が成り立つのは副作用と記録が同一 TX の `storage.write` だけで、cross-TX の書込は副作用の成功後・記録前にワーカーが止まると、予約の回収（300 秒）後に再実行され得る（§2.5）。`llm.invoke`/`agent.invoke`/`http.request` はこの journal を通らず at-least-once のまま（リース失効時に LLM 生成や sandbox 実行が再実行され得る）。 | PK `(tenant_id, idempotency_key)`。`result_summary` が NULL の間は「予約済み・実行中」を表す。 |
 | `workflow_registration` | `0017_workflow_registration.sql:12` | ワークフローの有効化状態（enabled/disabled/suspended_reconsent）・同意済みスコープ集合。 | PK `(tenant_id, workflow_id)`。 |
 | `workflow_trigger` | `0017:30` | IR から実体化したトリガ（schedule/event/interactive）。 | PK `(tenant_id, trigger_id)`。 |
 | `workflow_delegation` | `0017:55` | 委譲台帳。`(delegator, scope, object_ref)` ごとに、どの FGA relation タプルを発行したかを記録。 | PK `(tenant_id, workflow_id, delegator, scope, object_ref)`。 |
@@ -152,7 +154,7 @@ tick を実行するのは常に 1 プロセスだけになる。
 ### 2.5 「exactly-once の代替」としての Postgres — effect_journal
 
 ステップ実行は **at-least-once**（クラッシュ→リース失効→再実行がありうる）。これを
-「高々 1 回」まで引き上げるのが `effect_journal` テーブルと `capability/journal.rs` の
+重複しにくくするのが `effect_journal` テーブルと `capability/journal.rs` の
 `JournalDecision`（`Proceed` / `AlreadyDone(結果)` / `InProgress` / `DigestMismatch`）だが、
 **実際にこの journal を通すのは書込系の能力のみ**: `storage.write`（in-TX・
 `StorageService::write_file_internal_idempotent`）と、cross-TX の `workflow.start`（`nodes/capability.rs:261-301`）・
@@ -162,7 +164,11 @@ tick を実行するのは常に 1 プロセスだけになる。
 (tenant_id, idempotency_key)` を行い、同一キーでの再実行は記録済み結果を no-op で返す。
 `result_summary` が NULL のままの行は「予約済み・副作用実行中」を意味し、
 `RESERVATION_RECLAIM_SECS = 300`（`journal.rs:14`）を過ぎても NULL なら別ワーカーが再取得して
-よいとみなす。**`llm.invoke`/`agent.invoke`/`rag.search`/`http.request` はこの保護の対象外**で
+よいとみなす（`journal.rs` の `try_reclaim`）。このため **「高々 1 回」が成り立つのは、副作用と記録を
+同一 TX で確定する `storage.write` だけ**である。cross-TX の書込（`workflow.start`・`csv.patch`・`csv.write`・
+`data.write`）は、副作用の成功後・`journal.record` の前にワーカーが止まると結果が NULL のまま残り、
+回収後に同じ書込が再実行され得る（重複を防げるかはポート側の冪等性に依存する）。
+**`llm.invoke`/`agent.invoke`/`rag.search`/`http.request` はこの保護の対象外**で
 at-least-once のまま（外部 `http.request` は `Idempotency-Key` ヘッダ注入支援のみの
 best-effort、README.md §6 Q4）。リース失効直後の再実行では LLM 生成や sandbox 実行が
 二重に走り得る点に注意。
@@ -191,7 +197,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | 冪等キー | `idempotency_key()`（`run/model.rs:108-110`、`wf:{tenant_id}:{run_id}:{step_path}`・attempt 非依存）。 |
 | effect_journal | `effect_journal` テーブル（`0016:109`）＋ `capability/journal.rs`（`JournalDecision`・`op_digest`）。 |
 | fencing token | `step_execution.fencing_token` 列。`claim_ready_step`（`run/store/claim.rs:136`）が claim のたびに +1。 |
-| 能力ゲートウェイ | `CapabilityNodeExecutor`（`nodes/exec.rs:36-49` 構造体・286-365行 `impl NodeExecutor`）。処理順は「制御ノード早期return → `check_ceiling` → 能力ごとのディスパッチ」。ディスパッチ先の手順は能力ごとに異なる: `llm.invoke`/`agent.invoke`/`http.request` は `rate_check`（`nodes/capability.rs:110-124`）を通す。`workflow.start`/`csv.patch`/`csv.write`/`data.write` は `effect_journal` を予約してから `NodePorts` を呼ぶ。`storage.write` は冪等キーと `op_digest` を `NodePorts::storage_write` に渡し、storage 側のトランザクション内で journal を処理する。読取系（`storage.read` 等）は journal を通さずに `NodePorts` を呼ぶ。いずれも最後に `audit.record`。 |
+| 能力ゲートウェイ | `CapabilityNodeExecutor`（`nodes/exec.rs:36-49` 構造体・286-365行 `impl NodeExecutor`）。処理順は「制御ノード早期return → `check_ceiling` → 能力ごとのディスパッチ」。ディスパッチ先の手順は能力ごとに異なる: `llm.invoke`/`agent.invoke`/`http.request` は `rate_check`（`nodes/capability.rs:110-124`）を通す。`workflow.start`/`csv.patch`/`csv.write`/`data.write` は `effect_journal` を予約してから `NodePorts` を呼ぶ。`storage.write` は冪等キーと `op_digest` を `NodePorts::storage_write` に渡し、storage 側のトランザクション内で journal を処理する。読取系（`storage.read` 等）は journal を通さずに `NodePorts` を呼ぶ。成功時は最後に `audit.record` を呼ぶが、ポートエラーで早期 return した場合や、journal が `AlreadyDone`（記録済み結果をそのまま返す）・`InProgress`・`DigestMismatch` を返した場合は記録しない（scope_ceiling 外の拒否だけは `record_out_of_scope` で記録する）。 |
 | NodePorts / ProdNodePorts | トレイト定義は `nodes/ports.rs:163-`（`storage_write/storage_read/storage_list/rag_search/llm_invoke/agent_invoke/http_send/resolve_secret/workflow_start/skill_resolve/csv_query/csv_patch/csv_write` の13メソッドと、既定実装つきの `data_list_tables/data_query/data_get/data_write`）。実装は `crates/api/src/workflow_runtime/ports.rs:31-52`（`ProdNodePorts`）、`auth_ctx`（`workflow_runtime/auth.rs:9-27`）が interactive/schedule・event で `AuthContext::new` と `AuthContext::for_workflow` を分岐。 |
 | script-runtime | `crates/script-runtime`（`ScriptEngine::run`、`engine.rs:247-277`）。能力呼び出しの gRPC 双方向ストリームは `server.rs:66`（`execute`）/`142-217`（`drive_stream`）。 |
 | WorkflowRunLauncher | `run/launcher.rs`（`WorkflowRunLauncher`・`LauncherError`）。interactive API・スケジューラ・イベント relay が共有するrun作成の唯一の入口。 |
@@ -231,14 +237,16 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
    制御ノードを早期return → `check_ceiling` → 能力ごとのディスパッチ（外部 API 系は `rate_check`、
    cross-TX の書込系は `effect_journal` 予約して `Proceed` のときのみ副作用実行、`storage.write` は
    冪等キーと `op_digest` をポートに渡して storage 側 TX 内で journal 処理、読取系は journal なし）→
-   `NodePorts` 経由でチョークポイント呼出 → `audit.record`。
-6. **AuthContext 分岐（storage/rag/secret/skill/csv/data のみ）**: `auth_ctx`
+   `NodePorts` 経由でチョークポイント呼出 → 成功時のみ `audit.record`（ポートエラーの早期 return や
+   journal の `AlreadyDone` では記録しない）。
+6. **AuthContext 分岐**: `auth_ctx`
    （`workflow_runtime/auth.rs:9-27`）が `ec.principal_kind == "workflow"` なら
    `AuthContext::for_workflow`、そうでなければ `AuthContext::new(..PrincipalKind::User..)` を組み、
-   `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`/`data_*`（`DataPort::actor` 経由）がこれをチョークポイントへ渡す。チョークポイント
-   内部で通常どおり OpenFGA check が走る（ワークフロー専用の認可経路はない）。**`llm_invoke`/
-   `agent_invoke`/`http_send` は `auth_ctx` を呼ばず OpenFGA を経由しない**（§1 の注記のとおり
-   scope_ceiling・レート制限・宛先束縛・sandbox 制約で守る）。
+   `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`/`workflow_start`/`data_*`（`DataPort::actor` 経由）が
+   これをチョークポイントへ渡す。チョークポイント内部で通常どおり OpenFGA check が走る（ワークフロー専用の
+   認可経路はない）。`llm_invoke` も `AuthContext` を `LlmGateway` に渡すが、テナント単位の制限・利用量の
+   記録のためで OpenFGA check はない。**`agent_invoke`/`http_send` は `auth_ctx` を呼ばない**。
+   この 3 つは §1 の注記のとおり scope_ceiling・レート制限・宛先束縛・sandbox 制約で守る。
 7. **checkpoint**: 結果（`output`/`taken_ports`）を `step_execution` に単一 TX で書き込み、
    `readiness.rs` の純関数が後続 step の ready/skip を判定する。
 
@@ -283,7 +291,8 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
   shiki-server プロセス内のエンジンを使う in-process 経路のみ（§1 参照）。script.md が前提とする「非特権別プロセス・資格情報ゼロ」の
   隔離は Stage A では未接続。
 - **effect_journal の適用範囲**: 書込系（`storage.write`・`workflow.start`・`csv.patch`・`csv.write`・
-  `data.write`）のみ。`llm.invoke`/
+  `data.write`）のみ。「高々 1 回」が成り立つのは in-TX の `storage.write` だけで、cross-TX の書込は
+  予約の回収窓（300 秒）で再実行され得る（§2.5）。`llm.invoke`/
   `agent.invoke`/`http.request` は at-least-once のままで、リース失効時に再実行され得る
   （§2.5・§3 参照）。
 
