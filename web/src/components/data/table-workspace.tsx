@@ -28,6 +28,7 @@ import * as React from "react";
 
 import { CalendarMonth, GalleryGrid, KanbanBoard } from "@/components/data/card-views";
 import { DataGrid, type DataGridHandle, type DataGridStatus } from "@/components/data/data-grid";
+import { ExportButton } from "@/components/data/export-button";
 import { ImportDialog, importProgress, useImportJob } from "@/components/data/import-dialog";
 import { RecordDialog } from "@/components/data/record-dialog";
 import { useFsm } from "@/components/data/transition-editor";
@@ -405,7 +406,14 @@ export function TableWorkspace({
   React.useEffect(() => {
     const prev = prevImportStatus.current;
     prevImportStatus.current = importStatus;
-    if (!prev || prev === importStatus) return;
+    if (prev === importStatus) return;
+    // 画面を開いて最初に見た進捗がもう「完了」のとき（CSV から作った直後など）は、表の最初の読込が取込より
+    // 先だったかもしれない。直前（1 分以内）に終わった取込のときだけ読み直す（時計のずれは 1 分まで許す）。
+    if (!prev) {
+      const at = importJob.status?.finished_at;
+      const recent = !at || Math.abs(Date.now() - Date.parse(at)) < 60_000;
+      if (!recent || (importStatus !== "done" && importStatus !== "indexing")) return;
+    }
     if (importStatus === "done" || importStatus === "indexing") {
       if (prev !== "indexing") gridRef.current?.reload();
       if (importStatus === "done" && !importOpen) {
@@ -609,6 +617,7 @@ export function TableWorkspace({
               <span className="max-sm:sr-only">SQL</span>
             </Link>
           </Button>
+          <ExportButton table={table} masked={masked} />
           {viewer.can_edit ? (
             <Button
               variant="ghost"
