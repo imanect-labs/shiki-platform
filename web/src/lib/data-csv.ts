@@ -75,6 +75,8 @@ export function parseCsvRecords(text: string): string[][] {
       cell += ch;
     }
   }
+  // 引用符が閉じないまま終わった CSV は、以降の行が 1 つのセルに飲まれている（列の数では気付けない）。
+  if (inQuotes) throw new Error("CSV の引用符（\"）が閉じていません。ファイルの形を確かめてください。");
   if (cell !== "" || row.length > 0 || quoted) endRow();
   return rows;
 }
@@ -93,12 +95,27 @@ const ROW_KEY_HEADER = "_key";
 /// 表計算ソフトが数式として解釈する先頭文字（CSV インジェクション）。
 const FORMULA_LEAD = /^[=+\-@\t\r]/;
 
+/// JSON にする。入れ子の中の `ExactNumber` も元の表記のまま数値として書く（`JSON.stringify` は丸める）。
+export function jsonExact(v: unknown): string {
+  if (v instanceof ExactNumber) return v.source;
+  if (Array.isArray(v)) {
+    return `[${v.map((x) => (x === undefined || typeof x === "function" ? "null" : jsonExact(x))).join(",")}]`;
+  }
+  if (v !== null && typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>).filter(
+      ([, x]) => x !== undefined && typeof x !== "function",
+    );
+    return `{${entries.map(([k, x]) => `${JSON.stringify(k)}:${jsonExact(x)}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
 /// JSON の値 1 つをセルの文字列にする（取込と往復できる形）。
 function scalar(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
   if (typeof v === "number" || typeof v === "boolean" || v instanceof ExactNumber) return String(v);
-  return JSON.stringify(v, (_k, x: unknown) => (x instanceof ExactNumber ? Number(x.source) : x));
+  return jsonExact(v);
 }
 
 /// レコードの値 1 つ → セル。JSON の数値は数式になり得ないので、数式の対策の対象外。
@@ -115,7 +132,7 @@ export function exportCell(v: unknown): string {
       !parts[0]?.startsWith("[") &&
       // 数式対策の `'` が先頭の要素に付くと値が変わるので、JSON 配列（`[` 始まり・無害）で書く。
       !FORMULA_LEAD.test(parts[0] ?? "");
-    s = plain ? parts.join(";") : JSON.stringify(v.map((x) => (x instanceof ExactNumber ? Number(x.source) : x)));
+    s = plain ? parts.join(";") : jsonExact(v);
   } else {
     s = scalar(v);
   }

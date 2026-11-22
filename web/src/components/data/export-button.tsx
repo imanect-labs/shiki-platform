@@ -60,7 +60,7 @@ export function ExportButton({ table, masked }: { table: DataTable; masked: Read
       data-testid="export-csv"
       data-state={running ? "running" : "idle"}
       aria-label={running ? `CSV に書き出し中（${fmt(rows)} 行）。押すと中止` : "CSV に書き出す"}
-      title={running ? "押すと中止します" : "見えている列と行を CSV に書き出します"}
+      title={running ? "押すと中止します" : "閲覧できるテーブル全体を CSV に書き出します（ビューの絞り込み・並べ替えは反映しません）"}
     >
       {running ? (
         <Loader2 className="size-4 animate-spin text-primary" aria-hidden />

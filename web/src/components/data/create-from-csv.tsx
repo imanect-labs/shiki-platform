@@ -30,10 +30,12 @@ import {
   MAX_CSV_BYTES,
   parseCsvRecords,
   planFromCsv,
+  safeFileName,
   tableNameFromFile,
   type CsvColumnType,
   type CsvTablePlan,
 } from "@/lib/data-csv";
+import { downloadBlob } from "@/lib/download";
 import { cn } from "@/lib/utils";
 
 const fmt = (n: number) => n.toLocaleString("ja-JP");
@@ -151,11 +153,14 @@ export function CreateFromCsvDialog({
       // テーブル画面の取込の表示が同じ取込の進捗と結果を追う。
       writeStored(table.id, r.import_id);
     } catch (err) {
-      // テーブルはできている。行はテーブル画面の「取り込む」から入れ直せる。
+      // テーブルはできている。元の CSV は列名を変えた列の見出しが合わないので、見出しを参照名に直した取込用の
+      // CSV を保存し、テーブル画面の「取り込む」からそのまま入れ直せるようにする。
+      const file = `${safeFileName(name.trim())}-取込用.csv`;
+      downloadBlob(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }), file);
       toast({
         variant: "destructive",
         title: "テーブルは作りましたが、行を取り込めませんでした",
-        description: err instanceof Error ? err.message : String(err),
+        description: `${err instanceof Error ? err.message : String(err)}。取込用の CSV（${file}）を保存しました。テーブル画面の「取り込む」から入れ直せます。`,
       });
     } finally {
       setBusy(false);
