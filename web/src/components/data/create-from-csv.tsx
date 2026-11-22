@@ -153,15 +153,26 @@ export function CreateFromCsvDialog({
       // テーブル画面の取込の表示が同じ取込の進捗と結果を追う。
       writeStored(table.id, r.import_id);
     } catch (err) {
-      // テーブルはできている。元の CSV は列名を変えた列の見出しが合わないので、見出しを参照名に直した取込用の
-      // CSV を保存し、テーブル画面の「取り込む」からそのまま入れ直せるようにする。
-      const file = `${safeFileName(name.trim())}-取込用.csv`;
-      downloadBlob(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }), file);
-      toast({
-        variant: "destructive",
-        title: "テーブルは作りましたが、行を取り込めませんでした",
-        description: `${err instanceof Error ? err.message : String(err)}。取込用の CSV（${file}）を保存しました。テーブル画面の「取り込む」から入れ直せます。`,
-      });
+      const reason = err instanceof Error ? err.message : String(err);
+      // サーバが断った（4xx・408 を除く）ときだけ、取込は始まっていないと言える。そのときは見出しを参照名に直した
+      // 取込用の CSV を保存し、テーブル画面の「取り込む」から入れ直せるようにする（元の CSV は列名を変えた列が合わない）。
+      // 通信断・5xx は受け付け済みかもしれず、入れ直すと行が二重になりうるので、再取込は案内しない。
+      const rejected = err instanceof DataApiError && err.status >= 400 && err.status < 500 && err.status !== 408;
+      if (rejected) {
+        const file = `${safeFileName(name.trim())}-取込用.csv`;
+        downloadBlob(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }), file);
+        toast({
+          variant: "destructive",
+          title: "テーブルは作りましたが、行を取り込めませんでした",
+          description: `${reason}。取込用の CSV（${file}）を保存しました。テーブル画面の「取り込む」から入れ直せます。`,
+        });
+      } else {
+        toast({
+          variant: "destructive",
+          title: "テーブルは作りましたが、取込が始まったか確かめられませんでした",
+          description: `${reason}。しばらくしてからテーブル画面で行が入っているか確かめてください。`,
+        });
+      }
     } finally {
       setBusy(false);
     }
