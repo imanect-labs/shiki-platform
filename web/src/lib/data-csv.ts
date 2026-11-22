@@ -41,6 +41,8 @@ export function safeFileName(name: string, fallback = "table"): string {
 // 書き出し
 // ---------------------------------------------------------------------------
 
+/// 取込の行キーの見出し（`crates/data/src/bulk/csv.rs` の `ROW_KEY_COLUMN`）。
+const ROW_KEY_HEADER = "_key";
 /// 表計算ソフトが数式として解釈する先頭文字（CSV インジェクション）。
 const FORMULA_LEAD = /^[=+\-@\t\r]/;
 
@@ -58,8 +60,12 @@ export function exportCell(v: unknown, numeric: boolean): string {
   let s: string;
   if (Array.isArray(v)) {
     const parts = v.map(scalar);
-    // 要素に `;` を含む・要素が入れ子なら JSON 配列で書く（取込は `[` で始まれば JSON 配列として読む）。
-    const plain = v.every((x) => x == null || typeof x !== "object") && parts.every((p) => !p.includes(";"));
+    // `;` 区切りで往復できない要素があれば JSON 配列で書く（取込は `[` で始まれば JSON 配列として読み、
+    // それ以外は `;` で割って各要素の前後の空白を除き、空の要素を捨てる）。
+    const plain =
+      v.every((x) => x == null || typeof x !== "object") &&
+      parts.every((p) => p !== "" && p === p.trim() && !p.includes(";")) &&
+      !parts[0]?.startsWith("[");
     s = plain ? parts.join(";") : JSON.stringify(v);
   } else {
     s = scalar(v);
@@ -69,11 +75,14 @@ export function exportCell(v: unknown, numeric: boolean): string {
   return FORMULA_LEAD.test(s) ? `'${s}` : s;
 }
 
-/// 書き出す列（読める列・表示順）と見出し。表示名が重複する列は参照名を見出しにする（取込が照合できる）。
+/// 書き出す列（読める列・表示順）と見出し。表示名で取込が同じ列へ照合できないときは参照名を見出しにする:
+/// 表示名が重複する・別の列の参照名と同じ（取込は参照名を先に照合する）・行キーの見出し `_key`・
+/// 前後に空白がある（取込は見出しの空白を除く）・表計算ソフトが数式と読む先頭文字。参照名は英小文字・数字・`_` だけ。
 export function exportColumns(table: DataTable, masked: ReadonlySet<string>): { field: FieldDef; header: string }[] {
   const fields = [...table.schema.fields]
     .filter((f) => !masked.has(f.key))
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const keys = new Set(table.schema.fields.map((f) => f.key));
   const count = new Map<string, number>();
   for (const f of fields) {
     const d = f.display_name || f.key;
@@ -81,7 +90,13 @@ export function exportColumns(table: DataTable, masked: ReadonlySet<string>): { 
   }
   return fields.map((f) => {
     const d = f.display_name || f.key;
-    return { field: f, header: (count.get(d) ?? 0) > 1 ? f.key : d };
+    const unsafe =
+      (count.get(d) ?? 0) > 1 ||
+      (d !== f.key && keys.has(d)) ||
+      d === ROW_KEY_HEADER ||
+      d !== d.trim() ||
+      FORMULA_LEAD.test(d);
+    return { field: f, header: unsafe ? f.key : d };
   });
 }
 
@@ -226,7 +241,8 @@ export function buildCsvTable(plan: CsvTablePlan): { fields: FieldDef[]; csv: st
   const body = plan.rows.map((r) =>
     r.map((v, i) => {
       if (plan.columns[i].type === "date") return normalizeDate(v) ?? v;
-      if (plan.columns[i].type === "number") return v.trim();
+      // 型を推定したときと同じく前後の空白を除いて送る（取込の検証は数値・日時の空白を許さない）。
+      if (plan.columns[i].type === "number" || plan.columns[i].type === "date_time") return v.trim();
       return v;
     }),
   );

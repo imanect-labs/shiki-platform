@@ -113,6 +113,15 @@ export function CreateFromCsvDialog({
     setBusy(true);
     let table: DataTable;
     const { fields, csv } = buildCsvTable(plan);
+    // 改行の CRLF 化・Shift_JIS からの変換で、選んだファイルより送る CSV が大きくなることがある。
+    // 取込が 413 で断る大きさなら、空のテーブルを作る前に止める。
+    if (new Blob([csv]).size > MAX_CSV_BYTES) {
+      setFileError(
+        `UTF-8 に直すと ${MAX_CSV_BYTES / (1024 * 1024)} MB を超えるため取り込めません。行を分けて作成してください。`,
+      );
+      setBusy(false);
+      return;
+    }
     try {
       table = await createTable(name.trim(), { fields, field_policy: [] });
     } catch (err) {
