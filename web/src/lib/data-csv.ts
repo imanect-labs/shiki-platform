@@ -8,11 +8,13 @@
 /// 書き出した CSV は取込（`crates/data/src/bulk/csv.rs`）とそのまま往復できる形で書く:
 /// 見出しは表示名（同じ表示名が複数あれば参照名）、multi_select / record_ref は `;` 区切り、空は値なし。
 
-import { runQuery, type DataRecord, type DataTable, type FieldDef, type FieldType } from "@/lib/data-api";
+import { ExactNumber, runQueryExact, type DataRecord, type DataTable, type FieldDef, type FieldType } from "@/lib/data-api";
 import { keyFromLabel } from "@/lib/data-view";
 
 /// 取込が受け付ける CSV の上限（サーバの `MAX_BULK_CSV_BYTES` と同じ）。
 export const MAX_CSV_BYTES = 32 * 1024 * 1024;
+/// 1 回の取込の行の上限（サーバの `MAX_BULK_ROWS` と同じ）。
+export const MAX_CSV_ROWS = 1_000_000;
 /// 1 テーブルの列の上限（サーバの `MAX_FIELDS` と同じ）。
 export const MAX_CSV_COLUMNS = 200;
 /// 書き出しの 1 ページの件数（クエリ API の上限）。
@@ -50,12 +52,12 @@ const FORMULA_LEAD = /^[=+\-@\t\r]/;
 function scalar(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
-  if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return JSON.stringify(v);
+  if (typeof v === "number" || typeof v === "boolean" || v instanceof ExactNumber) return String(v);
+  return JSON.stringify(v, (_k, x: unknown) => (x instanceof ExactNumber ? Number(x.source) : x));
 }
 
-/// レコードの値 1 つ → セル。`numeric` は数値の列の値か（数式の対策の対象外）。
-export function exportCell(v: unknown, numeric: boolean): string {
+/// レコードの値 1 つ → セル。JSON の数値は数式になり得ないので、数式の対策の対象外。
+export function exportCell(v: unknown): string {
   if (v == null) return "";
   let s: string;
   if (Array.isArray(v)) {
@@ -65,12 +67,14 @@ export function exportCell(v: unknown, numeric: boolean): string {
     const plain =
       v.every((x) => x == null || typeof x !== "object") &&
       parts.every((p) => p !== "" && p === p.trim() && !p.includes(";")) &&
-      !parts[0]?.startsWith("[");
-    s = plain ? parts.join(";") : JSON.stringify(v);
+      !parts[0]?.startsWith("[") &&
+      // 数式対策の `'` が先頭の要素に付くと値が変わるので、JSON 配列（`[` 始まり・無害）で書く。
+      !FORMULA_LEAD.test(parts[0] ?? "");
+    s = plain ? parts.join(";") : JSON.stringify(v.map((x) => (x instanceof ExactNumber ? Number(x.source) : x)));
   } else {
     s = scalar(v);
   }
-  if (numeric && typeof v === "number") return s;
+  if (typeof v === "number" || v instanceof ExactNumber) return s;
   // 他人の書いた値が表計算ソフトで数式として動かないよう、先頭に `'` を付ける。
   return FORMULA_LEAD.test(s) ? `'${s}` : s;
 }
@@ -105,7 +109,7 @@ export function exportRow(rec: DataRecord, cols: readonly { field: FieldDef }[])
   const data = (rec.data ?? {}) as Record<string, unknown>;
   const suppressed = new Set(rec.suppressed_fields ?? []);
   return cols.map(({ field }) =>
-    suppressed.has(field.key) ? "" : exportCell(data[field.key], field.type === "number"),
+    suppressed.has(field.key) ? "" : exportCell(data[field.key]),
   );
 }
 
@@ -121,7 +125,7 @@ export async function exportTableCsv(
   let cursor: string | undefined;
   let rows = 0;
   do {
-    const r = await runQuery(
+    const r = await runQueryExact(
       table.id,
       { snapshot: true, limit: EXPORT_PAGE, cursor },
       { signal: opts.signal },
@@ -202,6 +206,9 @@ export function planFromCsv(parsed: string[][]): CsvTablePlan {
   if (!head || head.every((h) => h.trim() === "")) throw new Error("見出しの行がありません。1 行目に列名を書いてください。");
   if (head.length > MAX_CSV_COLUMNS) throw new Error(`列が多すぎます（最大 ${MAX_CSV_COLUMNS} 列）。`);
   if (!rows.length) throw new Error("データの行がありません。見出しの下に 1 行以上書いてください。");
+  if (rows.length > MAX_CSV_ROWS) {
+    throw new Error(`行が多すぎます（1 回に取り込めるのは ${MAX_CSV_ROWS.toLocaleString("ja-JP")} 行まで）。`);
+  }
   const bad = rows.findIndex((r) => r.length !== head.length);
   if (bad >= 0) {
     throw new Error(

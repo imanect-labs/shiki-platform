@@ -70,8 +70,11 @@ export function CreateFromCsvDialog({
   const [reading, setReading] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  /// 読込の世代（選び直し・開き直しで進める。古い読込の結果は捨てる）。
+  const readSeq = React.useRef(0);
 
   React.useEffect(() => {
+    readSeq.current += 1;
     if (open) {
       setFileName(null);
       setPlan(null);
@@ -83,22 +86,26 @@ export function CreateFromCsvDialog({
 
   const pick = async (file: File | undefined) => {
     if (!file) return;
+    const seq = ++readSeq.current;
     setFileError(null);
     setPlan(null);
     setFileName(file.name);
     if (file.size > MAX_CSV_BYTES) {
       setFileError(`ファイルが大きすぎます（最大 ${MAX_CSV_BYTES / (1024 * 1024)} MB）。`);
+      setReading(false);
       return;
     }
     setReading(true);
     try {
       const p = planFromCsv(parseCsv(decodeCsv(await file.arrayBuffer())));
+      if (seq !== readSeq.current) return;
       setPlan(p);
       setName((n) => n || tableNameFromFile(file.name));
     } catch (e) {
+      if (seq !== readSeq.current) return;
       setFileError(e instanceof Error ? e.message : String(e));
     } finally {
-      setReading(false);
+      if (seq === readSeq.current) setReading(false);
     }
   };
 
