@@ -40,6 +40,9 @@ import { cn } from "@/lib/utils";
 
 const fmt = (n: number) => n.toLocaleString("ja-JP");
 
+/// 取込を始める前に断られたと分かる状態コード（取込の登録より前の検査だけが返す）。
+const REJECTED_BEFORE_START = new Set([400, 409, 413, 415, 422, 429]);
+
 /// バイト列を文字列にする（UTF-8 → 読めなければ Shift_JIS）。先頭の BOM は除く。
 export function decodeCsv(buf: ArrayBuffer): string {
   let text: string;
@@ -154,10 +157,11 @@ export function CreateFromCsvDialog({
       writeStored(table.id, r.import_id);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      // サーバが断った（4xx・408 を除く）ときだけ、取込は始まっていないと言える。そのときは見出しを参照名に直した
-      // 取込用の CSV を保存し、テーブル画面の「取り込む」から入れ直せるようにする（元の CSV は列名を変えた列が合わない）。
-      // 通信断・5xx は受け付け済みかもしれず、入れ直すと行が二重になりうるので、再取込は案内しない。
-      const rejected = err instanceof DataApiError && err.status >= 400 && err.status < 500 && err.status !== 408;
+      // 取込を始める前にサーバが断ったと言える応答（入力の誤り・大きすぎる・競合・混雑）のときだけ、見出しを参照名に
+      // 直した取込用の CSV を保存し、テーブル画面の「取り込む」から入れ直せるようにする（元の CSV は列名を変えた列が
+      // 合わない）。通信断・5xx・401/403/404（取込の登録後の状態の読取でも返りうる）は受け付け済みかもしれず、
+      // 入れ直すと行が二重になりうるので、再取込は案内しない。
+      const rejected = err instanceof DataApiError && REJECTED_BEFORE_START.has(err.status);
       if (rejected) {
         const file = `${safeFileName(name.trim())}-取込用.csv`;
         downloadBlob(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }), file);
