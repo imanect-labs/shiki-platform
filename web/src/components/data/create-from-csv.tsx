@@ -23,12 +23,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
-import { parseCsv } from "@/lib/csv/parse";
 import { createTable, DataApiError, startCsvImport, type DataTable } from "@/lib/data-api";
 import {
   buildCsvTable,
   CSV_COLUMN_TYPES,
   MAX_CSV_BYTES,
+  parseCsvRecords,
   planFromCsv,
   tableNameFromFile,
   type CsvColumnType,
@@ -97,7 +97,7 @@ export function CreateFromCsvDialog({
     }
     setReading(true);
     try {
-      const p = planFromCsv(parseCsv(decodeCsv(await file.arrayBuffer())));
+      const p = planFromCsv(parseCsvRecords(decodeCsv(await file.arrayBuffer())));
       if (seq !== readSeq.current) return;
       setPlan(p);
       setName((n) => n || tableNameFromFile(file.name));

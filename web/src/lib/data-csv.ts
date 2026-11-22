@@ -30,8 +30,53 @@ export function csvCell(s: string): string {
 }
 
 /// 行を CSV にする（CRLF 区切り・末尾改行あり。Excel が素直に開ける形）。
+/// 1 列だけで空の行は `""` と書く（空行は CSV の読み手が読み飛ばすので、行が消える）。
 export function csvLines(rows: readonly (readonly string[])[]): string {
-  return rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  return rows.map((r) => (r.length === 1 && r[0] === "" ? '""' : r.map(csvCell).join(","))).join("\r\n") + "\r\n";
+}
+
+/// CSV をセルの行列にする（RFC4180）。読み飛ばすのは本当に空の行だけで、`""` だけの行（1 列の空のセル）は残す。
+export function parseCsvRecords(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  let quoted = false;
+  const endRow = () => {
+    row.push(cell);
+    if (row.length > 1 || row[0] !== "" || quoted) rows.push(row);
+    row = [];
+    cell = "";
+    quoted = false;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+      quoted = true;
+    } else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      endRow();
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell !== "" || row.length > 0 || quoted) endRow();
+  return rows;
 }
 
 /// ファイル名に使えない文字を `_` にする。
