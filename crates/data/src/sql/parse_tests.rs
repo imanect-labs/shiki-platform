@@ -33,6 +33,9 @@ fn accepts_the_closed_subset() {
     assert_eq!(s.group_by.len(), 1);
     assert!(s.having.is_some());
     ok("SELECT title FROM orders WHERE NOT (amount < 5) AND (title = 'x') IS NULL");
+    // 真偽のリテラルと IS TRUE / FALSE も `(…) IS NULL` の左辺に書ける（#1004）。
+    ok("SELECT title FROM orders WHERE (TRUE) IS NULL");
+    ok("SELECT title FROM orders WHERE ((amount < 5) IS TRUE) IS NOT NULL");
     ok("SELECT title FROM orders WHERE due BETWEEN DATE '2026-01-01' AND '2026-03-31'");
     ok("SELECT 経費.title FROM 経費 WHERE 1 = 1");
 }
@@ -93,6 +96,13 @@ fn rejects_outside_the_subset_with_structured_reasons() {
         );
         assert!(!e.message.is_empty());
     }
+    // `(…) IS NULL` の中の ILIKE も ILIKE の理由で断る（「左辺は列か条件式」にしない・#1004）。
+    let e = parse(
+        "SELECT title FROM orders WHERE (title ILIKE 'a%') IS NULL",
+        &QueryLimits::default(),
+    )
+    .unwrap_err();
+    assert!(e.message.contains("ILIKE"), "{e:?}");
     assert_eq!(code("SELEC title FROM orders"), RejectCode::SyntaxError);
     assert_eq!(
         code(
