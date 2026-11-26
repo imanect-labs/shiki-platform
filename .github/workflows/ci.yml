@@ -554,25 +554,38 @@ jobs:
           if [ "$FULL" = "true" ]; then full_flag="--full"; fi
           log_args=()
           for log in "${failed_logs[@]}"; do log_args+=(--log "$log"); done
-          # flaky の一覧は、回し直しが全部通ってから coverage-flaky.txt（main で flaky-report へ上げる）にする。
-          python3 scripts/ci-select.py coverage-retry "${log_args[@]}" $full_flag \
-            --targets retry-targets.txt --flaky coverage-flaky.pending || exit 1
-          while read -r args; do
+          python3 scripts/ci-select.py coverage-retry "${log_args[@]}" $full_flag --targets retry-targets.txt || exit 1
+          # 全部の対象を回し直してから判定する（途中で止めると、後ろの対象の結果と flaky の記録が欠ける）。
+          # 通った対象のテストは flaky として coverage-flaky.txt に書く（main で flaky-report へ上げる）。
+          : > coverage-flaky.txt
+          still_failing=()
+          n=0
+          while IFS=$'\t' read -r args names; do
+            n=$((n + 1))
             echo "::group::回し直し: cargo llvm-cov --no-report $args"
             # shellcheck disable=SC2086
-            if ! cargo llvm-cov --no-report $args 2>&1 | tee -a cargo-test-retry.log; then
-              echo "::endgroup::"
+            # 標準入力は塞ぐ（テストが読むと、ループが読む retry-targets.txt の残りを食われる）。
+            if cargo llvm-cov --no-report $args < /dev/null 2>&1 | tee "retry-$n.log"; then
+              tr '\t' '\n' <<< "$names" >> coverage-flaky.txt
+            else
+              still_failing+=("retry-$n.log")
               echo "::error::回し直しても落ちた: $args"
-              exit 1
             fi
             echo "::endgroup::"
           done < retry-targets.txt
-          mv coverage-flaky.pending coverage-flaky.txt
-          while read -r t; do echo "::warning::flaky（回し直して通った）: $t"; done < coverage-flaky.txt
-          {
-            echo '### 回し直して通ったテスト（flaky）'
-            sed 's/^/- `/;s/$/`/' coverage-flaky.txt
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -s coverage-flaky.txt ]; then
+            while read -r t; do echo "::warning::flaky（回し直して通った）: $t"; done < coverage-flaky.txt
+            {
+              echo '### 回し直して通ったテスト（flaky）'
+              sed 's/^/- `/;s/$/`/' coverage-flaky.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${#still_failing[@]}" -gt 0 ]; then
+            # selection-gap（main の失敗時）へは最終結果だけを渡す。回し直して通った対象を落ちたものとして
+            # 数えないよう、cargo-test.log を回し直しでも落ちた対象のログで作り直す（1 回目は cargo-test-*.log に残る）。
+            cat "${still_failing[@]}" > cargo-test.log
+            exit 1
+          fi
       # CI で一度も走らない結合テストの接続先を毎回見える場所に出す（減らすべき負債の一覧）。
       - name: "job summary: CI で走らない結合テスト"
         if: always()

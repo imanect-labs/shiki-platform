@@ -283,7 +283,7 @@ class SelectionGapTest(unittest.TestCase):
         error: test failed, to rerun pass `-p shiki-storage --test storage_it`
              Running unittests src/lib.rs (target/llvm-cov-target/debug/deps/shiki_yui-1)
         test render::a ... FAILED
-        test render::b ... FAILED
+        test render::b - should panic ... FAILED
         error: test failed, to rerun pass `-p shiki-yui --lib`
         error: 2 targets failed:
             `-p shiki-storage --test storage_it`
@@ -310,22 +310,22 @@ class SelectionGapTest(unittest.TestCase):
 
     def test_coverage_retry_writes_targets_and_flaky_names(self):
         with tempfile.TemporaryDirectory() as tmp:
-            log, targets, flaky = Path(tmp, "log"), Path(tmp, "t"), Path(tmp, "f")
+            log, targets = Path(tmp, "log"), Path(tmp, "t")
             log.write_text(self.COVERAGE_LOG)
-            argv = ["coverage-retry", "--log", str(log), "--full", "--targets", str(targets), "--flaky", str(flaky)]
+            argv = ["coverage-retry", "--log", str(log), "--full", "--targets", str(targets)]
             self.assertEqual(ci.main(argv), 0)
-            self.assertEqual(targets.read_text().splitlines(), ["--workspace --test storage_it", "-p shiki-yui --lib"])
             # nextest の JUnit と同じ名前にして、flaky-report の Issue を同じテストでまとめる。
+            # `- should panic` は表示の注記なので名前に入れない。
             self.assertEqual(
-                flaky.read_text().splitlines(),
-                ["shiki-storage::storage_it upload_gc_sweeps_across_batch_boundary",
-                 "shiki-yui render::a", "shiki-yui render::b"],
+                [line.split("\t") for line in targets.read_text().splitlines()],
+                [["--workspace --test storage_it", "shiki-storage::storage_it upload_gc_sweeps_across_batch_boundary"],
+                 ["-p shiki-yui --lib", "shiki-yui render::a", "shiki-yui render::b"]],
             )
 
     def test_coverage_retry_refuses_build_failures_and_mass_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
-            log, targets, flaky = Path(tmp, "log"), Path(tmp, "t"), Path(tmp, "f")
-            argv = ["coverage-retry", "--log", str(log), "--targets", str(targets), "--flaky", str(flaky)]
+            log, targets = Path(tmp, "log"), Path(tmp, "t")
+            argv = ["coverage-retry", "--log", str(log), "--targets", str(targets)]
             log.write_text("error[E0308]: mismatched types\nerror: could not compile `shiki-x`\n")
             self.assertEqual(ci.main(argv), 1)
             # 片方の呼出しがビルド失敗なら、もう片方に回し直せる失敗があっても回し直さない。
@@ -346,14 +346,14 @@ class SelectionGapTest(unittest.TestCase):
             first, second = Path(tmp, "1"), Path(tmp, "2")
             first.write_text(twice)
             second.write_text("test b ... FAILED\nerror: test failed, to rerun pass `-p shiki-data --test authz_memo_it`\n")
-            targets, flaky = Path(tmp, "t"), Path(tmp, "f")
-            argv = ["coverage-retry", "--log", str(first), "--log", str(second),
-                    "--targets", str(targets), "--flaky", str(flaky)]
+            targets = Path(tmp, "t")
+            argv = ["coverage-retry", "--log", str(first), "--log", str(second), "--targets", str(targets)]
             self.assertEqual(ci.main(argv), 0)
-            self.assertEqual(targets.read_text().splitlines(),
-                             ["-p shiki-data --test policy_threat_it", "-p shiki-data --test authz_memo_it"])
-            self.assertEqual(flaky.read_text().splitlines(),
-                             ["shiki-data::policy_threat_it a", "shiki-data::policy_threat_it c", "shiki-data::authz_memo_it b"])
+            self.assertEqual(
+                [line.split("\t") for line in targets.read_text().splitlines()],
+                [["-p shiki-data --test policy_threat_it", "shiki-data::policy_threat_it a", "shiki-data::policy_threat_it c"],
+                 ["-p shiki-data --test authz_memo_it", "shiki-data::authz_memo_it b"]],
+            )
 
     def test_coverage_flaky_is_reported_with_nextest_flaky(self):
         with tempfile.TemporaryDirectory() as tmp:
