@@ -307,6 +307,8 @@ export function SharePeoplePanel({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
               // 検索は打鍵に追従するので、確定はキーボードを閉じるだけ（フォーム送信させない）。
+              // IME の変換確定の Enter（isComposing）は日本語の入力操作なので、何もしない。
+              if (e.nativeEvent.isComposing) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 (e.target as HTMLInputElement).blur();
