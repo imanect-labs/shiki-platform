@@ -10,6 +10,7 @@ import {
   Loader2,
   Lock,
   type LucideIcon,
+  Plus,
   ShieldOff,
   Trash2,
   UserRound,
@@ -47,14 +48,6 @@ const AUDIENCES: {
   testId: string;
 }[] = [
   {
-    value: "anonymous",
-    label: "リンクを知っている全員",
-    desc: "匿名・社外にも公開（近日対応）。",
-    icon: Link2,
-    disabled: true,
-    testId: "link-audience-anonymous",
-  },
-  {
     value: "organization",
     label: "社内の全員",
     desc: "社内（テナント）の全員がリンクから開けます。",
@@ -67,6 +60,15 @@ const AUDIENCES: {
     desc: "新たな権限は付与しない純粋なリンク（既存の権限者に渡す用）。",
     icon: Lock,
     testId: "link-audience-restricted",
+  },
+  // 未対応（選べない）ので、選べる選択肢の後ろに置く。
+  {
+    value: "anonymous",
+    label: "リンクを知っている全員",
+    desc: "匿名・社外への公開（近日対応）。",
+    icon: Link2,
+    disabled: true,
+    testId: "link-audience-anonymous",
   },
 ];
 
@@ -111,15 +113,23 @@ export function ShareLinksPanel({
   nodeId,
   linkPath,
   passwordSupported,
+  onCountChange,
 }: {
   nodeId: string;
   linkPath: string;
   passwordSupported: boolean;
+  /// 発行済みリンクの件数（読み込み中・権限なしは null）。タブの件数表示に使う。
+  onCountChange?: (count: number | null) => void;
 }) {
   const [links, setLinks] = React.useState<ShareLink[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [forbidden, setForbidden] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  // 作成フォームの開閉。null = 未決定（読み込み後、発行済みが無ければ開き、あれば畳む）。
+  // 一度開いたら発行後も開いたままにする（続けて別の範囲のリンクを作れるように）。
+  const [formOpen, setFormOpen] = React.useState<boolean | null>(null);
+  const countRef = React.useRef(onCountChange);
+  countRef.current = onCountChange;
 
   // 発行フォームの状態。broad は organization に統合（A-2）。
   const [audience, setAudience] = React.useState<GeneralAccessLevel>("organization");
@@ -151,11 +161,17 @@ export function ShareLinksPanel({
     let active = true;
     setLoading(true);
     setForbidden(false);
+    setFormOpen(null);
     listShareLinks(nodeId)
-      .then((ls) => active && setLinks(ls))
+      .then((ls) => {
+        if (!active) return;
+        setLinks(ls);
+        setFormOpen(ls.length === 0);
+      })
       .catch((e: unknown) => {
         if (!active) return;
         setLinks([]);
+        setFormOpen(true);
         // 非 owner は 403。空フォームを見せず「権限なし」状態にする（#342 レビュー C-2）。
         const status = (e as { status?: number } | null)?.status;
         const msg = e instanceof Error ? e.message : String(e);
@@ -166,6 +182,10 @@ export function ShareLinksPanel({
       active = false;
     };
   }, [nodeId]);
+
+  React.useEffect(() => {
+    countRef.current?.(loading || forbidden ? null : links.length);
+  }, [loading, forbidden, links.length]);
 
   /// リンクの共有 URL を組む。パスワード付きは token を載せて解錠ヒント（?lt=..&unlock=1）を付す。
   /// broad/既存向けリンクは token を要さず、リソースへのポインタ（bare URL）で開ける。
@@ -365,27 +385,21 @@ export function ShareLinksPanel({
                 <li
                   key={link.link_id}
                   data-testid="link-item"
-                  className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
+                  className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5"
                 >
                   {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                    <div className="min-w-0 flex-1 basis-44">
+                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
+                    <LinkAudienceIcon audience={link.audience} />
+                    <div className="min-w-0 flex-1 basis-40">
                       <p className="truncate text-sm font-medium">
-                        {AUDIENCE_LABEL[link.audience]}
-                        <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                          {link.role === "editor" ? "編集" : "閲覧"}
-                        </span>
+                        {AUDIENCE_LABEL[link.audience]}が{link.role === "editor" ? "編集" : "閲覧"}できる
                       </p>
-                      <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="size-3" aria-hidden />
-                        {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
-                        {link.has_password ? (
-                          <span className="ml-1 inline-flex items-center gap-0.5">
-                            <Lock className="size-3" aria-hidden />
-                            パスワード
-                          </span>
-                        ) : null}
-                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        <LinkChip icon={Clock}>
+                          {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
+                        </LinkChip>
+                        {link.has_password ? <LinkChip icon={Lock}>パスワード</LinkChip> : null}
+                      </div>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
                       <Button
@@ -527,130 +541,150 @@ export function ShareLinksPanel({
           )}
         </div>
       ) : null}
-      {/* 発行フォーム */}
-      <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
-        <p className="text-sm font-medium">共有リンクを作成</p>
-        <div className="flex flex-col" role="radiogroup" aria-label="リンクの公開範囲">
-          {AUDIENCES.map((a) => {
-            const active = !a.disabled && audience === a.value;
-            const Icon = a.icon;
-            return (
-              <button
-                key={a.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                disabled={a.disabled}
-                data-testid={a.testId}
-                onClick={() => !a.disabled && setAudience(a.value as GeneralAccessLevel)}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
-                  active ? "border-border bg-accent" : "border-transparent hover:bg-accent/40",
-                  a.disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
-                )}
-              >
-                <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium leading-tight">{a.label}</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">{a.desc}</span>
-                </span>
-                <span
+      {/* 発行フォーム（発行済みがあれば畳んでおき、ボタンで開く） */}
+      {formOpen === false ? (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setFormOpen(true)}
+          data-testid="link-form-open"
+          className="self-start"
+        >
+          <Plus className="size-4" aria-hidden />
+          新しいリンクを作成
+        </Button>
+      ) : formOpen === null ? null : (
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium">新しいリンクを作成</p>
+            {links.length > 0 ? (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setFormOpen(false)}>
+                閉じる
+              </Button>
+            ) : null}
+          </div>
+          <div className="flex flex-col" role="radiogroup" aria-label="リンクの公開範囲">
+            {AUDIENCES.map((a) => {
+              const active = !a.disabled && audience === a.value;
+              const Icon = a.icon;
+              return (
+                <button
+                  key={a.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  disabled={a.disabled}
+                  data-testid={a.testId}
+                  onClick={() => !a.disabled && setAudience(a.value as GeneralAccessLevel)}
                   className={cn(
-                    "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    active ? "border-foreground/60" : "border-muted-foreground/40",
+                    "flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
+                    active ? "border-border bg-accent" : "border-transparent hover:bg-accent/40",
+                    a.disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
                   )}
-                  aria-hidden
                 >
-                  {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+                  <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium leading-tight">{a.label}</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">{a.desc}</span>
+                  </span>
+                  <span
+                    className={cn(
+                      "flex size-4 shrink-0 items-center justify-center rounded-full border",
+                      active ? "border-foreground/60" : "border-muted-foreground/40",
+                    )}
+                    aria-hidden
+                  >
+                    {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-        {/* その他の設定（restricted 以外＝権限を配るときのみ） */}
-        {audience !== "restricted" ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm text-muted-foreground">権限</span>
-              <SegmentedControl
-                aria-label="リンクの権限"
-                size="sm"
-                options={ROLE_OPTIONS}
-                value={role}
-                onValueChange={(v) => setRole(v as ShareRole)}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="link-expiry" className="text-sm text-muted-foreground">
-                有効期限
-              </label>
-              <div className="flex items-center gap-1.5">
-                <Input
-                  id="link-expiry"
-                  data-testid="link-expiry"
-                  type="date"
-                  min={minDate}
-                  value={expiry}
-                  onChange={(e) => setExpiry(e.target.value)}
-                  // 文字サイズは Input の既定（スマホ 16px）に任せる（iOS の自動ズームを避ける）。
-                  className="h-8 w-40 max-md:h-10 max-md:w-44"
+          {/* その他の設定（restricted 以外＝権限を配るときのみ） */}
+          {audience !== "restricted" ? (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm text-muted-foreground">権限</span>
+                <SegmentedControl
+                  aria-label="リンクの権限"
+                  size="sm"
+                  options={ROLE_OPTIONS}
+                  value={role}
+                  onValueChange={(v) => setRole(v as ShareRole)}
                 />
-                {expiry ? (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
-                    なし
-                  </Button>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="link-expiry" className="text-sm text-muted-foreground">
+                  有効期限
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    id="link-expiry"
+                    data-testid="link-expiry"
+                    type="date"
+                    min={minDate}
+                    value={expiry}
+                    onChange={(e) => setExpiry(e.target.value)}
+                    // 文字サイズは Input の既定（スマホ 16px）に任せる（iOS の自動ズームを避ける）。
+                    className="h-8 w-40 max-md:h-10 max-md:w-44"
+                  />
+                  {expiry ? (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
+                      なし
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="link-password-toggle" className="text-sm text-muted-foreground">
+                    パスワード保護
+                  </label>
+                  {passwordSupported ? (
+                    <Switch
+                      id="link-password-toggle"
+                      data-testid="link-password-toggle"
+                      checked={pwEnabled}
+                      onCheckedChange={(v) => {
+                        setPwEnabled(v);
+                        if (!v) setPwValue("");
+                      }}
+                    />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">この種別では未対応</span>
+                  )}
+                </div>
+                {pwOn ? (
+                  <Input
+                    data-testid="link-password"
+                    type="password"
+                    autoComplete="new-password"
+                    value={pwValue}
+                    onChange={(e) => setPwValue(e.target.value)}
+                    placeholder="パスワードを入力"
+                    className="h-8 max-md:h-10"
+                  />
                 ) : null}
               </div>
             </div>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <label htmlFor="link-password-toggle" className="text-sm text-muted-foreground">
-                  パスワード保護
-                </label>
-                {passwordSupported ? (
-                  <Switch
-                    id="link-password-toggle"
-                    data-testid="link-password-toggle"
-                    checked={pwEnabled}
-                    onCheckedChange={(v) => {
-                      setPwEnabled(v);
-                      if (!v) setPwValue("");
-                    }}
-                  />
-                ) : (
-                  <span className="text-xs text-muted-foreground">この種別では未対応</span>
-                )}
-              </div>
-              {pwOn ? (
-                <Input
-                  data-testid="link-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={pwValue}
-                  onChange={(e) => setPwValue(e.target.value)}
-                  placeholder="パスワードを入力"
-                  className="h-8 max-md:h-10"
-                />
-              ) : null}
-            </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        <div className="flex justify-end">
-          <Button
-            type="button"
-            size="sm"
-            loading={creating}
-            disabled={pwMissing}
-            onClick={() => void create()}
-            data-testid="link-create"
-          >
-            <Link2 className="size-4" aria-hidden />
-            リンクを作成
-          </Button>
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              size="sm"
+              loading={creating}
+              disabled={pwMissing}
+              onClick={() => void create()}
+              data-testid="link-create"
+            >
+              <Link2 className="size-4" aria-hidden />
+              リンクを作成
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
 
       <ConfirmDialog
         open={revokeLinkTarget !== null}
@@ -687,5 +721,28 @@ export function ShareLinksPanel({
         }}
       />
     </div>
+  );
+}
+
+/// 発行済みリンクの公開範囲のアイコン（社内の全員＝建物、既存の権限者のみ＝鍵）。
+function LinkAudienceIcon({ audience }: { audience: GeneralAccessLevel }) {
+  const Icon = audience === "restricted" ? Lock : Building2;
+  return (
+    <span
+      className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-secondary-foreground"
+      aria-hidden
+    >
+      <Icon className="size-4" />
+    </span>
+  );
+}
+
+/// 発行済みリンクの属性（期限・パスワード）を小さな札で出す。
+function LinkChip({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+      <Icon className="size-3" aria-hidden />
+      {children}
+    </span>
   );
 }

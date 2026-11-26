@@ -97,7 +97,7 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
 
     // ③ アプリ**本体だけ**を bob に共有する（ワークフローは共有しない）。
     await page.getByRole("button", { name: "共有" }).click();
-    await page.getByPlaceholder("名前・メールで検索").fill("bob");
+    await page.getByPlaceholder("名前・メール・部署で検索").fill("bob");
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
