@@ -39,7 +39,7 @@ test("テーブルを閲覧で共有すると相手の一覧に出て開け、�
   const share = page.getByTestId("table-share-dialog");
   await expect(share.getByText(`「${name}」を共有`)).toBeVisible();
   await expect(share.getByText("まだ誰にも共有していません。")).toBeVisible();
-  await share.getByPlaceholder("名前・メール・部署で検索").fill("bob");
+  await share.getByPlaceholder("名前や部署で検索").fill("bob");
   const bobRow = share.locator("li", { hasText: "bob@" });
   await expect(bobRow).toBeVisible({ timeout: 10_000 });
   await bobRow.getByRole("button", { name: "共有", exact: true }).click();

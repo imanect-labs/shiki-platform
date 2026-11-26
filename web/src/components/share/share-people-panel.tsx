@@ -4,7 +4,8 @@
 ///
 /// - 検索欄は 1 つで、メンバーと部署・ロールをまとめて探す（以前は種別の切り替えが要った）。
 ///   付ける権限（閲覧/編集）は検索欄の横で 1 回だけ選び、候補の「共有」で付ける。
-/// - 候補は検索語を入れたときだけ出す。空のときは「共有中の相手」を検索欄のすぐ下に見せる。
+/// - 検索欄の下は 1 つの領域で、検索語があれば候補、無ければ「共有中の相手」を出す（入れ替え）。
+///   高さはダイアログ側で固定し、この領域だけがスクロールする（共有相手が多くても枠は伸びない）。
 /// - 既に共有中の相手は候補側にも「閲覧で共有中」と出し、選んだ権限が違えばその場で変更できる
 ///   （同じ相手に閲覧と編集の 2 つの共有が並ばないように）。
 /// - 共有中の相手は頭文字のアバター・表示名・メールで出し（ID は出さない）、行の中で権限を変えたり
@@ -15,9 +16,9 @@
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
 
 import * as React from "react";
-import { Loader2, Search, Users, X } from "lucide-react";
+import { Loader2, type LucideIcon, Search, Users, X } from "lucide-react";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { StatusDot } from "@/components/settings/settings-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -43,7 +44,7 @@ export type PeopleEntry = {
 };
 
 const ROLE_LABEL: Record<PeopleRole, string> = { viewer: "閲覧", editor: "編集" };
-const SEARCH_PLACEHOLDER = "名前・メール・部署で検索";
+const SEARCH_PLACEHOLDER = "名前や部署で検索";
 /// 1 回の検索で出す候補数（メンバー / 部署・ロール）。先頭ページのみで全件は取らない。
 const USER_LIMIT = 6;
 const ROLE_LIMIT = 4;
@@ -170,6 +171,8 @@ export function SharePeoplePanel({
     try {
       await grant(target, role);
       await refresh();
+      // 検索を閉じて共有中の相手の一覧へ戻す（いま足した相手がそこに見える）。
+      setQuery("");
       toast({
         title: "共有しました",
         description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
@@ -206,7 +209,11 @@ export function SharePeoplePanel({
 
   /// 共有中の相手の権限を変える（新しい権限を付けてから古い権限を外す・途中で失敗しても
   /// アクセスが消えない順序）。
-  const changeRole = async (entry: PeopleEntry, role: PeopleRole) => {
+  const changeRole = async (
+    entry: PeopleEntry,
+    role: PeopleRole,
+    opts?: { clearQuery?: boolean },
+  ) => {
     if (role === entry.role) return;
     const k = entryKey(entry);
     setPendingKey(k);
@@ -214,6 +221,7 @@ export function SharePeoplePanel({
       if (!sharedKeys.has(entryKey({ target: entry.target, role }))) await grant(entry.target, role);
       await revoke(entry.target, entry.role);
       await refresh();
+      if (opts?.clearQuery) setQuery("");
     } catch (e) {
       toast({
         variant: "destructive",
@@ -235,29 +243,27 @@ export function SharePeoplePanel({
     const k = existing ? entryKey(existing) : entryKey({ target: { type: c.kind, id: c.id }, role: addRole });
     const busy = pendingKey === k;
     return (
-      <li key={`${c.kind}:${c.id}`} className="flex items-center gap-2.5 px-3 py-2">
+      <li key={`${c.kind}:${c.id}`} className={ROW}>
         <PrincipalAvatar kind={c.kind} name={c.primary} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{c.primary}</p>
+          <p className="truncate text-[13.5px] font-medium">{c.primary}</p>
           <p className="truncate text-xs text-muted-foreground">
             {existing ? (
-              <span className="font-medium text-foreground/80">{ROLE_LABEL[existing.role]}で共有中</span>
+              <StatusDot>{ROLE_LABEL[existing.role]}で共有中</StatusDot>
             ) : (
               c.secondary
             )}
           </p>
         </div>
         {existing && existing.role === addRole ? (
-          <Button type="button" size="sm" variant="ghost" disabled className="shrink-0 pointer-coarse:h-9">
-            共有済み
-          </Button>
+          <span className="shrink-0 px-2 text-xs text-muted-foreground">共有済み</span>
         ) : existing ? (
           <Button
             type="button"
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => void changeRole(existing, addRole)}
+            onClick={() => void changeRole(existing, addRole, { clearQuery: true })}
             className="shrink-0 pointer-coarse:h-9"
           >
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
@@ -281,176 +287,186 @@ export function SharePeoplePanel({
   };
 
   return (
-    // min-w-0: grid（DialogContent）の子として、メール等の折り返さない文字幅まで広がらないように。
-    <div className="flex min-w-0 flex-col gap-4">
+    // 高さはダイアログ側で固定し、ここは残りの高さを埋めて中だけスクロールする（検索・読み込み・
+    // 件数の増減でダイアログの大きさが変わらない）。min-w-0: メール等の折り返さない文字で広がらないように。
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       {/* 追加: 検索欄＋これから付ける権限 */}
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <div className="relative min-w-0 flex-1">
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              type="search"
-              enterKeyHint="search"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                // 検索は打鍵に追従するので、確定はキーボードを閉じるだけ（フォーム送信させない）。
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  (e.target as HTMLInputElement).blur();
-                }
-              }}
-              placeholder={SEARCH_PLACEHOLDER}
-              aria-label="共有する相手を検索"
-              data-share-search=""
-              className="pl-9 max-md:h-11"
-            />
-          </div>
-          <RoleSelect
-            value={addRole}
-            onChange={setAddRole}
-            label="追加する相手の権限"
-            size="lg"
+      <div className="flex shrink-0 items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
           />
+          <Input
+            type="search"
+            enterKeyHint="search"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // 検索は打鍵に追従するので、確定はキーボードを閉じるだけ（フォーム送信させない）。
+              if (e.key === "Enter") {
+                e.preventDefault();
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            placeholder={SEARCH_PLACEHOLDER}
+            aria-label="共有する相手を検索"
+            data-share-search=""
+            className="pl-9 pr-9 max-md:h-11"
+          />
+          {searching ? (
+            <Loader2
+              className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground"
+              aria-label="検索中"
+            />
+          ) : null}
         </div>
-
-        {/* 候補（検索語があるときだけ。メンバーと部署・ロールを分けて出す） */}
-        {hasQuery ? (
-          <div className="rounded-lg border border-border" aria-busy={searching || undefined}>
-            {searching && results.length === 0 ? (
-              <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-                検索中…
-              </div>
-            ) : results.length === 0 ? (
-              <p className="px-3 py-5 text-center text-sm text-muted-foreground">
-                該当するメンバー・部署がありません
-              </p>
-            ) : (
-              <div className={cn("flex flex-col", searching && "opacity-60")}>
-                {userResults.length > 0 ? (
-                  <CandidateGroup label="メンバー">{userResults.map(renderCandidate)}</CandidateGroup>
-                ) : null}
-                {roleResults.length > 0 ? (
-                  <CandidateGroup label="部署・ロール" divided={userResults.length > 0}>
-                    {roleResults.map(renderCandidate)}
-                  </CandidateGroup>
-                ) : null}
-              </div>
-            )}
-          </div>
-        ) : null}
+        <RoleSelect value={addRole} onChange={setAddRole} label="追加する相手の権限" size="lg" />
       </div>
 
-      {/* 共有中の相手 */}
-      <div className="flex flex-col gap-1.5">
-        <p className="text-sm font-medium">
-          共有中の相手
-          {!loadingShares && shares.length > 0 ? (
-            <span className="ml-1.5 text-xs font-normal text-muted-foreground">{shares.length} 件</span>
-          ) : null}
-        </p>
-        {loadingShares ? (
-          <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            読み込み中…
-          </div>
-        ) : shares.length === 0 ? (
-          <div className="flex items-center gap-3 rounded-lg border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-            <Users className="size-5 shrink-0" aria-hidden />
-            <p>
-              まだ誰にも共有していません。
-              <span className="mt-0.5 block text-xs">上の検索欄から、メンバーや部署を探して共有できます。</span>
-            </p>
+      {/* 検索欄の下は 1 つの領域を入れ替える（検索語があれば候補、無ければ共有中の相手）。
+          候補を相手一覧の上に差し込まないので、打鍵のたびに一覧が上下しない。 */}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-1">
+        {hasQuery ? (
+          <div className="flex flex-col gap-3" aria-busy={searching || undefined}>
+            {searching && results.length === 0 ? null : results.length === 0 ? (
+              <Note icon={Search}>該当するメンバー・部署がありません</Note>
+            ) : (
+              <>
+                {userResults.length > 0 ? (
+                  <Section title="メンバー">
+                    <ul className={PANEL} aria-label="メンバーの候補">
+                      {userResults.map(renderCandidate)}
+                    </ul>
+                  </Section>
+                ) : null}
+                {roleResults.length > 0 ? (
+                  <Section title="部署・ロール">
+                    <ul className={PANEL} aria-label="部署・ロールの候補">
+                      {roleResults.map(renderCandidate)}
+                    </ul>
+                  </Section>
+                ) : null}
+              </>
+            )}
           </div>
         ) : (
-          <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
-            {shares.map((s) => {
-              const k = entryKey(s);
-              const name = s.display_name ?? undefined;
-              const fallback = s.target.type === "role" ? s.target.id : "名前を取得できないメンバー";
-              // 名前を引けないメンバーが複数いても行（と操作ボタンの読み上げ）を区別できるよう、短縮 ID を添える。
-              const shortId = !name && s.target.type !== "role" ? s.target.id.slice(0, 8) : null;
-              const a11yName = shortId ? `${fallback}（ID ${shortId}）` : (name ?? fallback);
-              const secondary =
-                s.target.type === "role"
-                  ? "部署・ロール"
-                  : (s.email ?? (shortId ? `メンバー · ID ${shortId}…` : "メンバー"));
-              return (
-                <li key={k} data-testid="share-entry" className="flex items-center gap-2.5 py-1.5 pl-3 pr-1">
-                  <PrincipalAvatar kind={s.target.type} name={name} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{name ?? fallback}</p>
-                    <p className="truncate text-xs text-muted-foreground" title={shortId ? s.target.id : undefined}>
-                      {secondary}
-                    </p>
-                  </div>
-                  <RoleSelect
-                    value={s.role}
-                    onChange={(r) => void changeRole(s, r)}
-                    disabled={pendingKey === k}
-                    label={`${a11yName} の権限`}
-                  />
-                  <button
-                    type="button"
-                    aria-label={`${a11yName} の共有を解除`}
-                    title="共有を解除"
-                    disabled={pendingKey === k}
-                    onClick={() => void remove(s)}
-                    className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-11"
-                  >
-                    {pendingKey === k ? (
-                      <Loader2 className="size-4 animate-spin" aria-hidden />
-                    ) : (
-                      <X className="size-4" aria-hidden />
-                    )}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          <Section title="共有中の相手" count={loadingShares ? null : shares.length}>
+            {loadingShares ? (
+              <div className="flex items-center gap-2 px-1 py-2 text-[13px] text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                読み込み中…
+              </div>
+            ) : shares.length === 0 ? (
+              <Note icon={Users}>
+                まだ誰にも共有していません。
+                <span className="mt-0.5 block text-xs">上の検索欄から、メンバーや部署を探して共有できます。</span>
+              </Note>
+            ) : (
+              <ul className={PANEL}>
+                {shares.map((s) => {
+                  const k = entryKey(s);
+                  const name = s.display_name ?? undefined;
+                  const fallback = s.target.type === "role" ? s.target.id : "名前を取得できないメンバー";
+                  // 名前を引けないメンバーが複数いても行（と操作ボタンの読み上げ）を区別できるよう、短縮 ID を添える。
+                  const shortId = !name && s.target.type !== "role" ? s.target.id.slice(0, 8) : null;
+                  const a11yName = shortId ? `${fallback}（ID ${shortId}）` : (name ?? fallback);
+                  const secondary =
+                    s.target.type === "role"
+                      ? "部署・ロール"
+                      : (s.email ?? (shortId ? `メンバー · ID ${shortId}…` : "メンバー"));
+                  return (
+                    <li key={k} data-testid="share-entry" className={cn(ROW, "pr-1.5")}>
+                      <PrincipalAvatar kind={s.target.type} name={name} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13.5px] font-medium">{name ?? fallback}</p>
+                        <p
+                          className="truncate text-xs text-muted-foreground"
+                          title={shortId ? s.target.id : undefined}
+                        >
+                          {secondary}
+                        </p>
+                      </div>
+                      <RoleSelect
+                        value={s.role}
+                        onChange={(r) => void changeRole(s, r)}
+                        disabled={pendingKey === k}
+                        label={`${a11yName} の権限`}
+                      />
+                      <button
+                        type="button"
+                        aria-label={`${a11yName} の共有を解除`}
+                        title="共有を解除"
+                        disabled={pendingKey === k}
+                        onClick={() => void remove(s)}
+                        className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-11"
+                      >
+                        {pendingKey === k ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <X className="size-4" aria-hidden />
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Section>
         )}
       </div>
     </div>
   );
 }
 
-function CandidateGroup({
-  label,
-  divided,
+/// 一覧の面と行（設定画面と同じシキの作法: 角の大きい面・行の間は控えめな荒い破線）。
+const PANEL = "rule-soft overflow-hidden rounded-xl border bg-card";
+const ROW = "shiki-dash-top flex items-center gap-3 px-3.5 py-2.5 first:bg-none";
+
+/// 見出し（面の外に置く）＋中身。
+function Section({
+  title,
+  count,
   children,
 }: {
-  label: string;
-  divided?: boolean;
+  title: string;
+  count?: number | null;
   children: React.ReactNode;
 }) {
   return (
-    <div className={cn(divided && "border-t border-border")}>
-      <p className="px-3 pb-0.5 pt-2 text-xs font-medium text-muted-foreground">{label}</p>
-      <ul className="divide-y divide-border" aria-label={label}>
-        {children}
-      </ul>
+    <section className="flex flex-col gap-2">
+      <h3 className="flex items-baseline gap-2 px-1 text-[13px] font-semibold tracking-[-0.01em]">
+        {title}
+        {count ? <span className="text-xs font-normal tabular-nums text-muted-foreground">{count} 件</span> : null}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/// 空・該当なしの一言（破線の枠。設定画面の「準備中」の一言と同じ形）。
+function Note({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
+      <Icon className="size-4 shrink-0" aria-hidden />
+      <p className="min-w-0">{children}</p>
     </div>
   );
 }
 
-/// 相手のアバター。メンバーは表示名の頭文字、部署・ロールは人の集まりのアイコン。
+/// 相手のアバター。メンバーは表示名の頭文字（管理コンソールのメンバー一覧と同じ）、部署・ロールは人の集まりのアイコン。
 function PrincipalAvatar({ kind, name }: { kind: PrincipalKind; name?: string }) {
   const initial = name?.trim().charAt(0);
   return (
-    <Avatar aria-hidden>
-      <AvatarFallback
-        className={cn(kind === "role" && "bg-secondary text-secondary-foreground")}
-      >
-        {kind === "role" || !initial ? <Users className="size-4" /> : initial.toUpperCase()}
-      </AvatarFallback>
-    </Avatar>
+    <span
+      aria-hidden
+      className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-[13px] font-semibold text-foreground/80"
+    >
+      {kind === "role" || !initial ? <Users className="size-4" /> : initial.toUpperCase()}
+    </span>
   );
 }
 

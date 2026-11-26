@@ -23,7 +23,7 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
   const share = page.getByRole("dialog");
   await expect(share.getByText(`「${folder}」を共有`)).toBeVisible();
 
-  const search = share.getByPlaceholder("名前・メール・部署で検索");
+  const search = share.getByPlaceholder("名前や部署で検索");
 
   // bob（同テナント）は検索に出る。
   await search.fill("bob");
@@ -72,7 +72,7 @@ test("共有ダイアログ: 部署・ロールへ共有", async ({ page }) => {
   await expect(share.getByText(`「${folder}」を共有`)).toBeVisible();
 
   // 部署・ロールも同じ検索欄で探せる（種別の切り替えは無い）。
-  const search = share.getByPlaceholder("名前・メール・部署で検索");
+  const search = share.getByPlaceholder("名前や部署で検索");
   await search.fill("営業");
   const salesRow = share.locator("li", { hasText: "営業部" });
   await expect(salesRow).toBeVisible({ timeout: 10_000 });

@@ -88,8 +88,8 @@ export function ShareDialog({
 
         {/* min-w-0: DialogContent は grid のため、子が折り返さない文字（メール等）の幅まで広がって
             横にはみ出すのを防ぐ。 */}
-        <Tabs defaultValue="permissions" className="mt-4 min-w-0">
-          <TabsList className="grid w-full grid-cols-2 pointer-coarse:h-12">
+        <Tabs defaultValue="permissions" className="mt-4 flex min-h-0 min-w-0 flex-1 flex-col">
+          <TabsList className="grid w-full shrink-0 grid-cols-2 pointer-coarse:h-12">
             <TabsTrigger value="permissions" data-testid="share-tab-permissions">
               メンバー・部署
               <TabCount count={peopleCount} />
@@ -101,7 +101,7 @@ export function ShareDialog({
           </TabsList>
 
           {/* 両タブとも開いた時点で読み込む（forceMount）。タブ名の件数を、開く前から出すため。 */}
-          <TabsContent value="permissions" forceMount className="mt-3 data-[state=inactive]:hidden">
+          <TabsContent value="permissions" forceMount className={TAB_BODY}>
             <SharePeoplePanel
               open={open}
               resourceId={node.id}
@@ -112,7 +112,7 @@ export function ShareDialog({
             />
           </TabsContent>
 
-          <TabsContent value="links" forceMount className="mt-3 data-[state=inactive]:hidden">
+          <TabsContent value="links" forceMount className={TAB_BODY}>
             <ShareLinksPanel
               nodeId={node.id}
               linkPath={linkPath}
@@ -133,11 +133,14 @@ export function ShareDialog({
   );
 }
 
-/// タブ名の横の件数（0 件・未取得は出さない）。
+/// タブの中身: 残りの高さを埋め、中身側でスクロールする（非表示のタブは消す）。
+const TAB_BODY = "mt-4 min-h-0 flex-1 flex-col data-[state=active]:flex data-[state=inactive]:hidden";
+
+/// タブ名の横の件数（0 件・未取得は出さない）。設定画面の小さな印と同じ形。
 function TabCount({ count }: { count: number | null }) {
   if (!count) return null;
   return (
-    <span className="ml-1.5 rounded-full bg-muted-foreground/15 px-1.5 text-[11px] font-medium leading-4 tabular-nums">
+    <span className="ml-1.5 rounded bg-muted px-1.5 py-px text-[10px] font-normal leading-4 tabular-nums text-muted-foreground">
       {count}
     </span>
   );

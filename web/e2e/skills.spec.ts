@@ -34,7 +34,7 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await card.getByRole("button", { name: `${name} のその他の操作` }).click();
     await page.getByRole("menuitem", { name: "共有" }).click();
     await expect(page.getByRole("dialog")).toContainText("を共有");
-    await page.getByPlaceholder("名前・メール・部署で検索").fill("bob");
+    await page.getByPlaceholder("名前や部署で検索").fill("bob");
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
