@@ -93,7 +93,11 @@ test("ドライブ: 共有ダイアログの権限の選択肢で Esc を押し�
   await page.getByRole("menuitem", { name: "共有" }).click();
   const share = page.getByRole("dialog");
   await expect(share.getByText(`「${folder}」を共有`)).toBeVisible();
-  await escapeClosesOnlySelect(page, share.getByRole("combobox").first(), share);
+  // 候補（行ごとの権限の選択肢）は検索語を入れたときだけ出る。
+  await share.getByPlaceholder("名前・メールで検索").fill("bob");
+  const bobRow = share.locator("li", { hasText: "bob@a-corp.example.com" });
+  await expect(bobRow).toBeVisible({ timeout: 10_000 });
+  await escapeClosesOnlySelect(page, bobRow.getByRole("combobox"), share);
   // 画面が操作できる（もう一度メニューを開ける）。
   await page.getByRole("button", { name: `「${folder}」の操作` }).click();
   await expect(page.getByRole("menuitem", { name: "共有" })).toBeVisible();
