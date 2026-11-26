@@ -742,7 +742,7 @@ jobs:
           jq -n --arg sha "$HEAD_SHA" --arg title "$title" --arg summary "$summary" --arg text "$text" \
             '{name: "mutants-report", head_sha: $sha, status: "completed", conclusion: "neutral",
               output: {title: $title, summary: ($summary[:60000]), text: $text}}' \
-            | gh api --method POST "repos/$REPO/check-runs" --input -
+            | gh api --method POST "repos/$REPO/check-runs" --input - --silent
 
   # 構造化データの行述語の脅威モデルを、読取の全戦略（強制・O3 の交差駆動とバッチ駆動を含む）と
   # O2（統計を作ってからコストで選ぶ）と本体経路（v1・機能フラグ）で回し直す
