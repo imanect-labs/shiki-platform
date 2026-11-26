@@ -68,6 +68,7 @@ e2e = [
     "chat-ai-edit-revert.spec.ts",
     "chat-branch.spec.ts",
     "chat-approval-banner.spec.ts",
+    "chat-approval-summary.spec.ts",
     "chat-mobile.spec.ts",
     "chat-answer-export.spec.ts",
     "chat-thread-export.spec.ts",
