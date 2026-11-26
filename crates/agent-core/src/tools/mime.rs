@@ -9,6 +9,7 @@ pub(super) fn content_type_for(name: &str) -> &'static str {
         .to_ascii_lowercase();
     match ext.as_str() {
         "csv" => "text/csv",
+        "tsv" => "text/tab-separated-values",
         "json" => "application/json",
         "txt" => "text/plain",
         "md" => "text/markdown",
@@ -16,6 +17,7 @@ pub(super) fn content_type_for(name: &str) -> &'static str {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "svg" => "image/svg+xml",
+        "webp" => "image/webp",
         "pdf" => "application/pdf",
         "py" => "text/x-python",
         "js" => "text/javascript",
@@ -43,6 +45,7 @@ mod tests {
         assert_eq!(content_type_for("a.csv"), "text/csv");
         assert_eq!(content_type_for("main.py"), "text/x-python");
         assert_eq!(content_type_for("noext"), "application/octet-stream");
+        assert_eq!(content_type_for("a.webp"), "image/webp");
     }
 
     /// Office 成果物が octet-stream になると office.read が「対応外」で拒否する（S2 検証）。
