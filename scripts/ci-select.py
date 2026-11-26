@@ -11,6 +11,8 @@
                  （PR は変更行で判定し、全体 80% のゲートは main で判定する・#921 の human 決定）。
   selection-gap  main の全量 run で落ちたテストが、その変更を PR として選んだときに選ばれていたかを突き合わせる
                  （選ばれていなければ選択漏れか flaky。ci.yml の selection-gap ジョブが Issue にする・#922）。
+  coverage-retry coverage ジョブ（cargo test）で落ちたテストバイナリを 1 回回し直す準備（#1355）。
+  flaky          再試行で通ったテストを Issue 候補にする（main の flaky-report ジョブ）。
 
 依存は標準ライブラリのみ（changes ジョブに Rust ツールチェーンを入れない）。Cargo.toml は tomllib で読む。
 ロジックの検査は scripts/test_ci_select.py（quality ジョブで回す）。
@@ -611,19 +613,94 @@ def flaky_e2e_tests(reports: list[str]) -> list[str]:
     return sorted(flaky)
 
 
+FAILED_TEST = re.compile(r"^test (.+) \.\.\. FAILED$")
+# coverage ジョブで再試行するテストバイナリの上限。これより多く落ちたら、たまたまではなく本物の故障とみて再試行しない。
+RETRY_TARGET_LIMIT = 3
+
+
+def cargo_failures(log: str) -> list[dict]:
+    """cargo test のログから、落ちたテストバイナリごとの {package, kind, name, tests} を出す。
+
+    cargo は落ちたバイナリの結果のすぐ後に「to rerun pass `-p X --test Y`」を出すので、
+    それまでに見た「test 名前 ... FAILED」をそのバイナリの落ちたテストとする。
+    """
+    out: list[dict] = []
+    pending: list[str] = []
+    for raw in log.splitlines():
+        line = raw.strip()
+        m = FAILED_TEST.match(line)
+        if m:
+            pending.append(m.group(1))
+            continue
+        r = RERUN.search(line)
+        if r:
+            pkg, kind, name = r.groups()
+            out.append({"package": pkg, "kind": kind or "", "name": name or "", "tests": pending})
+            pending = []
+    return out
+
+
+def retry_args(failure: dict, full: bool) -> str:
+    """落ちたバイナリだけを回し直す cargo の引数。
+
+    全量の run は `--workspace` で計装ビルドしているので、結合テスト（--test）は `--workspace` のまま絞る
+    （`-p` にするとフィーチャ集合が変わって計装ビルドがやり直しになる）。lib・doc は名前で絞れないので `-p` にする。
+    """
+    if failure["kind"] == "test" and full:
+        return f"--workspace --test {failure['name']}"
+    args = f"-p {failure['package']}"
+    if failure["kind"]:
+        args += f" --{failure['kind']}"
+    if failure["name"]:
+        args += f" {failure['name']}"
+    return args
+
+
+def cmd_coverage_retry(args: argparse.Namespace) -> int:
+    """coverage ジョブ（cargo test・再試行なし）で落ちたテストバイナリを、1 回だけ回し直すための準備（#1355）。
+
+    rust ジョブの nextest（retries = 2）と同じ扱いにする。回し直す cargo の引数を --targets に、
+    通ったら flaky として記録するテストを --flaky に書く（名前は nextest の JUnit と同じ「<パッケージ>::<バイナリ> <テスト>」）。
+    落ちたテストを読み取れない（ビルド失敗など）か、落ちたバイナリが多すぎるときは 1 を返し、再試行させない。
+    """
+    failures = cargo_failures(Path(args.log).read_text(encoding="utf-8", errors="replace"))
+    Path(args.targets).write_text("", encoding="utf-8")
+    Path(args.flaky).write_text("", encoding="utf-8")
+    if not failures:
+        print("落ちたテストを読み取れない（ビルド失敗など）ので再試行しない")
+        return 1
+    if len(failures) > RETRY_TARGET_LIMIT:
+        print(f"落ちたテストバイナリが {len(failures)} 個あり、上限 {RETRY_TARGET_LIMIT} を超えるので再試行しない")
+        return 1
+    targets, flaky = [], []
+    for f in failures:
+        targets.append(retry_args(f, args.full))
+        binary = f"{f['package']}::{f['name']}" if f["kind"] == "test" and f["name"] else f["package"]
+        flaky += [f"{binary} {t}" for t in f["tests"]] or [f"{binary} （テスト名を読み取れない）"]
+    Path(args.targets).write_text("".join(f"{t}\n" for t in targets), encoding="utf-8")
+    Path(args.flaky).write_text("".join(f"{t}\n" for t in flaky), encoding="utf-8")
+    for t in targets:
+        print(f"再試行: {t}")
+    return 0
+
+
 def cmd_flaky(args: argparse.Namespace) -> int:
     """main の run で再試行により通ったテストを、1 テスト 1 件の Issue 候補（JSON）にする。"""
     base = Path(args.dir)
     junit = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.xml"))]
     reports = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("e2e-results.json"))]
-    tests = flaky_rust_tests(junit) + flaky_e2e_tests(reports)
+    # coverage ジョブが再試行で通したテスト（cmd_coverage_retry の --flaky）。
+    coverage = {line.strip() for p in sorted(base.rglob("coverage-flaky.txt"))
+                for line in p.read_text(encoding="utf-8").splitlines() if line.strip()}
+    tests = sorted(set(flaky_rust_tests(junit)) | coverage) + flaky_e2e_tests(reports)
     run = "{}/{}/actions/runs/{}".format(os.environ.get("GITHUB_SERVER_URL", ""), os.environ.get("GITHUB_REPOSITORY", ""),
                                          os.environ.get("GITHUB_RUN_ID", ""))
     issues = []
     for t in tests[: args.limit]:
         body = "\n".join([
             "main の run で、このテストは**一度落ちてから再試行で通りました**（CI は緑のまま）。"
-            "nextest（retries = 2）と Playwright（CI で retries: 1）の再試行が吸収した flaky を、"
+            "nextest（retries = 2）・coverage ジョブ（落ちたバイナリを 1 回回し直す）・"
+            "Playwright（CI で retries: 1）の再試行が吸収した flaky を、"
             "`scripts/ci-select.py flaky` が自動で記録しています。",
             "",
             f"- テスト: {md_code(t)}",
@@ -778,6 +855,13 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--output", required=True, help="Issue 候補 [{title, body}] の書き出し先")
     f.add_argument("--limit", type=int, default=20, help="1 回の run で記録する上限")
     f.set_defaults(func=cmd_flaky)
+
+    r = sub.add_parser("coverage-retry", help="coverage ジョブで落ちたテストバイナリを 1 回回し直す準備")
+    r.add_argument("--log", required=True, help="cargo test（cargo llvm-cov）のログ")
+    r.add_argument("--full", action="store_true", help="全量の run（--workspace で計装ビルドしている）")
+    r.add_argument("--targets", required=True, help="回し直す cargo の引数（1 行 1 バイナリ）の書き出し先")
+    r.add_argument("--flaky", required=True, help="回し直して通ったら flaky とするテスト（1 行 1 件）の書き出し先")
+    r.set_defaults(func=cmd_coverage_retry)
 
     p = sub.add_parser("select")
     p.add_argument("--base", default="HEAD^1")
