@@ -527,13 +527,17 @@ jobs:
               cargo llvm-cov --all --no-report --no-fail-fast
               return
             fi
+            # 落ちても止めずに両方とも最後まで回す（--no-fail-fast）。下の回し直しは落ちたバイナリだけを回すので、
+            # 途中で止めると、後ろのバイナリや常に回す脅威テストが一度も走らないまま緑になる。
+            local rc=0
             # 変更したクレート＋依存するクレートのテスト（-p は changes ジョブが組んだもの・語分割させる）。
             # shellcheck disable=SC2086
-            cargo llvm-cov --no-report $CARGO_PACKAGES || return
+            cargo llvm-cov --no-report --no-fail-fast $CARGO_PACKAGES || rc=$?
             # 常に回す脅威テストは 1 回の起動でまとめて回す。パッケージごとに `-p` で起動すると依存の
             # フィーチャ集合が変わり、計装ビルドが何度もやり直しになる（--workspace なら main と同じ）。
             # shellcheck disable=SC2086
-            cargo llvm-cov --no-report --workspace $ALWAYS_RUN_TESTS
+            cargo llvm-cov --no-report --no-fail-fast --workspace $ALWAYS_RUN_TESTS || rc=$?
+            return "$rc"
           }
           if run_tests 2>&1 | tee cargo-test.log; then exit 0; fi
           # 落ちたテストバイナリだけを 1 回回し直す（rust ジョブの nextest retries と同じ扱い・#1355）。
@@ -542,8 +546,9 @@ jobs:
           # 落ちたテストを読み取れない（ビルド失敗など）か、落ちたバイナリが多い（本物の故障）ときは回し直さない。
           full_flag=""
           if [ "$FULL" = "true" ]; then full_flag="--full"; fi
+          # flaky の一覧は、回し直しが全部通ってから coverage-flaky.txt（main で flaky-report へ上げる）にする。
           python3 scripts/ci-select.py coverage-retry --log cargo-test.log $full_flag \
-            --targets retry-targets.txt --flaky coverage-flaky.txt || exit 1
+            --targets retry-targets.txt --flaky coverage-flaky.pending || exit 1
           while read -r args; do
             echo "::group::回し直し: cargo llvm-cov --no-report $args"
             # shellcheck disable=SC2086
@@ -554,6 +559,7 @@ jobs:
             fi
             echo "::endgroup::"
           done < retry-targets.txt
+          mv coverage-flaky.pending coverage-flaky.txt
           while read -r t; do echo "::warning::flaky（回し直して通った）: $t"; done < coverage-flaky.txt
           {
             echo '### 回し直して通ったテスト（flaky）'
