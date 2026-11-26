@@ -74,8 +74,21 @@ async fn kill_permanent(deps: &Arc<PipelineDeps>, job: &ClaimedJob, error: &RagE
         tracing::error!(job_id = job.id, error = %qe, "kill/dead 記録に失敗（vt 経過で再配信）");
         return;
     }
-    tracing::error!(job_id = job.id, trace_id = ?job.trace_id, error = %error,
-        "恒久エラー。DLQ へ移送");
+    log_dead_letter(job.id, job.trace_id.as_deref(), error);
+}
+
+/// 恒久エラーで DLQ へ送ったことを記録する。
+///
+/// 利用者の文書が原因（壊れた・空・未対応形式など）の拒否は想定どおりの失敗なので WARN、
+/// 設定・版不一致・衝突など調べるべき恒久エラーだけを ERROR で出す。
+fn log_dead_letter(job_id: i64, trace_id: Option<&str>, error: &RagError) {
+    if let Some(code) = error.document_rejection_code() {
+        tracing::warn!(job_id, trace_id = ?trace_id, code, error = %error,
+            "文書を処理できないため DLQ へ移送");
+    } else {
+        tracing::error!(job_id, trace_id = ?trace_id, error = %error,
+            "恒久エラー。DLQ へ移送");
+    }
 }
 
 /// 一時エラーのバックオフ再配信（試行上限で DLQ）。
@@ -117,4 +130,100 @@ async fn run_job(deps: &Arc<PipelineDeps>, job: &ClaimedJob) -> Result<IndexOutc
         )));
     }
     indexer::handle(deps, &message, job.trace_id.as_deref()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::*;
+
+    /// 出力されたログ行を溜める書き込み先。
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Captured {
+        type Writer = Captured;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn captured_log(error: &RagError) -> String {
+        let out = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(out.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_dead_letter(7, Some("trace-1"), error);
+        });
+        let bytes = out.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn parse_error(code: &str) -> RagError {
+        RagError::Parse {
+            code: code.into(),
+            detail: "detail".into(),
+        }
+    }
+
+    #[test]
+    fn 文書が原因の拒否は_warn_で出し_恒久エラーの_error_を出さない() {
+        for code in [
+            "parse_failed",
+            "empty_document",
+            "unsupported_content_type",
+            "source_too_large",
+        ] {
+            let log = captured_log(&parse_error(code));
+            assert!(log.contains(" WARN "), "{code}: {log}");
+            assert!(
+                log.contains("文書を処理できないため DLQ へ移送"),
+                "{code}: {log}"
+            );
+            assert!(log.contains(&format!("code=\"{code}\"")), "{code}: {log}");
+            assert!(!log.contains("ERROR"), "{code}: {log}");
+            assert!(!log.contains("恒久エラー。DLQ へ移送"), "{code}: {log}");
+        }
+    }
+
+    #[test]
+    fn 基盤や設定が原因の恒久エラーは_error_のまま() {
+        let errors = [
+            parse_error("source_fetch_failed"),
+            parse_error("source_url_not_allowed"),
+            parse_error("invalid_content"),
+            RagError::Config("tenant 不一致".into()),
+            RagError::EmbeddingVersionMismatch {
+                expected: "a".into(),
+                actual: "b".into(),
+            },
+            RagError::ChunkIdConflict {
+                node_id: uuid::Uuid::nil(),
+                count: 1,
+            },
+            RagError::InvalidTenant("x".into()),
+        ];
+        for error in &errors {
+            let log = captured_log(error);
+            assert!(log.contains("ERROR"), "{error}: {log}");
+            assert!(log.contains("恒久エラー。DLQ へ移送"), "{error}: {log}");
+            assert!(log.contains("job_id=7"), "{error}: {log}");
+        }
+    }
 }
