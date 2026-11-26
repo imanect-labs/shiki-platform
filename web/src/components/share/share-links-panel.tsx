@@ -49,7 +49,7 @@ const AUDIENCES: {
   {
     value: "anonymous",
     label: "リンクを知っている全員",
-    desc: "匿名・社外にも公開（近日対応・#341）。",
+    desc: "匿名・社外にも公開（近日対応）。",
     icon: Link2,
     disabled: true,
     testId: "link-audience-anonymous",
@@ -344,6 +344,189 @@ export function ShareLinksPanel({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* 発行済みリンク一覧。いま有効なリンクを先に見せる（作成フォームの下だとスマホでは画面外に
+          押し出され、何が公開中か分からなかった）。0 件なら節ごと出さず作成フォームだけにする。 */}
+      {loading || links.length > 0 ? (
+        <div className="flex flex-col gap-2" data-testid="link-list">
+          <p className="text-sm font-medium">
+            発行済みリンク
+            {!loading ? (
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">{links.length} 件</span>
+            ) : null}
+          </p>
+          {loading ? (
+            <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              読み込み中…
+            </div>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {links.map((link) => (
+                <li
+                  key={link.link_id}
+                  data-testid="link-item"
+                  className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
+                >
+                  {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <div className="min-w-0 flex-1 basis-44">
+                      <p className="truncate text-sm font-medium">
+                        {AUDIENCE_LABEL[link.audience]}
+                        <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                          {link.role === "editor" ? "編集" : "閲覧"}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="size-3" aria-hidden />
+                        {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
+                        {link.has_password ? (
+                          <span className="ml-1 inline-flex items-center gap-0.5">
+                            <Lock className="size-3" aria-hidden />
+                            パスワード
+                          </span>
+                        ) : null}
+                      </p>
+                    </div>
+                    <div className="ml-auto flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="link-copy"
+                        onClick={() => void copyUrl(link)}
+                      >
+                        {copiedId === link.link_id ? (
+                          <Check className="size-4" aria-hidden />
+                        ) : (
+                          <Copy className="size-4" aria-hidden />
+                        )}
+                        {copiedId === link.link_id ? "コピー済み" : "コピー"}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        data-testid="link-extend"
+                        onClick={() => {
+                          setEditingId((id) => (id === link.link_id ? null : link.link_id));
+                          setEditExpiry(isoToDateInput(link.expires_at));
+                        }}
+                      >
+                        延長
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                        title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                        data-testid="link-revoke"
+                        disabled={pendingId === link.link_id}
+                        onClick={() => setRevokeLinkTarget(link)}
+                        className="flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
+                      >
+                        {pendingId === link.link_id ? (
+                          <Loader2 className="size-4 animate-spin" aria-hidden />
+                        ) : (
+                          <Trash2 className="size-4" aria-hidden />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  {editingId === link.link_id ? (
+                    // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Input
+                        type="date"
+                        aria-label="新しい有効期限"
+                        min={minDate}
+                        value={editExpiry}
+                        onChange={(e) => setEditExpiry(e.target.value)}
+                        className="h-8 min-w-0 flex-1 basis-36 max-md:h-10 md:max-w-44"
+                      />
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setEditExpiry("")}>
+                        無期限
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        loading={pendingId === link.link_id}
+                        onClick={() => void applyExtend(link)}
+                      >
+                        適用
+                      </Button>
+                    </div>
+                  ) : null}
+                  {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
+                  {link.has_password && link.redeem_count > 0 ? (
+                    <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2">
+                      <button
+                        type="button"
+                        data-testid="link-grants-toggle"
+                        onClick={() => void toggleGrants(link)}
+                        aria-expanded={grantsOpenId === link.link_id}
+                        className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
+                      >
+                        <Users className="size-3.5" aria-hidden />
+                        {link.redeem_count} 人が解錠済み
+                      </button>
+                      {grantsOpenId === link.link_id ? (
+                        grantsLoadingId === link.link_id ? (
+                          <p className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
+                            <Loader2 className="size-3 animate-spin" aria-hidden />
+                            読み込み中…
+                          </p>
+                        ) : (
+                          <>
+                            <ul className="flex flex-col gap-1" data-testid="link-grant-list">
+                              {(grantsMap[link.link_id] ?? []).map((g) => (
+                                <li
+                                  key={g.user_id}
+                                  data-testid="link-grant-item"
+                                  className="flex items-center gap-2 rounded-md bg-muted/40 py-0.5 pl-2 pr-0.5"
+                                >
+                                  <UserRound
+                                    className="size-3.5 shrink-0 text-muted-foreground"
+                                    aria-hidden
+                                  />
+                                  <span className="min-w-0 flex-1 truncate text-xs">
+                                    {g.display_name ?? g.user_id}
+                                  </span>
+                                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                                    {isoToDateInput(g.granted_at)}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    aria-label="このユーザーのアクセスを取り消す"
+                                    title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
+                                    data-testid="link-grant-revoke"
+                                    onClick={() => setRevokeTarget({ link, grant: g })}
+                                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-11"
+                                  >
+                                    <Trash2 className="size-3.5" aria-hidden />
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                            {/* 一覧は上限 500 件で打ち切られる。総数（redeem_count）より少なければ明示する。 */}
+                            {(grantsMap[link.link_id]?.length ?? 0) < link.redeem_count ? (
+                              <p
+                                data-testid="link-grants-truncated"
+                                className="pl-1 text-[11px] text-muted-foreground"
+                              >
+                                ほか {link.redeem_count - (grantsMap[link.link_id]?.length ?? 0)}{" "}
+                                人（一覧は上限まで表示）
+                              </p>
+                            ) : null}
+                          </>
+                        )
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
       {/* 発行フォーム */}
       <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
         <p className="text-sm font-medium">共有リンクを作成</p>
@@ -469,185 +652,6 @@ export function ShareLinksPanel({
         </div>
       </div>
 
-      {/* 発行済みリンク一覧 */}
-      <div className="flex flex-col gap-2" data-testid="link-list">
-        <p className="text-sm font-medium">発行済みリンク</p>
-        {loading ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            読み込み中…
-          </div>
-        ) : links.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            まだ発行済みのリンクはありません。
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {links.map((link) => (
-              <li
-                key={link.link_id}
-                data-testid="link-item"
-                className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
-              >
-                {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                  <div className="min-w-0 flex-1 basis-44">
-                    <p className="truncate text-sm font-medium">
-                      {AUDIENCE_LABEL[link.audience]}
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                        {link.role === "editor" ? "編集" : "閲覧"}
-                      </span>
-                    </p>
-                    <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                      <Clock className="size-3" aria-hidden />
-                      {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
-                      {link.has_password ? (
-                        <span className="ml-1 inline-flex items-center gap-0.5">
-                          <Lock className="size-3" aria-hidden />
-                          パスワード
-                        </span>
-                      ) : null}
-                    </p>
-                  </div>
-                  <div className="ml-auto flex shrink-0 items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="link-copy"
-                      onClick={() => void copyUrl(link)}
-                    >
-                      {copiedId === link.link_id ? (
-                        <Check className="size-4" aria-hidden />
-                      ) : (
-                        <Copy className="size-4" aria-hidden />
-                      )}
-                      {copiedId === link.link_id ? "コピー済み" : "コピー"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      data-testid="link-extend"
-                      onClick={() => {
-                        setEditingId((id) => (id === link.link_id ? null : link.link_id));
-                        setEditExpiry(isoToDateInput(link.expires_at));
-                      }}
-                    >
-                      延長
-                    </Button>
-                    <button
-                      type="button"
-                      aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                      title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                      data-testid="link-revoke"
-                      disabled={pendingId === link.link_id}
-                      onClick={() => setRevokeLinkTarget(link)}
-                      className="flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
-                    >
-                      {pendingId === link.link_id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden />
-                      ) : (
-                        <Trash2 className="size-4" aria-hidden />
-                      )}
-                    </button>
-                  </div>
-                </div>
-                {editingId === link.link_id ? (
-                  // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Input
-                      type="date"
-                      aria-label="新しい有効期限"
-                      min={minDate}
-                      value={editExpiry}
-                      onChange={(e) => setEditExpiry(e.target.value)}
-                      className="h-8 min-w-0 flex-1 basis-36 max-md:h-10 md:max-w-44"
-                    />
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setEditExpiry("")}>
-                      無期限
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      loading={pendingId === link.link_id}
-                      onClick={() => void applyExtend(link)}
-                    >
-                      適用
-                    </Button>
-                  </div>
-                ) : null}
-                {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
-                {link.has_password && link.redeem_count > 0 ? (
-                  <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2">
-                    <button
-                      type="button"
-                      data-testid="link-grants-toggle"
-                      onClick={() => void toggleGrants(link)}
-                      aria-expanded={grantsOpenId === link.link_id}
-                      className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
-                    >
-                      <Users className="size-3.5" aria-hidden />
-                      {link.redeem_count} 人が解錠済み
-                    </button>
-                    {grantsOpenId === link.link_id ? (
-                      grantsLoadingId === link.link_id ? (
-                        <p className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
-                          <Loader2 className="size-3 animate-spin" aria-hidden />
-                          読み込み中…
-                        </p>
-                      ) : (
-                        <>
-                          <ul className="flex flex-col gap-1" data-testid="link-grant-list">
-                            {(grantsMap[link.link_id] ?? []).map((g) => (
-                              <li
-                                key={g.user_id}
-                                data-testid="link-grant-item"
-                                className="flex items-center gap-2 rounded-md bg-muted/40 py-0.5 pl-2 pr-0.5"
-                              >
-                                <UserRound
-                                  className="size-3.5 shrink-0 text-muted-foreground"
-                                  aria-hidden
-                                />
-                                <span className="min-w-0 flex-1 truncate text-xs">
-                                  {g.display_name ?? g.user_id}
-                                </span>
-                                <span className="shrink-0 text-[11px] text-muted-foreground">
-                                  {isoToDateInput(g.granted_at)}
-                                </span>
-                                <button
-                                  type="button"
-                                  aria-label="このユーザーのアクセスを取り消す"
-                                  title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
-                                  data-testid="link-grant-revoke"
-                                  onClick={() => setRevokeTarget({ link, grant: g })}
-                                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-11"
-                                >
-                                  <Trash2 className="size-3.5" aria-hidden />
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                          {/* 一覧は上限 500 件で打ち切られる。総数（redeem_count）より少なければ明示する。 */}
-                          {(grantsMap[link.link_id]?.length ?? 0) < link.redeem_count ? (
-                            <p
-                              data-testid="link-grants-truncated"
-                              className="pl-1 text-[11px] text-muted-foreground"
-                            >
-                              ほか {link.redeem_count - (grantsMap[link.link_id]?.length ?? 0)}{" "}
-                              人（一覧は上限まで表示）
-                            </p>
-                          ) : null}
-                        </>
-                      )
-                    ) : null}
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
       <ConfirmDialog
         open={revokeLinkTarget !== null}
         onOpenChange={(open) => !open && setRevokeLinkTarget(null)}

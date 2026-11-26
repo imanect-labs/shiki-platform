@@ -6,7 +6,8 @@
 /// - 共有中の相手は表示名で出し（ID は出さない）、行の中で権限を変えたり解除したりできる。
 ///   表示名・email は共有一覧 API がテナント内ディレクトリから解決して返す（#741）。返らない相手
 ///   （ディレクトリ未登録など）は「名前を取得できないメンバー」＋短縮 ID で区別できるようにする。
-/// - 検索は先頭ページのみ（全件取得しない）。別テナントの相手はサーバ側で出ない。
+/// - 検索は先頭ページのみ（全件取得しない）。検索語が空のときは候補を出さず、共有中の相手を先に見せる。
+///   別テナントの相手はサーバ側で出ない。
 ///
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
 
@@ -120,6 +121,13 @@ export function SharePeoplePanel({
   // 古いクエリ/種別の遅延レスポンスが新しい結果を上書きしないようにする。
   React.useEffect(() => {
     if (!open) return;
+    // 検索語が空のときは候補を出さない（開いた直後に候補が並ぶと「共有中の相手」が下へ押し出され、
+    // 見た目も同じ行の形なので「誰に共有済みか」が読み取りにくかった）。
+    if (!query.trim()) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
     let active = true;
     const handle = setTimeout(() => {
       setSearching(true);
@@ -252,54 +260,61 @@ export function SharePeoplePanel({
         />
       </div>
 
-      {/* 検索結果（最大 8 件なので内側でスクロールさせない） */}
-      <div className="rounded-lg border border-border" aria-busy={searching || undefined}>
-        {searching && results.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            検索中…
-          </div>
-        ) : results.length === 0 ? (
-          <p className="px-3 py-5 text-center text-sm text-muted-foreground">{kindDef.empty}</p>
-        ) : (
-          <ul className={cn("divide-y divide-border", searching && "opacity-60")}>
-            {results.map((c) => {
-              const role = rowRole[c.id] ?? "viewer";
-              const k = `${kind}:${c.id}:${role}`;
-              const already = sharedKeys.has(k);
-              return (
-                <li key={c.id} className="flex items-center gap-2.5 px-3 py-2">
-                  <PrincipalAvatar kind={kind} />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{c.primary}</p>
-                    <p className="truncate text-xs text-muted-foreground">{c.secondary}</p>
-                  </div>
-                  <RoleSelect
-                    value={role}
-                    onChange={(r) => setRowRole((prev) => ({ ...prev, [c.id]: r }))}
-                    label={`${c.primary} に付与する権限`}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={already ? "ghost" : "outline"}
-                    disabled={already || pendingKey === k}
-                    onClick={() => void share(c)}
-                    className="shrink-0 pointer-coarse:h-9"
-                  >
-                    {pendingKey === k ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                    {already ? "共有済み" : "共有"}
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+      {/* 検索結果（検索語があるときだけ。最大 8 件なので内側でスクロールさせない） */}
+      {query.trim() ? (
+        <div className="rounded-lg border border-border" aria-busy={searching || undefined}>
+          {searching && results.length === 0 ? (
+            <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              検索中…
+            </div>
+          ) : results.length === 0 ? (
+            <p className="px-3 py-5 text-center text-sm text-muted-foreground">{kindDef.empty}</p>
+          ) : (
+            <ul className={cn("divide-y divide-border", searching && "opacity-60")}>
+              {results.map((c) => {
+                const role = rowRole[c.id] ?? "viewer";
+                const k = `${kind}:${c.id}:${role}`;
+                const already = sharedKeys.has(k);
+                return (
+                  <li key={c.id} className="flex items-center gap-2.5 px-3 py-2">
+                    <PrincipalAvatar kind={kind} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{c.primary}</p>
+                      <p className="truncate text-xs text-muted-foreground">{c.secondary}</p>
+                    </div>
+                    <RoleSelect
+                      value={role}
+                      onChange={(r) => setRowRole((prev) => ({ ...prev, [c.id]: r }))}
+                      label={`${c.primary} に付与する権限`}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={already ? "ghost" : "outline"}
+                      disabled={already || pendingKey === k}
+                      onClick={() => void share(c)}
+                      className="shrink-0 pointer-coarse:h-9"
+                    >
+                      {pendingKey === k ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                      {already ? "共有済み" : "共有"}
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
 
       {/* 共有中の相手 */}
       <div className="flex flex-col gap-1.5">
-        <p className="text-sm font-medium">共有中の相手</p>
+        <p className="text-sm font-medium">
+          共有中の相手
+          {!loadingShares && shares.length > 0 ? (
+            <span className="ml-1.5 text-xs font-normal text-muted-foreground">{shares.length} 件</span>
+          ) : null}
+        </p>
         {loadingShares ? (
           <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
