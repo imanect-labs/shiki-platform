@@ -328,9 +328,32 @@ class SelectionGapTest(unittest.TestCase):
             argv = ["coverage-retry", "--log", str(log), "--targets", str(targets), "--flaky", str(flaky)]
             log.write_text("error[E0308]: mismatched types\nerror: could not compile `shiki-x`\n")
             self.assertEqual(ci.main(argv), 1)
+            # 片方の呼出しがビルド失敗なら、もう片方に回し直せる失敗があっても回し直さない。
+            ok = Path(tmp, "ok")
+            ok.write_text(self.COVERAGE_LOG)
+            self.assertEqual(ci.main(argv[:2] + [str(ok), "--log"] + argv[2:]), 1)
             log.write_text("".join(f"error: test failed, to rerun pass `-p shiki-{i} --lib`\n" for i in range(4)))
             self.assertEqual(ci.main(argv), 1)
             self.assertEqual(targets.read_text(), "")
+
+    def test_same_binary_from_both_runs_counts_once(self):
+        # 選択したパッケージと常に回す脅威テストの両方で同じバイナリが落ちても、1 個と数える。
+        twice = "".join(
+            f"test {t} ... FAILED\nerror: test failed, to rerun pass `-p shiki-data --test {b}`\n"
+            for b, t in [("policy_threat_it", "a"), ("authz_memo_it", "b"), ("policy_threat_it", "a"), ("policy_threat_it", "c")]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp, "1"), Path(tmp, "2")
+            first.write_text(twice)
+            second.write_text("test b ... FAILED\nerror: test failed, to rerun pass `-p shiki-data --test authz_memo_it`\n")
+            targets, flaky = Path(tmp, "t"), Path(tmp, "f")
+            argv = ["coverage-retry", "--log", str(first), "--log", str(second),
+                    "--targets", str(targets), "--flaky", str(flaky)]
+            self.assertEqual(ci.main(argv), 0)
+            self.assertEqual(targets.read_text().splitlines(),
+                             ["-p shiki-data --test policy_threat_it", "-p shiki-data --test authz_memo_it"])
+            self.assertEqual(flaky.read_text().splitlines(),
+                             ["shiki-data::policy_threat_it a", "shiki-data::policy_threat_it c", "shiki-data::authz_memo_it b"])
 
     def test_coverage_flaky_is_reported_with_nextest_flaky(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -656,21 +656,41 @@ def retry_args(failure: dict, full: bool) -> str:
     return args
 
 
+def merge_failures(failures: list[dict]) -> list[dict]:
+    """同じバイナリ（パッケージ・種類・名前）の記録を 1 つにまとめる。落ちたテストの名前も重複なくまとめる。
+
+    選択実行では、選んだパッケージのテストと常に回す脅威テストの両方に同じバイナリが入りうる。
+    """
+    merged: dict[tuple[str, str, str], dict] = {}
+    for f in failures:
+        key = (f["package"], f["kind"], f["name"])
+        if key not in merged:
+            merged[key] = {**f, "tests": []}
+        merged[key]["tests"] += [t for t in f["tests"] if t not in merged[key]["tests"]]
+    return list(merged.values())
+
+
 def cmd_coverage_retry(args: argparse.Namespace) -> int:
     """coverage ジョブ（cargo test・再試行なし）で落ちたテストバイナリを、1 回だけ回し直すための準備（#1355）。
 
-    rust ジョブの nextest（retries = 2）と同じ扱いにする。回し直す cargo の引数を --targets に、
-    通ったら flaky として記録するテストを --flaky に書く（名前は nextest の JUnit と同じ「<パッケージ>::<バイナリ> <テスト>」）。
-    落ちたテストを読み取れない（ビルド失敗など）か、落ちたバイナリが多すぎるときは 1 を返し、再試行させない。
+    rust ジョブの nextest（retries = 2）と同じ扱いにする。--log には落ちた cargo 呼出しのログを 1 つずつ渡す。
+    回し直す cargo の引数を --targets に、通ったら flaky として記録するテストを --flaky に書く
+    （名前は nextest の JUnit と同じ「<パッケージ>::<バイナリ> <テスト>」）。
+    どれか 1 つのログから落ちたテストを読み取れない（ビルド失敗など）か、落ちたバイナリが多すぎるときは
+    1 を返し、回し直させない（ほかの回し直しが通っても、読み取れなかった失敗が残るため）。
     """
-    failures = cargo_failures(Path(args.log).read_text(encoding="utf-8", errors="replace"))
     Path(args.targets).write_text("", encoding="utf-8")
     Path(args.flaky).write_text("", encoding="utf-8")
-    if not failures:
-        print("落ちたテストを読み取れない（ビルド失敗など）ので再試行しない")
-        return 1
+    failures: list[dict] = []
+    for log in args.log:
+        found = cargo_failures(Path(log).read_text(encoding="utf-8", errors="replace"))
+        if not found:
+            print(f"{log}: 落ちたテストを読み取れない（ビルド失敗など）ので回し直さない")
+            return 1
+        failures += found
+    failures = merge_failures(failures)
     if len(failures) > RETRY_TARGET_LIMIT:
-        print(f"落ちたテストバイナリが {len(failures)} 個あり、上限 {RETRY_TARGET_LIMIT} を超えるので再試行しない")
+        print(f"落ちたテストバイナリが {len(failures)} 個あり、上限 {RETRY_TARGET_LIMIT} を超えるので回し直さない")
         return 1
     targets, flaky = [], []
     for f in failures:
@@ -857,7 +877,8 @@ def main(argv: list[str] | None = None) -> int:
     f.set_defaults(func=cmd_flaky)
 
     r = sub.add_parser("coverage-retry", help="coverage ジョブで落ちたテストバイナリを 1 回回し直す準備")
-    r.add_argument("--log", required=True, help="cargo test（cargo llvm-cov）のログ")
+    r.add_argument("--log", required=True, action="append",
+                   help="落ちた cargo test（cargo llvm-cov）呼出しのログ（呼出しごとに 1 つ・複数可）")
     r.add_argument("--full", action="store_true", help="全量の run（--workspace で計装ビルドしている）")
     r.add_argument("--targets", required=True, help="回し直す cargo の引数（1 行 1 バイナリ）の書き出し先")
     r.add_argument("--flaky", required=True, help="回し直して通ったら flaky とするテスト（1 行 1 件）の書き出し先")
