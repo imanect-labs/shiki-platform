@@ -3528,10 +3528,19 @@ async fn share_link_password_redeem() {
     assert!(service.get_metadata(&mctx, file.id, None).await.is_ok());
 }
 
+/// 期限失効 sweep（`revoke_expired_share_links`）を**未来の時刻**で回すテストの直列化。
+///
+/// sweep はテナント・org を絞らず「期限が渡した時刻以前のリンク」を全部失効させる。未来の時刻で回すと、
+/// 並行する別テストが作ったばかりの期限付きリンクまで失効させ、その redeem が Forbidden になる（#1355・
+/// coverage の計装で遅くなると表に出る）。未来の時刻で sweep し、かつ自分の期限付きリンクが生きている前提の
+/// テストは、本体の間これを持つ。
+static EXPIRY_SWEEP_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// 有効期限: 遅延失効（get_metadata 前段）とイベント駆動タイマの明示剥奪、次回起床時刻。
 #[tokio::test]
 async fn share_link_expiry() {
     use chrono::Utc;
+    let _serial = EXPIRY_SWEEP_SERIAL.lock().await;
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
@@ -4980,6 +4989,7 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
 #[tokio::test]
 async fn share_link_expire_race_with_extend_keeps_grants() {
     use chrono::Utc;
+    let _serial = EXPIRY_SWEEP_SERIAL.lock().await;
     let Some(ctx) = setup().await else { return };
     let Ctx {
         service,
