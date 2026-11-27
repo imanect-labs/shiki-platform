@@ -19,20 +19,20 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// [`TracedSend::send_traced`] で使う内部サービス向けクライアントの builder。
 ///
 /// reqwest は別 origin へのリダイレクトでも `traceparent` を消さずに付け直すため、既定の追従を
-/// 許すと内部サービスが返した 3xx 経由でトレース ID が外部へ出る。同じ origin（scheme・host・port）
-/// へのリダイレクトだけ追い（従来の挙動を保つ）、別 origin へは追わずに 3xx をそのまま返す。
+/// 許すと内部サービスが返した 3xx 経由でトレース ID が外部へ出る。同じホストへのリダイレクトだけ
+/// 追い（http→https の昇格やポート違いも含め従来の挙動を保つ）、別ホストへは追わずに 3xx を返す。
 pub fn internal_client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().redirect(same_origin_redirect_policy())
+    reqwest::Client::builder().redirect(same_host_redirect_policy())
 }
 
-/// 同じ origin へのリダイレクトだけ追う（上限は reqwest 既定と同じ 10 回）。
-fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+/// 同じホストへのリダイレクトだけ追う（上限は reqwest 既定と同じ 10 回）。
+fn same_host_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
-        let same_origin = attempt
+        let same_host = attempt
             .previous()
             .first()
-            .is_some_and(|origin| same_origin(origin, attempt.url()));
-        if !same_origin {
+            .is_some_and(|origin| origin.host_str() == attempt.url().host_str());
+        if !same_host {
             attempt.stop()
         } else if attempt.previous().len() > 10 {
             attempt.error("too many redirects")
@@ -40,12 +40,6 @@ fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
             attempt.follow()
         }
     })
-}
-
-fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
-    a.scheme() == b.scheme()
-        && a.host_str() == b.host_str()
-        && a.port_or_known_default() == b.port_or_known_default()
 }
 
 /// `reqwest::RequestBuilder` を client span 付きで送る拡張。

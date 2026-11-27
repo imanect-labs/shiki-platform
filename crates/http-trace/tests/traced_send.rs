@@ -202,12 +202,12 @@ async fn redirecting_server(location: String) -> String {
 }
 
 #[tokio::test]
-async fn internal_client_does_not_follow_redirect_to_other_origin() {
+async fn internal_client_does_not_follow_redirect_to_other_host() {
     let (sub, _exporter) = otel_subscriber();
     let _g = tracing::subscriber::set_default(sub);
     // 「外部」役のサーバ。内部用クライアントならここには届かない。
     let (external, seen) = one_shot_server(200).await;
-    let internal = redirecting_server(external).await;
+    let internal = redirecting_server(external.replace("127.0.0.1", "localhost")).await;
 
     let resp = shiki_http_trace::internal_client_builder()
         .build()
@@ -229,7 +229,7 @@ async fn default_client_would_leak_traceparent_on_redirect() {
     let (sub, _exporter) = otel_subscriber();
     let _g = tracing::subscriber::set_default(sub);
     let (external, seen) = one_shot_server(200).await;
-    let internal = redirecting_server(external).await;
+    let internal = redirecting_server(external.replace("127.0.0.1", "localhost")).await;
 
     reqwest::Client::new()
         .get(&internal)
@@ -242,7 +242,7 @@ async fn default_client_would_leak_traceparent_on_redirect() {
 }
 
 #[tokio::test]
-async fn internal_client_follows_same_origin_redirect() {
+async fn internal_client_follows_same_host_redirect() {
     // 同じ origin へのリダイレクトは従来どおり追う（OpenFGA 等の既存の接続を壊さない）。
     let (sub, _exporter) = otel_subscriber();
     let _g = tracing::subscriber::set_default(sub);
@@ -287,4 +287,28 @@ async fn internal_client_follows_same_origin_redirect() {
     let seen = seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 2, "同一 origin のリダイレクトを追っていない");
     assert!(seen[1].starts_with("get /moved"), "{}", seen[1]);
+}
+
+#[tokio::test]
+async fn internal_client_follows_same_host_other_port_redirect() {
+    // 同じホストでポート（や http→https）が変わるリダイレクトは追う（OpenFGA の前段で
+    // TLS へ転送する構成などを壊さない）。
+    let (sub, _exporter) = otel_subscriber();
+    let _g = tracing::subscriber::set_default(sub);
+    let (target, seen) = one_shot_server(200).await;
+    let origin = redirecting_server(target).await;
+
+    let resp = shiki_http_trace::internal_client_builder()
+        .build()
+        .unwrap()
+        .get(&origin)
+        .send_traced()
+        .instrument(tracing::info_span!("caller"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        seen.lock().unwrap().is_some(),
+        "同一ホストのリダイレクトを追っていない"
+    );
 }
