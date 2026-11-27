@@ -70,7 +70,7 @@ CF_ACCESS_CLIENT_ID=… CF_ACCESS_CLIENT_SECRET=… \
   node scripts/help-eval/run.mjs --base https://shiki-preview.imanect.app --runs 3 --out /tmp/help-eval.jsonl
 ```
 
-プレビューへの入り方は giken-ops の `docs/shiki-preview-agent-access.md`。結果は回ごとに揺れるので、
+プレビューへの入り方は `pr` スキルの `references/verify.md` §4.5。結果は回ごとに揺れるので、
 指示や表示を変えたら前後で同じ質問・同じ回数を流して比べる。
 
 2026-11-14 の結果（プレビュー・既定モデル・12 問 × 3 回）:

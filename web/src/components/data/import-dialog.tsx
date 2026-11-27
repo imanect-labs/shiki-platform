@@ -45,7 +45,8 @@ function readStored(tableId: string): string | null {
   }
 }
 
-function writeStored(tableId: string, id: string | null) {
+/// テーブルの取込 ID を覚える（テーブル画面を開いたときに同じ取込の進捗を出す・CSV からの作成でも使う）。
+export function writeStored(tableId: string, id: string | null) {
   try {
     if (id) window.sessionStorage.setItem(storageKey(tableId), id);
     else window.sessionStorage.removeItem(storageKey(tableId));

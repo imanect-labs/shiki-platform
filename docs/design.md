@@ -9,7 +9,7 @@
 
 ## 1. 設計原則
 
-1. **モジュラモノリス＋特権分離**: コアは単一バイナリ。特権が要るサンドボックスだけ別プロセス。
+1. **モジュラモノリス＋特権分離**: コアは単一バイナリ。権限・配置・障害境界が異なる処理は別プロセスに隔離する（サンドボックス、script-runtime、設計中のConnect/Ops等）。
 2. **差し替え点はトレイトに集約**: クラウド/オンプレ差は4〜5本のトレイト実装で吸収、アプリ本体は不変。
 3. **単一チョークポイント**: ストレージ・認可・LLM呼出は各々1経路に集約し、権限/監査/イベントをそこで担保。
 4. **枯れた基盤に乗る／コアを自作**: 隔離・認可・認証・パースは既製、サンドボックス制御/RAG/agent/gatewayは自作。
@@ -1476,6 +1476,20 @@ post-filter で落ちること）。
 
 **外部ユーザーは参加できない。** principal はテナント内に限り、Phase 13 の匿名 `PrincipalKind` を
 messaging の経路へ流さない。
+
+### 4.15 Shiki Connect / Shiki Ops（設計先行）
+
+FR-19/20の将来設計。**この節の追加は実装・配備・PoCコードのマージを意味しない。**
+
+- **Connect**: 業務データ/システム接続。初期はRust file daemonとShiki側Gateway。原本I/OはStorageService、認可はOpenFGA、RAGはpre/postの二段認可を経由する。
+- **Ops**: オンプレの任意の運用・セキュリティ管理。外部LLM/Web proxy、選択的監視送信、署名更新/rollback、弊社fleet管理。SaaS運営コンソールやConnectの業務主体とは権限を分ける。
+- **共有範囲**: outbound TLS、認証部品、再接続/有界配送のライブラリ。プロセス・資格情報・audience・台帳・キュー・特権を共有しない。
+- **外部送信/停止**: 顧客側の最終許可を必須とし、Ops障害をコアreadinessの条件にしない。エアギャップでは外部poll/exportを含め停止する。
+- **既存境界**: 弊社proxyはLlmProvider/SearchProviderのadapterとして追加し、§4.5の認可/会計/監査をオンプレ側に残す。Ops agentは業務本文や任意shellへ到達しない。
+
+詳細は[共通基盤](./connect-ops-foundation.md)、[Connect](./shiki-connect.md)、[Ops](./shiki-ops.md)。
+[PoC記録](./connect-poc-evidence.md)は条件付きの試験事実を示し、本番保証やOpsの実証とは区別する。
+実装順と既存Phase 8との対応は[COトラック](./roadmap/parallel-tracks.md#connect-ops-track)を参照。
 
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 

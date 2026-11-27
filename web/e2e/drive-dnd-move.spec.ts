@@ -1,0 +1,101 @@
+import { expect, test, type Page } from "@playwright/test";
+
+import { loginViaKeycloak, uniqueName } from "./helpers";
+
+/// ドライブ内の D&D 移動（#1045）。行をフォルダ行へ落とすと移動し、パンくずへ落とすと
+/// 祖先へ戻る。フォルダをフォルダへ入れることもできる。
+///
+/// ドライブ直下は他の spec の残りで長くなり、画面外の行へのドラッグはスクロールの途中で
+/// 座標がずれるため、毎回新しい作業フォルダの中で操作する（全行が画面内に収まる）。
+
+async function newFolder(page: Page, name: string) {
+  await page.getByRole("button", { name: "新規フォルダ" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").fill(name);
+  await dialog.getByRole("button", { name: "作成" }).click();
+  await expect(page.getByText(name, { exact: true })).toBeVisible();
+}
+
+test("ドライブの項目を D&D でフォルダへ移動・パンくずで戻せる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+
+  const work = uniqueName("DnD作業");
+  const folderA = uniqueName("DnD先");
+  const folderB = uniqueName("DnD入れ子");
+  const fileName = `${uniqueName("DnDメモ")}.txt`;
+
+  await newFolder(page, work);
+  await page.getByText(work, { exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "パンくず" })).toContainText(work);
+
+  await newFolder(page, folderA);
+  await newFolder(page, folderB);
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from("drag and drop\n"),
+  });
+  await expect(page.getByText(fileName, { exact: true })).toBeVisible({ timeout: 20_000 });
+  // 進捗パネルが閉じて一覧の位置が落ち着いてからドラッグする。
+  await expect(page.getByLabel("アップロード中")).toHaveCount(0);
+
+  // --- ファイル → フォルダ A ---
+  // 掴んでいる間はカーソルに付いて浮くカードが出て、乗った先を「→ ○○へ移動」で示す。
+  const src = (await page.getByText(fileName, { exact: true }).boundingBox())!;
+  const dst = (await page.getByText(folderA, { exact: true }).boundingBox())!;
+  await page.mouse.move(src.x + 10, src.y + src.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(src.x + 30, src.y + 20, { steps: 4 });
+  await page.mouse.move(dst.x + 10, dst.y + dst.height / 2, { steps: 8 });
+  await expect(page.getByText(`「${folderA}」へ移動`, { exact: true })).toBeVisible();
+  await page.mouse.up();
+  await expect(page.getByText(`「${folderA}」へ移動`, { exact: true })).toHaveCount(0);
+  await expect(page.getByText(`「${fileName}」を「${folderA}」へ移動しました`, { exact: true })).toBeVisible();
+  await expect(page.getByText(fileName, { exact: true })).toHaveCount(0);
+
+  // --- フォルダ B → フォルダ A（フォルダごと入れる） ---
+  await page.getByText(folderB, { exact: true }).dragTo(page.getByText(folderA, { exact: true }));
+  await expect(page.getByText(`「${folderB}」を「${folderA}」へ移動しました`, { exact: true })).toBeVisible();
+  await expect(page.getByText(folderB, { exact: true })).toHaveCount(0);
+
+  // --- A の中: 両方ある。ファイルをパンくずの作業フォルダへ落として 1 つ上へ戻す ---
+  await page.getByText(folderA, { exact: true }).click();
+  await expect(page.getByText(fileName, { exact: true })).toBeVisible();
+  await expect(page.getByText(folderB, { exact: true })).toBeVisible();
+  const crumbs = page.getByRole("navigation", { name: "パンくず" });
+  await page.getByText(fileName, { exact: true }).dragTo(crumbs.getByRole("button", { name: work }));
+  await expect(page.getByText(`「${fileName}」を「${work}」へ移動しました`, { exact: true })).toBeVisible();
+  await expect(page.getByText(fileName, { exact: true })).toHaveCount(0);
+
+  // 作業フォルダへ戻ると、ファイルがある。
+  await crumbs.getByRole("button", { name: work }).click();
+  await expect(page.getByText(fileName, { exact: true })).toBeVisible();
+
+  // --- OS のファイルをフォルダ行へ落とす → そのフォルダへアップロード。同名衝突の
+  // 「両方残す」も、現在フォルダではなく落としたフォルダへ保存される ---
+  const dup = `${uniqueName("DnD投入")}.txt`;
+  await dropOsFile(page, page.getByText(folderA, { exact: true }), dup);
+  await expect(page.getByText("アップロードが完了しました", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+  await dropOsFile(page, page.getByText(folderA, { exact: true }), dup);
+  const conflict = page.getByRole("dialog");
+  await conflict.getByRole("button", { name: "両方残す" }).click();
+  await expect(conflict).toBeHidden();
+  // 現在フォルダ（作業フォルダ）には入らない。
+  await expect(page.getByText(dup, { exact: true })).toHaveCount(0);
+  await page.getByText(folderA, { exact: true }).click();
+  await expect(page.getByText(dup, { exact: true })).toBeVisible();
+  await expect(page.getByText(dup.replace(/\.txt$/, " (1).txt"), { exact: true })).toBeVisible({ timeout: 20_000 });
+});
+
+/// OS からのファイルのドロップを再現する（dataTransfer に File を載せて dragenter→dragover→drop）。
+async function dropOsFile(page: Page, target: ReturnType<Page["getByText"]>, name: string) {
+  const dt = await page.evaluateHandle((n) => {
+    const d = new DataTransfer();
+    d.items.add(new File(["dropped from os\n"], n, { type: "text/plain" }));
+    return d;
+  }, name);
+  for (const type of ["dragenter", "dragover", "drop"]) {
+    await target.dispatchEvent(type, { dataTransfer: dt });
+  }
+}
