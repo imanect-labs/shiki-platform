@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use shiki_http_trace::TracedSend;
 
 use crate::error::AuthzError;
 
@@ -184,7 +185,7 @@ impl FgaHttp {
             if !continuation.is_empty() {
                 query.push(("continuation_token", &continuation));
             }
-            let resp = self.http.get(&url).query(&query).send().await?;
+            let resp = self.http.get(&url).query(&query).send_traced().await?;
             let resp = ensure_ok(resp).await?;
             let parsed: ListStoresResponse = resp.json().await?;
             if let Some(store) = parsed.stores.into_iter().find(|s| s.name == name) {
@@ -203,7 +204,7 @@ impl FgaHttp {
             .http
             .post(&url)
             .json(&serde_json::json!({ "name": name }))
-            .send()
+            .send_traced()
             .await?;
         let resp = ensure_ok(resp).await?;
         let parsed: CreateStoreResponse = resp.json().await?;
@@ -216,7 +217,7 @@ impl FgaHttp {
             "{}/stores/{}/authorization-models?page_size=1",
             self.base_url, store_id
         );
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http.get(&url).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: ReadModelsResponse = resp.json().await?;
         Ok(parsed.authorization_models.into_iter().next().map(|m| m.id))
@@ -228,7 +229,7 @@ impl FgaHttp {
             "{}/stores/{}/authorization-models/{}",
             self.base_url, store_id, model_id
         );
-        let resp = self.http.get(&url).send().await?;
+        let resp = self.http.get(&url).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let mut body: Value = resp.json().await?;
         // {"authorization_model": {...}} を取り出す。
@@ -240,7 +241,7 @@ impl FgaHttp {
     /// authorization model を書き込み、新しい model id を返す。
     pub async fn write_model(&self, store_id: &str, model: &Value) -> Result<String, AuthzError> {
         let url = format!("{}/stores/{}/authorization-models", self.base_url, store_id);
-        let resp = self.http.post(&url).json(model).send().await?;
+        let resp = self.http.post(&url).json(model).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: WriteModelResponse = resp.json().await?;
         Ok(parsed.authorization_model_id)
@@ -266,7 +267,7 @@ impl FgaHttp {
             authorization_model_id: model_id,
             consistency,
         };
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self.http.post(&url).json(&body).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: CheckResponse = resp.json().await?;
         Ok(parsed.allowed)
@@ -312,7 +313,7 @@ impl FgaHttp {
             authorization_model_id: model_id,
             consistency,
         };
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self.http.post(&url).json(&body).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: BatchCheckResponse = resp.json().await?;
         decode_batch_check(parsed, items.len())
@@ -345,7 +346,7 @@ impl FgaHttp {
             if !token.is_empty() {
                 body["continuation_token"] = Value::from(token.clone());
             }
-            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = self.http.post(&url).json(&body).send_traced().await?;
             let resp = ensure_ok(resp).await?;
             let parsed: ReadResponse = resp.json().await?;
             out.extend(parsed.tuples.into_iter().map(|t| t.key));
@@ -376,7 +377,7 @@ impl FgaHttp {
             "user": user,
             "consistency": HIGHER_CONSISTENCY,
         });
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self.http.post(&url).json(&body).send_traced().await?;
         let resp = ensure_ok(resp).await?;
         let parsed: ListObjectsResponse = resp.json().await?;
         Ok(parsed.objects)
@@ -401,7 +402,7 @@ impl FgaHttp {
             "writes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
             "authorization_model_id": model_id,
         });
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self.http.post(&url).json(&body).send_traced().await?;
         ensure_ok_idempotent(resp, "already exists").await
     }
 
@@ -422,7 +423,7 @@ impl FgaHttp {
             "deletes": { "tuple_keys": [{ "user": user, "relation": relation, "object": object }] },
             "authorization_model_id": model_id,
         });
-        let resp = self.http.post(&url).json(&body).send().await?;
+        let resp = self.http.post(&url).json(&body).send_traced().await?;
         ensure_ok_idempotent(resp, "does not exist").await
     }
 
@@ -452,7 +453,7 @@ impl FgaHttp {
                 "deletes": { "tuple_keys": keys },
                 "authorization_model_id": model_id,
             });
-            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = self.http.post(&url).json(&body).send_traced().await?;
             if ensure_ok_idempotent(resp, "does not exist").await? {
                 deleted += chunk.len() as u32;
             }
@@ -483,7 +484,7 @@ impl FgaHttp {
             if !token.is_empty() {
                 body["continuation_token"] = Value::from(token.clone());
             }
-            let resp = self.http.post(&url).json(&body).send().await?;
+            let resp = self.http.post(&url).json(&body).send_traced().await?;
             let resp = ensure_ok(resp).await?;
             let parsed: ReadResponse = resp.json().await?;
             out.extend(parsed.tuples.into_iter().map(|t| t.key.object));

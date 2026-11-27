@@ -18,6 +18,7 @@ tokio.workspace = true
 sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shiki-http-trace.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -49,6 +50,9 @@ tokio.workspace = true
 tempfile = "3"
 # consumer の DLQ ログの水準をテストで捕まえる。
 tracing-subscriber.workspace = true
+# 外向き HTTP の traceparent の結線テスト（tests/trace_propagation.rs）。
+tracing-opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # 構造化データの permission-aware 検索の PoC（Task 15.8・tests/record_search_poc_it.rs）。
 # rag は本体で data に依存しない（可視性は RecordVisibility トレイト越し）。
 shiki-data.workspace = true

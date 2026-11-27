@@ -16,6 +16,7 @@ use std::sync::Arc;
 use authz::{AuthContext, AuthzClient, Consistency, Relation};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use shiki_http_trace::TracedSend;
 use sqlx::PgPool;
 use storage::StorageService;
 use uuid::Uuid;
@@ -160,7 +161,7 @@ impl OfficeEditor {
                 "data_base64": encoded,
                 "ops": ops,
             }))
-            .send()
+            .send_traced()
             .await
             .map_err(|e| OfficeError::Worker(e.to_string()))?;
         if !resp.status().is_success() {

@@ -6,6 +6,7 @@
 //! worker はストレージへ一切アクセスしない（bytes は本プロセスが運ぶ・edit.rs と同契約）。
 
 use base64::Engine as _;
+use shiki_http_trace::TracedSend;
 
 use crate::edit::{map_worker_error, WorkerEditResponse};
 use crate::error::OfficeError;
@@ -49,7 +50,7 @@ impl DocxComposer {
                 "data_base64": encoded,
                 "ops": [{ "op": "append_markdown", "markdown": markdown }],
             }))
-            .send()
+            .send_traced()
             .await
             .map_err(|e| OfficeError::Worker(e.to_string()))?;
         if !resp.status().is_success() {

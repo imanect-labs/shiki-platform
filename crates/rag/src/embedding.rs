@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use authz::AuthContext;
 use serde::Deserialize;
+use shiki_http_trace::TracedSend;
 use std::time::Duration;
 
 use crate::error::RagError;
@@ -102,7 +103,7 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
             if matches!(input, EmbedInput::Document) {
                 request = request.timeout(Duration::from_mins(5));
             }
-            let resp = request.send().await?;
+            let resp = request.send_traced().await?;
             if !resp.status().is_success() {
                 return Err(map_worker_error(resp).await);
             }
