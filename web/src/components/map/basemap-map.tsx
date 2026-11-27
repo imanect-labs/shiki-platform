@@ -454,8 +454,8 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
           {figure.title}
         </div>
       ) : null}
-      {/* 地図と地点の一覧を 1 枚にまとめる。全画面では一覧を地図の横に、会話やノートの中では地図の下端に
-          カードの列を重ねる（本文の幅の中で地図を横に狭めず、縦にも伸ばしすぎない）。 */}
+      {/* 地図と地点の一覧を 1 枚にまとめる。会話やノートの中では地図の下端にカードの列を重ね（本文の幅の中で
+          地図を横に狭めず、縦にも伸ばしすぎない）、全画面では一覧のパネルを地図の上に浮かべる。 */}
       <div
         ref={frameRef}
         role="region"
