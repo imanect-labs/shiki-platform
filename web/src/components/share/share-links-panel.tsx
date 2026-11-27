@@ -213,7 +213,9 @@ export function ShareLinksPanel({
     }
   };
 
-  const pwOn = passwordSupported && pwEnabled;
+  // 既存の権限者のみ（restricted）のリンクはパスワードを持たない（送信時も落とす）。欄も隠れるので、
+  // ここで有効扱いにすると作成ボタンが押せないまま戻れなくなる。
+  const pwOn = passwordSupported && pwEnabled && audience !== "restricted";
   const pwMissing = pwOn && !pwValue;
 
   const create = async () => {
@@ -406,9 +408,16 @@ export function ShareLinksPanel({
                       <div className="min-w-0 flex-1 basis-40">
                         <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium">
                           <span className="truncate">{AUDIENCE_LABEL[link.audience]}</span>
-                          <RoleTag role={link.role === "editor" ? "editor" : "viewer"}>
-                            {link.role === "editor" ? "編集できる" : "閲覧できる"}
-                          </RoleTag>
+                          {/* 既存の権限者のみのリンクは新しい権限を付けないので、権限の札は出さない。 */}
+                          {link.audience !== "restricted" ? (
+                            <RoleTag role={link.role === "editor" ? "editor" : "viewer"}>
+                              {link.role === "editor" ? "編集できる" : "閲覧できる"}
+                            </RoleTag>
+                          ) : (
+                            <span className="shrink-0 text-xs font-normal text-muted-foreground">
+                              既存のアクセス権のまま
+                            </span>
+                          )}
                         </p>
                         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                           <span className="inline-flex items-center gap-1">
