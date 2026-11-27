@@ -408,6 +408,12 @@ fn session_record(csrf: &str) -> SessionRecord {
     }
 }
 
+/// 実行ごとに一意な識別子（`<prefix>-<uuid 先頭 8 桁>`）。テスト DB の使い回しで一意制約に当たらないようにする。
+fn unique(prefix: &str) -> String {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("{prefix}-{}", &suffix[..8])
+}
+
 fn manifest_json(name: &str, version: &str) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -440,6 +446,8 @@ async fn manifest_crud_and_publish_over_http() {
         .unwrap();
     let app = build_router(state_with(pool, sessions));
     let cookie = "shiki_session=sid-app.default; shiki_csrf=csrf";
+    // 公開名は (tenant, kind, name, version) で一意。テスト DB を使い回しても 409 にならないよう実行ごとに変える。
+    let name = unique("http-expense");
 
     // create（POST は CSRF 二重送信が要る）。
     let resp = app
@@ -453,7 +461,7 @@ async fn manifest_crud_and_publish_over_http() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "manifest": manifest_json("http-expense", "1.0.0"),
+                        "manifest": manifest_json(&name, "1.0.0"),
                     }))
                     .unwrap(),
                 ))
@@ -499,7 +507,7 @@ async fn manifest_crud_and_publish_over_http() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "manifest": manifest_json("http-expense", "1.1.0"),
+                        "manifest": manifest_json(&name, "1.1.0"),
                         "expected_version": 1,
                     }))
                     .unwrap(),
@@ -575,6 +583,11 @@ async fn install_import_uninstall_over_http() {
         .unwrap();
     let app = build_router(state_with(pool.clone(), sessions));
     let cookie = "shiki_session=sid-inst.default; shiki_csrf=csrf";
+    // 公開名・信頼鍵 ID は tenant 内で一意。テスト DB を使い回しても 409 にならないよう実行ごとに変える。
+    let name = unique("http-install");
+    let imported = unique("http-imported");
+    let imported_2 = unique("http-imported-2");
+    let key_id = unique("http-key");
     let post = |uri: String, body: serde_json::Value| {
         Request::builder()
             .method("POST")
@@ -587,7 +600,7 @@ async fn install_import_uninstall_over_http() {
     };
 
     // publish まで（テーブル 1 本つきマニフェスト）。
-    let mut m = manifest_json("http-install", "1.0.0");
+    let mut m = manifest_json(&name, "1.0.0");
     m["tables"] = serde_json::json!([{
         "name": "http_install_t",
         "schema": { "fields": [ { "name": "title", "type": "text", "required": true } ] },
@@ -620,7 +633,7 @@ async fn install_import_uninstall_over_http() {
         .oneshot(post(
             "/apps/installations".into(),
             serde_json::json!({
-                "name": "http-install", "version": "1.0.0",
+                "name": name, "version": "1.0.0",
                 "granted_scopes": ["rag.query"],
             }),
         ))
@@ -634,7 +647,7 @@ async fn install_import_uninstall_over_http() {
         .oneshot(post(
             "/apps/installations".into(),
             serde_json::json!({
-                "name": "http-install", "version": "1.0.0",
+                "name": name, "version": "1.0.0",
                 "granted_scopes": ["data.read", "data.write"],
             }),
         ))
@@ -686,18 +699,18 @@ async fn install_import_uninstall_over_http() {
         "acme".into(),
         authz::TenantId::parse("default").unwrap(),
     );
-    keys.add(&kctx, "http-key", &public, None).await.unwrap();
+    keys.add(&kctx, &key_id, &public, None).await.unwrap();
     let import_manifest: app_platform::MiniAppManifest =
-        serde_json::from_value(manifest_json("http-imported", "2.0.0")).unwrap();
+        serde_json::from_value(manifest_json(&imported, "2.0.0")).unwrap();
     let sig = app_platform::sign_manifest(&import_manifest, &secret).unwrap();
     let resp = app
         .clone()
         .oneshot(post(
             "/apps/registry/import".into(),
             serde_json::json!({
-                "manifest": manifest_json("http-imported", "2.0.0"),
+                "manifest": manifest_json(&imported, "2.0.0"),
                 "signature_hex": hex::encode(&sig),
-                "key_id": "http-key",
+                "key_id": key_id,
             }),
         ))
         .await
@@ -711,9 +724,9 @@ async fn install_import_uninstall_over_http() {
         .oneshot(post(
             "/apps/registry/import".into(),
             serde_json::json!({
-                "manifest": manifest_json("http-imported-2", "2.0.0"),
+                "manifest": manifest_json(&imported_2, "2.0.0"),
                 "signature_hex": hex::encode(&bad),
-                "key_id": "http-key",
+                "key_id": key_id,
             }),
         ))
         .await
@@ -979,6 +992,8 @@ async fn first_party_skill_import_and_install_over_http() {
     };
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let name = format!("slack-notify-{}", &suffix[..8]);
+    // 信頼鍵 ID は tenant 内で一意。テスト DB を使い回しても 409 にならないよう実行ごとに変える。
+    let key_id = format!("skill-key-{}", &suffix[..8]);
 
     // 信頼鍵を台帳へ登録し、リポジトリ同梱バンドル（sdk/first-party-skills）へ署名する。
     let secret = [21u8; 32];
@@ -999,7 +1014,7 @@ async fn first_party_skill_import_and_install_over_http() {
         "acme".into(),
         authz::TenantId::parse("default").unwrap(),
     );
-    keys.add(&kctx, "skill-key", &public, None).await.unwrap();
+    keys.add(&kctx, &key_id, &public, None).await.unwrap();
     let body: serde_json::Value = serde_json::from_str(include_str!(
         "../../../sdk/first-party-skills/slack-notify/skill.json"
     ))
