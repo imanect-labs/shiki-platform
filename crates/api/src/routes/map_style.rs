@@ -1,7 +1,7 @@
 //! 背景地図のスタイル（MapLibre style spec v8・OpenMapTiles のレイヤ構成）。
 //!
 //! 図の地点・道順を読みやすくするための控えめな地図にする（道路・水域・緑地・建物・地名だけ）。
-//! 色は彩度を落とし、主役のピン・名前・道順より目立たせない（道路は白、主要道路も淡い色）。
+//! 場所が読み取れる程度の濃さ（主要道路・川・町名・駅名）を保ちつつ、ピン・名前・道順の朱色とは重ならない配色にする。
 //! `glyphs` と `sprite` は持たない。文字はすべて端末のフォントで描き（MapLibre は `glyphs` の無い
 //! スタイルの文字を手元で描く）、アイコンは使わない。ブラウザは地図データ以外を読みに行かない。
 
@@ -57,53 +57,53 @@ struct Palette {
 }
 
 const LIGHT: Palette = Palette {
-    background: "#f3f2ef",
-    water: "#cddde9",
-    waterway: "#bcd2e2",
-    wood: "#e3e9dc",
-    grass: "#e8ede1",
-    residential: "#efeeeb",
-    commercial: "#eeebe7",
-    building: "#e5e2dd",
-    building_outline: "#d9d5ce",
-    motorway: "#f6e2c3",
-    motorway_casing: "#dcc6a2",
-    major: "#ffffff",
-    major_casing: "#d5d0c7",
+    background: "#f2f0eb",
+    water: "#aecde3",
+    waterway: "#9cc1db",
+    wood: "#d6e3ca",
+    grass: "#dfe9d0",
+    residential: "#eae7e1",
+    commercial: "#eee5de",
+    building: "#ddd8cf",
+    building_outline: "#cdc6ba",
+    motorway: "#f4c582",
+    motorway_casing: "#cf9d55",
+    major: "#fce4ab",
+    major_casing: "#cfb27a",
     minor: "#ffffff",
-    minor_casing: "#e0dcd4",
-    path: "#cfc9bf",
-    rail: "#c2bdb5",
-    boundary: "#b4aec4",
-    text: "#5a554f",
-    text_muted: "#8a847c",
-    water_text: "#6b8ba3",
+    minor_casing: "#c9c2b6",
+    path: "#c0b7a9",
+    rail: "#a39c91",
+    boundary: "#9c95b3",
+    text: "#2b2724",
+    text_muted: "#4f4a44",
+    water_text: "#386787",
     halo: "#ffffff",
 };
 
 const DARK: Palette = Palette {
-    background: "#1c1d20",
-    water: "#1d2a36",
-    waterway: "#22323f",
-    wood: "#1f2420",
-    grass: "#202521",
-    residential: "#212225",
-    commercial: "#232325",
-    building: "#28292d",
-    building_outline: "#303136",
-    motorway: "#4a4031",
-    motorway_casing: "#3a3228",
-    major: "#3a3b40",
-    major_casing: "#2b2c30",
-    minor: "#323338",
-    minor_casing: "#28292d",
-    path: "#3c3d42",
-    rail: "#414247",
-    boundary: "#5a556b",
-    text: "#b8b4ae",
-    text_muted: "#8e8a84",
-    water_text: "#7f9bb0",
-    halo: "#1c1d20",
+    background: "#1c1d21",
+    water: "#1e3a52",
+    waterway: "#26486a",
+    wood: "#1f2b22",
+    grass: "#222d23",
+    residential: "#232428",
+    commercial: "#272427",
+    building: "#2d2e33",
+    building_outline: "#383940",
+    motorway: "#7a6236",
+    motorway_casing: "#523f22",
+    major: "#5a5240",
+    major_casing: "#3a3428",
+    minor: "#3e3f46",
+    minor_casing: "#2a2b30",
+    path: "#4a4b51",
+    rail: "#56575d",
+    boundary: "#6f6987",
+    text: "#e6e2dc",
+    text_muted: "#b8b3ac",
+    water_text: "#8fb6d6",
+    halo: "#1c1d21",
 };
 
 /// 地名の文字（日本語名を優先し、無ければ既定の名前）。
@@ -266,21 +266,29 @@ fn overlay_layers(p: &Palette) -> Vec<Value> {
         }),
         json!({
             "id": "road-name", "type": "symbol", "source": SOURCE, "source-layer": "transportation_name",
-            "minzoom": 13,
+            "minzoom": 12,
             // 鉄道の線名は出さない（駅のまわりで文字が重なり、地点の名前が読みにくくなる）。
             "filter": ["!", ["match", ["get", "class"], ["rail", "transit"], true, false]],
             "layout": {
-                "symbol-placement": "line", "text-field": name_expr(), "text-size": 11,
+                "symbol-placement": "line", "text-field": name_expr(), "text-size": 11.5,
                 "text-rotation-alignment": "map", "text-pitch-alignment": "viewport"
             },
             "paint": { "text-color": p.text_muted, "text-halo-color": p.halo, "text-halo-width": 1.5 }
         }),
         json!({
             "id": "place-minor", "type": "symbol", "source": SOURCE, "source-layer": "place",
-            "minzoom": 11,
+            "minzoom": 10,
             "filter": ["match", ["get", "class"], ["suburb", "quarter", "neighbourhood", "village", "hamlet"], true, false],
+            "layout": { "text-field": name_expr(), "text-size": 12.5, "text-max-width": 8 },
+            "paint": { "text-color": p.text_muted, "text-halo-color": p.halo, "text-halo-width": 1.8 }
+        }),
+        // 駅名（どのあたりかの目印）。
+        json!({
+            "id": "station-name", "type": "symbol", "source": SOURCE, "source-layer": "poi",
+            "minzoom": 11,
+            "filter": ["all", ["==", ["get", "class"], "railway"], ["match", ["get", "subclass"], ["station", "halt"], true, false]],
             "layout": { "text-field": name_expr(), "text-size": 12, "text-max-width": 8 },
-            "paint": { "text-color": p.text_muted, "text-halo-color": p.halo, "text-halo-width": 1.5 }
+            "paint": { "text-color": p.text, "text-halo-color": p.halo, "text-halo-width": 1.8 }
         }),
         json!({
             "id": "place-major", "type": "symbol", "source": SOURCE, "source-layer": "place",

@@ -32,7 +32,7 @@ const FONT_FAMILY =
   '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", Meiryo, sans-serif';
 
 /// 全地点を収めるときの余白（右は操作ボタンの幅と名前の長さの分だけ広く取り、ピンの右に出す名前がボタンの下に入らないようにする）。
-const FIT_PADDING = { top: 40, bottom: 36, left: 40, right: 128 };
+const FIT_PADDING = { top: 44, bottom: 14, left: 48, right: 96 };
 
 /// これより地点の多い図は、ピンを小さくし、地図を縦に広げる。
 const DENSE_MARKERS = 20;
@@ -196,7 +196,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         if (!f || f.geometry.type !== "Point") return;
         const p = f.properties as { n: number; label: string; desc: string };
         popupRef.current?.remove();
-        popupRef.current = new maplibre.Popup({ closeButton: true, offset: 14, maxWidth: "260px" })
+        popupRef.current = new maplibre.Popup({ closeButton: true, offset: PIN_HEIGHT - 4, maxWidth: "260px" })
           .setLngLat(f.geometry.coordinates as [number, number])
           .setDOMContent(popupContent(p.n, p.label, p.desc))
           .addTo(m);
@@ -270,7 +270,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     popupRef.current?.remove();
     void import("maplibre-gl").then((maplibre) => {
       if (mapRef.current !== m) return;
-      popupRef.current = new maplibre.Popup({ closeButton: true, offset: 14, maxWidth: "260px" })
+      popupRef.current = new maplibre.Popup({ closeButton: true, offset: PIN_HEIGHT - 4, maxWidth: "260px" })
         .setLngLat([mk.lng, mk.lat])
         .setDOMContent(popupContent(i + 1, mk.label, mk.desc ?? ""))
         .addTo(m);
@@ -291,13 +291,13 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         aria-label={figure.title ? undefined : "地図"}
         className={cn(
           "relative overflow-hidden border border-border/60 bg-secondary/40",
-          // 高さは Yui の背景なしの図（最大 320px）にそろえる。
+          // 地点の様子が分かる大きさにする（地点の多い図はさらに縦に広げる）。
           // 地点の多い図は縦に広げ、ピン同士の間隔を空ける。
           fullscreen
             ? "h-screen w-screen rounded-none"
             : figure.markers.length > DENSE_MARKERS
-              ? "h-[340px] rounded-xl sm:h-[460px]"
-              : "h-[280px] rounded-xl sm:h-[320px]",
+              ? "h-[380px] rounded-xl sm:h-[540px]"
+              : "h-[320px] rounded-xl sm:h-[340px]",
         )}
       >
         {/* MapLibre は自分の要素に position: relative を付けるので、絶対配置ではなく大きさで埋める。 */}
@@ -419,16 +419,55 @@ function popupContent(n: number, label: string, desc: string): HTMLElement {
   return root;
 }
 
-/// 地点（番号付きのピン・名前）と道順のレイヤを足す。
+/// ピンの絵（地図でよく見る、先のとがった形）。外から画像を読まず、その場で描いて地図に登録する。
+/// 先端が地点を指すので、ピンの高さ（PIN_HEIGHT）だけ上に名前と吹き出しを出す。
+const PIN_WIDTH = 26;
+const PIN_HEIGHT = 36;
+
+function pinImage(color: string, stroke: string): ImageData | null {
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = PIN_WIDTH * scale;
+  canvas.height = PIN_HEIGHT * scale;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.scale(scale, scale);
+  const cx = PIN_WIDTH / 2;
+  const r = 11;
+  const cy = r + 2;
+  // 頭の円から先端へ細くなる形。
+  ctx.beginPath();
+  ctx.moveTo(cx, PIN_HEIGHT - 1.5);
+  ctx.bezierCurveTo(cx - 3, PIN_HEIGHT - 10, cx - r, cy + 8, cx - r, cy);
+  ctx.arc(cx, cy, r, Math.PI, 0);
+  ctx.bezierCurveTo(cx + r, cy + 8, cx + 3, PIN_HEIGHT - 10, cx, PIN_HEIGHT - 1.5);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = stroke;
+  ctx.stroke();
+  // 中の白い点。
+  ctx.beginPath();
+  ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx.fillStyle = stroke;
+  ctx.fill();
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/// 地点（ピン・名前）と道順のレイヤを足す。
 function addFigureLayers(
   m: MlMap,
   figure: MapFigure,
   colors: (typeof COLORS)["light"] | (typeof COLORS)["dark"],
 ) {
   const route = routeFeature(figure);
-  // 地点が多い（20 を超える）図はピンを小さくし、引いた表示でピン同士が塗りつぶし合わないようにする。
+  // 地点が多い（20 を超える）図はピンと名前を少し小さくし、引いた表示で塗りつぶし合わないようにする。
   const dense = figure.markers.length > DENSE_MARKERS;
-  const pin = dense ? { radius: 9, number: 10, padding: 6 } : { radius: 12, number: 12, padding: 9 };
+  const iconSize = dense ? 0.8 : 1;
+  const textSize = dense ? 13 : 14;
+  const image = pinImage(colors.pin, colors.halo);
+  if (image) m.addImage("yui-pin", image, { pixelRatio: 2 });
   m.addSource("yui-points", { type: "geojson", data: markerFeatures(figure) });
   if (route) {
     m.addSource("yui-route", { type: "geojson", data: route });
@@ -440,18 +479,29 @@ function addFigureLayers(
       paint: { "line-color": colors.route, "line-width": 3.5, "line-opacity": 0.85, "line-dasharray": [2, 1.6] },
     });
   }
-  // 名前は重なるものを隠す（番号の若い地点を優先）。ピンと番号は必ず出す。
-  // 記号は上のレイヤから順に場所を決めるので、名前は番号より下に置き、番号の後に置き場所を探させる
-  // （名前がほかのピンに重ならない）。
+  // 名前は重なるものを隠す（一覧の順で先の地点を優先）。ピンは必ず出す。記号は上のレイヤから順に
+  // 置き場所を決めるので、名前をピンより下に置き、名前がほかのピンに重ならないようにする。
+  // 名前の位置はピンの頭の横（先端から PIN_HEIGHT の 6 割ほど上）。単位は文字の大きさ（em）。
+  const head = -((PIN_HEIGHT * iconSize * 0.62) / textSize);
+  const side = (PIN_WIDTH * iconSize * 0.55) / textSize;
   m.addLayer({
     id: "yui-labels",
     type: "symbol",
     source: "yui-points",
     layout: {
       "text-field": ["get", "label"],
-      "text-size": 14,
-      "text-variable-anchor": ["left", "right", "top", "bottom"],
-      "text-radial-offset": 1.3,
+      "text-size": textSize,
+      // 置ける場所を広く探す（近い地点が並んでも、どちらかの名前が消えないように）。
+      "text-variable-anchor-offset": [
+        "left", [side, head],
+        "right", [-side, head],
+        "bottom", [0, head * 1.9],
+        "top", [0, 0.3],
+        "bottom-left", [side * 0.6, head * 1.6],
+        "bottom-right", [-side * 0.6, head * 1.6],
+        "top-left", [side * 0.6, 0.2],
+        "top-right", [-side * 0.6, 0.2],
+      ],
       "text-justify": "auto",
       "text-max-width": 10,
       "symbol-sort-key": ["get", "n"],
@@ -460,32 +510,23 @@ function addFigureLayers(
   });
   m.addLayer({
     id: "yui-pins",
-    type: "circle",
-    source: "yui-points",
-    // 近い地点でピンが重なるときは、番号の若いピンを上に描く。
-    layout: { "circle-sort-key": ["-", 0, ["get", "n"]] },
-    paint: {
-      "circle-radius": pin.radius,
-      "circle-color": colors.pin,
-      "circle-stroke-color": colors.halo,
-      "circle-stroke-width": dense ? 2 : 2.5,
-    },
-  });
-  m.addLayer({
-    id: "yui-pin-numbers",
     type: "symbol",
     source: "yui-points",
     layout: {
-      "text-field": ["to-string", ["get", "n"]],
-      "text-size": pin.number,
-      // 番号の当たり判定をピンの円まで広げ、名前がほかのピンに重ならないようにする。
-      "text-padding": pin.padding,
-      // 地点の多い図では、重なったピンの番号は出さない（点だけ見せ、拡大すると番号と名前が出る）。
-      "text-allow-overlap": !dense,
-      // 重ねて描くとき（地点の少ない図）は番号の若いものを上に、重なりを隠すとき（地点の多い図）は
-      // 番号の若いものを先に置く（MapLibre は sort-key の小さいものから置き、大きいものを上に描く）。
-      "symbol-sort-key": dense ? ["get", "n"] : ["-", 0, ["get", "n"]],
+      "icon-image": "yui-pin",
+      "icon-size": iconSize,
+      "icon-anchor": "bottom",
+      // ピンは重なっても全部出す。当たり判定には残すので、名前はピンを避けて置かれる。
+      "icon-allow-overlap": true,
+      // 当たり判定はピンの絵の大きさだけ（余白で名前の置き場所を狭めない）。
+      "icon-padding": 0,
+      // 地点の多い図では、ピンが名前の置き場所をふさがないようにする（ピンが密集していても、
+      // 一覧の順で先の地点の名前が出る。名前同士は重ならず、名前はピンの上に描く）。
+      "icon-ignore-placement": dense,
+      // 近い地点では、一覧の順で先の地点のピンを上に描く。
+      "symbol-sort-key": ["-", 0, ["get", "n"]],
     },
-    paint: { "text-color": "#ffffff" },
   });
+  // 地点の多い図では名前をピンより上に描く（ピンが密集していても名前が隠れない）。
+  if (dense) m.moveLayer("yui-labels");
 }
