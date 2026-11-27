@@ -55,7 +55,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.revoke_share_link_grant",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
     )]
     pub async fn revoke_share_link_grant(
@@ -65,83 +64,88 @@ impl StorageService {
         user_id: &str,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let Some((node_id, obj)) = self
-            .authorize_link_owner(
-                ctx,
-                link_id,
-                AuditAction::NodeShareLinkGrantRevoke,
-                trace_id,
-            )
-            .await?
-        else {
-            return Err(StorageError::Forbidden);
-        };
-        let ns = ctx.ns();
-        let now = Utc::now();
+        crate::span_err::storage(
+            async {
+                let Some((node_id, obj)) = self
+                    .authorize_link_owner(
+                        ctx,
+                        link_id,
+                        AuditAction::NodeShareLinkGrantRevoke,
+                        trace_id,
+                    )
+                    .await?
+                else {
+                    return Err(StorageError::Forbidden);
+                };
+                let ns = ctx.ns();
+                let now = Utc::now();
 
-        let mut tx = self.db.begin().await?;
-        self.lock_node(&mut tx, node_id).await?;
+                let mut tx = self.db.begin().await?;
+                self.lock_node(&mut tx, node_id).await?;
 
-        // live な行だけをソフト失効し、剥奪対象の role を同時に取り出す（1 文・冪等）。
-        // 2 度目以降は 0 行 → `None` → そのまま冪等成功。
-        let grole: Option<String> = sqlx::query_scalar(
-            "UPDATE node_share_link_grant SET revoked_at = now() \
+                // live な行だけをソフト失効し、剥奪対象の role を同時に取り出す（1 文・冪等）。
+                // 2 度目以降は 0 行 → `None` → そのまま冪等成功。
+                let grole: Option<String> = sqlx::query_scalar(
+                    "UPDATE node_share_link_grant SET revoked_at = now() \
              WHERE link_id = $1 AND user_id = $2 AND tenant_id = $3 AND revoked_at IS NULL \
              RETURNING role",
-        )
-        .bind(link_id)
-        .bind(user_id)
-        .bind(ctx.tenant_id())
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(grole) = grole else {
-            tx.rollback().await?;
-            return Ok(());
-        };
-        let Some(role) = ShareRole::parse(&grole) else {
-            return Err(StorageError::Integrity(format!(
-                "共有リンク grant の role が不正: {grole}"
-            )));
-        };
+                )
+                .bind(link_id)
+                .bind(user_id)
+                .bind(ctx.tenant_id())
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(grole) = grole else {
+                    tx.rollback().await?;
+                    return Ok(());
+                };
+                let Some(role) = ShareRole::parse(&grole) else {
+                    return Err(StorageError::Integrity(format!(
+                        "共有リンク grant の role が不正: {grole}"
+                    )));
+                };
 
-        // 同 (node,user,role) を保持する **live な grant × active リンク** が残っていればタプルは
-        // 消さない（参照カウント）。⚠️ 上の UPDATE を**同一 tx で先に**実行しているので、自分の行は
-        // g.revoked_at IS NULL に引っ掛からず自然に除外される（だから link_id <> は要らない）。
-        // 順序を入れ替えると自分を数えて remaining = 1 になり、タプルが永久に残る。
-        let remaining: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM node_share_link_grant g \
+                // 同 (node,user,role) を保持する **live な grant × active リンク** が残っていればタプルは
+                // 消さない（参照カウント）。⚠️ 上の UPDATE を**同一 tx で先に**実行しているので、自分の行は
+                // g.revoked_at IS NULL に引っ掛からず自然に除外される（だから link_id <> は要らない）。
+                // 順序を入れ替えると自分を数えて remaining = 1 になり、タプルが永久に残る。
+                let remaining: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM node_share_link_grant g \
              JOIN node_share_link l ON l.link_id = g.link_id \
              WHERE g.node_id = $1 AND g.user_id = $2 AND g.role = $3 AND g.tenant_id = $4 \
                AND g.revoked_at IS NULL \
                AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at > $5)",
-        )
-        .bind(node_id)
-        .bind(user_id)
-        .bind(&grole)
-        .bind(ctx.tenant_id())
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await?;
-        if remaining == 0 {
-            // 最後の live grant → via_link を剥奪（失敗は ? 伝播で tx 巻き戻し＝fail-closed）。
-            // 剥奪は台帳 UPDATE の後・commit の前・ロック保持下で行う。commit 失敗時に補償が
-            // 要らないのは付与と非対称な点: 剥奪の失敗は「アクセスを失ったが台帳は live」＝
-            // fail-closed 方向で、本人が再 redeem すればタプルが張り直されて自己修復する。
-            self.authz
-                .delete_tuple(&ns.user(user_id), role.relation_via_link(), &obj)
+                )
+                .bind(node_id)
+                .bind(user_id)
+                .bind(&grole)
+                .bind(ctx.tenant_id())
+                .bind(now)
+                .fetch_one(&mut *tx)
                 .await?;
-        }
-        self.finalize_share_link_tx(
-            tx,
-            ctx,
-            node_id,
-            kind_of(&obj),
-            AuditAction::NodeShareLinkGrantRevoke,
-            json!({ "link_id": link_id, "user_id": user_id, "role": role,
+                if remaining == 0 {
+                    // 最後の live grant → via_link を剥奪（失敗は ? 伝播で tx 巻き戻し＝fail-closed）。
+                    // 剥奪は台帳 UPDATE の後・commit の前・ロック保持下で行う。commit 失敗時に補償が
+                    // 要らないのは付与と非対称な点: 剥奪の失敗は「アクセスを失ったが台帳は live」＝
+                    // fail-closed 方向で、本人が再 redeem すればタプルが張り直されて自己修復する。
+                    self.authz
+                        .delete_tuple(&ns.user(user_id), role.relation_via_link(), &obj)
+                        .await?;
+                }
+                self.finalize_share_link_tx(
+                    tx,
+                    ctx,
+                    node_id,
+                    kind_of(&obj),
+                    AuditAction::NodeShareLinkGrantRevoke,
+                    json!({ "link_id": link_id, "user_id": user_id, "role": role,
                     "tuple_revoked": remaining == 0 }),
-            trace_id,
+                    trace_id,
+                )
+                .await
+            }
+            .await,
         )
-        .await
     }
 
     /// あるリンクの redeem 済み per-user タプルを参照カウントして剥奪する（失効/期限失効時）。
@@ -247,7 +251,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.list_share_link_grants",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), link_id = %link_id, count = tracing::field::Empty),
     )]
     pub async fn list_share_link_grants(
@@ -256,38 +259,48 @@ impl StorageService {
         link_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareLinkGrant>, StorageError> {
-        if self
-            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkGrantsList, trace_id)
-            .await?
-            .is_none()
-        {
-            return Err(StorageError::Forbidden);
-        }
-        // 表示名解決は同一 org の directory_user に限定する（テナント内 org 越境で別 org の表示名を
-        // 返さない・org は隔離境界・#371）。LEFT JOIN なので該当なしは user_id 表示へフォールバック。
-        let rows: Vec<GrantRow> = sqlx::query_as(
-            "SELECT g.user_id, d.display_name, g.granted_at \
+        crate::span_err::storage(
+            async {
+                if self
+                    .authorize_link_owner(
+                        ctx,
+                        link_id,
+                        AuditAction::NodeShareLinkGrantsList,
+                        trace_id,
+                    )
+                    .await?
+                    .is_none()
+                {
+                    return Err(StorageError::Forbidden);
+                }
+                // 表示名解決は同一 org の directory_user に限定する（テナント内 org 越境で別 org の表示名を
+                // 返さない・org は隔離境界・#371）。LEFT JOIN なので該当なしは user_id 表示へフォールバック。
+                let rows: Vec<GrantRow> = sqlx::query_as(
+                    "SELECT g.user_id, d.display_name, g.granted_at \
              FROM node_share_link_grant g \
              LEFT JOIN directory_user d \
                ON d.user_id = g.user_id AND d.tenant_id = g.tenant_id AND d.org = $3 \
              WHERE g.link_id = $1 AND g.tenant_id = $2 AND g.revoked_at IS NULL \
              ORDER BY g.granted_at DESC \
              LIMIT $4",
+                )
+                .bind(link_id)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
+                .bind(SHARE_LINK_GRANTS_LIMIT)
+                .fetch_all(&self.db)
+                .await?;
+                tracing::Span::current().record("count", rows.len());
+                Ok(rows
+                    .into_iter()
+                    .map(|r| ShareLinkGrant {
+                        user_id: r.user_id,
+                        display_name: r.display_name,
+                        granted_at: r.granted_at,
+                    })
+                    .collect())
+            }
+            .await,
         )
-        .bind(link_id)
-        .bind(ctx.tenant_id())
-        .bind(ctx.org())
-        .bind(SHARE_LINK_GRANTS_LIMIT)
-        .fetch_all(&self.db)
-        .await?;
-        tracing::Span::current().record("count", rows.len());
-        Ok(rows
-            .into_iter()
-            .map(|r| ShareLinkGrant {
-                user_id: r.user_id,
-                display_name: r.display_name,
-                granted_at: r.granted_at,
-            })
-            .collect())
     }
 }

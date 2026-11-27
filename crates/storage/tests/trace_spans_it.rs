@@ -333,6 +333,26 @@ async fn list_and_download_emit_bounded_child_spans() {
     assert!(names.len() <= MAX_SPANS_PER_REQUEST);
     assert!(errors.is_empty(), "{errors:?}");
 
+    // --- パンくず（祖先の判定は 1 回の BatchCheck・祖先ごとに span を増やさない） ---
+    let crumbs = service
+        .breadcrumb(&actx, file_id, None)
+        .instrument(tracing::info_span!("http_request"))
+        .await
+        .expect("パンくず");
+    assert_eq!(crumbs.len(), 2, "フォルダ → ファイル");
+    let (spans, errors) = rec.take();
+    let names = names_under_request(&spans);
+    println!("パンくずの span: {names:?}");
+    assert!(has_child(&spans, "storage.breadcrumb", "http_request"));
+    assert!(has_child(&spans, "authz.batch_check", "storage.breadcrumb"));
+    // 単発の check は対象ノード自身の読取認可の 1 回だけ（祖先ごとに増えない）。
+    assert_eq!(
+        names.iter().filter(|n| **n == "authz.check").count(),
+        1,
+        "祖先ごとの check にならない"
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+
     // --- 内部読み取り（実バイトを ObjectStore から読む経路） ---
     let (_, bytes) = service
         .read_file_internal(&actx, file_id, None)

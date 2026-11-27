@@ -52,7 +52,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.begin_upload",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = declared_size),
     )]
     pub async fn begin_upload_with_base(
@@ -67,6 +66,7 @@ impl StorageService {
         base_version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<UploadTicket, StorageError> {
+        crate::span_err::storage(async {
         let base_version = target_node_id.and(base_version);
         if !is_valid_sha256_hex(declared_sha256) {
             return Err(StorageError::Invalid(
@@ -188,12 +188,13 @@ impl StorageService {
             upload_url,
         })
     }
+        .await)
+    }
 
     /// presigned GET URL を発行する（短 TTL）。
     #[tracing::instrument(
         name = "storage.issue_download_url",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
     )]
     pub async fn issue_download_url(
@@ -202,40 +203,45 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<DownloadTicket, StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
-        if node.kind != NodeKind::File {
-            return Err(StorageError::NotFound);
-        }
-        self.require_read(
-            ctx,
-            &ctx.ns().file(&file_id.to_string()),
-            AuditAction::FileDownloadUrlIssue,
-            "file",
-            &file_id.to_string(),
-            trace_id,
-        )
-        .await?;
-        let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let url = self
-            .presign_blob(ctx, sha, &node.name, node.content_type.as_deref())
-            .await?;
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::FileDownloadUrlIssue,
-                    object_type: "file",
-                    object_id: &file_id.to_string(),
-                    decision: Decision::Allow,
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, file_id, false).await?;
+                if node.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
+                self.require_read(
+                    ctx,
+                    &ctx.ns().file(&file_id.to_string()),
+                    AuditAction::FileDownloadUrlIssue,
+                    "file",
+                    &file_id.to_string(),
                     trace_id,
-                    metadata: json!({ "ttl_secs": self.presign_get_ttl.as_secs() }),
-                },
-            )
-            .await?;
-        Ok(DownloadTicket {
-            url,
-            expires_in_secs: self.presign_get_ttl.as_secs(),
-        })
+                )
+                .await?;
+                let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
+                let url = self
+                    .presign_blob(ctx, sha, &node.name, node.content_type.as_deref())
+                    .await?;
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::FileDownloadUrlIssue,
+                            object_type: "file",
+                            object_id: &file_id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "ttl_secs": self.presign_get_ttl.as_secs() }),
+                        },
+                    )
+                    .await?;
+                Ok(DownloadTicket {
+                    url,
+                    expires_in_secs: self.presign_get_ttl.as_secs(),
+                })
+            }
+            .await,
+        )
     }
 
     /// blob の refcount を upsert で +1 する（新規は 1 で挿入）。tenant_id + org スコープ。

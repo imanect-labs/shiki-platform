@@ -85,7 +85,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.write_file",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
     )]
     pub async fn write_file_internal(
@@ -97,16 +96,21 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        match self
-            .write_file_core(ctx, parent_id, name, bytes, content_type, trace_id, None)
-            .await?
-        {
-            WriteCoreOut::Written(node) => Ok(*node),
-            // idem=None は決して dedup しない。
-            WriteCoreOut::Deduped(_) => Err(StorageError::Integrity(
-                "idem 無し書込が dedup を返した".into(),
-            )),
-        }
+        crate::span_err::storage(
+            async {
+                match self
+                    .write_file_core(ctx, parent_id, name, bytes, content_type, trace_id, None)
+                    .await?
+                {
+                    WriteCoreOut::Written(node) => Ok(*node),
+                    // idem=None は決して dedup しない。
+                    WriteCoreOut::Deduped(_) => Err(StorageError::Integrity(
+                        "idem 無し書込が dedup を返した".into(),
+                    )),
+                }
+            }
+            .await,
+        )
     }
 
     /// 同名衝突時に ` (2)` `(3)` … を付けてリトライする新規作成（Drive 風・上限あり・#381）。
@@ -117,7 +121,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.write_file_unique",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
     )]
     pub async fn write_file_unique_internal(
@@ -129,28 +132,40 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        let (stem, ext) = file_name
-            .rsplit_once('.')
-            .map_or((file_name, ""), |(s, e)| (s, e));
-        for attempt in 1..=MAX_NAME_ATTEMPTS {
-            let candidate = if attempt == 1 {
-                file_name.to_string()
-            } else if ext.is_empty() {
-                format!("{stem} ({attempt})")
-            } else {
-                format!("{stem} ({attempt}).{ext}")
-            };
-            match self
-                .write_file_internal(ctx, parent_id, &candidate, bytes, content_type, trace_id)
-                .await
-            {
-                Ok(node) => return Ok(node),
-                // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
-                Err(StorageError::Conflict) => {}
-                Err(e) => return Err(e),
+        crate::span_err::storage(
+            async {
+                let (stem, ext) = file_name
+                    .rsplit_once('.')
+                    .map_or((file_name, ""), |(s, e)| (s, e));
+                for attempt in 1..=MAX_NAME_ATTEMPTS {
+                    let candidate = if attempt == 1 {
+                        file_name.to_string()
+                    } else if ext.is_empty() {
+                        format!("{stem} ({attempt})")
+                    } else {
+                        format!("{stem} ({attempt}).{ext}")
+                    };
+                    match self
+                        .write_file_internal(
+                            ctx,
+                            parent_id,
+                            &candidate,
+                            bytes,
+                            content_type,
+                            trace_id,
+                        )
+                        .await
+                    {
+                        Ok(node) => return Ok(node),
+                        // 名前衝突は次候補（連番付き）へ。それ以外の失敗はそのまま返す。
+                        Err(StorageError::Conflict) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(StorageError::Conflict)
             }
-        }
-        Err(StorageError::Conflict)
+            .await,
+        )
     }
 
     /// バイト列を **冪等キー付きで** 保存する（チョークポイント側 in-TX effect_journal・PIT-31）。
@@ -163,7 +178,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.write_file_idempotent",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
     )]
     pub async fn write_file_internal_idempotent(
@@ -177,21 +191,26 @@ impl StorageService {
         op_digest: &str,
         trace_id: Option<&str>,
     ) -> Result<Value, StorageError> {
-        match self
-            .write_file_core(
-                ctx,
-                parent_id,
-                name,
-                bytes,
-                content_type,
-                trace_id,
-                Some((idempotency_key, op_digest)),
-            )
-            .await?
-        {
-            WriteCoreOut::Written(node) => Ok(write_summary(&node)),
-            WriteCoreOut::Deduped(summary) => Ok(summary),
-        }
+        crate::span_err::storage(
+            async {
+                match self
+                    .write_file_core(
+                        ctx,
+                        parent_id,
+                        name,
+                        bytes,
+                        content_type,
+                        trace_id,
+                        Some((idempotency_key, op_digest)),
+                    )
+                    .await?
+                {
+                    WriteCoreOut::Written(node) => Ok(write_summary(&node)),
+                    WriteCoreOut::Deduped(summary) => Ok(summary),
+                }
+            }
+            .await,
+        )
     }
 
     /// 配置先（親フォルダ or org ルート）への新規作成権限を確認する（書込チョークポイントの
@@ -458,7 +477,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.read_file",
         skip_all,
-        err,
         fields(
             tenant_id = ctx.tenant_id(),
             node_kind = "file",
@@ -473,46 +491,51 @@ impl StorageService {
         max_bytes: i64,
         trace_id: Option<&str>,
     ) -> Result<(Node, Vec<u8>), StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
-        if node.kind != NodeKind::File {
-            return Err(StorageError::NotFound);
-        }
-        self.require_read(
-            ctx,
-            &ctx.ns().file(&file_id.to_string()),
-            AuditAction::FileReadInternal,
-            "file",
-            &file_id.to_string(),
-            trace_id,
-        )
-        .await?;
-        let limit = max_bytes.min(self.max_upload_size);
-        if node.size_bytes.unwrap_or(0) > limit {
-            return Err(StorageError::Invalid(format!(
-                "size が内部読み取りの上限を超えています（最大 {limit} バイト）"
-            )));
-        }
-        let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let mut tx = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
-        let bytes = self
-            .content
-            .read_on(&mut tx, ctx.tenant(), ctx.org(), sha)
-            .await?;
-        tx.commit().await?;
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::FileReadInternal,
-                    object_type: "file",
-                    object_id: &file_id.to_string(),
-                    decision: Decision::Allow,
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, file_id, false).await?;
+                if node.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
+                self.require_read(
+                    ctx,
+                    &ctx.ns().file(&file_id.to_string()),
+                    AuditAction::FileReadInternal,
+                    "file",
+                    &file_id.to_string(),
                     trace_id,
-                    metadata: json!({ "size": bytes.len() }),
-                },
-            )
-            .await?;
-        tracing::Span::current().record("bytes", bytes.len());
-        Ok((node, bytes))
+                )
+                .await?;
+                let limit = max_bytes.min(self.max_upload_size);
+                if node.size_bytes.unwrap_or(0) > limit {
+                    return Err(StorageError::Invalid(format!(
+                        "size が内部読み取りの上限を超えています（最大 {limit} バイト）"
+                    )));
+                }
+                let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
+                let mut tx = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
+                let bytes = self
+                    .content
+                    .read_on(&mut tx, ctx.tenant(), ctx.org(), sha)
+                    .await?;
+                tx.commit().await?;
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::FileReadInternal,
+                            object_type: "file",
+                            object_id: &file_id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "size": bytes.len() }),
+                        },
+                    )
+                    .await?;
+                tracing::Span::current().record("bytes", bytes.len());
+                Ok((node, bytes))
+            }
+            .await,
+        )
     }
 }

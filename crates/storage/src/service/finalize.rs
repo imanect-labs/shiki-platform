@@ -15,7 +15,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.finalize_upload",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", upload_id = %upload_id),
     )]
     pub async fn finalize_upload(
@@ -24,6 +23,7 @@ impl StorageService {
         upload_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        crate::span_err::storage(async {
         // 所有者束縛: アップロードを宣言した本人のみ finalize できる（upload_id 漏洩での横取り防止）。
         // tenant_id も条件に含め、同一 org 内でも tenant 跨ぎを遮断する。
         let pending: PendingRow = sqlx::query_as(
@@ -312,6 +312,8 @@ impl StorageService {
         let _ = self.store.delete(&incoming_key).await; // best-effort 後始末（final は残す）
         let _ = self.store.delete(&pending.staging_key).await;
         Ok(node)
+    }
+        .await)
     }
 
     // --- ダウンロード / メタ ---

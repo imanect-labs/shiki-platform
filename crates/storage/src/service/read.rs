@@ -24,7 +24,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.get_metadata",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
     )]
     pub async fn get_metadata_annotated(
@@ -34,35 +33,40 @@ impl StorageService {
         trace_id: Option<&str>,
         annotations: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Node, StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
-        // 共有リンクの遅延失効（#342・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
-        // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
-        self.enforce_share_link_expiry(ctx, file_id, node.kind)
-            .await?;
-        self.require_read_annotated(
-            ctx,
-            &ctx.ns().file(&file_id.to_string()),
-            AuditAction::FileMetadataRead,
-            "file",
-            &file_id.to_string(),
-            trace_id,
-            annotations,
-        )
-        .await?;
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::FileMetadataRead,
-                    object_type: "file",
-                    object_id: &file_id.to_string(),
-                    decision: Decision::Allow,
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, file_id, false).await?;
+                // 共有リンクの遅延失効（#342・defense-in-depth）: 期限切れなら FGA タプルを先行剥奪して
+                // から viewer 判定する（新規 open が期限後のタプルで通らないようにする）。
+                self.enforce_share_link_expiry(ctx, file_id, node.kind)
+                    .await?;
+                self.require_read_annotated(
+                    ctx,
+                    &ctx.ns().file(&file_id.to_string()),
+                    AuditAction::FileMetadataRead,
+                    "file",
+                    &file_id.to_string(),
                     trace_id,
-                    metadata: serde_json::Value::Object(annotations.clone()),
-                },
-            )
-            .await?;
-        Ok(node)
+                    annotations,
+                )
+                .await?;
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::FileMetadataRead,
+                            object_type: "file",
+                            object_id: &file_id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: serde_json::Value::Object(annotations.clone()),
+                        },
+                    )
+                    .await?;
+                Ok(node)
+            }
+            .await,
+        )
     }
 
     // --- 変更系 ---
@@ -83,7 +87,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.list_children",
         skip_all,
-        err,
         fields(
             tenant_id = ctx.tenant_id(),
             node_kind = "folder",
@@ -101,132 +104,139 @@ impl StorageService {
         include_system: bool,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
-        // 親の閲覧可否を先に確認（ルートは org メンバー）。読めない親は存在秘匿で空扱い。
-        match parent_id {
-            Some(p) => {
-                self.ensure_folder(ctx, p).await?;
-                // 共有リンクの遅延失効（#368/A-3・defense-in-depth）: 親フォルダの期限切れ broad
-                // タプルを先行剥奪してから viewer 判定する（get_metadata と同じ経路を列挙にも通す）。
-                // 子ごとの遅延失効は列挙のホットパスに reconcile を撒くコストが高いため通さない
-                // （子はイベント駆動タイマ＋各 open 時の get_metadata で eventual に失効する）。
-                self.enforce_share_link_expiry(ctx, p, NodeKind::Folder)
-                    .await?;
-                self.require_read(
-                    ctx,
-                    &ctx.ns().folder(&p.to_string()),
-                    AuditAction::FolderChildrenList,
-                    "folder",
-                    &p.to_string(),
-                    trace_id,
-                )
-                .await?;
-            }
-            None => {
-                self.require(
-                    ctx,
-                    Relation::Member,
-                    &ctx.ns().organization(ctx.org()),
-                    AuditAction::FolderChildrenList,
-                    "organization",
-                    ctx.org(),
-                    trace_id,
-                )
-                .await?;
-            }
-        }
+        crate::span_err::storage(
+            async {
+                // 親の閲覧可否を先に確認（ルートは org メンバー）。読めない親は存在秘匿で空扱い。
+                match parent_id {
+                    Some(p) => {
+                        self.ensure_folder(ctx, p).await?;
+                        // 共有リンクの遅延失効（#368/A-3・defense-in-depth）: 親フォルダの期限切れ broad
+                        // タプルを先行剥奪してから viewer 判定する（get_metadata と同じ経路を列挙にも通す）。
+                        // 子ごとの遅延失効は列挙のホットパスに reconcile を撒くコストが高いため通さない
+                        // （子はイベント駆動タイマ＋各 open 時の get_metadata で eventual に失効する）。
+                        self.enforce_share_link_expiry(ctx, p, NodeKind::Folder)
+                            .await?;
+                        self.require_read(
+                            ctx,
+                            &ctx.ns().folder(&p.to_string()),
+                            AuditAction::FolderChildrenList,
+                            "folder",
+                            &p.to_string(),
+                            trace_id,
+                        )
+                        .await?;
+                    }
+                    None => {
+                        self.require(
+                            ctx,
+                            Relation::Member,
+                            &ctx.ns().organization(ctx.org()),
+                            AuditAction::FolderChildrenList,
+                            "organization",
+                            ctx.org(),
+                            trace_id,
+                        )
+                        .await?;
+                    }
+                }
 
-        let limit = limit.clamp(1, 100);
-        // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
-        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
-        let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
-        let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
+                let limit = limit.clamp(1, 100);
+                // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
+                let batch: i64 = (limit as i64 * 2).clamp(16, 200);
+                // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+                let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
+                let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
-        let mut exhausted = false;
-        while items.len() < limit && !exhausted {
-            // keyset: (sort_col, id) cmp (after_val, after_id)。parent_id は IS NOT DISTINCT FROM で
-            // NULL（ルート）も同値比較する。after_val は text で受けて列型へキャストして比較する。
-            // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
-            // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
-            let sql = format!(
-                "SELECT {NODE_COLS} FROM node \
+                let mut items: Vec<Node> = Vec::with_capacity(limit);
+                let mut exhausted = false;
+                while items.len() < limit && !exhausted {
+                    // keyset: (sort_col, id) cmp (after_val, after_id)。parent_id は IS NOT DISTINCT FROM で
+                    // NULL（ルート）も同値比較する。after_val は text で受けて列型へキャストして比較する。
+                    // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
+                    // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
+                    let sql = format!(
+                        "SELECT {NODE_COLS} FROM node \
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
                    AND ($7 OR system = false) \
                    AND parent_id IS NOT DISTINCT FROM $3 \
                    AND {keyset} \
                  ORDER BY {order_by} LIMIT $6"
-            );
-            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(ctx.org())
-                .bind(ctx.tenant_id())
-                .bind(parent_id)
-                .bind(after.as_ref().map(|c| c.value.as_str()))
-                .bind(after.as_ref().map(|c| c.id))
-                .bind(batch)
-                .bind(include_system)
-                .bind(after.as_ref().map(|c| c.kind.as_str()))
-                .bind(after.as_ref().map(|c| c.name.as_str()))
-                .fetch_all(&self.db)
-                .await?;
-            if (rows.len() as i64) < batch {
-                exhausted = true;
-            }
-            if rows.is_empty() {
-                break;
-            }
-            // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
-            // 判定は残り枠ぶんずつ BatchCheck にまとめる（子ごとに check すると往復と span が
-            // 行数ぶん増える）。ページに入り得ない行は判定しない（不要な行の判定失敗で一覧全体を
-            // 落とさない）。
-            let mut pending = rows.into_iter();
-            while items.len() < limit {
-                let chunk: Vec<NodeRow> = pending.by_ref().take(limit - items.len()).collect();
-                if chunk.is_empty() {
-                    break;
-                }
-                let decisions =
-                    post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &chunk).await?;
-                for (row, allowed) in chunk.into_iter().zip(decisions) {
-                    let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                    after = Some(ChildCursor {
-                        value: child_sort_value(sort.key, &row),
-                        name: row.name.clone(),
-                        id: row.id,
-                        kind,
-                    });
-                    if !allowed {
-                        continue;
+                    );
+                    let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                        .bind(ctx.org())
+                        .bind(ctx.tenant_id())
+                        .bind(parent_id)
+                        .bind(after.as_ref().map(|c| c.value.as_str()))
+                        .bind(after.as_ref().map(|c| c.id))
+                        .bind(batch)
+                        .bind(include_system)
+                        .bind(after.as_ref().map(|c| c.kind.as_str()))
+                        .bind(after.as_ref().map(|c| c.name.as_str()))
+                        .fetch_all(&self.db)
+                        .await?;
+                    if (rows.len() as i64) < batch {
+                        exhausted = true;
                     }
-                    items.push(row_to_node(row)?);
-                    if items.len() == limit {
+                    if rows.is_empty() {
                         break;
                     }
+                    // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
+                    // 判定は BatchCheck にまとめる（子ごとに check すると往復と span が行数ぶん増える）。
+                    // ページ外の行の判定失敗で一覧全体を落とさない（post_filter_front）。
+                    let mut pending = std::collections::VecDeque::from(rows);
+                    while items.len() < limit && !pending.is_empty() {
+                        let decisions = post_filter_front(
+                            self.authz.as_ref(),
+                            ctx,
+                            Relation::Viewer,
+                            pending.make_contiguous(),
+                            limit - items.len(),
+                        )
+                        .await?;
+                        let chunk: Vec<NodeRow> = pending.drain(..decisions.len()).collect();
+                        for (row, allowed) in chunk.into_iter().zip(decisions) {
+                            let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                            after = Some(ChildCursor {
+                                value: child_sort_value(sort.key, &row),
+                                name: row.name.clone(),
+                                id: row.id,
+                                kind,
+                            });
+                            if !allowed {
+                                continue;
+                            }
+                            items.push(row_to_node(row)?);
+                            if items.len() == limit {
+                                break;
+                            }
+                        }
+                    }
                 }
+                // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
+                let next_cursor = if items.len() == limit {
+                    after.map(|c| encode_child_cursor(sort, &c))
+                } else {
+                    None
+                };
+                // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::FolderChildrenList,
+                            object_type: "folder",
+                            object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "returned": items.len() }),
+                        },
+                    )
+                    .await?;
+                tracing::Span::current().record("count", items.len());
+                Ok(ChildPage { items, next_cursor })
             }
-        }
-        // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
-        let next_cursor = if items.len() == limit {
-            after.map(|c| encode_child_cursor(sort, &c))
-        } else {
-            None
-        };
-        // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::FolderChildrenList,
-                    object_type: "folder",
-                    object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "returned": items.len() }),
-                },
-            )
-            .await?;
-        tracing::Span::current().record("count", items.len());
-        Ok(ChildPage { items, next_cursor })
+            .await,
+        )
     }
 
     /// フォルダ横断の**名前検索**（権限フィルタ済み・keyset ページング）。
@@ -258,7 +268,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.search_nodes",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
     )]
     pub async fn search_nodes_by_name_kind(
@@ -271,115 +280,122 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
-        self.require(
-            ctx,
-            Relation::Member,
-            &ctx.ns().organization(ctx.org()),
-            AuditAction::NodeSearch,
-            "organization",
-            ctx.org(),
-            trace_id,
-        )
-        .await?;
+        crate::span_err::storage(
+            async {
+                self.require(
+                    ctx,
+                    Relation::Member,
+                    &ctx.ns().organization(ctx.org()),
+                    AuditAction::NodeSearch,
+                    "organization",
+                    ctx.org(),
+                    trace_id,
+                )
+                .await?;
 
-        let terms: Vec<String> = query
-            .split_whitespace()
-            .map(|t| format!("%{}%", crate::directory::escape_like(t)))
-            .collect();
-        if terms.is_empty() {
-            return Ok(ChildPage {
-                items: vec![],
-                next_cursor: None,
-            });
-        }
+                let terms: Vec<String> = query
+                    .split_whitespace()
+                    .map(|t| format!("%{}%", crate::directory::escape_like(t)))
+                    .collect();
+                if terms.is_empty() {
+                    return Ok(ChildPage {
+                        items: vec![],
+                        next_cursor: None,
+                    });
+                }
 
-        let limit = limit.clamp(1, 100);
-        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
-        let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
-        let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
+                let limit = limit.clamp(1, 100);
+                let batch: i64 = (limit as i64 * 2).clamp(16, 200);
+                // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+                let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
+                let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
-        let mut exhausted = false;
-        while items.len() < limit && !exhausted {
-            // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
-            // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
-            let sql = format!(
-                "SELECT {NODE_COLS} FROM node \
+                let mut items: Vec<Node> = Vec::with_capacity(limit);
+                let mut exhausted = false;
+                while items.len() < limit && !exhausted {
+                    // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
+                    // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
+                    let sql = format!(
+                        "SELECT {NODE_COLS} FROM node \
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
                    AND name ILIKE ALL($3) \
                    AND {keyset} \
                    AND ($7::text IS NULL OR kind = $7) \
                  ORDER BY {order_by} LIMIT $6"
-            );
-            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(ctx.org())
-                .bind(ctx.tenant_id())
-                .bind(&terms)
-                .bind(after.as_ref().map(|c| c.value.as_str()))
-                .bind(after.as_ref().map(|c| c.id))
-                .bind(batch)
-                .bind(kind.map(NodeKind::as_str))
-                .bind(after.as_ref().map(|c| c.kind.as_str()))
-                .bind(after.as_ref().map(|c| c.name.as_str()))
-                .fetch_all(&self.db)
-                .await?;
-            if (rows.len() as i64) < batch {
-                exhausted = true;
-            }
-            if rows.is_empty() {
-                break;
-            }
-            // 判定は残り枠ぶんずつ BatchCheck にまとめる（子ごとに check すると往復と span が
-            // 行数ぶん増える）。ページに入り得ない行は判定しない（不要な行の判定失敗で一覧全体を
-            // 落とさない）。
-            let mut pending = rows.into_iter();
-            while items.len() < limit {
-                let chunk: Vec<NodeRow> = pending.by_ref().take(limit - items.len()).collect();
-                if chunk.is_empty() {
-                    break;
-                }
-                let decisions =
-                    post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &chunk).await?;
-                for (row, allowed) in chunk.into_iter().zip(decisions) {
-                    let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                    after = Some(ChildCursor {
-                        value: child_sort_value(sort.key, &row),
-                        name: row.name.clone(),
-                        id: row.id,
-                        kind,
-                    });
-                    if !allowed {
-                        continue;
+                    );
+                    let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                        .bind(ctx.org())
+                        .bind(ctx.tenant_id())
+                        .bind(&terms)
+                        .bind(after.as_ref().map(|c| c.value.as_str()))
+                        .bind(after.as_ref().map(|c| c.id))
+                        .bind(batch)
+                        .bind(kind.map(NodeKind::as_str))
+                        .bind(after.as_ref().map(|c| c.kind.as_str()))
+                        .bind(after.as_ref().map(|c| c.name.as_str()))
+                        .fetch_all(&self.db)
+                        .await?;
+                    if (rows.len() as i64) < batch {
+                        exhausted = true;
                     }
-                    items.push(row_to_node(row)?);
-                    if items.len() == limit {
+                    if rows.is_empty() {
                         break;
                     }
+                    // 判定は BatchCheck にまとめる（子ごとに check すると往復と span が行数ぶん増える）。
+                    // ページ外の行の判定失敗で一覧全体を落とさない（post_filter_front）。
+                    let mut pending = std::collections::VecDeque::from(rows);
+                    while items.len() < limit && !pending.is_empty() {
+                        let decisions = post_filter_front(
+                            self.authz.as_ref(),
+                            ctx,
+                            Relation::Viewer,
+                            pending.make_contiguous(),
+                            limit - items.len(),
+                        )
+                        .await?;
+                        let chunk: Vec<NodeRow> = pending.drain(..decisions.len()).collect();
+                        for (row, allowed) in chunk.into_iter().zip(decisions) {
+                            let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                            after = Some(ChildCursor {
+                                value: child_sort_value(sort.key, &row),
+                                name: row.name.clone(),
+                                id: row.id,
+                                kind,
+                            });
+                            if !allowed {
+                                continue;
+                            }
+                            items.push(row_to_node(row)?);
+                            if items.len() == limit {
+                                break;
+                            }
+                        }
+                    }
                 }
+                let next_cursor = if items.len() == limit {
+                    after.map(|c| encode_child_cursor(sort, &c))
+                } else {
+                    None
+                };
+                // 検索も列挙操作として監査へ（クエリ本文は含めない: 低エントロピー語の露出回避）。
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::NodeSearch,
+                            object_type: "organization",
+                            object_id: ctx.org(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "returned": items.len() }),
+                        },
+                    )
+                    .await?;
+                tracing::Span::current().record("count", items.len());
+                Ok(ChildPage { items, next_cursor })
             }
-        }
-        let next_cursor = if items.len() == limit {
-            after.map(|c| encode_child_cursor(sort, &c))
-        } else {
-            None
-        };
-        // 検索も列挙操作として監査へ（クエリ本文は含めない: 低エントロピー語の露出回避）。
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::NodeSearch,
-                    object_type: "organization",
-                    object_id: ctx.org(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "returned": items.len() }),
-                },
-            )
-            .await?;
-        tracing::Span::current().record("count", items.len());
-        Ok(ChildPage { items, next_cursor })
+            .await,
+        )
     }
 
     /// ノードのパンくず（祖先列）を root→自身の順で返す（**読める接尾のみ**）。
@@ -391,7 +407,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.breadcrumb",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
     )]
     pub async fn breadcrumb(
@@ -400,68 +415,76 @@ impl StorageService {
         node_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Vec<Crumb>, StorageError> {
-        let node = self.load_node(ctx, node_id, false).await?;
-        self.require_read(
-            ctx,
-            &node_fga_object(&ctx.ns(), node.kind, node_id),
-            AuditAction::NodeBreadcrumbRead,
-            node.kind.as_str(),
-            &node_id.to_string(),
-            trace_id,
-        )
-        .await?;
-        // 祖先（自身含む）を 自身→root の順（depth 昇順）で取得する。
-        let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
-            "SELECT n.id, n.name, n.kind, c.depth \
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, node_id, false).await?;
+                self.require_read(
+                    ctx,
+                    &node_fga_object(&ctx.ns(), node.kind, node_id),
+                    AuditAction::NodeBreadcrumbRead,
+                    node.kind.as_str(),
+                    &node_id.to_string(),
+                    trace_id,
+                )
+                .await?;
+                // 祖先（自身含む）を 自身→root の順（depth 昇順）で取得する。
+                let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
+                    "SELECT n.id, n.name, n.kind, c.depth \
              FROM node_closure c JOIN node n ON n.id = c.ancestor AND n.tenant_id = c.tenant_id \
              WHERE c.tenant_id = $3 AND c.descendant = $1 AND n.org = $2 AND n.deleted_at IS NULL \
              ORDER BY c.depth ASC",
-        )
-        .bind(node_id)
-        .bind(ctx.org())
-        .bind(ctx.tenant_id())
-        .fetch_all(&self.db)
-        .await?;
+                )
+                .bind(node_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
+                .fetch_all(&self.db)
+                .await?;
 
-        // 自身（depth 0）から上へ。読めない祖先に当たったら打ち切る（読める接尾のみ）。
-        let mut crumbs = Vec::with_capacity(rows.len());
-        for (id, name, kind, _depth) in rows {
-            let kind = NodeKind::parse(&kind)
-                .ok_or_else(|| StorageError::Integrity(format!("未知のノード種別: {kind}")))?;
-            if id != node_id {
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Viewer,
-                        &node_fga_object(&ctx.ns(), kind, id),
-                        Consistency::HigherConsistency,
+                // 自身（depth 0）から上へ。読めない祖先に当たったら打ち切る（読める接尾のみ）。
+                // 祖先の判定は 1 回の BatchCheck にまとめる（祖先ごとの往復と span を増やさない）。
+                let mut parsed = Vec::with_capacity(rows.len());
+                for (id, name, kind, _depth) in rows {
+                    let kind = NodeKind::parse(&kind).ok_or_else(|| {
+                        StorageError::Integrity(format!("未知のノード種別: {kind}"))
+                    })?;
+                    parsed.push((id, name, kind));
+                }
+                let ancestors: Vec<(NodeKind, Uuid)> = parsed
+                    .iter()
+                    .filter(|(id, _, _)| *id != node_id)
+                    .map(|(id, _, kind)| (*kind, *id))
+                    .collect();
+                let mut allowed = ancestor_decisions(self.authz.as_ref(), ctx, &ancestors)
+                    .await?
+                    .into_iter();
+                let mut crumbs = Vec::with_capacity(parsed.len());
+                for (id, name, kind) in parsed {
+                    if id != node_id && !allowed.next().unwrap_or(false) {
+                        break;
+                    }
+                    crumbs.push(Crumb { id, name, kind });
+                }
+                // 自身→root で積んだので、表示順（root→自身）へ反転する。
+                crumbs.reverse();
+                tracing::Span::current().record("count", crumbs.len());
+                // 成功読取を監査に残す（NFR-6・読取系なので未チェーン）。
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::NodeBreadcrumbRead,
+                            object_type: node.kind.as_str(),
+                            object_id: &node_id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "depth": crumbs.len() }),
+                        },
                     )
                     .await?;
-                if !allowed {
-                    break;
-                }
+                Ok(crumbs)
             }
-            crumbs.push(Crumb { id, name, kind });
-        }
-        // 自身→root で積んだので、表示順（root→自身）へ反転する。
-        crumbs.reverse();
-        tracing::Span::current().record("count", crumbs.len());
-        // 成功読取を監査に残す（NFR-6・読取系なので未チェーン）。
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::NodeBreadcrumbRead,
-                    object_type: node.kind.as_str(),
-                    object_id: &node_id.to_string(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "depth": crumbs.len() }),
-                },
-            )
-            .await?;
-        Ok(crumbs)
+            .await,
+        )
     }
 
     /// org + tenant スコープでノードを 1 件読む。

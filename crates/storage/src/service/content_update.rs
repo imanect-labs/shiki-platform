@@ -22,7 +22,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.update_file_content",
         skip_all,
-        err,
         fields(
             tenant_id = ctx.tenant_id(),
             node_kind = "file",
@@ -38,6 +37,7 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        crate::span_err::storage(async {
         let size = i64::try_from(bytes.len())
             .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
         if size > self.max_upload_size {
@@ -146,5 +146,7 @@ impl StorageService {
         .await?;
         tx.commit().await?;
         Ok(node)
+    }
+        .await)
     }
 }

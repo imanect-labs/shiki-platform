@@ -87,7 +87,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.create_folder",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "folder"),
     )]
     pub async fn create_folder(
@@ -97,8 +96,13 @@ impl StorageService {
         name: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.create_folder_inner(ctx, parent_id, name, false, trace_id)
-            .await
+        crate::span_err::storage(
+            async {
+                self.create_folder_inner(ctx, parent_id, name, false, trace_id)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// **システム領域**のフォルダを作成する（issue #392・migration 0060）。
@@ -109,7 +113,6 @@ impl StorageService {
     #[tracing::instrument(
         name = "storage.create_folder",
         skip_all,
-        err,
         fields(tenant_id = ctx.tenant_id(), node_kind = "folder"),
     )]
     pub async fn create_system_folder(
@@ -119,8 +122,13 @@ impl StorageService {
         name: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.create_folder_inner(ctx, parent_id, name, true, trace_id)
-            .await
+        crate::span_err::storage(
+            async {
+                self.create_folder_inner(ctx, parent_id, name, true, trace_id)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// `create_folder` / `create_system_folder` の実体。`force_system` は「この 1 段を

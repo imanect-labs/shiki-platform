@@ -9,8 +9,8 @@
 use std::{sync::Arc, time::Duration};
 
 use authz::{
-    AuthContext, AuthzClient, CheckTuple, Consistency, FgaObject, Namespace, ObjectType, Principal,
-    Relation, Subject, TenantId,
+    AuthContext, AuthzClient, Consistency, FgaObject, Namespace, ObjectType, Principal, Relation,
+    Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -187,6 +187,7 @@ mod finalize;
 mod folder;
 mod internal_io;
 mod move_rename;
+mod post_filter;
 mod proposal;
 mod read;
 mod restore;
@@ -204,44 +205,9 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
+use post_filter::{ancestor_decisions, post_filter_front};
 pub use restore::RevertOutcome;
 pub use workspace_io::WriteAtOutcome;
-
-/// 一覧の post-filter（PIT-13）: 取得した行ごとの `relation` を **BatchCheck でまとめて**判定する。
-///
-/// 結果は `rows` と同じ順。1 行ずつ `check` すると往復と span が行数ぶん増えるため、1 フェッチ
-/// ラウンドを 1 回の `batch_check`（OpenFGA は 50 問ごとに 1 往復）に寄せる。判定は単発と同じく
-/// 強整合（即時剥奪の反映）・fail-closed（1 問でも失敗なら全体エラー・応答数の不一致もエラー）。
-async fn post_filter_rows(
-    authz: &dyn AuthzClient,
-    ctx: &AuthContext,
-    relation: Relation,
-    rows: &[NodeRow],
-) -> Result<Vec<bool>, StorageError> {
-    let subject = ctx.subject();
-    let ns = ctx.ns();
-    let items: Vec<CheckTuple> = rows
-        .iter()
-        .map(|row| CheckTuple {
-            subject: subject.clone(),
-            relation,
-            object: node_fga_object(
-                &ns,
-                NodeKind::parse(&row.kind).unwrap_or(NodeKind::File),
-                row.id,
-            ),
-        })
-        .collect();
-    let allowed = authz
-        .batch_check(&items, Consistency::HigherConsistency)
-        .await?;
-    if allowed.len() != rows.len() {
-        return Err(StorageError::Integrity(
-            "batch_check の応答数が問い数と一致しません".into(),
-        ));
-    }
-    Ok(allowed)
-}
 
 fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
     let kind = NodeKind::parse(&row.kind)
