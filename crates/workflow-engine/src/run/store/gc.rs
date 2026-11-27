@@ -31,6 +31,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::PgPool;
+use tracing::Instrument;
 
 use super::{map_db, RunStore, RunStoreError};
 
@@ -363,7 +364,10 @@ impl RunStore {
         // 別のコネクションを取りに行くため、プールが 1 本の構成で永久待機する。長時間 GC の間
         // 1 本を無用に占有しないためでもある（Codex P2・#445）。
         drop(conn);
-        let outcome = self.purge_expired_history(None).await;
+        let outcome = self
+            .purge_expired_history(None)
+            .instrument(job.span(jobq::JobSpanLink::Link))
+            .await;
         let mut conn = self.db.acquire().await.map_err(map_db)?;
         match outcome {
             Ok(report) => {

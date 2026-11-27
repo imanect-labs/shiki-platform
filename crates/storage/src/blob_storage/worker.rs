@@ -3,6 +3,7 @@ use crate::StorageError;
 use authz::TenantId;
 use serde::Deserialize;
 use std::time::Duration;
+use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -59,6 +60,8 @@ impl BlobStorage {
         };
         let tenant = TenantId::parse(job.tenant_id.clone())
             .map_err(|e| StorageError::Integrity(e.to_string()))?;
+        let span = job.span(jobq::JobSpanLink::Link);
+        let traceparent = job.traceparent.clone();
         let result = async {
             let payload: Payload = serde_json::from_value(job.payload)
                 .map_err(|e| StorageError::Integrity(e.to_string()))?;
@@ -73,12 +76,15 @@ impl BlobStorage {
                 .await?;
             let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, &tenant).await?;
             if batch.checked == 16 {
-                Self::enqueue_after(
-                    &mut tx,
-                    &tenant,
-                    &payload.org,
-                    payload.node_id,
-                    batch.after_version,
+                jobq::continue_trace(
+                    traceparent.as_deref(),
+                    Self::enqueue_after(
+                        &mut tx,
+                        &tenant,
+                        &payload.org,
+                        payload.node_id,
+                        batch.after_version,
+                    ),
                 )
                 .await?;
             }
@@ -88,6 +94,7 @@ impl BlobStorage {
             tx.commit().await?;
             Ok::<_, StorageError>(())
         }
+        .instrument(span)
         .await;
         if let Err(e) = result {
             tracing::warn!(error = %e, job_id = job.id, "旧版の最適化を再試行します");

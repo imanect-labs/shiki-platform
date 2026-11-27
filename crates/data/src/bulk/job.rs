@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use serde_json::Value;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::{enqueue_import, BULK_CHUNK, BULK_IMPORT_QUEUE};
@@ -41,19 +42,26 @@ impl DataStore {
             drop(conn);
             let Some(job) = jobs.pop() else { continue };
             let lease = JobLease::start(&self.pools, &job.tenant_id, job.id);
-            let outcome = self.run_bulk_job(&job).await;
+            let outcome = self
+                .run_bulk_job(&job)
+                .instrument(job.span(jobq::JobSpanLink::Link))
+                .await;
             drop(lease);
             let mut tx = pool.begin().await.map_err(map_db)?;
             match outcome {
                 Ok(again) => {
                     if again {
                         if let Some((table_id, import_id)) = job_ids(&job.payload) {
-                            enqueue_import(
-                                &mut tx,
-                                &job.tenant_id,
-                                table_id,
-                                import_id,
-                                job.trace_id.as_deref(),
+                            // 続きのジョブも元の取込のリクエストへつなぐ。
+                            jobq::continue_trace(
+                                job.traceparent.as_deref(),
+                                enqueue_import(
+                                    &mut tx,
+                                    &job.tenant_id,
+                                    table_id,
+                                    import_id,
+                                    job.trace_id.as_deref(),
+                                ),
                             )
                             .await?;
                         }

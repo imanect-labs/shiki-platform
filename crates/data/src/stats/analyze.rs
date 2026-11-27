@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use sqlx::types::Json;
 use sqlx::{PgConnection, Row};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::{
@@ -72,7 +73,11 @@ impl DataStore {
                 .and_then(Value::as_str)
                 .and_then(|s| Uuid::parse_str(s).ok());
             let outcome = match table_id {
-                Some(t) => self.analyze_table(&job.tenant_id, t).await.map(|_| ()),
+                Some(t) => self
+                    .analyze_table(&job.tenant_id, t)
+                    .instrument(job.span(jobq::JobSpanLink::Link))
+                    .await
+                    .map(|_| ()),
                 None => Err(DataError::Internal(
                     "統計収集ジョブの payload が不正です".into(),
                 )),

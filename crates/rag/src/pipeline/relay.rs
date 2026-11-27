@@ -50,15 +50,20 @@ pub async fn relay_once(pool: &PgPool, config: &RagConfig) -> Result<usize, RagE
             op: event.op.clone(),
             actor: event.actor.clone(),
         };
-        jobq::enqueue_on(
-            &mut tx,
-            NewJob {
-                queue: RAG_INGEST_QUEUE,
-                tenant_id: &event.tenant_id,
-                payload: &serde_json::to_value(&message)?,
-                trace_id: event.trace_id.as_deref(),
-                max_attempts: config.job_max_attempts,
-            },
+        let payload = serde_json::to_value(&message)?;
+        // 書込んだリクエストの context を引き継ぐ（relay のループの span ではなく）。
+        jobq::continue_trace(
+            event.traceparent.as_deref(),
+            jobq::enqueue_on(
+                &mut tx,
+                NewJob {
+                    queue: RAG_INGEST_QUEUE,
+                    tenant_id: &event.tenant_id,
+                    payload: &payload,
+                    trace_id: event.trace_id.as_deref(),
+                    max_attempts: config.job_max_attempts,
+                },
+            ),
         )
         .await?;
         ids.push(event.id);

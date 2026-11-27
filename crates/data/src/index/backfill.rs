@@ -19,6 +19,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::types::Json;
 use sqlx::PgConnection;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::partition::analyze_index_partitions_without_stats;
@@ -699,7 +700,10 @@ impl DataStore {
             drop(conn);
             let Some(job) = jobs.pop() else { continue };
             let lease = JobLease::start(&self.pools, &job.tenant_id, job.id);
-            let outcome = self.run_index_job(&job).await;
+            let outcome = self
+                .run_index_job(&job)
+                .instrument(job.span(jobq::JobSpanLink::Link))
+                .await;
             drop(lease);
             let mut tx = pool.begin().await.map_err(map_db)?;
             match outcome {
@@ -712,7 +716,11 @@ impl DataStore {
                                 .get("op")
                                 .and_then(Value::as_str)
                                 .unwrap_or("backfill");
-                            enqueue(&mut tx, op, &job.tenant_id, table_id).await?;
+                            jobq::continue_trace(
+                                job.traceparent.as_deref(),
+                                enqueue(&mut tx, op, &job.tenant_id, table_id),
+                            )
+                            .await?;
                         }
                     }
                     jobq::ack(&mut tx, job.id)

@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use sqlx::types::Json;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::field_key::upgrade_legacy_schema;
@@ -224,13 +225,16 @@ impl DataStore {
         };
         // 移行中にコネクションを握らない（移行は別コネクションで Tx を張る）。
         drop(conn);
-        let outcome = self.migrate_field_keys_batch(MIGRATION_BATCH).await;
+        let outcome = self
+            .migrate_field_keys_batch(MIGRATION_BATCH)
+            .instrument(job.span(jobq::JobSpanLink::Link))
+            .await;
         let mut tx = registry.begin().await.map_err(map_db)?;
         match outcome {
             Ok(progress) => {
                 // 続きがあれば**同じ Tx で**次のジョブを積んでから ack する（取りこぼさない）。
                 if progress.remaining > 0 {
-                    enqueue(&mut tx).await?;
+                    jobq::continue_trace(job.traceparent.as_deref(), enqueue(&mut tx)).await?;
                 }
                 jobq::ack(&mut tx, job.id).await.map_err(map_jobq)?;
                 tx.commit().await.map_err(map_db)?;

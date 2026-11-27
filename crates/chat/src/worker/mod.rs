@@ -49,6 +49,7 @@ use authz::{AuthContext, Principal};
 use llm_gateway::LlmGateway;
 use rag::SearchService;
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::model::{ContentBlock, RunStatus, StreamEventKind};
@@ -302,9 +303,16 @@ impl ChatWorker {
         }
 
         let last_attempt = job.attempts >= job.max_attempts;
+        // 初回はユーザーが待っている生成なので、発話を受けたリクエストのトレースの**子**にする。
+        // 再試行（バックオフ後）はリンクにして、元のリクエストのトレースを何十分も伸ばさない
+        // （順番待ちの先送りは attempts を消費しないので初回のまま。先送りでは span を作らない）。
+        let span = job.span(jobq::JobSpanLink::parent_unless_retry(job.attempts));
         // 生成の間（承認待ちを含む）ジョブを再配信させない。接続は拍ごとに借りるだけ。
         let lease = job_lease::JobLease::start(self.db.clone(), job.id, vt);
-        let result = self.process_run(run_id, worker_id, slot).await;
+        let result = self
+            .process_run(run_id, worker_id, slot)
+            .instrument(span.clone())
+            .await;
         drop(lease);
         match result {
             Ok(()) => {
@@ -317,7 +325,8 @@ impl ChatWorker {
                 // 再試行しても同じ結果になる失敗（プロバイダが要求を拒否した等）は、残りの試行を
                 // 待たずに確定する。再試行の間は「生成中」に見え続けるため（#877）。
                 let give_up = last_attempt || !e.is_retryable();
-                tracing::warn!(error = %e, run_id = %run_id, last_attempt, give_up, "generation failed");
+                tracing::warn!(parent: &span, error = %e, run_id = %run_id, last_attempt, give_up,
+                    "generation failed");
                 // 確定するなら run を failed 化し UI に反映（DLQ 行き）。会話には定型文だけを
                 // 出し、上流の生エラー（プロバイダ JSON・URL 等）は last_error と tracing に留める。
                 if give_up {
