@@ -12,6 +12,12 @@ impl StorageService {
     ///
     /// closure の子孫（自身含む・生存分）を 1 txn でまとめて `deleted_at` する。refcount は
     /// soft-delete では減らさない（復元可能な間は本体を参照し続ける・LbvQZ と対称）。
+    #[tracing::instrument(
+        name = "storage.soft_delete",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", node_id = %folder_id),
+    )]
     pub async fn soft_delete_folder(
         &self,
         ctx: &AuthContext,
@@ -94,6 +100,12 @@ impl StorageService {
     }
 
     /// 論理削除（ゴミ箱）。blob refcount を減らす。
+    #[tracing::instrument(
+        name = "storage.soft_delete",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn soft_delete_file(
         &self,
         ctx: &AuthContext,
@@ -173,6 +185,12 @@ impl StorageService {
     /// 復元できる（editor）ものだけを post-filter で返す。keyset `(deleted_at, id)` 降順で
     /// ページングし、全件取得はしない。**システム領域（#392）は出さない** — ドライブに
     /// 見えなかったものがゴミ箱から現れると「隠す」意味が崩れるため。
+    #[tracing::instrument(
+        name = "storage.list_trash",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
+    )]
     pub async fn list_trash(
         &self,
         ctx: &AuthContext,
@@ -229,20 +247,13 @@ impl StorageService {
             if rows.is_empty() {
                 break;
             }
-            for row in rows {
+            // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。子ごとの判定は
+            // 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
+            let decisions =
+                post_filter_rows(self.authz.as_ref(), ctx, Relation::Editor, &rows).await?;
+            for (row, allowed) in rows.into_iter().zip(decisions) {
                 after_ts = Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
                 after_id = Some(row.id);
-                // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Editor,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
-                    )
-                    .await?;
                 if !allowed {
                     continue;
                 }
@@ -273,6 +284,7 @@ impl StorageService {
                 },
             )
             .await?;
+        tracing::Span::current().record("count", items.len());
         Ok(ChildPage { items, next_cursor })
     }
 

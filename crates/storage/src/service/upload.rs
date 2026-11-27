@@ -49,6 +49,12 @@ impl StorageService {
     /// 違えば declare の時点で [`StorageError::VersionConflict`] にし、finalize でも版更新を
     /// `version = base_version` の条件付きにして、その間に入った保存を上書きしない。
     #[allow(clippy::too_many_arguments)] // 宣言メタ一式は凝集した 1 操作の引数。
+    #[tracing::instrument(
+        name = "storage.begin_upload",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = declared_size),
+    )]
     pub async fn begin_upload_with_base(
         &self,
         ctx: &AuthContext,
@@ -184,6 +190,12 @@ impl StorageService {
     }
 
     /// presigned GET URL を発行する（短 TTL）。
+    #[tracing::instrument(
+        name = "storage.issue_download_url",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn issue_download_url(
         &self,
         ctx: &AuthContext,

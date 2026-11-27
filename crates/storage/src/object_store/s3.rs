@@ -132,6 +132,7 @@ fn build_client(endpoint: &str, cfg: &S3Config) -> Client {
 
 #[async_trait::async_trait]
 impl ObjectStore for S3ObjectStore {
+    #[tracing::instrument(name = "objstore.ensure_bucket", skip_all, err)]
     async fn ensure_bucket(&self) -> Result<(), ObjectStoreError> {
         let exists = self
             .internal
@@ -162,6 +163,12 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "objstore.presign_put",
+        skip_all,
+        err,
+        fields(bytes = content_length, multipart = false),
+    )]
     async fn presign_put(
         &self,
         key: &str,
@@ -183,6 +190,7 @@ impl ObjectStore for S3ObjectStore {
         Ok(req.uri().to_string())
     }
 
+    #[tracing::instrument(name = "objstore.presign_get", skip_all, err)]
     async fn presign_get(
         &self,
         key: &str,
@@ -209,6 +217,7 @@ impl ObjectStore for S3ObjectStore {
         Ok(req.uri().to_string())
     }
 
+    #[tracing::instrument(name = "objstore.presign_get_internal", skip_all, err)]
     async fn presign_get_internal(
         &self,
         key: &str,
@@ -234,6 +243,12 @@ impl ObjectStore for S3ObjectStore {
     // finalize は `head_object` で checksum を読むだけにすれば**再ダウンロード無し**で
     // content-addressing の整合検証が成立する。本 PR では現状の再ハッシュで安全側に倒し、
     // checksum 検証への切替を後続 Issue（ストレージ最適化）で行う。
+    #[tracing::instrument(
+        name = "objstore.read_and_hash",
+        skip_all,
+        err,
+        fields(bytes = tracing::field::Empty),
+    )]
     async fn read_and_hash(&self, key: &str) -> Result<(String, u64), ObjectStoreError> {
         let resp = self
             .internal
@@ -264,9 +279,17 @@ impl ObjectStore for S3ObjectStore {
             }
             hasher.update(&buf[..n]);
         }
-        Ok(hasher.finalize())
+        let (sha, len) = hasher.finalize();
+        tracing::Span::current().record("bytes", len);
+        Ok((sha, len))
     }
 
+    #[tracing::instrument(
+        name = "objstore.put",
+        skip_all,
+        err,
+        fields(bytes = bytes.len(), multipart = false),
+    )]
     async fn put_object(
         &self,
         key: &str,
@@ -285,6 +308,12 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "objstore.get",
+        skip_all,
+        err,
+        fields(bytes = tracing::field::Empty),
+    )]
     async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError> {
         let resp = self
             .internal
@@ -306,11 +335,19 @@ impl ObjectStore for S3ObjectStore {
             .collect()
             .await
             .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
-        Ok(data.into_bytes().to_vec())
+        let bytes = data.into_bytes().to_vec();
+        tracing::Span::current().record("bytes", bytes.len());
+        Ok(bytes)
     }
 
+    #[tracing::instrument(
+        name = "objstore.exists",
+        skip_all,
+        err,
+        fields(exists = tracing::field::Empty),
+    )]
     async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError> {
-        match self
+        let exists = match self
             .internal
             .head_object()
             .bucket(&self.bucket)
@@ -318,18 +355,20 @@ impl ObjectStore for S3ObjectStore {
             .send()
             .await
         {
-            Ok(_) => Ok(true),
+            Ok(_) => true,
             Err(e) => {
                 let se = e.into_service_error();
-                if se.is_not_found() {
-                    Ok(false)
-                } else {
-                    Err(ObjectStoreError::Backend(format!("head_object: {se}")))
+                if !se.is_not_found() {
+                    return Err(ObjectStoreError::Backend(format!("head_object: {se}")));
                 }
+                false
             }
-        }
+        };
+        tracing::Span::current().record("exists", exists);
+        Ok(exists)
     }
 
+    #[tracing::instrument(name = "objstore.copy", skip_all, err)]
     async fn copy(&self, src_key: &str, dst_key: &str) -> Result<(), ObjectStoreError> {
         // copy_source は `bucket/key`。org/sha256/uuid 由来でパス安全な文字のみ。
         let copy_source = format!("{}/{}", self.bucket, src_key);
@@ -344,6 +383,7 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
+    #[tracing::instrument(name = "objstore.delete", skip_all, err)]
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         self.internal
             .delete_object()
@@ -355,6 +395,12 @@ impl ObjectStore for S3ObjectStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "objstore.list_prefix",
+        skip_all,
+        err,
+        fields(count = tracing::field::Empty),
+    )]
     async fn list_prefix(
         &self,
         prefix: &str,
@@ -374,14 +420,21 @@ impl ObjectStore for S3ObjectStore {
             .send()
             .await
             .map_err(|e| ObjectStoreError::Backend(format!("list_objects_v2: {e}")))?;
-        let keys = resp
+        let keys: Vec<String> = resp
             .contents()
             .iter()
             .filter_map(|o| o.key().map(str::to_string))
             .collect();
+        tracing::Span::current().record("count", keys.len());
         Ok((keys, resp.next_continuation_token().map(str::to_string)))
     }
 
+    #[tracing::instrument(
+        name = "objstore.delete_batch",
+        skip_all,
+        err,
+        fields(count = keys.len()),
+    )]
     async fn delete_batch(&self, keys: &[String]) -> Result<(), ObjectStoreError> {
         if keys.is_empty() {
             return Ok(());

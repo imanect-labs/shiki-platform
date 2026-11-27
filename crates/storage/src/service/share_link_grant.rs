@@ -52,6 +52,12 @@ impl StorageService {
     /// 明示共有（viewer/editor）は別 relation なので決して剥奪されない（#366 B-2）。
     ///
     /// 存在しない／既に取消済みの grant は冪等成功。リンクが無い／別テナントは存在秘匿の `Forbidden`。
+    #[tracing::instrument(
+        name = "storage.revoke_share_link_grant",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn revoke_share_link_grant(
         &self,
         ctx: &AuthContext,
@@ -238,6 +244,12 @@ impl StorageService {
     /// `directory_user` から解決する（無ければ `None`）。broad リンクは台帳を持たないため常に空。
     /// 個別取消済み（`revoked_at IS NOT NULL`）は live でないので含めない —— 含めると owner が
     /// 取消に失敗したと誤認する。
+    #[tracing::instrument(
+        name = "storage.list_share_link_grants",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn list_share_link_grants(
         &self,
         ctx: &AuthContext,

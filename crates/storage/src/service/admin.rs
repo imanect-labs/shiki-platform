@@ -94,6 +94,7 @@ impl StorageService {
 
     /// begin_tenant_purgeで取得したguardを保持したままstorageの撤去を行う。
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(name = "storage.purge_tenant", skip_all, err)]
     pub async fn purge_tenant_with_guard(
         &self,
         guard: &crate::blob_storage::TenantPurgeGuard,

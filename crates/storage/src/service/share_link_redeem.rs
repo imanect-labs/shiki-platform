@@ -68,6 +68,12 @@ impl StorageService {
     /// **レート制限・token 引き・audience 検査・Argon2id 検証はロック外**に置く。Argon2id は 1 回
     /// 50〜100ms の CPU なので、ロック下で回すと任意の認証ユーザーが誤パスワードを連打するだけで
     /// owner の共有操作（create/revoke/extend/失効）を node 単位で止められる（DoS）。
+    #[tracing::instrument(
+        name = "storage.redeem_share_link",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id()),
+    )]
     pub async fn redeem_share_link(
         &self,
         ctx: &AuthContext,

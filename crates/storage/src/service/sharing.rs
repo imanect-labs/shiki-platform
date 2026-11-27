@@ -39,6 +39,12 @@ impl StorageService {
     /// 「ACL は変わったが監査が無い」状態を残さない。ただし補償は **実際に付与したとき
     /// （`write_tuple` が `true`）のみ**行う。冪等 no-op（既共有の再共有）を巻き戻すと
     /// 既存共有を誤って剥奪してしまうため（idempotent 補償の逆破壊を防ぐ）。
+    #[tracing::instrument(
+        name = "storage.share_node",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn share_node(
         &self,
         ctx: &AuthContext,
@@ -85,6 +91,12 @@ impl StorageService {
     /// PIT-11: read 認可は HIGHER_CONSISTENCY で問い合わせるため、剥奪は次リクエストから即時に効く。
     /// 監査失敗時は剥奪を補償付与するが、**実際に剥奪したとき（`delete_tuple` が `true`）のみ**。
     /// 冪等 no-op（未共有の unshare）を巻き戻すと存在しなかった権限を新規付与してしまうため。
+    #[tracing::instrument(
+        name = "storage.unshare_node",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn unshare_node(
         &self,
         ctx: &AuthContext,
@@ -132,6 +144,12 @@ impl StorageService {
     /// 親フォルダからの継承は含めない＝「このノードで誰に共有したか」の管理ビュー）。
     /// 相手の表示名（user は email も）は呼び出し元テナント（＋ org）のディレクトリから 1 クエリで
     /// 一括解決する（#741）。解決失敗は非致命（名前は表示補助・一覧自体は返す）。
+    #[tracing::instrument(
+        name = "storage.list_shares",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn list_shares(
         &self,
         ctx: &AuthContext,
@@ -182,6 +200,12 @@ impl StorageService {
     /// OpenFGA の `list-objects`（viewer 実効集合・継承込み）で id を引き、DB で生存ノードの
     /// メタへ keyset `(updated_at, id)` 降順で 1 ページ解決する。作成者本人のノード（≒owner）は
     /// 「共有された」一覧から除く。全件取得はせず `next_cursor` で無限スクロールする。
+    #[tracing::instrument(
+        name = "storage.list_shared_with_me",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
+    )]
     pub async fn list_shared_with_me(
         &self,
         ctx: &AuthContext,
@@ -265,6 +289,7 @@ impl StorageService {
             .into_iter()
             .map(row_to_node)
             .collect::<Result<Vec<_>, _>>()?;
+        tracing::Span::current().record("count", items.len());
         Ok(ChildPage { items, next_cursor })
     }
 

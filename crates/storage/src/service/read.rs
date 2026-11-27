@@ -21,6 +21,12 @@ impl StorageService {
 
     /// [`Self::get_metadata`] に、許可・拒否の監査 metadata へ書き足す値を添える
     /// （チャットの回答のための読み出しなら会話・回答の ID・#829）。
+    #[tracing::instrument(
+        name = "storage.get_metadata",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn get_metadata_annotated(
         &self,
         ctx: &AuthContext,
@@ -74,6 +80,17 @@ impl StorageService {
     /// move 直後は DB の `parent_id` が先に見え、新親の FGA `parent` タプルが遅延し得るため、
     /// DB 親子関係を認可の近道にすると未認可の子を露出し得る（FGA を真実とする）。
     #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 親 ＋ ソート ＋ ページング ＋ 可視性 ＋ trace。
+    #[tracing::instrument(
+        name = "storage.list_children",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "folder",
+            limit = limit,
+            count = tracing::field::Empty,
+        ),
+    )]
     pub async fn list_children(
         &self,
         ctx: &AuthContext,
@@ -158,8 +175,11 @@ impl StorageService {
             if rows.is_empty() {
                 break;
             }
-            for row in rows {
-                // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
+            // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
+            // 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
+            let decisions =
+                post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &rows).await?;
+            for (row, allowed) in rows.into_iter().zip(decisions) {
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
                 after = Some(ChildCursor {
                     value: child_sort_value(sort.key, &row),
@@ -167,15 +187,6 @@ impl StorageService {
                     id: row.id,
                     kind,
                 });
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Viewer,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
-                    )
-                    .await?;
                 if !allowed {
                     continue;
                 }
@@ -205,6 +216,7 @@ impl StorageService {
                 },
             )
             .await?;
+        tracing::Span::current().record("count", items.len());
         Ok(ChildPage { items, next_cursor })
     }
 
@@ -234,6 +246,12 @@ impl StorageService {
     /// 絞り込みは SQL 側で行う（取ってから捨てると、上位をもう一方の種別が占めたときに
     /// 目的のものが 1 件も返らず、捨てる行の分まで OpenFGA check が走る）。
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "storage.search_nodes",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
+    )]
     pub async fn search_nodes_by_name_kind(
         &self,
         ctx: &AuthContext,
@@ -303,7 +321,10 @@ impl StorageService {
             if rows.is_empty() {
                 break;
             }
-            for row in rows {
+            // 子ごとの判定は 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
+            let decisions =
+                post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &rows).await?;
+            for (row, allowed) in rows.into_iter().zip(decisions) {
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
                 after = Some(ChildCursor {
                     value: child_sort_value(sort.key, &row),
@@ -311,15 +332,6 @@ impl StorageService {
                     id: row.id,
                     kind,
                 });
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Viewer,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
-                    )
-                    .await?;
                 if !allowed {
                     continue;
                 }
@@ -348,6 +360,7 @@ impl StorageService {
                 },
             )
             .await?;
+        tracing::Span::current().record("count", items.len());
         Ok(ChildPage { items, next_cursor })
     }
 
@@ -357,6 +370,12 @@ impl StorageService {
     /// 当たった時点で打ち切る。これにより返すのは「自身から上方向に連続して読める範囲」＝
     /// 読める接尾（contiguous suffix ending at self）であり、読めない祖先名は一切漏れない。
     /// 直接共有でルート祖先が読めない場合は、読める範囲（最小で自身のみ）だけを返す。
+    #[tracing::instrument(
+        name = "storage.breadcrumb",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
+    )]
     pub async fn breadcrumb(
         &self,
         ctx: &AuthContext,
@@ -409,6 +428,7 @@ impl StorageService {
         }
         // 自身→root で積んだので、表示順（root→自身）へ反転する。
         crumbs.reverse();
+        tracing::Span::current().record("count", crumbs.len());
         // 成功読取を監査に残す（NFR-6・読取系なので未チェーン）。
         self.audit
             .record(

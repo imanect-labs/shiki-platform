@@ -82,6 +82,12 @@ impl StorageService {
     /// finalize の新規作成経路（`finalize.rs`）を「バイトを既に所持している」前提で写した実装。
     /// staging/incoming を経ず、sha256 をメモリ上で計算して content-addressed に直接昇格する
     /// （バイト所持＝所持証明そのものなので、宣言ハッシュ照合は不要）。公開 API。
+    #[tracing::instrument(
+        name = "storage.write_file",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
+    )]
     pub async fn write_file_internal(
         &self,
         ctx: &AuthContext,
@@ -108,6 +114,12 @@ impl StorageService {
     /// 「新規作成」の入口（`/notes`・`/slides`・`/documents`・AI の Office 作成ツール）が共有する
     /// 振る舞い。呼び出し側で写すと連番規則が分岐するため、チョークポイント側に置く。
     /// 上限まで空きが無ければ [`StorageError::Conflict`]（黙って上書きしない・fail-closed）。
+    #[tracing::instrument(
+        name = "storage.write_file_unique",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
+    )]
     pub async fn write_file_unique_internal(
         &self,
         ctx: &AuthContext,
@@ -148,6 +160,12 @@ impl StorageService {
     /// 予約ごと消える）。並行ワーカーは `INSERT ON CONFLICT` が相手 tx の commit を待つため、
     /// 後続は確定済みの結果要約を dedup で受け取る。返り値は書込結果の要約（本文は含まない）。
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "storage.write_file_idempotent",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
+    )]
     pub async fn write_file_internal_idempotent(
         &self,
         ctx: &AuthContext,
@@ -437,6 +455,17 @@ impl StorageService {
     /// 上限は**読み出す版そのもの**の `size_bytes` で、ダウンロードの前に判定する（blob は
     /// content-addressed なので、判定した版と取得する内容は一致する）。呼び出し側が事前に確認した
     /// サイズを渡せば、確認後に大きい版へ差し替わっても全体をメモリへ載せる前に拒否できる。
+    #[tracing::instrument(
+        name = "storage.read_file",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            bytes = tracing::field::Empty,
+        ),
+    )]
     pub async fn read_file_internal_bounded(
         &self,
         ctx: &AuthContext,
@@ -483,6 +512,7 @@ impl StorageService {
                 },
             )
             .await?;
+        tracing::Span::current().record("bytes", bytes.len());
         Ok((node, bytes))
     }
 }

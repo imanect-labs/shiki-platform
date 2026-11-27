@@ -12,6 +12,12 @@ impl StorageService {
     // staging 読み戻し → ハッシュ検証 → content-addressed 昇格 → ノード化 ＋ FGA タプルを
     // 単一 txn で原子的に行うため長め。段階の不変条件を一望できるよう一体に保つ。
     #[allow(clippy::too_many_lines)]
+    #[tracing::instrument(
+        name = "storage.finalize_upload",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", upload_id = %upload_id),
+    )]
     pub async fn finalize_upload(
         &self,
         ctx: &AuthContext,

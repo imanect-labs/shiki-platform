@@ -352,6 +352,12 @@ impl StorageService {
     }
 
     /// ファイルのリネーム・移動（[`update_node`](Self::update_node) の種別固定ラッパ）。
+    #[tracing::instrument(
+        name = "storage.update_node",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn update_file(
         &self,
         ctx: &AuthContext,
@@ -365,6 +371,12 @@ impl StorageService {
     }
 
     /// フォルダのリネーム・移動（[`update_node`](Self::update_node) の種別固定ラッパ）。
+    #[tracing::instrument(
+        name = "storage.update_node",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", node_id = %folder_id),
+    )]
     pub async fn update_folder(
         &self,
         ctx: &AuthContext,

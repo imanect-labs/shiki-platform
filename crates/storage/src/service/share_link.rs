@@ -78,6 +78,12 @@ impl StorageService {
     /// broad タプルを書かず redeem 経由で per-user タプルを発行する。認可通過**後**にパスワードを
     /// ハッシュ化する（未認可で argon2 を走らせない・DoS 対策）。
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "storage.create_share_link",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn create_share_link(
         &self,
         ctx: &AuthContext,
@@ -202,6 +208,12 @@ impl StorageService {
     /// `redeem_count` は **live な grant のみ**（`revoked_at IS NULL`）を数える。個別取消（#375）は
     /// 台帳行をソフト失効させるので、ここで絞らないと「N 人が解錠済み」が取消後も減らず、owner が
     /// 取消の成否を判断する唯一のフィードバックが壊れる（一覧の「ほか N 人」表示も嘘になる）。
+    #[tracing::instrument(
+        name = "storage.list_share_links",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn list_share_links(
         &self,
         ctx: &AuthContext,
@@ -228,6 +240,12 @@ impl StorageService {
 
     /// 共有リンクを失効する（owner 権限）。broad タプルを reconcile（他 active が要求しない分のみ
     /// 剥奪）し、このリンクの redeem 済み per-user タプルを参照カウントして剥奪する。
+    #[tracing::instrument(
+        name = "storage.revoke_share_link",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn revoke_share_link(
         &self,
         ctx: &AuthContext,
@@ -306,6 +324,12 @@ impl StorageService {
 
     /// 共有リンクの有効期限を延長/変更する（owner 権限。`expires_at = None` で無期限化）。
     /// 期限切れだったリンクを未来へ延ばした場合は reconcile で broad タプルを復活させる。
+    #[tracing::instrument(
+        name = "storage.extend_share_link",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn extend_share_link(
         &self,
         ctx: &AuthContext,

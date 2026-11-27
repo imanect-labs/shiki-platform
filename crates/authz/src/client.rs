@@ -202,8 +202,51 @@ impl OpenFgaClient {
     }
 }
 
+/// span 属性用: FGA 識別子 `<type>:<tenant>|<local>` の type 部。
+///
+/// span には型・tenant・件数だけを載せ、local id（AD グループのパス等を含み得る）や
+/// subject は載せない（属性は tenant_id と ID・件数に限る方針）。
+fn span_object_type(object: &FgaObject) -> &str {
+    object.as_str().split_once(':').map_or("", |(ty, _)| ty)
+}
+
+/// span 属性用: `<type>:<tenant>|<local>` 形式の識別子から tenant 部を取り出す
+/// （名前空間化されていない識別子は空文字）。
+fn span_tenant_of(qualified: &str) -> &str {
+    qualified
+        .split_once(':')
+        .and_then(|(_, rest)| rest.split_once(crate::object::TENANT_SEP))
+        .map_or("", |(tenant, _)| tenant)
+}
+
+/// span 属性用: [`FgaObject`] の tenant 部。
+fn span_tenant(object: &FgaObject) -> &str {
+    span_tenant_of(object.as_str())
+}
+
+/// 一括判定の span に載せる「許可した件数」。
+fn allowed_count(results: &[bool]) -> usize {
+    results.iter().filter(|b| **b).count()
+}
+
+// span（認可チョークポイントの所要時間・docs/design.md §4.9）: 全メソッドに `authz.*` の
+// INFO span を張る（既定 EnvFilter `info,...` で落ちない）。エラーは `err` で span を error に。
+// 子ごとに呼ばれ得るループ（一覧の post-filter）は呼び出し側を `batch_check` に寄せ、
+// 1 リクエストの span 数を抑える。
 #[async_trait]
 impl AuthzClient for OpenFgaClient {
+    #[tracing::instrument(
+        name = "authz.check",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant(object),
+            relation = relation.as_str(),
+            object_type = span_object_type(object),
+            consistency = consistency.as_str(),
+            allowed = tracing::field::Empty,
+        )
+    )]
     async fn check(
         &self,
         subject: &Subject,
@@ -211,7 +254,8 @@ impl AuthzClient for OpenFgaClient {
         object: &FgaObject,
         consistency: Consistency,
     ) -> Result<bool, AuthzError> {
-        self.fga
+        let allowed = self
+            .fga
             .check(
                 &self.store_id,
                 &self.model_id,
@@ -220,9 +264,24 @@ impl AuthzClient for OpenFgaClient {
                 object.as_str(),
                 consistency.as_str(),
             )
-            .await
+            .await?;
+        tracing::Span::current().record("allowed", allowed);
+        Ok(allowed)
     }
 
+    #[tracing::instrument(
+        name = "authz.batch_check",
+        skip_all,
+        err,
+        fields(
+            tenant_id = items.first().map_or("", |i| span_tenant(&i.object)),
+            relation = items.first().map_or("", |i| i.relation.as_str()),
+            object_type = items.first().map_or("", |i| span_object_type(&i.object)),
+            consistency = consistency.as_str(),
+            count = items.len(),
+            allowed_count = tracing::field::Empty,
+        )
+    )]
     async fn batch_check(
         &self,
         items: &[CheckTuple],
@@ -240,16 +299,29 @@ impl AuthzClient for OpenFgaClient {
                     .await?,
             );
         }
+        tracing::Span::current().record("allowed_count", allowed_count(&out));
         Ok(out)
     }
 
+    #[tracing::instrument(
+        name = "authz.write_tuple",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant(object),
+            relation = relation.as_str(),
+            object_type = span_object_type(object),
+            changed = tracing::field::Empty,
+        )
+    )]
     async fn write_tuple(
         &self,
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
     ) -> Result<bool, AuthzError> {
-        self.fga
+        let changed = self
+            .fga
             .write_tuple(
                 &self.store_id,
                 &self.model_id,
@@ -257,16 +329,30 @@ impl AuthzClient for OpenFgaClient {
                 relation.as_str(),
                 object.as_str(),
             )
-            .await
+            .await?;
+        tracing::Span::current().record("changed", changed);
+        Ok(changed)
     }
 
+    #[tracing::instrument(
+        name = "authz.delete_tuple",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant(object),
+            relation = relation.as_str(),
+            object_type = span_object_type(object),
+            changed = tracing::field::Empty,
+        )
+    )]
     async fn delete_tuple(
         &self,
         subject: &Subject,
         relation: Relation,
         object: &FgaObject,
     ) -> Result<bool, AuthzError> {
-        self.fga
+        let changed = self
+            .fga
             .delete_tuple(
                 &self.store_id,
                 &self.model_id,
@@ -274,30 +360,58 @@ impl AuthzClient for OpenFgaClient {
                 relation.as_str(),
                 object.as_str(),
             )
-            .await
+            .await?;
+        tracing::Span::current().record("changed", changed);
+        Ok(changed)
     }
 
+    #[tracing::instrument(
+        name = "authz.read_tuples",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant(object),
+            relation = relation.map_or("", Relation::as_str),
+            object_type = span_object_type(object),
+            count = tracing::field::Empty,
+        )
+    )]
     async fn read_tuples(
         &self,
         object: &FgaObject,
         relation: Option<Relation>,
     ) -> Result<Vec<ReadTupleKey>, AuthzError> {
-        self.fga
+        let tuples = self
+            .fga
             .read_tuples(
                 &self.store_id,
                 object.as_str(),
                 relation.map(Relation::as_str),
             )
-            .await
+            .await?;
+        tracing::Span::current().record("count", tuples.len());
+        Ok(tuples)
     }
 
+    #[tracing::instrument(
+        name = "authz.list_objects",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant_of(subject.as_str()),
+            relation = relation.as_str(),
+            object_type = object_type.as_str(),
+            count = tracing::field::Empty,
+        )
+    )]
     async fn list_objects(
         &self,
         subject: &Subject,
         relation: Relation,
         object_type: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
-        self.fga
+        let ids = self
+            .fga
             .list_objects(
                 &self.store_id,
                 &self.model_id,
@@ -305,9 +419,21 @@ impl AuthzClient for OpenFgaClient {
                 relation.as_str(),
                 subject.as_str(),
             )
-            .await
+            .await?;
+        tracing::Span::current().record("count", ids.len());
+        Ok(ids)
     }
 
+    #[tracing::instrument(
+        name = "authz.delete_object_tuples",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant(object),
+            object_type = span_object_type(object),
+            count = tracing::field::Empty,
+        )
+    )]
     async fn delete_object_tuples(&self, object: &FgaObject) -> Result<u32, AuthzError> {
         // Read で全直接タプルを列挙 → deletes 配列でバッチ削除（ページングしつつ収束まで）。
         let mut deleted: u32 = 0;
@@ -317,6 +443,7 @@ impl AuthzClient for OpenFgaClient {
                 .read_tuples(&self.store_id, object.as_str(), None)
                 .await?;
             if tuples.is_empty() {
+                tracing::Span::current().record("count", deleted);
                 return Ok(deleted);
             }
             deleted += self
@@ -326,13 +453,51 @@ impl AuthzClient for OpenFgaClient {
         }
     }
 
+    #[tracing::instrument(
+        name = "authz.read_subject_objects",
+        skip_all,
+        err,
+        fields(
+            tenant_id = span_tenant_of(subject.as_str()),
+            object_type = object_type.as_str(),
+            count = tracing::field::Empty,
+        )
+    )]
     async fn read_subject_objects(
         &self,
         subject: &Subject,
         object_type: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
-        self.fga
+        let ids = self
+            .fga
             .read_subject_objects(&self.store_id, subject.as_str(), object_type.as_str())
-            .await
+            .await?;
+        tracing::Span::current().record("count", ids.len());
+        Ok(ids)
+    }
+}
+
+#[cfg(test)]
+mod span_attr_tests {
+    use super::*;
+
+    #[test]
+    fn span_attrs_extract_type_and_tenant_only() {
+        let ns = crate::object::Namespace::for_tenant("acme");
+        let file = ns.file("0b6f-uuid");
+        assert_eq!(span_object_type(&file), "file");
+        assert_eq!(span_tenant(&file), "acme");
+        // subject（user:<tenant>|<local>）からも tenant 部だけを取り出す。
+        assert_eq!(span_tenant_of(ns.user("alice").as_str()), "acme");
+        // 名前空間化されていない識別子・型の無い文字列は空（local id を誤って載せない）。
+        assert_eq!(span_tenant(&FgaObject::new(ObjectType::File, "raw")), "");
+        assert_eq!(span_tenant_of("no-colon"), "");
+        assert_eq!(span_tenant_of("file:no-sep"), "");
+    }
+
+    #[test]
+    fn allowed_count_counts_true_only() {
+        assert_eq!(allowed_count(&[true, false, true]), 2);
+        assert_eq!(allowed_count(&[]), 0);
     }
 }

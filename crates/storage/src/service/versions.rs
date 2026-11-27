@@ -12,6 +12,18 @@ impl StorageService {
     ///
     /// 内容を持つ版（初版アップロード / 内容更新 / 版復元）だけが並ぶ。同一内容の版は
     /// `blob_sha256` を共有する（content-addressing）。
+    #[tracing::instrument(
+        name = "storage.list_versions",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            limit = limit,
+            count = tracing::field::Empty,
+        ),
+    )]
     pub async fn list_versions(
         &self,
         ctx: &AuthContext,
@@ -75,11 +87,23 @@ impl StorageService {
                 },
             )
             .await?;
-        let items = rows.into_iter().map(VersionRow::into_model).collect();
+        let items: Vec<FileVersion> = rows.into_iter().map(VersionRow::into_model).collect();
+        tracing::Span::current().record("count", items.len());
         Ok((items, next_cursor))
     }
 
     /// 特定版の presigned ダウンロード URL を発行する（viewer 権限・短 TTL）。
+    #[tracing::instrument(
+        name = "storage.issue_version_download_url",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            version = version,
+        ),
+    )]
     pub async fn issue_version_download_url(
         &self,
         ctx: &AuthContext,

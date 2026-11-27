@@ -33,6 +33,12 @@ impl StorageService {
     /// 既存の同名生存ファイルがあれば内容を新版へ差し替え（`WriteOp::Update`）、無ければ新規作成
     /// （`WriteOp::Create`）する。いずれも content-addressing・版記録・監査・書込イベントを 1 txn で
     /// 原子的に確定する（finalize の create/update 経路と対称）。認可は配置先フォルダの `editor`。
+    #[tracing::instrument(
+        name = "storage.write_file_at",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
+    )]
     pub async fn write_file_at(
         &self,
         ctx: &AuthContext,
@@ -88,6 +94,12 @@ impl StorageService {
     /// 既存内容 ＋ `suffix` を新しい内容として新版に記録する（版管理上は通常の新版なので、
     /// 過去の台帳もそのまま復元できる）。既存内容の読み出しは `(parent, name)` の advisory lock
     /// 取得**後**に行うため、並行追記で片方の追記が消えることがない。
+    #[tracing::instrument(
+        name = "storage.append_file_at",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = suffix.len()),
+    )]
     pub async fn append_file_at(
         &self,
         ctx: &AuthContext,

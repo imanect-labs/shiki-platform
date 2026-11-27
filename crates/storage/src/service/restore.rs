@@ -9,6 +9,12 @@ use crate::audit::AuditAction;
 
 impl StorageService {
     /// ゴミ箱からの復元（editor 権限・同名衝突は Conflict）。
+    #[tracing::instrument(
+        name = "storage.restore",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn restore_file(
         &self,
         ctx: &AuthContext,
@@ -100,6 +106,12 @@ impl StorageService {
     /// `soft_delete_folder` はサブツリーを 1 txn で同一 `deleted_at` にする。復元は
     /// **その削除と同時に消えた配下**（＝同一 `deleted_at`）だけを戻す。独立に先に削除された
     /// 配下（別タイムスタンプ）は巻き込まない。祖先が削除済みなら（到達不能の露出を避けるため）拒否。
+    #[tracing::instrument(
+        name = "storage.restore",
+        skip_all,
+        err,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", node_id = %folder_id),
+    )]
     pub async fn restore_folder(
         &self,
         ctx: &AuthContext,
@@ -208,6 +220,17 @@ impl StorageService {
     /// 復元は履歴を巻き戻さず、対象版の blob を指す新版（version+1）を追記する
     /// （AC: 復元が新しい版として記録される・履歴を壊さない）。content-addressing により
     /// 実体はコピーされず blob を共有する（refcount +1）。
+    #[tracing::instrument(
+        name = "storage.restore_version",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            version = version,
+        ),
+    )]
     pub async fn restore_version(
         &self,
         ctx: &AuthContext,
@@ -254,6 +277,17 @@ impl StorageService {
     ///   版上げでは競合にならない。
     /// - `edit_versions` のいずれかが無い／提案版／その前に内容版が無い（新規作成の版）→
     ///   [`StorageError::NotFound`]。
+    #[tracing::instrument(
+        name = "storage.revert_edit",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            count = edit_versions.len(),
+        ),
+    )]
     pub async fn revert_edit(
         &self,
         ctx: &AuthContext,

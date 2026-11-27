@@ -19,6 +19,17 @@ impl StorageService {
     ///
     /// 対象行を `FOR UPDATE` でロックし、並行保存の lost-update を防ぐ。rename/move とは
     /// 独立（名前・親は触らない）。返り値は更新後のノードメタ。
+    #[tracing::instrument(
+        name = "storage.update_file_content",
+        skip_all,
+        err,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            bytes = bytes.len(),
+        ),
+    )]
     pub async fn update_file_content_internal(
         &self,
         ctx: &AuthContext,
