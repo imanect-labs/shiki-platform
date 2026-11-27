@@ -504,6 +504,8 @@ else
   # 背景地図のデータ（basemap.pmtiles）の置き場所。呼び出し側の SHIKI__MAP__DATA_DIR をそのまま渡す
   # （未設定なら地図データなし＝背景なしの図。作り方は scripts/basemap/build-basemap.sh）。
   Q_MAP_DIR=$(printf '%q' "${SHIKI__MAP__DATA_DIR:-}")
+  # 道路沿いの道順を計算する Valhalla の URL（未設定なら道順は直線。作り方は scripts/basemap/build-routing.sh）。
+  Q_ROUTING_URL=$(printf '%q' "${SHIKI__MAP__ROUTING_URL:-}")
   if [ -n "$EFF_CORS" ]; then
     CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
   else
@@ -572,6 +574,7 @@ export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
 # 背景地図（design.md §4.7）。空なら地図データなし。
 export SHIKI__MAP__DATA_DIR=${Q_MAP_DIR}
+export SHIKI__MAP__ROUTING_URL=${Q_ROUTING_URL}
 # 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
 export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true

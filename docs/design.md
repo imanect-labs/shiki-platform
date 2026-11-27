@@ -759,6 +759,10 @@ flowchart TB
   配信は `GET /map/config`・`/map/style.json`・`/map/basemap.pmtiles`（範囲指定）で、置き場所は `SHIKI__MAP__DATA_DIR`
   （compose の shiki-server には未配線。使うときは地図データのディレクトリをマウントして設定する）、
   作り方は `scripts/basemap/build-basemap.sh`。データの古さと範囲外の扱いは PIT-84。
+  Yui の道順（`route:`）は、徒歩（`walk`）と車（`drive`）に限り、shiki-server が自前で動かす Valhalla
+  （`SHIKI__MAP__ROUTING_URL`・`POST /map/route`）で道路沿いの線にして重ねる（ブラウザは Valhalla へ接続しない）。
+  公共交通（`transit`）と移動手段の指定が無い道順、経路を出せないときは Yui と同じ直線のまま描く。
+  経路データの作り方は `scripts/basemap/build-routing.sh`、データの食い違いと結べない地点の扱いは PIT-85。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。
 
 ### 4.8 資料作成・Office 統合（Collabora＝docx/xlsx 系・スライドは §4.8.3 の自前実装）

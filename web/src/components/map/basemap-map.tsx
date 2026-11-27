@@ -14,15 +14,15 @@ import { useTheme } from "next-themes";
 import { Loader2, Maximize2, Minimize2, Minus, PanelLeftOpen, Plus, Scan } from "lucide-react";
 import type { MapFigure } from "@imanect/yui";
 import { YuiFigure } from "@imanect/yui/react";
-import type { Map as MlMap } from "maplibre-gl";
+import type { GeoJSONSource, Map as MlMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { loadBasemapConfig, loadBasemapStyle, peekBasemapConfig, type BasemapConfig } from "@/lib/basemap";
+import { loadBasemapConfig, loadBasemapStyle, loadRoute, peekBasemapConfig, type BasemapConfig } from "@/lib/basemap";
 import { cn } from "@/lib/utils";
 import { MapCardCarousel } from "./map-list";
 import { MapPanel } from "./map-panel";
 import { createFigureMarkers, type FigureMarkers, type Insets } from "./map-markers";
-import { initialView, routeFeature } from "./yui-map-data";
+import { initialView, routeFeature, routeQuery, routeSummary } from "./yui-map-data";
 
 /// ピン・名前・道順の色。背景地図（青い水域・緑の森・淡い道路）のどれとも紛れない朱色にし、
 /// 名前は濃い文字に太い縁取りを付けて道路の上でも読めるようにする。
@@ -52,6 +52,9 @@ const DISPOSE_DELAY_MS = 2000;
 const LOAD_TIMEOUT_MS = 20_000;
 
 type Phase = "checking" | "fallback" | "idle" | "loading" | "ready";
+
+/// 道路沿いの道順の状態（none: 直線のまま描く道順・道順なし）。
+type RouteState = { status: "none" } | { status: "loading" } | { status: "ok"; summary: string } | { status: "failed" };
 
 let protocolReady: Promise<{ add: (url: string) => void; drop: (url: string) => void }> | null = null;
 
@@ -89,6 +92,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   const [phase, setPhase] = React.useState<Phase>(known === undefined ? "checking" : known ? "idle" : "fallback");
   const [near, setNear] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
+  const [route, setRoute] = React.useState<RouteState>({ status: "none" });
   // 要素の全画面に対応しない環境（iPhone の Safari など）ではボタンを出さない。
   const [canFullscreen, setCanFullscreen] = React.useState(false);
   const frameRef = React.useRef<HTMLDivElement>(null);
@@ -268,6 +272,33 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
           window.clearTimeout(timeout);
           if (!disposed && !failed) setPhase("ready");
         });
+        // 道順は、まず Yui と同じ直線で描き、道路沿いの線が取れたら差し替える（取れなければ直線のまま）。
+        const query = config.routing && m.getSource("yui-route") ? routeQuery(figure) : null;
+        if (!query) {
+          setRoute({ status: "none" });
+          return;
+        }
+        setRoute({ status: "loading" });
+        loadRoute(query)
+          .then((r) => {
+            if (disposed || failed || mapRef.current !== m) return;
+            if (!r) {
+              setRoute({ status: "failed" });
+              return;
+            }
+            (m.getSource("yui-route") as GeoJSONSource | undefined)?.setData({
+              type: "Feature",
+              geometry: { type: "LineString", coordinates: r.coordinates },
+              properties: {},
+            });
+            // 道路沿いの線は実線で描く（直線の破線と見分ける）。
+            m.setPaintProperty("yui-route", "line-dasharray", undefined);
+            m.setPaintProperty("yui-route", "line-width", 4);
+            setRoute({ status: "ok", summary: routeSummary(query.mode, r.distance_m, r.duration_s) });
+          })
+          .catch(() => {
+            if (!disposed) setRoute({ status: "failed" });
+          });
       });
     })().catch(fail);
     return () => {
@@ -279,6 +310,8 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       setSelected(null);
       map?.remove();
       mapRef.current = null;
+      // 作り直す地図は直線から描き直すので、前の地図の道順の表示を残さない。
+      setRoute({ status: "none" });
       setPhase((p) => (p === "fallback" ? p : "idle"));
     };
   }, [config, keepAlive, theme, figure, leave, setHover]);
@@ -448,11 +481,27 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   );
 
   return (
-    <div className="min-w-0" data-testid="basemap-figure" data-state={phase} data-list={fullscreen ? "panel" : "overlay"}>
+    <div
+      className="min-w-0"
+      data-testid="basemap-figure"
+      data-state={phase}
+      data-list={fullscreen ? "panel" : "overlay"}
+      // 道順の線が道路沿いか直線か（見た目と同じ区別を E2E でも確かめる）。
+      data-route={route.status === "ok" ? "road" : figure.route ? "straight" : "none"}
+    >
       {figure.title ? (
         <div id={titleId} className="mb-2 text-[14px] font-semibold leading-snug text-foreground">
           {figure.title}
         </div>
+      ) : null}
+      {route.status !== "none" ? (
+        <p className="-mt-1 mb-2 text-[12px] leading-5 text-muted-foreground" data-testid="basemap-route" aria-live="polite">
+          {route.status === "ok"
+            ? `道順: ${route.summary}（道路沿い）`
+            : route.status === "loading"
+              ? "道順を計算しています…"
+              : "道路沿いの道順を出せないため、地点を直線で結んでいます"}
+        </p>
       ) : null}
       {/* 地図と地点の一覧を 1 枚にまとめる。会話やノートの中では地図の下端にカードの列を重ね（本文の幅の中で
           地図を横に狭めず、縦にも伸ばしすぎない）、全画面では一覧のパネルを地図の上に浮かべる。 */}
@@ -503,6 +552,13 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
               ref={panelRef}
               {...listProps}
               title={figure.title}
+              note={
+                route.status === "ok"
+                  ? `道順: ${route.summary}（道路沿い）`
+                  : route.status === "failed"
+                    ? "道路沿いの道順を出せないため、地点を直線で結んでいます"
+                    : undefined
+              }
               onClear={() => setSelected(null)}
               onZoomTo={zoomTo}
               onCollapse={() => setPanelOpen(false)}

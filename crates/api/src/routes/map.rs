@@ -56,6 +56,9 @@ pub(crate) fn map_route_decls() -> Vec<RouteDecl> {
         RouteDecl::new(ARCHIVE_PATH, &["GET"], AccessPolicy::Session, || {
             get(basemap_archive)
         }),
+        RouteDecl::new("/map/route", &["POST"], AccessPolicy::Session, || {
+            axum::routing::post(super::map_route::map_route)
+        }),
     ]
 }
 
@@ -76,6 +79,8 @@ pub struct MapConfigResponse {
     pub style_url: Option<String>,
     /// 地図に必ず表示する出典（地図データの利用条件）。
     pub attribution: Vec<MapAttribution>,
+    /// 道路沿いの道順を出せるか（`POST /map/route`）。`false` なら道順は Yui と同じ直線。
+    pub routing: bool,
 }
 
 /// 地図データの置き場所（設定とファイルの有無）。
@@ -105,6 +110,7 @@ pub async fn map_config(
     Json(MapConfigResponse {
         available,
         style_url: available.then(|| STYLE_PATH.to_string()),
+        routing: state.config.map.routing_base().is_some(),
         attribution: ATTRIBUTION
             .iter()
             .map(|(text, url)| MapAttribution {

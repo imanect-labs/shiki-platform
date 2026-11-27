@@ -12,6 +12,8 @@ import type { MapListProps } from "./map-list";
 
 export type MapPanelProps = MapListProps & {
   title?: string | undefined;
+  /// 題名の下に添える一言（道順の距離と時間など）。
+  note?: string | undefined;
   /// 選んだ地点を外す（一覧へ戻る）。
   onClear: () => void;
   /// その地点へ寄る（拡大して真ん中に）。
@@ -88,6 +90,11 @@ function PanelList(p: MapPanelProps) {
           <div className={cn("text-[12.5px] text-muted-foreground", p.title ? "mt-0.5" : "text-[15px] font-semibold text-foreground")}>
             {q ? `${shown.length} / ${p.markers.length} か所` : `${p.markers.length} か所`}
           </div>
+          {p.note ? (
+            <div className="mt-1.5 text-[12.5px] leading-snug text-foreground/80" data-testid="basemap-panel-note">
+              {p.note}
+            </div>
+          ) : null}
         </div>
         <IconButton label="一覧を隠す" onClick={p.onCollapse} className="-mr-2 -mt-0.5">
           <PanelLeftClose className="size-4" />

@@ -422,6 +422,7 @@ impl AppConfig {
         Self::check_llm_timeouts(&self.llm)?;
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;
+        self.map.validate()?;
         Self::check_llm_chatgpt(&self.llm)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
