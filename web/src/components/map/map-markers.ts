@@ -45,8 +45,9 @@ export type MarkerHandlers = {
 export type FigureMarkers = {
   /// 指している・選んでいる地点を強調し、カードを出す（null で消す）。
   setActive: (i: number | null) => void;
-  /// 地図の下端に重なっている部品（カードの列など）の高さ。札とカードはその上だけに置く。
-  setBottomInset: (px: number) => void;
+  /// 地図の左端・下端に重なっている部品（全画面の一覧のパネル・カードの列）の幅と高さ。
+  /// 札とカードはそれを除いた範囲だけに置く。
+  setInsets: (insets: Insets) => void;
   /// 地図の左上・右上に重なっている部品（件数・操作ボタン）の大きさ（余白込み）。札とカードはそこを避ける。
   setCorners: (corners: Corners) => void;
   remove: () => void;
@@ -64,6 +65,9 @@ type Entry = {
 };
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
+
+/// 地図の左端・下端に重なる部品の幅と高さ。
+export type Insets = { left: number; bottom: number };
 
 /// 角に重なる部品の幅と高さ（[幅, 高さ]）。
 export type Corners = { topLeft: [number, number]; topRight: [number, number] };
@@ -136,17 +140,22 @@ export function createFigureMarkers(
 
   // 札の置き場所を決める（一覧の順で先の地点から、上・右・左・下の順に空いている所へ）。
   let frame = 0;
-  let bottomInset = 0;
+  let insets: Insets = { left: 0, bottom: 0 };
   let corners: Corners = { topLeft: [0, 0], topRight: [0, 0] };
   /// 角の部品が占める範囲。
   const cornerBoxes = (view: Box): Box[] => [
     { x0: view.x0, y0: view.y0, x1: view.x0 + corners.topLeft[0], y1: view.y0 + corners.topLeft[1] },
     { x0: view.x1 - corners.topRight[0], y0: view.y0, x1: view.x1, y1: view.y0 + corners.topRight[1] },
   ];
-  /// 札・カードを置ける範囲（地図の下端に重なる部品の分を除く）。
+  /// 札・カードを置ける範囲（地図の左端・下端に重なる部品の分を除く）。
   const visible = (): Box => {
     const canvas = map.getCanvas();
-    return { x0: 0, y0: 0, x1: canvas.clientWidth, y1: Math.max(0, canvas.clientHeight - bottomInset) };
+    return {
+      x0: Math.min(insets.left, canvas.clientWidth),
+      y0: 0,
+      x1: canvas.clientWidth,
+      y1: Math.max(0, canvas.clientHeight - insets.bottom),
+    };
   };
   // 動かしている間もカードを枠の中に保つ（カードを作った後で入れる）。
   const follow: { card?: () => void } = {};
@@ -264,9 +273,9 @@ export function createFigureMarkers(
       corners = c;
       schedule();
     },
-    setBottomInset: (px) => {
-      if (px === bottomInset) return;
-      bottomInset = px;
+    setInsets: (next) => {
+      if (next.left === insets.left && next.bottom === insets.bottom) return;
+      insets = next;
       schedule();
     },
     remove: () => {
