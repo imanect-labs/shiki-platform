@@ -84,6 +84,15 @@ fn summarize_skips_dollar_quotes_nested_comments_and_escaped_strings() {
     for sql in cases {
         assert_eq!(summarize(sql), summary("SELECT", Some("t")), "{sql}");
     }
+    // 英字以外のタグのドル引用も読み飛ばす。英字以外の表名は載せず、後ろの語を表名にもしない。
+    assert_eq!(
+        summarize("SELECT $タグ$ FROM secret7 $タグ$ FROM t"),
+        summary("SELECT", Some("t"))
+    );
+    assert_eq!(
+        summarize("SELECT 1 FROM 文書 WHERE a = $1"),
+        summary("SELECT", None)
+    );
     // プレースホルダは語にならず、閉じていないドル引用でも落ちない。
     assert_eq!(summarize("SELECT $1 FROM t"), summary("SELECT", Some("t")));
     assert_eq!(summarize("SELECT $q$ FROM secret"), summary("SELECT", None));

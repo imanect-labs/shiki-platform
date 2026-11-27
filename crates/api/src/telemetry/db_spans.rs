@@ -277,8 +277,9 @@ fn tokenize(sql: &str) -> Vec<Token<'_>> {
     tokens
 }
 
+/// 識別子の字。英数字以外（日本語の表名など）も 1 語に含める（`identifier` が載せるかを決める）。
 fn is_ident_byte(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.')
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.') || c >= 0x80
 }
 
 /// 引用（`q` で閉じる・`qq` は中の 1 文字）を読み飛ばし、閉じの直後の位置を返す。
@@ -319,9 +320,11 @@ fn skip_dollar(bytes: &[u8], start: usize) -> usize {
         }
         return j;
     }
+    // タグは識別子と同じ字（Postgres は英字以外の文字も許す）。UTF-8 の多バイト文字はバイト
+    // 0x80 以上なので、そのまま 1 字として進める。
     while bytes
         .get(j)
-        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b >= 0x80)
     {
         j += 1;
     }
