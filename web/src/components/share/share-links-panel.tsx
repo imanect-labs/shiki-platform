@@ -19,6 +19,8 @@ import {
 
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { IconTile, SoonBadge } from "@/components/settings/settings-ui";
+
+import { GROUP_SEASON, RoleTag } from "./role-color";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -396,10 +398,17 @@ export function ShareLinksPanel({
                   >
                     {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                      <IconTile icon={link.audience === "restricted" ? Lock : Building2} />
+                      {/* 社内の全員へのリンクは届く範囲が広いので夏（新緑）、既存の権限者のみは無彩色。 */}
+                      <IconTile
+                        icon={link.audience === "restricted" ? Lock : Building2}
+                        season={link.audience === "restricted" ? undefined : GROUP_SEASON}
+                      />
                       <div className="min-w-0 flex-1 basis-40">
-                        <p className="truncate text-[13.5px] font-medium">
-                          {AUDIENCE_LABEL[link.audience]}が{link.role === "editor" ? "編集" : "閲覧"}できる
+                        <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium">
+                          <span className="truncate">{AUDIENCE_LABEL[link.audience]}</span>
+                          <RoleTag role={link.role === "editor" ? "editor" : "viewer"}>
+                            {link.role === "editor" ? "編集できる" : "閲覧できる"}
+                          </RoleTag>
                         </p>
                         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
                           <span className="inline-flex items-center gap-1">

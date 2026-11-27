@@ -18,7 +18,6 @@
 import * as React from "react";
 import { Loader2, type LucideIcon, Search, Users, X } from "lucide-react";
 
-import { StatusDot } from "@/components/settings/settings-ui";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,7 +29,10 @@ import {
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
 import { searchDirectory, searchRoles } from "@/lib/storage";
+import { seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
+
+import { GROUP_SEASON, ROLE_LABEL, ROLE_SEASON, RoleDot, RoleTag } from "./role-color";
 
 export type PrincipalKind = "user" | "role";
 export type PeopleRole = "viewer" | "editor";
@@ -43,7 +45,6 @@ export type PeopleEntry = {
   email?: string | null;
 };
 
-const ROLE_LABEL: Record<PeopleRole, string> = { viewer: "閲覧", editor: "編集" };
 const SEARCH_PLACEHOLDER = "名前や部署で検索";
 /// 1 回の検索で出す候補数（メンバー / 部署・ロール）。先頭ページのみで全件は取らない。
 const USER_LIMIT = 6;
@@ -252,7 +253,7 @@ export function SharePeoplePanel({
             <span className="min-w-0 truncate">{c.secondary}</span>
             {existing ? (
               <span className="shrink-0">
-                <StatusDot>{ROLE_LABEL[existing.role]}で共有中</StatusDot>
+                <RoleTag role={existing.role}>{ROLE_LABEL[existing.role]}で共有中</RoleTag>
               </span>
             ) : null}
           </p>
@@ -467,12 +468,24 @@ function Note({ icon: Icon, children }: { icon: LucideIcon; children: React.Reac
 /// 相手のアバター。メンバーは表示名の頭文字（管理コンソールのメンバー一覧と同じ）、部署・ロールは人の集まりのアイコン。
 function PrincipalAvatar({ kind, name }: { kind: PrincipalKind; name?: string }) {
   const initial = name?.trim().charAt(0);
+  if (kind === "role") {
+    // 部署・ロールは複数人に届くので、夏（新緑）の差し色で人と見分ける。
+    return (
+      <span
+        aria-hidden
+        style={seasonAccentStyle(GROUP_SEASON)}
+        className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--season)]/[0.16] text-[var(--season)]"
+      >
+        <Users className="size-4" />
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden
       className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-[13px] font-semibold text-foreground/80"
     >
-      {kind === "role" || !initial ? <Users className="size-4" /> : initial.toUpperCase()}
+      {initial ? initial.toUpperCase() : <Users className="size-4" />}
     </span>
   );
 }
@@ -496,18 +509,30 @@ function RoleSelect({
     <Select value={value} onValueChange={(v) => onChange(v as PeopleRole)} disabled={disabled}>
       <SelectTrigger
         aria-label={label}
+        // 権限の色（閲覧＝冬・編集＝秋）を枠と面にごく薄く敷き、一覧でも権限が一目で分かるようにする。
+        style={seasonAccentStyle(ROLE_SEASON[value])}
         className={cn(
-          "shrink-0 gap-1",
+          "shrink-0 gap-1 border-[var(--season)]/40 bg-[var(--season)]/[0.08]",
           size === "lg"
-            ? "h-9 w-[5.5rem] px-3 text-sm max-md:h-11 pointer-coarse:h-11"
-            : "h-8 w-[4.75rem] px-2 text-xs pointer-coarse:h-9 pointer-coarse:text-[13px]",
+            ? "h-9 w-[6rem] px-3 text-sm max-md:h-11 pointer-coarse:h-11"
+            : "h-8 w-[5.25rem] px-2 text-xs pointer-coarse:h-9 pointer-coarse:text-[13px]",
         )}
       >
         <SelectValue />
       </SelectTrigger>
       <SelectContent align="end" className="min-w-[7rem]">
-        <SelectItem value="viewer">閲覧</SelectItem>
-        <SelectItem value="editor">編集</SelectItem>
+        <SelectItem value="viewer">
+          <span className="flex items-center gap-1.5">
+            <RoleDot role="viewer" />
+            閲覧
+          </span>
+        </SelectItem>
+        <SelectItem value="editor">
+          <span className="flex items-center gap-1.5">
+            <RoleDot role="editor" />
+            編集
+          </span>
+        </SelectItem>
       </SelectContent>
     </Select>
   );
