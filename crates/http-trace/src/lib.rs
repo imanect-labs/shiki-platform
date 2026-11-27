@@ -16,7 +16,18 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use tracing::{field::Empty, Instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+/// [`TracedSend::send_traced`] で使う内部サービス向けクライアントの builder（リダイレクト無効）。
+///
+/// reqwest は別 origin へのリダイレクトでも `traceparent` を消さずに付け直すため、追従を許すと
+/// 内部サービスが返した 3xx 経由でトレース ID が外部へ出る。内部サービスの API はリダイレクトを
+/// 返さない前提なので、追従せず 3xx をそのまま呼び出し側へ返す（各クライアントのエラー処理に乗る）。
+pub fn internal_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().redirect(reqwest::redirect::Policy::none())
+}
+
 /// `reqwest::RequestBuilder` を client span 付きで送る拡張。
+///
+/// クライアントは [`internal_client_builder`] で作ったものを使う（リダイレクト先への漏れ防止）。
 pub trait TracedSend {
     /// client span を切り、その文脈を `traceparent` として載せて送る。
     fn send_traced(self) -> impl Future<Output = reqwest::Result<reqwest::Response>> + Send;

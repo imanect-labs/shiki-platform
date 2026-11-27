@@ -5248,6 +5248,7 @@ dependencies = [
  "shiki-collab",
  "shiki-data",
  "shiki-gui",
+ "shiki-http-trace",
  "shiki-llm-gateway",
  "shiki-office",
  "shiki-rag",

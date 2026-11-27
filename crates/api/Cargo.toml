@@ -23,6 +23,7 @@ path = "src/bin/export-openapi.rs"
 
 [dependencies]
 shiki-authz.workspace = true
+shiki-http-trace.workspace = true
 shiki-collab.workspace = true
 shiki-tabular.workspace = true
 shiki-office.workspace = true

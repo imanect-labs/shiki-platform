@@ -184,3 +184,59 @@ async fn invalid_request_is_returned_as_error() {
     let res = reqwest::Client::new().get("not a url").send_traced().await;
     assert!(res.is_err());
 }
+
+/// `location` へ 302 を返す 1 回きりのサーバ。
+async fn redirecting_server(location: String) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut chunk = [0u8; 4096];
+        let _ = sock.read(&mut chunk).await.unwrap();
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        sock.write_all(resp.as_bytes()).await.unwrap();
+    });
+    format!("http://{addr}/")
+}
+
+#[tokio::test]
+async fn internal_client_does_not_follow_redirect_to_other_origin() {
+    let (sub, _exporter) = otel_subscriber();
+    let _g = tracing::subscriber::set_default(sub);
+    // 「外部」役のサーバ。内部用クライアントならここには届かない。
+    let (external, seen) = one_shot_server(200).await;
+    let internal = redirecting_server(external).await;
+
+    let resp = shiki_http_trace::internal_client_builder()
+        .build()
+        .unwrap()
+        .get(&internal)
+        .send_traced()
+        .instrument(tracing::info_span!("caller"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 302, "リダイレクトを追わず 3xx を返す");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(seen.lock().unwrap().is_none(), "外部へリクエストが出ている");
+}
+
+#[tokio::test]
+async fn default_client_would_leak_traceparent_on_redirect() {
+    // 内部用クライアントが必要な理由の固定: 既定のクライアントは別 origin へ追従し、
+    // traceparent もそのまま付け直す。
+    let (sub, _exporter) = otel_subscriber();
+    let _g = tracing::subscriber::set_default(sub);
+    let (external, seen) = one_shot_server(200).await;
+    let internal = redirecting_server(external).await;
+
+    reqwest::Client::new()
+        .get(&internal)
+        .send_traced()
+        .instrument(tracing::info_span!("caller"))
+        .await
+        .unwrap();
+    let raw = seen.lock().unwrap().clone().unwrap();
+    assert!(header(&raw, "traceparent").is_some(), "{raw}");
+}
