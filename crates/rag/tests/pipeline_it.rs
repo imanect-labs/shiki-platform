@@ -29,6 +29,10 @@ use rag::embedding::{EmbedInput, EmbedResponse, EmbeddingProvider};
 use rag::pipeline::{consumer, relay, PipelineDeps, RAG_INGEST_QUEUE};
 use rag::types::{BlockType, ParsedBlock, ParsedDocument};
 use rag::vector_store::{ChunkPoint, PreFilter, ScoredChunk, VectorSearch, VectorStore};
+/// フェイク ObjectStore が返す本体と、その sha256（取り込みは本体の sha256・大きさを blob の行と突き合わせる）。
+const FAKE_TEXT: &str = "四半期の報告。";
+const FAKE_TEXT_SHA256: &str = "ba34f643186c69b33318704175e9fe2daf13097209f7e80e16704c422fa68cb4";
+
 use rag::{DocumentParser, ParseRequest, RagConfig, RagError, TantivyFulltext};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::event::{emit_on, WriteEvent};
@@ -297,7 +301,7 @@ impl ObjectStore for FakeObjectStore {
     async fn get_object(&self, _key: &str) -> Result<Vec<u8>, ObjectStoreError> {
         // 文章のファイル（text/plain）は、取り込みが中身を読んで UTF-8 にしてから渡す（D-118）。フェイクのパーサは
         // 中身を見ないので、読める短い文章を返す。
-        Ok("四半期の報告。".as_bytes().to_vec())
+        Ok(FAKE_TEXT.as_bytes().to_vec())
     }
     async fn exists(&self, _key: &str) -> Result<bool, ObjectStoreError> {
         Ok(true)
@@ -400,16 +404,20 @@ async fn setup(parser: FakeParser) -> Option<TestEnv> {
 /// 経由しない最小セットアップ。実サービス経由の E2E は compose 検証で行う）。
 async fn create_file_with_event(env: &TestEnv, parent: Option<Uuid>, name: &str) -> Uuid {
     let ctx = &env.ctx;
-    let sha = format!("{:0>64}", Uuid::new_v4().simple().to_string());
+    // 取り込みは本体を読んで sha256 と大きさを確かめる（main の #1299 の `BlobStorage::read_on`）。フェイクの
+    // ストアが返す本文（[`FAKE_TEXT`]）の実際の値で blob を作る。同じ本文のファイルは blob を共有する（内容アドレス）。
+    let sha = FAKE_TEXT_SHA256.to_string();
     let mut tx = env.pool.begin().await.unwrap();
     sqlx::query(
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
-         values ($1, $2, $3, 10, 'text/plain', $4, 1)",
+         values ($1, $2, $3, $5, 'text/plain', $4, 1) \
+         on conflict (tenant_id, org, sha256) do update set refcount = blob.refcount + 1",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
     .bind(&sha)
     .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
+    .bind(FAKE_TEXT.len() as i64)
     .execute(&mut *tx)
     .await
     .unwrap();

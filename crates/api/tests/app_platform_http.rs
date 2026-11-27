@@ -1066,7 +1066,7 @@ async fn install_import_uninstall_over_http() {
     let reinstall = post(
         "/apps/installations".into(),
         serde_json::json!({
-            "name": "http-install", "version": "1.0.0",
+            "name": name, "version": "1.0.0",
             "granted_scopes": ["data.read"],
         }),
     );

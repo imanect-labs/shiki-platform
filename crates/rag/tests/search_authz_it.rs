@@ -34,6 +34,7 @@ use authz::client::{OpenFgaClient, OpenFgaConfig};
 use authz::{AuthContext, AuthzClient, Consistency, Relation, Subject};
 use common::{
     test_ctx, test_ctx_org, FakeEmbedder, FakeObjectStore, FakeReranker, FakeVectorStore,
+    FAKE_TEXT, FAKE_TEXT_SHA256,
 };
 use rag::pipeline::{consumer, relay, PipelineDeps};
 use rag::types::{BlockType, ParsedBlock, ParsedDocument};
@@ -206,16 +207,20 @@ async fn create_folder(env: &Env, name: &str) -> Uuid {
 /// create イベントを発行してパイプラインで索引する。
 async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
     let ctx = &env.alice;
-    let sha = format!("{:0>64}", Uuid::new_v4().simple().to_string());
+    // 取り込みは本体を読んで sha256 と大きさを確かめる（main の #1299 の `BlobStorage::read_on`）。フェイクの
+    // ストアが返す本文（[`FAKE_TEXT`]）の実際の値で blob を作る。同じ本文のファイルは blob を共有する（内容アドレス）。
+    let sha = FAKE_TEXT_SHA256.to_string();
     let mut tx = env.pool.begin().await.unwrap();
     sqlx::query(
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
-         values ($1, $2, $3, 10, 'text/plain', $4, 1)",
+         values ($1, $2, $3, $5, 'text/plain', $4, 1) \
+         on conflict (tenant_id, org, sha256) do update set refcount = blob.refcount + 1",
     )
     .bind(ctx.tenant_id())
     .bind(ctx.org())
     .bind(&sha)
     .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
+    .bind(FAKE_TEXT.len() as i64)
     .execute(&mut *tx)
     .await
     .unwrap();

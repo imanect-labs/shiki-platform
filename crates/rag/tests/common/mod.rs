@@ -27,6 +27,11 @@ use rag::RagError;
 use storage::{ObjectStore, ObjectStoreError};
 use uuid::Uuid;
 
+/// フェイク ObjectStore が返す本体と、その sha256（取り込みは本体の sha256・大きさを blob の行と突き合わせる）。
+pub const FAKE_TEXT: &str = "四半期の報告。";
+pub const FAKE_TEXT_SHA256: &str =
+    "ba34f643186c69b33318704175e9fe2daf13097209f7e80e16704c422fa68cb4";
+
 /// テスト用 AuthContext（tenant 固定）。
 pub fn test_ctx(tenant: &str, user: &str) -> AuthContext {
     test_ctx_org(tenant, user, "acme")
@@ -251,7 +256,7 @@ impl ObjectStore for FakeObjectStore {
     async fn get_object(&self, _key: &str) -> Result<Vec<u8>, ObjectStoreError> {
         // 文章のファイル（text/plain）は、取り込みが中身を読んで UTF-8 にしてから渡す（D-118）。フェイクのパーサは
         // 中身を見ないので、読める短い文章を返す。
-        Ok("四半期の報告。".as_bytes().to_vec())
+        Ok(FAKE_TEXT.as_bytes().to_vec())
     }
     async fn exists(&self, _key: &str) -> Result<bool, ObjectStoreError> {
         Ok(true)
