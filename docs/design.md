@@ -1012,7 +1012,8 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
     ユーザー入力が混ざる経路は別途棚卸しして塞ぐ。
   - **`traceparent` は外部へ送らない**: 内部コンポーネント（同じ配備内の ingestion-worker 等）への HTTP/gRPC
     にだけ注入し、外部 LLM プロバイダ・公開 Web 取得には注入も転送もしない。プロバイダとの突合は応答の
-    リクエスト ID を span 属性に載せて行う。
+    リクエスト ID を span 属性に載せて行う（外部から来た値なので、英数字と `-` `_` `.` だけで 128 文字以内の
+    ときだけ載せ、合わなければ載せない）。
   - **本文は Langfuse だけ**: 本文を見たいときは同じ trace_id で Langfuse を引く。Tempo には ID・名前・
     列挙値・数値だけを置く。Langfuse は配備内に置き、閲覧は運用者に限るのを基本とする
     （[connect-ops-foundation.md](./connect-ops-foundation.md) §4 と同じ扱い）。
