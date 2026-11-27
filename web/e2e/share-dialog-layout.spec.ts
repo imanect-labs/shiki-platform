@@ -47,34 +47,11 @@ async function height(locator: Locator): Promise<number> {
   return Math.round(box.height);
 }
 
-test("共有ダイアログ: 高さは検索・タブ・作成フォーム・共有相手の多さで変わらず、一覧だけがスクロールする", async ({
-  page,
-}) => {
-  await loginViaKeycloak(page); // alice
-  const folder = await createFolder(page, "高さ固定");
-
-  let share = await openShareDialog(page, folder);
-  const base = await height(share);
-  await expect(share.getByText("まだ誰にも共有していません。")).toBeVisible();
-
-  // 検索中（候補が一覧の位置に出る）。
-  const search = share.getByPlaceholder("名前や部署で検索");
-  await search.fill("営業");
-  await expect(share.locator("li", { hasText: "営業部" })).toBeVisible({ timeout: 10_000 });
-  expect(await height(share)).toBe(base);
-  await search.fill("");
-
-  // リンクタブ（発行済み 0 件なので作成フォームが開いている）。
-  await share.getByTestId("share-tab-links").click();
-  await expect(share.getByTestId("link-create")).toBeVisible();
-  expect(await height(share)).toBe(base);
-  await share.getByRole("button", { name: "閉じる", exact: true }).click();
-  await expect(share).toBeHidden();
-
-  // 共有相手が 25 人いるとき（一覧の取得だけを差し替える）。
+/// 共有相手の一覧の取得だけを差し替える（n 件の架空の相手。付与・解除などの他の経路は実バックエンドのまま）。
+async function stubShares(page: Page, n: number) {
   await page.route("**/api/nodes/*/shares", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
-    const entries = Array.from({ length: 25 }, (_, i) => ({
+    const entries = Array.from({ length: n }, (_, i) => ({
       target: { type: "user", id: `00000000-0000-0000-0000-${String(1000 + i).padStart(12, "0")}` },
       role: i % 4 === 0 ? "editor" : "viewer",
       display_name: `共有相手 ${i + 1}`,
@@ -82,17 +59,96 @@ test("共有ダイアログ: 高さは検索・タブ・作成フォーム・共
     }));
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(entries) });
   });
-  share = await openShareDialog(page, folder);
-  await expect(share.getByTestId("share-entry")).toHaveCount(25);
-  expect(await height(share)).toBe(base);
-  const scroll = share.getByTestId("share-people-scroll");
-  const overflow = await scroll.evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }));
-  expect(overflow.sh).toBeGreaterThan(overflow.ch);
-  // 一覧の末尾まで中だけでスクロールできる。
-  await share.getByTestId("share-entry").last().scrollIntoViewIfNeeded();
-  await expect(share.getByTestId("share-entry").last()).toBeInViewport();
-  expect(await height(share)).toBe(base);
-});
+}
+
+const DESKTOP = { width: 1280, height: 900 };
+const VIEWPORTS = [
+  { label: "PC 幅 1280px", size: DESKTOP },
+  { label: "スマホ幅 390px", size: { width: 390, height: 844 } },
+];
+
+for (const vp of VIEWPORTS) {
+  test(`共有ダイアログ（${vp.label}）: 高さは共有 0 件・3 件・25 件、検索中、リンクタブ、作成フォーム展開で変わらず、一覧だけがスクロールする`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(DESKTOP);
+    await loginViaKeycloak(page); // alice
+    const folder = await createFolder(page, "高さ固定");
+
+    // ドライブの行メニューは PC 幅で開き、開いたダイアログを測る幅に合わせてから測る。
+    const open = async () => {
+      await page.setViewportSize(DESKTOP);
+      const share = await openShareDialog(page, folder);
+      await page.setViewportSize(vp.size);
+      return share;
+    };
+    const close = async (share: Locator) => {
+      await share.getByRole("button", { name: "閉じる", exact: true }).click();
+      await expect(share).toBeHidden();
+    };
+    const heights: Record<string, number> = {};
+
+    // 共有 0 件（実バックエンドの新しいフォルダ）。
+    let share = await open();
+    await expect(share.getByText("まだ誰にも共有していません。")).toBeVisible();
+    heights["共有 0 件"] = await height(share);
+
+    // 検索中（候補が一覧の位置に出る）。
+    const search = share.getByPlaceholder("名前や部署で検索");
+    await search.fill("営業");
+    await expect(share.locator("li", { hasText: "営業部" })).toBeVisible({ timeout: 10_000 });
+    heights["検索中"] = await height(share);
+    await search.fill("");
+
+    // リンクタブ（発行済み 0 件・作成フォームが開いている）。
+    await share.getByTestId("share-tab-links").click();
+    await expect(share.getByTestId("link-create")).toBeVisible();
+    heights["リンクタブ（0 件）"] = await height(share);
+    await share.getByTestId("link-audience-organization").click();
+    await share.getByTestId("link-create").click();
+    await expect(share.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
+    heights["リンクタブ（発行直後）"] = await height(share);
+    await close(share);
+
+    // 開き直すと作成フォームは畳まれている → 開いた状態（作成フォーム展開）。
+    share = await open();
+    await share.getByTestId("share-tab-links").click();
+    await expect(share.getByTestId("link-form-open")).toBeVisible({ timeout: 10_000 });
+    heights["リンクタブ（作成フォームを畳んだ状態）"] = await height(share);
+    await share.getByTestId("link-form-open").click();
+    await expect(share.getByTestId("link-create")).toBeVisible();
+    heights["作成フォーム展開"] = await height(share);
+    await close(share);
+
+    // 共有 3 件・25 件（一覧の取得だけを差し替える）。
+    for (const n of [3, 25]) {
+      await page.unrouteAll({ behavior: "wait" });
+      await stubShares(page, n);
+      share = await open();
+      await expect(share.getByTestId("share-entry")).toHaveCount(n);
+      heights[`共有 ${n} 件`] = await height(share);
+      if (n === 25) {
+        // ダイアログは伸びず、中の一覧の領域だけがスクロールする（最後の行までスクロールして見える）。
+        const scroll = share.getByTestId("share-people-scroll");
+        const overflow = await scroll.evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }));
+        expect(overflow.sh).toBeGreaterThan(overflow.ch);
+        const last = share.getByTestId("share-entry").last();
+        await last.scrollIntoViewIfNeeded();
+        await expect(last).toBeInViewport();
+        heights["共有 25 件（最後までスクロール後）"] = await height(share);
+      }
+      await close(share);
+    }
+
+    // すべての状態で高さが同じ（記録として出力する）。
+    console.log(`[share-dialog-layout] ${vp.label} heights=${JSON.stringify(heights)}`);
+    const values = Object.values(heights);
+    expect(values.length).toBe(9);
+    for (const [state, h] of Object.entries(heights)) {
+      expect(h, `${vp.label}・${state}`).toBe(values[0]);
+    }
+  });
+}
 
 test("共有ダイアログ: 1 つの検索欄でメンバーと部署を探し、共有中の相手は候補から権限を変えられる", async ({
   page,
@@ -102,13 +158,25 @@ test("共有ダイアログ: 1 つの検索欄でメンバーと部署を探し�
   const share = await openShareDialog(page, folder);
   const search = share.getByPlaceholder("名前や部署で検索");
 
-  // 種別の切り替え無しで、同じ検索欄からメンバーも部署・ロールも出る。
-  await search.fill("bob");
-  await expect(share.getByRole("list", { name: "メンバーの候補" })).toContainText("bob@a-corp.example.com", {
+  // 種別の切り替えは無い（以前の「メンバー / 部署・ロール」の切り替えが出ない）。
+  await expect(share.getByTestId("share-kind-role")).toHaveCount(0);
+
+  // 1 回の入力で、メンバーと部署・ロールの両方を検索する（2 つの検索が同じ語で飛ぶ）。
+  const userReq = page.waitForRequest((r) => /\/api\/directory\/users\?.*q=%E5%96%B6%E6%A5%AD/.test(r.url()));
+  const roleReq = page.waitForRequest((r) => /\/api\/directory\/roles\?.*q=%E5%96%B6%E6%A5%AD/.test(r.url()));
+  await search.fill("営業");
+  await Promise.all([userReq, roleReq]);
+
+  // 検索中は、共有中の一覧の位置（同じスクロール領域）に候補が入れ替わって出る。
+  const scroll = share.getByTestId("share-people-scroll");
+  await expect(scroll.getByRole("list", { name: "部署・ロールの候補" })).toContainText("営業部", {
     timeout: 10_000,
   });
-  await search.fill("営業");
-  await expect(share.getByRole("list", { name: "部署・ロールの候補" })).toContainText("営業部", {
+  await expect(scroll.getByText("共有中の相手")).toHaveCount(0);
+
+  // 同じ検索欄で、メンバーも探せる。
+  await search.fill("bob");
+  await expect(share.getByRole("list", { name: "メンバーの候補" })).toContainText("bob@a-corp.example.com", {
     timeout: 10_000,
   });
 
@@ -121,6 +189,9 @@ test("共有ダイアログ: 1 つの検索欄でメンバーと部署を探し�
   await expect(bobEntry).toBeVisible({ timeout: 10_000 });
   await expect(search).toHaveValue("");
   await expect(bobEntry.getByRole("combobox")).toHaveText(/閲覧/);
+  // 一覧は設定画面と同じ部品（rule-soft の面・行の間の荒い破線）で描かれる。
+  await expect(bobEntry).toHaveClass(/shiki-dash-top/);
+  await expect(bobEntry.locator("xpath=..")).toHaveClass(/rule-soft/);
 
   // 共有中の相手は候補に「閲覧で共有中」と「共有済み」が出る。
   await search.fill("bob");
