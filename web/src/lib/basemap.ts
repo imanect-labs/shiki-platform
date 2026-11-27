@@ -8,6 +8,8 @@ import { apiFetch, apiUrl } from "@/lib/api";
 /// OpenAPI(utoipa) から生成した型。
 export type MapConfigResponse = components["schemas"]["MapConfigResponse"];
 export type MapAttribution = components["schemas"]["MapAttribution"];
+export type RouteRequest = components["schemas"]["RouteRequest"];
+export type RouteResponse = components["schemas"]["RouteResponse"];
 
 /// 読み込んだ背景地図の設定（地図データが無ければ null）。
 export type BasemapConfig = {
@@ -15,6 +17,8 @@ export type BasemapConfig = {
   styleUrl: string;
   /// 地図に必ず出す出典。
   attribution: MapAttribution[];
+  /// 道路沿いの道順を出せるか（出せなければ道順は直線）。
+  routing: boolean;
 };
 
 let configPromise: Promise<BasemapConfig | null> | null = null;
@@ -40,7 +44,7 @@ export function loadBasemapConfig(): Promise<BasemapConfig | null> {
       }
       if (!res.ok) throw new Error(`/map/config が ${res.status} を返しました`);
       const body = (await res.json()) as MapConfigResponse;
-      resolved = body.available && body.style_url ? { styleUrl: body.style_url, attribution: body.attribution } : null;
+      resolved = body.available && body.style_url ? { styleUrl: body.style_url, attribution: body.attribution, routing: body.routing } : null;
       return resolved;
     })().catch(() => {
       // 一時的な失敗で以後ずっと背景なしにならないよう、次は読み直す。
@@ -99,4 +103,32 @@ export async function loadBasemapStyle(
     return src === undefined || (typeof src === "string" && kept.has(src));
   });
   return { style, archives };
+}
+
+/// 道順の結果（同じ問い合わせはページ内で 1 回だけ。地図を作り直すたびに計算し直さない）。
+const routeCache = new Map<string, Promise<RouteResponse | null>>();
+
+/// 道路沿いの道順を shiki-server に問い合わせる（計算は自前の経路エンジン。ブラウザは shiki 以外へ接続しない）。
+/// 結べない・届かないときは null（呼び出し側は直線のまま描く）。「結べない」（422）は地点で決まるので覚え、
+/// 届かないなどの一時的な失敗は覚えずに次は問い合わせ直す。
+export function loadRoute(req: RouteRequest): Promise<RouteResponse | null> {
+  const key = JSON.stringify(req);
+  let p = routeCache.get(key);
+  if (!p) {
+    p = (async () => {
+      const res = await apiFetch("/map/route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req),
+      });
+      if (res.ok) return (await res.json()) as RouteResponse;
+      if (res.status !== 422) routeCache.delete(key);
+      return null;
+    })().catch(() => {
+      routeCache.delete(key);
+      return null;
+    });
+    routeCache.set(key, p);
+  }
+  return p;
 }

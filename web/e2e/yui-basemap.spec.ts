@@ -74,12 +74,39 @@ const EXTERNAL_PARTS = {
   layers: [{ id: "outside", type: "line", source: "outside", "source-layer": "roads" }],
 };
 
-async function mockMapApi(page: Page, available: boolean, withExternal = false) {
+async function mockMapApi(
+  page: Page,
+  available: boolean,
+  withExternal = false,
+  routing: "off" | "ok" | "no_route" = "off",
+) {
   await page.route("**/api/map/config", (route) =>
     route.fulfill({
-      json: { available, style_url: available ? "/map/style.json" : null, attribution: ATTRIBUTION },
+      json: {
+        available,
+        style_url: available ? "/map/style.json" : null,
+        attribution: ATTRIBUTION,
+        routing: routing !== "off",
+      },
     }),
   );
+  await page.route("**/api/map/route", (route) => {
+    if (routing === "no_route") return route.fulfill({ status: 422, json: { code: "no_route" } });
+    // ギャラリーの図の道順（大阪駅 → 本社・徒歩）を、途中で折れる線にして返す。
+    const body = route.request().postDataJSON() as { mode: string; stops: { lat: number; lng: number }[] };
+    const [a, b] = body.stops;
+    return route.fulfill({
+      json: {
+        coordinates: [
+          [a!.lng, a!.lat],
+          [a!.lng, b!.lat],
+          [b!.lng, b!.lat],
+        ],
+        distance_m: 1240,
+        duration_s: 930,
+      },
+    });
+  });
   await page.route("**/api/map/style.json*", (route) =>
     route.fulfill({
       json: {
@@ -169,6 +196,42 @@ test.describe("背景地図（map の renderMap）", () => {
     await section.scrollIntoViewIfNeeded();
     await expect(section.getByTestId("basemap-figure")).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
     expect(outside).toEqual([]);
+  });
+
+  test("道路沿いの道順が取れたら線を差し替え、距離と時間を出す", async ({ page }) => {
+    const requests: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().includes("/api/map/route")) requests.push(r.postData() ?? "");
+    });
+    await mockMapApi(page, true, false, "ok");
+    await page.goto("/reference/yui");
+    const section = page.getByTestId("yui-map");
+    await section.scrollIntoViewIfNeeded();
+    const figure = section.getByTestId("basemap-figure");
+    await expect(figure).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
+    await expect(figure.getByTestId("basemap-route")).toHaveText("道順: 徒歩 1.2 km・約 16 分（道路沿い）");
+    await expect(figure).toHaveAttribute("data-route", "road");
+    // 徒歩の道順の地点（大阪駅 → 本社）を順に送る。
+    expect(requests).toHaveLength(1);
+    const sent = JSON.parse(requests[0]!) as { mode: string; stops: { lat: number; lng: number }[] };
+    expect(sent.mode).toBe("walk");
+    expect(sent.stops).toEqual([
+      { lat: 34.7025, lng: 135.4959 },
+      { lat: 34.6937, lng: 135.5023 },
+    ]);
+  });
+
+  test("道順を出せないときは直線のまま、その旨を出す", async ({ page }) => {
+    await mockMapApi(page, true, false, "no_route");
+    await page.goto("/reference/yui");
+    const section = page.getByTestId("yui-map");
+    await section.scrollIntoViewIfNeeded();
+    const figure = section.getByTestId("basemap-figure");
+    await expect(figure).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
+    await expect(figure.getByTestId("basemap-route")).toHaveText(
+      "道路沿いの道順を出せないため、地点を直線で結んでいます",
+    );
+    await expect(figure).toHaveAttribute("data-route", "straight");
   });
 
   test("画面から離れた地図は破棄し、戻ると作り直す", async ({ page }) => {

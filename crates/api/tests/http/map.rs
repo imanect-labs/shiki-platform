@@ -227,3 +227,203 @@ async fn archive_serves_single_ranges_only() {
     assert_eq!(resp.headers()[axum::http::header::CONTENT_LENGTH], "1200");
     assert_ne!(resp.headers()[ETAG].to_str().unwrap(), etag);
 }
+
+/// 偽の Valhalla（`/route`）。最初の地点の緯度が 0 なら「道路が近くに無い」（400）を返す。
+async fn spawn_fake_valhalla() -> String {
+    use axum::{routing::post, Json};
+    async fn route(Json(body): Json<serde_json::Value>) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        // Valhalla の契約どおりのキーで送っていること。
+        assert!(body["locations"][0]["lon"].is_number(), "{body}");
+        assert!(body["locations"][0].get("lng").is_none(), "{body}");
+        assert_eq!(body["directions_type"], "none");
+        let first_lat = body["locations"][0]["lat"].as_f64().unwrap_or_default();
+        // 緯度 1〜3 は上流の異常（5xx・壊れた本文・Valhalla でない 404）を返す。
+        if first_lat == 1.0 {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response();
+        }
+        if first_lat == 2.0 {
+            return (StatusCode::OK, "not json").into_response();
+        }
+        if first_lat == 3.0 {
+            return (StatusCode::NOT_FOUND, "no such path").into_response();
+        }
+        if first_lat == 0.0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error_code": 171, "error": "No suitable edges near location" })),
+            )
+                .into_response();
+        }
+        assert_eq!(body["costing"], "pedestrian");
+        // (35.0, 139.0) → (35.001, 139.0) → (35.001, 139.001) を精度 6 桁で符号化したもの。
+        Json(serde_json::json!({
+            "trip": {
+                "legs": [{ "shape": "_kfwaA_k{bhGo}@??o}@" }],
+                "summary": { "length": 0.2, "time": 150.0 }
+            }
+        }))
+        .into_response()
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, axum::Router::new().route("/route", post(route)))
+            .await
+            .unwrap();
+    });
+    format!("http://{addr}")
+}
+
+async fn app_with_routing(routing_url: Option<String>) -> axum::Router {
+    let mut state = state_with(store_with_valid_session().await, None);
+    let mut config = (*state.config).clone();
+    config.map.routing_url = routing_url;
+    state.config = Arc::new(config);
+    build_router(state)
+}
+
+async fn post_route(
+    app: &axum::Router,
+    body: serde_json::Value,
+    csrf: bool,
+) -> (StatusCode, serde_json::Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/map/route")
+        .header("content-type", "application/json");
+    if csrf {
+        req = req
+            .header(COOKIE, "shiki_session=sid-valid.default; shiki_csrf=csrf")
+            .header("x-csrf-token", "csrf");
+    }
+    let resp = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = body_bytes(resp).await;
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn route_follows_roads_through_the_routing_engine() {
+    let app = app_with_routing(Some(spawn_fake_valhalla().await)).await;
+    let (_, cfg) = get_with_session(app.clone(), "/map/config").await;
+    assert_eq!(cfg["routing"], true);
+
+    let stops =
+        serde_json::json!([{ "lat": 35.0, "lng": 139.0 }, { "lat": 35.001, "lng": 139.001 }]);
+    let (status, body) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": stops }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let coords = body["coordinates"].as_array().unwrap();
+    assert_eq!(coords.len(), 3);
+    assert!((coords[2][0].as_f64().unwrap() - 139.001).abs() < 1e-9);
+    assert!((coords[2][1].as_f64().unwrap() - 35.001).abs() < 1e-9);
+    assert!((body["distance_m"].as_f64().unwrap() - 200.0).abs() < 1e-9);
+    assert!((body["duration_s"].as_f64().unwrap() - 150.0).abs() < 1e-9);
+
+    // 道路で結べない地点は 422（no_route）。web は直線のまま描く。
+    let far = serde_json::json!([{ "lat": 0.0, "lng": 0.0 }, { "lat": 35.0, "lng": 139.0 }]);
+    let (status, body) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": far }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "no_route");
+
+    // 地点の数・範囲の誤り、公共交通（扱わない）は 400 系。
+    let one = serde_json::json!([{ "lat": 35.0, "lng": 139.0 }]);
+    let (status, _) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": one }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = post_route(
+        &app,
+        serde_json::json!({ "mode": "transit", "stops": stops }),
+        true,
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}");
+
+    // 上流の異常（5xx・壊れた本文・Valhalla でない 404）は 503（地点のせいにしない）。
+    for lat in [1.0, 2.0, 3.0] {
+        let bad = serde_json::json!([{ "lat": lat, "lng": 139.0 }, { "lat": 35.0, "lng": 139.0 }]);
+        let (status, _) = post_route(
+            &app,
+            serde_json::json!({ "mode": "walk", "stops": bad }),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "lat={lat}");
+    }
+
+    // ログインしていなければ通さない。
+    let (status, _) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": stops }),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // ログインしていても CSRF のヘッダが無ければ通さない。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/map/route")
+                .header("content-type", "application/json")
+                .header(COOKIE, "shiki_session=sid-valid.default; shiki_csrf=csrf")
+                .body(Body::from(
+                    serde_json::json!({ "mode": "walk", "stops": stops }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn route_is_unavailable_without_a_reachable_routing_engine() {
+    let stops =
+        serde_json::json!([{ "lat": 35.0, "lng": 139.0 }, { "lat": 35.001, "lng": 139.001 }]);
+    // 未設定: 道順は出さない（web は直線）。
+    let app = app_with_routing(None).await;
+    let (_, cfg) = get_with_session(app.clone(), "/map/config").await;
+    assert_eq!(cfg["routing"], false);
+    let (status, _) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": stops }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // 設定はあるが届かない: 503。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let app = app_with_routing(Some(dead)).await;
+    let (status, _) = post_route(
+        &app,
+        serde_json::json!({ "mode": "walk", "stops": stops }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
