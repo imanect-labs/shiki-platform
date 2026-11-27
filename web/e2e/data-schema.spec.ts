@@ -101,12 +101,14 @@ test("列の編集: リンク・数式の追加、選択肢の追加、足した
   expect((await schemaOf(page, id)).find((f) => f.key === "name")?.display_name).toBe("件名");
 });
 
-/// 日本語の変換を確定する Enter の keydown を送る。Chromium は isComposing=true、Safari は isComposing=false で
-/// keyCode 229 を送る（`safari`）。どちらも「変換の確定」で、列や選択肢の追加ではない。
+/// 日本語の変換を確定する Enter の keydown を送る。どちらも「変換の確定」で、列や選択肢の追加ではない。
+/// 2 つの判定をそれぞれ単独で確かめるため、片方の印だけを付ける:
+/// - `safari=false`: isComposing=true だけ（keyCode は Enter の 13）。
+/// - `safari=true`: isComposing=false で keyCode 229 だけ（Safari の送り方）。
 async function pressImeEnter(page: Page, label: string, safari: boolean) {
   await page.getByLabel(label).evaluate((el, safari) => {
     const ev = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, isComposing: !safari });
-    Object.defineProperty(ev, "keyCode", { get: () => 229 });
+    Object.defineProperty(ev, "keyCode", { get: () => (safari ? 229 : 13) });
     el.dispatchEvent(ev);
   }, safari);
 }
