@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  Copy,
   Download,
   Eye,
   FilePlus2,
@@ -24,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
+import { toast } from "@/components/ui/use-toast";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import type { NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -43,7 +45,24 @@ export type NodeAction =
 /// シェルの浮いたクロームと同じ切替幅（md 未満をスマホとして扱う）。
 export const MOBILE_QUERY = "(max-width: 767.98px)";
 
-type ActionDef = { action: NodeAction; label: string; icon: LucideIcon };
+/// メニューの中だけで完結する操作（呼び出し側へは渡さない）。
+type LocalAction = "copyid";
+type MenuAction = NodeAction | LocalAction;
+
+type ActionDef = { action: MenuAction; label: string; icon: LucideIcon };
+
+/// ノードの ID をクリップボードへ写し、結果をトーストで知らせる。ワークフローのファイル欄や
+/// API・スクリプトで ID を指定するとき、ファイルを開いて URL から拾わずに済むようにする。
+async function copyNodeId(node: NodeResponse) {
+  try {
+    await navigator.clipboard.writeText(node.id);
+    toast({ description: `「${node.name}」の ID をコピーしました。` });
+  } catch {
+    toast({ variant: "destructive", description: "ID をコピーできませんでした。" });
+  }
+}
+
+const COPY_ID: ActionDef = { action: "copyid", label: "ID をコピー", icon: Copy };
 
 /// ノードに出せる操作を、スマホのアクションシートの段組み（大きなタイル 4 つ／行／破壊的操作）
 /// に分けて返す。PC のドロップダウンも同じ定義から並べる（項目の増減を 1 箇所で済ませる）。
@@ -57,7 +76,7 @@ function actionGroups(node: NodeResponse): { tiles: ActionDef[]; rows: ActionDef
         { action: "rename", label: "名前を変更", icon: Pencil },
         { action: "move", label: "移動", icon: FolderInput },
       ],
-      rows: [],
+      rows: [COPY_ID],
     };
   }
   return {
@@ -71,6 +90,7 @@ function actionGroups(node: NodeResponse): { tiles: ActionDef[]; rows: ActionDef
       { action: "move", label: "移動", icon: FolderInput },
       { action: "newversion", label: "新しいバージョン", icon: FilePlus2 },
       { action: "versions", label: "版履歴", icon: History },
+      COPY_ID,
     ],
   };
 }
@@ -105,6 +125,11 @@ export function NodeActionsMenu({
     onOpenChange?.(v);
   };
   const { tiles, rows } = actionGroups(node);
+  // 選んだ操作を実行する。ID のコピーはメニューの中で済ませ、それ以外は呼び出し側へ渡す。
+  const dispatch = (action: MenuAction) => {
+    if (action === "copyid") void copyNodeId(node);
+    else onAction(action, node);
+  };
 
   const trigger = (
     <Button
@@ -124,9 +149,9 @@ export function NodeActionsMenu({
   if (mobile) {
     // 選んだ操作は同期で呼ぶ（「新しいバージョン」のファイル選択はユーザー操作の文脈が
     // 切れると iOS で開かないため、setTimeout 等で遅らせない）。
-    const run = (action: NodeAction) => {
+    const run = (action: MenuAction) => {
       setOpen(false);
-      onAction(action, node);
+      dispatch(action);
     };
     return (
       <>
@@ -194,12 +219,12 @@ export function NodeActionsMenu({
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align={align}>
         {[...tiles, ...rows]
-          // PC は従来の並び（開く・ダウンロード・名前を変更・移動・共有・新しいバージョン・版履歴）。
+          // PC は従来の並び（開く・ダウンロード・名前を変更・移動・共有・新しいバージョン・版履歴）の後に ID をコピー。
           .sort((a, b) => DESKTOP_ORDER.indexOf(a.action) - DESKTOP_ORDER.indexOf(b.action))
           // フォルダの「開く」は行クリックと同じなので PC のメニューには出さない（従来どおり）。
           .filter((d) => !(node.kind === "folder" && d.action === "open"))
           .map((d) => (
-            <DropdownMenuItem key={d.action} onSelect={() => onAction(d.action, node)}>
+            <DropdownMenuItem key={d.action} onSelect={() => dispatch(d.action)}>
               <d.icon aria-hidden />
               {d.label}
             </DropdownMenuItem>
@@ -214,7 +239,7 @@ export function NodeActionsMenu({
   );
 }
 
-const DESKTOP_ORDER: NodeAction[] = [
+const DESKTOP_ORDER: MenuAction[] = [
   "open",
   "download",
   "rename",
@@ -222,6 +247,7 @@ const DESKTOP_ORDER: NodeAction[] = [
   "share",
   "newversion",
   "versions",
+  "copyid",
 ];
 
 function SheetRow({
