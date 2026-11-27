@@ -70,7 +70,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
-axum-tracing-opentelemetry = { workspace = true, features = ["tracing_level_info"] }
+tracing-opentelemetry-instrumentation-sdk = { workspace = true, features = ["tracing_level_info"] }
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

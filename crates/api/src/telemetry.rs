@@ -262,6 +262,18 @@ mod tests {
     }
 
     #[test]
+    fn incoming_trace_context_is_untrusted_by_default() {
+        // 設定に書かなければ受信した traceparent を信用しない（監査ログの trace_id を
+        // クライアントに選ばせない）。
+        let cfg: TelemetryConfig = serde_json::from_value(serde_json::json!({
+            "service_name": "s",
+            "log_format": "json",
+        }))
+        .unwrap();
+        assert!(!cfg.trust_incoming_trace_context);
+    }
+
+    #[test]
     fn telemetry_config_otlp_absent_is_none() {
         // otlp_endpoint 未設定（OTel 無効）の構成を表現できること。
         let cfg = telemetry_config(None, LogFormat::Json);

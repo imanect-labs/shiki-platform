@@ -20,7 +20,7 @@ use opentelemetry_sdk::{
 use tower::ServiceExt;
 use tracing_subscriber::layer::SubscriberExt;
 
-use super::http_util::{request_span_layer, strip_incoming_trace_context};
+use super::http_util::{request_span, strip_incoming_trace_context};
 use crate::{extract::TraceIdExt, telemetry};
 
 const PARENT_TRACE: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -84,7 +84,7 @@ fn app(trust_incoming: bool) -> Router {
             }),
         )
         .layer(middleware::from_fn(telemetry::observe))
-        .layer(request_span_layer());
+        .layer(middleware::from_fn(request_span));
     if trust_incoming {
         router
     } else {
@@ -123,10 +123,10 @@ async fn incoming_traceparent_is_continued_and_matches_audit_trace_id() {
     // http.route はテンプレート（生 path ではない）。
     assert_eq!(attr(span, "http.route"), Some(&Value::from("/files/{id}")));
     assert_eq!(attr(span, "http.request.method"), Some(&Value::from("GET")));
-    // ライブラリは u16 を記録し、tracing-opentelemetry 0.31 は u64 を文字列で載せる（"200"）。
+    // semconv どおり整数で載る（Tempo で `>= 500` のような範囲検索ができる）。
     assert_eq!(
         attr(span, "http.response.status_code"),
-        Some(&Value::from("200"))
+        Some(&Value::I64(200))
     );
     assert_eq!(attr(span, "trace_id"), Some(&Value::from(PARENT_TRACE)));
     assert_eq!(span.status, Status::Unset);
@@ -153,7 +153,7 @@ async fn server_error_marks_span_status_error() {
     assert_eq!(spans.len(), 1);
     assert_eq!(
         attr(&spans[0], "http.response.status_code"),
-        Some(&Value::from("500"))
+        Some(&Value::I64(500))
     );
     assert!(
         matches!(spans[0].status, Status::Error { .. }),

@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::{http::StatusCode, middleware, Router};
 use tower_http::timeout::TimeoutLayer;
 
-use super::http_util::{cors_layer, request_span_layer, strip_incoming_trace_context};
+use super::http_util::{cors_layer, request_span, strip_incoming_trace_context};
 use super::{route_table, AccessPolicy};
 use crate::{
     middleware::{require_org_admin, require_org_auditor, require_session},
@@ -132,7 +132,7 @@ pub fn build_router(state: AppState) -> Router {
     // observe は span 内で動く必要があるため span レイヤより内側（先に追加）。
     let router = router
         .layer(middleware::from_fn(telemetry::observe))
-        .layer(request_span_layer());
+        .layer(middleware::from_fn(request_span));
     // 受信した親を信用しない構成では、span レイヤより外側でトレース文脈のヘッダを捨てる。
     let router = if trust_incoming_trace_context {
         router

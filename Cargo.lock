@@ -641,24 +641,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-tracing-opentelemetry"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd3e188039e0e9e3dce1ad873358fd6bab72e6496e18b898bc36d72c07af4b26"
-dependencies = [
- "axum",
- "futures-core",
- "futures-util",
- "http",
- "opentelemetry",
- "pin-project-lite",
- "tower",
- "tracing",
- "tracing-opentelemetry",
- "tracing-opentelemetry-instrumentation-sdk",
-]
-
-[[package]]
 name = "backon"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5238,7 +5220,6 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
- "axum-tracing-opentelemetry",
  "base64",
  "chrono",
  "ed25519-dalek",
@@ -5287,6 +5268,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-opentelemetry",
+ "tracing-opentelemetry-instrumentation-sdk",
  "tracing-subscriber",
  "url",
  "utoipa",
