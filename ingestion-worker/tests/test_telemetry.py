@@ -26,11 +26,13 @@ TRACEPARENT = f"00-{TRACE_ID}-{PARENT_SPAN_ID}-01"
 def traced(worker_env: None):
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    # 本番（_build_provider）と同じく、送る前に例外メッセージを落とす層を挟む。
+    provider.add_span_processor(telemetry.RedactingSpanProcessor(SimpleSpanProcessor(exporter)))
     original = model_registry.get_registry()
     model_registry.set_registry_for_tests(FakeRegistry())
     client = TestClient(
         create_app(tracer_provider=provider),
+        raise_server_exceptions=False,
         headers={"Authorization": f"Bearer {TEST_WORKER_TOKEN}", "traceparent": TRACEPARENT},
     )
     try:
@@ -212,6 +214,8 @@ def test_endpoint_builds_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
         assert provider is not None
         assert registered == [provider]
         assert provider.resource.attributes["service.name"] == "ingestion-worker"
+        processors = provider._active_span_processor._span_processors
+        assert [type(p) for p in processors] == [telemetry.RedactingSpanProcessor]
     finally:
         assert provider is not None
         provider.shutdown()
@@ -275,3 +279,53 @@ def test_app_without_endpoint_ignores_previously_registered_global_provider(
         global_provider.shutdown()
     assert resp.status_code == 200
     assert exporter.get_finished_spans() == ()
+
+
+def test_unhandled_exception_message_is_not_exported_from_server_span(traced) -> None:
+    """未処理例外は FastAPI 計装がサーバ span に記録するが、メッセージは送る前に落とす。"""
+    secret = "社外秘の本文断片"
+
+    class FailingEmbedding:
+        def encode(self, _texts: list[str]) -> list[list[float]]:
+            raise RuntimeError(f"tokenizer failed on: {secret}")
+
+    registry = FakeRegistry()
+    registry._embedding = FailingEmbedding()
+    model_registry.set_registry_for_tests(registry)
+    client, exporter = traced
+    resp = client.post(
+        "/embed", json={"tenant_id": "a-corp", "input_type": "document", "texts": ["x"]}
+    )
+    assert resp.status_code == 500
+    spans = exporter.get_finished_spans()
+    server = _server_span(spans)
+    assert server.status.status_code == StatusCode.ERROR
+    assert dict(server.attributes or {})["error.type"] == "RuntimeError"
+    assert all(e.name != "exception" for s in spans for e in s.events)
+    for s in spans:
+        assert secret not in str(s.status.description or "")
+        assert secret not in _all_attribute_values((s,))
+
+
+def test_each_app_keeps_its_own_provider(worker_env) -> None:
+    """別のアプリを後から作っても、既存アプリの推論 span の送り先は変わらない。"""
+    exporter_a, exporter_b = InMemorySpanExporter(), InMemorySpanExporter()
+    provider_a, provider_b = TracerProvider(), TracerProvider()
+    provider_a.add_span_processor(SimpleSpanProcessor(exporter_a))
+    provider_b.add_span_processor(SimpleSpanProcessor(exporter_b))
+    headers = {"Authorization": f"Bearer {TEST_WORKER_TOKEN}"}
+    client_a = TestClient(create_app(tracer_provider=provider_a), headers=headers)
+    create_app(tracer_provider=provider_b)  # 後から別のアプリを作る
+    client_none = TestClient(create_app(), headers=headers)  # 送り先なし（no-op）
+    original = model_registry.get_registry()
+    model_registry.set_registry_for_tests(FakeRegistry())
+    body = {"tenant_id": "a-corp", "input_type": "query", "texts": ["x"]}
+    try:
+        assert client_a.post("/embed", json=body).status_code == 200
+        assert client_none.post("/embed", json=body).status_code == 200
+    finally:
+        model_registry.set_registry_for_tests(original)
+    names_a = {s.name for s in exporter_a.get_finished_spans()}
+    assert "worker.embed.encode" in names_a
+    assert exporter_b.get_finished_spans() == ()
+    assert len(exporter_a.get_finished_spans()) == 2
