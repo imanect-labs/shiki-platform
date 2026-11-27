@@ -75,7 +75,9 @@ export function SharePeoplePanel({
   onCountChange?: (count: number | null) => void;
 }) {
   const [query, setQuery] = React.useState("");
-  const [results, setResults] = React.useState<Candidate[]>([]);
+  // 候補は「どの検索語の結果か」と一緒に持つ。いまの検索語の結果でなければ出さない（検索語を変えた直後に、
+  // 前の語の候補を押して入力と違う相手に共有してしまわないように）。
+  const [resultsFor, setResultsFor] = React.useState<{ q: string; items: Candidate[] }>({ q: "", items: [] });
   const [searching, setSearching] = React.useState(false);
   // これから付ける権限（検索欄の横で 1 回だけ選ぶ）。
   const [addRole, setAddRole] = React.useState<PeopleRole>("viewer");
@@ -92,7 +94,7 @@ export function SharePeoplePanel({
     if (!open) return;
     let active = true;
     setQuery("");
-    setResults([]);
+    setResultsFor({ q: "", items: [] });
     setAddRole("viewer");
     setLoadingShares(true);
     loadRef
@@ -116,13 +118,14 @@ export function SharePeoplePanel({
     if (!open) return;
     const q = query.trim();
     if (!q) {
-      setResults([]);
+      setResultsFor({ q: "", items: [] });
       setSearching(false);
       return;
     }
     let active = true;
+    // 検索語が変わった時点で「検索中」にする（前の語の候補は下で隠れる）。
+    setSearching(true);
     const handle = setTimeout(() => {
-      setSearching(true);
       Promise.allSettled([
         searchDirectory({ q, limit: USER_LIMIT }),
         searchRoles({ q, limit: ROLE_LIMIT }),
@@ -140,7 +143,7 @@ export function SharePeoplePanel({
               items.push({ kind: "role", id: r.id, primary: r.display_name, secondary: "部署・ロール" });
             }
           }
-          setResults(items);
+          setResultsFor({ q, items });
         })
         .finally(() => active && setSearching(false));
     }, 200);
@@ -164,48 +167,60 @@ export function SharePeoplePanel({
 
   const refresh = async () => setShares(await loadRef.current());
 
-  const share = async (candidate: Candidate) => {
-    const role = addRole;
-    const target = { type: candidate.kind, id: candidate.id };
-    const k = entryKey({ target, role });
-    setPendingKey(k);
+  // 付与・変更・解除は同時に 1 つだけ（state の更新を待たずに弾けるよう ref で持つ）。処理中に権限を
+  // 切り替えて同じ相手をもう一度押し、閲覧と編集を重ねて付けてしまうのを防ぐ。
+  const opRef = React.useRef(false);
+  const runExclusive = async (key: string, fn: () => Promise<void>) => {
+    if (opRef.current) return;
+    opRef.current = true;
+    setPendingKey(key);
     try {
-      await grant(target, role);
-      await refresh();
-      // 検索を閉じて共有中の相手の一覧へ戻す（いま足した相手がそこに見える）。
-      setQuery("");
-      toast({
-        title: "共有しました",
-        description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
-      });
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "共有に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
+      await fn();
     } finally {
+      opRef.current = false;
       setPendingKey(null);
     }
   };
 
+  const share = async (candidate: Candidate) => {
+    const role = addRole;
+    const target = { type: candidate.kind, id: candidate.id };
+    await runExclusive(entryKey({ target, role }), async () => {
+      try {
+        await grant(target, role);
+        await refresh();
+        // 検索を閉じて共有中の相手の一覧へ戻す（いま足した相手がそこに見える）。
+        setQuery("");
+        toast({
+          title: "共有しました",
+          description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
+        });
+      } catch (e) {
+        toast({
+          variant: "destructive",
+          title: "共有に失敗しました",
+          description: e instanceof Error ? e.message : String(e),
+        });
+      }
+    });
+  };
+
   const remove = async (entry: PeopleEntry) => {
     const k = entryKey(entry);
-    setPendingKey(k);
-    try {
-      await revoke(entry.target, entry.role);
-      // 解除した (type, id, role) の行だけを消す。同相手の別ロール共有はサーバ側に残るため、
-      // id だけで filter すると画面から消えて「完全に外せた」と誤認する（実際は残存）。
-      setShares((prev) => prev.filter((s) => entryKey(s) !== k));
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "解除に失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setPendingKey(null);
-    }
+    await runExclusive(k, async () => {
+      try {
+        await revoke(entry.target, entry.role);
+        // 解除した (type, id, role) の行だけを消す。同相手の別ロール共有はサーバ側に残るため、
+        // id だけで filter すると画面から消えて「完全に外せた」と誤認する（実際は残存）。
+        setShares((prev) => prev.filter((s) => entryKey(s) !== k));
+      } catch (e) {
+        toast({
+          variant: "destructive",
+          title: "解除に失敗しました",
+          description: e instanceof Error ? e.message : String(e),
+        });
+      }
+    });
   };
 
   /// 共有中の相手の権限を変える（新しい権限を付けてから古い権限を外す・途中で失敗しても
@@ -216,33 +231,36 @@ export function SharePeoplePanel({
     opts?: { clearQuery?: boolean },
   ) => {
     if (role === entry.role) return;
-    const k = entryKey(entry);
-    setPendingKey(k);
-    try {
-      if (!sharedKeys.has(entryKey({ target: entry.target, role }))) await grant(entry.target, role);
-      await revoke(entry.target, entry.role);
-      await refresh();
-      if (opts?.clearQuery) setQuery("");
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "権限を変更できませんでした",
-        description: e instanceof Error ? e.message : String(e),
-      });
-      await refresh().catch(() => undefined);
-    } finally {
-      setPendingKey(null);
-    }
+    await runExclusive(entryKey(entry), async () => {
+      try {
+        if (!sharedKeys.has(entryKey({ target: entry.target, role }))) await grant(entry.target, role);
+        await revoke(entry.target, entry.role);
+        await refresh();
+        if (opts?.clearQuery) setQuery("");
+      } catch (e) {
+        toast({
+          variant: "destructive",
+          title: "権限を変更できませんでした",
+          description: e instanceof Error ? e.message : String(e),
+        });
+        await refresh().catch(() => undefined);
+      }
+    });
   };
 
   const hasQuery = query.trim().length > 0;
+  // いまの検索語の結果だけを出す（語を変えた直後の前の語の結果は出さない）。
+  const results = resultsFor.q === query.trim() ? resultsFor.items : [];
   const userResults = results.filter((c) => c.kind === "user");
   const roleResults = results.filter((c) => c.kind === "role");
+  // 処理中は全体の操作を止める。共有中の一覧を読み込み中は、既存の共有が分からないので候補から付けない。
+  const anyPending = pendingKey !== null;
+  const candidateLocked = anyPending || loadingShares;
 
   const renderCandidate = (c: Candidate) => {
     const existing = sharedByTarget.get(targetKey({ type: c.kind, id: c.id }));
-    const k = existing ? entryKey(existing) : entryKey({ target: { type: c.kind, id: c.id }, role: addRole });
-    const busy = pendingKey === k;
+    // 処理中の印は相手ごとに出す（権限を切り替えても同じ相手のボタンが押せるように戻らない）。
+    const busy = pendingKey !== null && pendingKey.startsWith(`${targetKey({ type: c.kind, id: c.id })}:`);
     return (
       <li key={`${c.kind}:${c.id}`} className={ROW}>
         <PrincipalAvatar kind={c.kind} name={c.primary} />
@@ -265,7 +283,7 @@ export function SharePeoplePanel({
             type="button"
             size="sm"
             variant="outline"
-            disabled={busy}
+            disabled={candidateLocked}
             onClick={() => void changeRole(existing, addRole, { clearQuery: true })}
             className="shrink-0 pointer-coarse:h-9"
           >
@@ -277,7 +295,7 @@ export function SharePeoplePanel({
             type="button"
             size="sm"
             variant="outline"
-            disabled={busy}
+            disabled={candidateLocked}
             onClick={() => void share(c)}
             className="shrink-0 pointer-coarse:h-9"
           >
@@ -329,7 +347,13 @@ export function SharePeoplePanel({
             />
           ) : null}
         </div>
-        <RoleSelect value={addRole} onChange={setAddRole} label="追加する相手の権限" size="lg" />
+        <RoleSelect
+          value={addRole}
+          onChange={setAddRole}
+          disabled={anyPending}
+          label="追加する相手の権限"
+          size="lg"
+        />
       </div>
 
       {/* 検索欄の下は 1 つの領域を入れ替える（検索語があれば候補、無ければ共有中の相手）。
@@ -401,14 +425,14 @@ export function SharePeoplePanel({
                       <RoleSelect
                         value={s.role}
                         onChange={(r) => void changeRole(s, r)}
-                        disabled={pendingKey === k}
+                        disabled={anyPending}
                         label={`${a11yName} の権限`}
                       />
                       <button
                         type="button"
                         aria-label={`${a11yName} の共有を解除`}
                         title="共有を解除"
-                        disabled={pendingKey === k}
+                        disabled={anyPending}
                         onClick={() => void remove(s)}
                         className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-11"
                       >
