@@ -14,12 +14,25 @@ import { registerOTel } from "@vercel/otel";
 
 /// 呼ぶ側（`instrumentation.ts`）が OTLP の宛先の有無を確かめてから呼ぶ。
 export function registerNodeOTel(): void {
-  const backend = new URL(process.env.BACKEND_ORIGIN ?? "http://localhost:8080").origin;
+  const backend = backendOrigin(process.env.BACKEND_ORIGIN);
   registerOTel({
     serviceName: process.env.OTEL_SERVICE_NAME || "shiki-web",
     instrumentationConfig: {
       // 前方一致で比べるので、末尾の `/` まで含めて別ポート・別ホストの取り違えを防ぐ。
-      fetch: { propagateContextUrls: [`${backend}/`] },
+      // 宛先が読めないときは、どこにも付けない（span のエクスポートは続ける）。
+      fetch: { propagateContextUrls: backend ? [`${backend}/`] : [] },
     },
   });
+}
+
+/// `BACKEND_ORIGIN` の origin。未設定・空なら中継と同じ既定（`http://localhost:8080`）。
+/// URL として読めない値でもサーバの起動は止めない（計装は観測のための付け足しなので）。
+function backendOrigin(raw: string | undefined): string | null {
+  const value = raw?.trim() || "http://localhost:8080";
+  try {
+    return new URL(value).origin;
+  } catch {
+    console.warn("[instrumentation] BACKEND_ORIGIN を URL として読めません。traceparent は付けません。");
+    return null;
+  }
 }

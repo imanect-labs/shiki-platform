@@ -5,8 +5,13 @@
 /// OTLP の宛先が空なら OTel のコード（サーバ側の約 300KB のチャンク）を読み込みもしない。
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "nodejs") {
-    const endpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "";
-    if (!endpoint.trim()) return;
+    // 空白だけの値は未設定として扱う。トレース専用の宛先が空白だけなら、共通の宛先に任せる
+    // （@vercel/otel は専用の値を先に読むので、空白のまま残すと共通の宛先が使われない）。
+    if (!process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim()) delete process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+    const tracesEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+    // OTel の仕様どおり、トレース専用の宛先だけでも有効にする。
+    if (!tracesEndpoint && !endpoint) return;
     const { registerNodeOTel } = await import("./instrumentation-node");
     registerNodeOTel();
   }
