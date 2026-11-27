@@ -274,5 +274,77 @@ fn sql_does_not_reach_log_output() {
     assert!(h.spans().iter().any(|s| s.name == "SELECT t"));
 }
 
+/// `init` と同じ subscriber（[`crate::telemetry::subscriber`]）で、OTLP の有無を切り替えて確かめる。
+fn init_like(h: &Harness, otlp: bool, buf: &Buf) -> Box<dyn Subscriber + Send + Sync> {
+    use tracing_subscriber::Layer as _;
+    let writer = buf.clone();
+    let fmt = tracing_subscriber::fmt::layer()
+        .with_writer(move || writer.clone())
+        .boxed();
+    crate::telemetry::subscriber(fmt, otlp.then(|| h.provider.tracer("test")))
+}
+
+/// sqlx のクエリイベントと同じ（ターゲット・レベル）の metadata。
+fn sqlx_query_metadata() -> &'static tracing::Metadata<'static> {
+    use tracing::callsite::Callsite as _;
+    let cs = tracing::callsite! {
+        name: "sqlx query",
+        kind: tracing::metadata::Kind::EVENT,
+        target: "sqlx::query",
+        level: tracing::Level::DEBUG,
+        fields: []
+    };
+    cs.metadata()
+}
+
+/// sqlx のクエリイベントの callsite を、その subscriber が有効にし得るか。
+///
+/// `enabled!`・`event!` は callsite の interest が never なら評価もイベント生成もしない（sqlx は
+/// SQL の整形もしない）。interest はプロセス全体の subscriber を合わせてキャッシュされるので、
+/// `cargo test` で別スレッドの subscriber が混ざらないよう、この subscriber に直接問う。
+fn sqlx_query_enabled(dispatch: &tracing::Dispatch) -> bool {
+    !dispatch.register_callsite(sqlx_query_metadata()).is_never()
+}
+
+#[test]
+fn otlp_disabled_keeps_query_events_off_and_makes_no_db_span() {
+    let h = Harness::new();
+    let buf = Buf::default();
+    let off = tracing::Dispatch::new(init_like(&h, false, &buf));
+    // sqlx は判定が偽ならイベントを作らない（SQL の整形もしない）＝変更前と同じコスト。
+    assert!(!sqlx_query_enabled(&off));
+    tracing::dispatcher::with_default(&off, || {
+        let request = tracing::info_span!("request");
+        let _e = request.enter();
+        emit_sqlx_like(
+            "SELECT secret_col FROM t WHERE a = $1",
+            Duration::from_millis(3),
+            1,
+        );
+        tracing::info!("visible");
+    });
+    let out = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        out.contains("visible") && !out.contains("secret_col"),
+        "{out}"
+    );
+    assert!(h.spans().is_empty(), "OTLP 無効では span を作らない");
+
+    // 同じ組み立てで OTLP を有効にすると、クエリイベントが有効になり DB span が出る。
+    let h = Harness::new();
+    let on = tracing::Dispatch::new(init_like(&h, true, &Buf::default()));
+    assert!(sqlx_query_enabled(&on));
+    tracing::dispatcher::with_default(&on, || {
+        let request = tracing::info_span!("request");
+        let _e = request.enter();
+        emit_sqlx_like(
+            "SELECT secret_col FROM t WHERE a = $1",
+            Duration::from_millis(3),
+            1,
+        );
+    });
+    assert!(h.spans().iter().any(|s| s.name == "SELECT t"));
+}
+
 #[path = "db_spans_bench.rs"]
 mod bench;
