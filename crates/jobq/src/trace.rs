@@ -12,7 +12,6 @@
 //! `traceparent` が無い行（列の追加前に積まれた行・span の外で積まれた行）や壊れた値でも
 //! 落ちない: 親もリンクも無い span になるだけ。
 
-use chrono::Utc;
 use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
 use opentelemetry::Context;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -89,13 +88,19 @@ pub fn parse_traceparent(value: &str) -> Option<SpanContext> {
 impl ClaimedJob {
     /// このジョブを処理する span を作る。処理は `.instrument(span)` か `span.in_scope` で包む。
     ///
-    /// 属性: キュー名・ジョブ id・試行回数・テナント・待ち時間（enqueue から claim まで。
-    /// 再試行では最初の enqueue からの経過）。`traceparent` が無く `trace_id` だけある行は、
+    /// 属性: キュー名・ジョブ id・試行回数・テナント・待ち時間（enqueue から claim まで。どちらも
+    /// DB の時計で、span を作るまでの処理時間は含めない。再試行では最初の enqueue からの経過）。
+    ///
+    /// span は**呼び出し時点の現在の span を親に取らない**（`parent: None`）。ワーカーのループが
+    /// span の中で動いていても、親子モードなら enqueue 元の子、リンクモードなら独立したトレースになる。`traceparent` が無く `trace_id` だけある行は、
     /// 突合用に `job.enqueue_trace_id` を載せる。
     #[must_use]
     pub fn span(&self, link: JobSpanLink) -> tracing::Span {
-        let wait_ms = (Utc::now() - self.enqueued_at).num_milliseconds().max(0);
+        let wait_ms = (self.claimed_at - self.enqueued_at)
+            .num_milliseconds()
+            .max(0);
         let span = tracing::info_span!(
+            parent: None,
             "job",
             otel.name = %format_args!("job {}", self.queue),
             job.queue = %self.queue,
@@ -129,6 +134,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use chrono::Utc;
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
     use tracing_subscriber::layer::SubscriberExt;
@@ -145,8 +151,14 @@ mod tests {
             max_attempts: 3,
             trace_id: trace_id.map(str::to_string),
             traceparent: traceparent.map(str::to_string),
-            enqueued_at: Utc::now() - chrono::Duration::seconds(5),
+            enqueued_at: claimed_at() - chrono::Duration::seconds(5),
+            claimed_at: claimed_at(),
         }
+    }
+
+    /// 固定の claim 時刻（待ち時間を厳密に比べるため）。
+    fn claimed_at() -> chrono::DateTime<Utc> {
+        chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap()
     }
 
     /// テスト用の exporter を付けた subscriber の下で `f` を走らせ、終わった span を返す。
@@ -203,8 +215,8 @@ mod tests {
         assert_eq!(attr(s, "job.queue").as_deref(), Some("chat_generation"));
         assert_eq!(attr(s, "job.attempts").as_deref(), Some("2"));
         assert_eq!(attr(s, "tenant_id").as_deref(), Some("a-corp"));
-        let wait: i64 = attr(s, "job.wait_ms").unwrap().parse().unwrap();
-        assert!(wait >= 5000, "wait_ms={wait}");
+        // 待ち時間は claim 時刻で確定する（span を作った時刻ではない）。
+        assert_eq!(attr(s, "job.wait_ms").as_deref(), Some("5000"));
     }
 
     #[test]
@@ -219,6 +231,32 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].span_context.trace_id().to_string(), &TP[3..35]);
         assert_eq!(links[0].span_context.span_id().to_string(), &TP[36..52]);
+    }
+
+    /// ワーカーのループが span の中で動いていても、その span を暗黙の親に取らない。
+    #[test]
+    fn job_span_ignores_the_ambient_worker_span() {
+        let spans = capture(|| {
+            tracing::info_span!("worker_loop").in_scope(|| {
+                job(Some(TP), None).span(JobSpanLink::Link).in_scope(|| {});
+                job(Some(TP), None)
+                    .span(JobSpanLink::Parent)
+                    .in_scope(|| {});
+                job(None, None).span(JobSpanLink::Parent).in_scope(|| {});
+            });
+        });
+        let outer = spans.iter().find(|s| s.name == "worker_loop").unwrap();
+        let jobs: Vec<_> = spans.iter().filter(|s| s.name != "worker_loop").collect();
+        assert_eq!(jobs.len(), 3);
+        for s in &jobs {
+            assert_ne!(s.span_context.trace_id(), outer.span_context.trace_id());
+            assert_ne!(s.parent_span_id, outer.span_context.span_id());
+        }
+        // リンク: 独立したトレースのルート。親子: enqueue 元の子。traceparent 無し: ルート。
+        assert_eq!(jobs[0].parent_span_id, SpanId::INVALID);
+        assert_eq!(jobs[0].links.len(), 1);
+        assert_eq!(jobs[1].parent_span_id.to_string(), &TP[36..52]);
+        assert_eq!(jobs[2].parent_span_id, SpanId::INVALID);
     }
 
     #[test]

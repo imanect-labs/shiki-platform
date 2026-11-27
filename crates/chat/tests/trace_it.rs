@@ -93,7 +93,8 @@ impl AuthzClient for AllowAll {
 ///
 /// 生成ジョブの待ち行列は全テストで共有なので、同じ DB では他のテスト（並列に走る別プロセス）の
 /// ワーカーがジョブを拾い、自分の gateway（stub）で生成を成功させてしまう。
-async fn isolated_setup(prefix: &str) -> Option<PgPool> {
+/// 返り値: (テスト用 DB のプール, 消すための管理接続, DB 名)。
+async fn isolated_setup(prefix: &str) -> Option<(PgPool, PgPool, String)> {
     let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
@@ -119,7 +120,18 @@ async fn isolated_setup(prefix: &str) -> Option<PgPool> {
         .run(&pool)
         .await
         .expect("マイグレーション適用");
-    Some(pool)
+    Some((pool, admin, name))
+}
+
+/// テスト用 DB を消す（共有 Postgres に溜めない）。ワーカーの接続が残っていても FORCE で切る。
+async fn drop_isolated(pool: PgPool, admin: PgPool, name: &str) {
+    // ワーカーのタスクが接続を返さないことがあるので、close は長く待たない（残りは FORCE で切る）。
+    let _ = tokio::time::timeout(Duration::from_secs(5), pool.close()).await;
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+        .execute(&admin)
+        .await
+        .expect("テスト用 DB を消せること");
+    admin.close().await;
 }
 
 fn ctx(tenant: &str) -> AuthContext {
@@ -189,7 +201,7 @@ fn test_deps(gateway: LlmGateway) -> chat::WorkerDeps {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn generation_job_span_is_a_child_of_the_request_span() {
-    let Some(pool) = isolated_setup("chat_trace").await else {
+    let Some((pool, admin, db_name)) = isolated_setup("chat_trace").await else {
         return;
     };
     let exporter = InMemorySpanExporter::default();
@@ -293,4 +305,6 @@ async fn generation_job_span_is_a_child_of_the_request_span() {
     assert_eq!(attr("tenant_id").as_deref(), Some(tenant.as_str()));
     assert_eq!(attr("job.attempts").as_deref(), Some("1"));
     assert!(attr("job.wait_ms").is_some());
+
+    drop_isolated(pool, admin, &db_name).await;
 }

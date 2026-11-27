@@ -117,6 +117,8 @@ pub struct ClaimedJob {
     /// enqueue 元の span の W3C `traceparent`。ワーカーは [`ClaimedJob::span`] で使う。
     pub traceparent: Option<String>,
     pub enqueued_at: DateTime<Utc>,
+    /// claim した時刻（DB の `now()`）。待ち時間（`claimed_at - enqueued_at`）を DB の時計だけで測る。
+    pub claimed_at: DateTime<Utc>,
 }
 
 /// [`fail`] の結果。
@@ -241,7 +243,7 @@ pub async fn claim(
              on conflict (queue) do nothing returning 1 \
          ) \
          select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
-                enqueued_at \
+                enqueued_at, now() as claimed_at \
          from claimed",
     )
     .bind(queue)
