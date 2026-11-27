@@ -36,7 +36,7 @@ const FONT_FAMILY =
   '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", Meiryo, sans-serif';
 
 /// 全地点を収めるときの余白（地点のまわりに出す札の大きさと、左上の件数・右上の操作ボタンの分）。
-const FIT_PADDING = { top: 56, bottom: 44, left: 96, right: 104 };
+const FIT_PADDING = { top: 80, bottom: 44, left: 96, right: 104 };
 /// 全画面で下からパネルを出すとき、その上に置く出典の行の高さ。
 const ATTRIBUTION_H = 20;
 /// 地図の下端に重ねたカードの列の高さ（測る前の見込み）。
