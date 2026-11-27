@@ -518,7 +518,11 @@ async def parse(req: ParseRequest) -> ParseResponse:
     content_type = req.content_type.split(";")[0].strip().lower()
     data = await _load(req)
     # 文書の中身・ファイル名は span に載せない（種別・大きさ・件数だけ）。
-    attributes = {"worker.content_type": content_type, "worker.bytes": len(data)}
+    # content_type は呼び出し側の入力そのもの。受け付ける種別のときだけ載せ、それ以外は
+    # "other" にまとめる（任意の文字列を span 経由で外へ出さない）。
+    known = _PLAIN_TEXT_TYPES | _DOCLING_TYPES | {_SLIDE_TYPE}
+    span_type = content_type if content_type in known else "other"
+    attributes = {"worker.content_type": span_type, "worker.bytes": len(data)}
     with inference_span("worker.parse", attributes) as span:
         resp = await _extract(req, data, content_type)
         span.set_attribute("worker.blocks", len(resp.blocks))

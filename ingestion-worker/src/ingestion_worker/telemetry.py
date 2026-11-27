@@ -110,7 +110,8 @@ def _build_provider() -> TracerProvider | None:
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     # BatchSpanProcessor はバックグラウンドで送る。collector 不在でも推論は止まらない。
     provider.add_span_processor(RedactingSpanProcessor(BatchSpanProcessor(OTLPSpanExporter())))
-    trace.set_tracer_provider(provider)
+    # グローバルには登録しない。同じプロセスの別の計装（ライブラリの自動計装など）が
+    # worker の送り先を勝手に使わないよう、provider はこのアプリの計装にだけ渡す。
     return provider
 
 

@@ -212,7 +212,8 @@ def test_endpoint_builds_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = telemetry._build_provider()
     try:
         assert provider is not None
-        assert registered == [provider]
+        # グローバルには登録しない（同じプロセスの別の計装が worker の送り先を使わない）。
+        assert registered == []
         assert provider.resource.attributes["service.name"] == "ingestion-worker"
         processors = provider._active_span_processor._span_processors
         assert [type(p) for p in processors] == [telemetry.RedactingSpanProcessor]
@@ -329,3 +330,24 @@ def test_each_app_keeps_its_own_provider(worker_env) -> None:
     assert "worker.embed.encode" in names_a
     assert exporter_b.get_finished_spans() == ()
     assert len(exporter_a.get_finished_spans()) == 2
+
+
+def test_parse_span_does_not_echo_unknown_content_type(traced) -> None:
+    """未知の content_type（呼び出し側の任意文字列）はそのまま載せず "other" にまとめる。"""
+    client, exporter = traced
+    secret_type = "application/x-社外秘-案件名"
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": base64.b64encode(b"x").decode(),
+            "content_type": secret_type,
+            "file_name": "a.bin",
+        },
+    )
+    assert resp.status_code == 422
+    spans = exporter.get_finished_spans()
+    span = _span(spans, "worker.parse")
+    assert dict(span.attributes or {})["worker.content_type"] == "other"
+    for s in spans:
+        assert "社外秘" not in _all_attribute_values((s,))
