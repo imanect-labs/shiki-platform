@@ -6,9 +6,9 @@
 use std::time::Duration;
 
 use axum::{http::StatusCode, middleware, Router};
-use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::timeout::TimeoutLayer;
 
-use super::http_util::{cors_layer, make_request_span};
+use super::http_util::{cors_layer, request_span_layer, strip_incoming_trace_context};
 use super::{route_table, AccessPolicy};
 use crate::{
     middleware::{require_org_admin, require_org_auditor, require_session},
@@ -110,6 +110,7 @@ pub fn build_router(state: AppState) -> Router {
         .map(|o| office::build_wopi_router(o.wopi.clone()).layer(long_timeout()));
 
     let cors = cors_layer(&state.config.server.cors_allowed_origins);
+    let trust_incoming_trace_context = state.config.telemetry.trust_incoming_trace_context;
     let mut router = public
         .merge(session_std)
         .merge(session_long)
@@ -127,10 +128,17 @@ pub fn build_router(state: AppState) -> Router {
     if let Some(wopi) = wopi {
         router = router.merge(wopi);
     }
+    // `Router::layer` はルートごとに包むため、内側で `MatchedPath`（= `http.route`）が引ける。
+    // observe は span 内で動く必要があるため span レイヤより内側（先に追加）。
     let router = router
-        // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
-        .layer(TraceLayer::new_for_http().make_span_with(make_request_span));
+        .layer(request_span_layer());
+    // 受信した親を信用しない構成では、span レイヤより外側でトレース文脈のヘッダを捨てる。
+    let router = if trust_incoming_trace_context {
+        router
+    } else {
+        router.layer(middleware::map_request(strip_incoming_trace_context))
+    };
 
     // CORS: 同一オリジン配信が既定（レイヤ無し）。別オリジン dev のみ、設定された
     // オリジンに限定して credential 付きを許可する（permissive はセッション Cookie と

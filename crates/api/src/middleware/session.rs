@@ -95,6 +95,7 @@ pub async fn require_session(
     // IdP の access token（本人権限で Keycloak Account API を呼ぶハンドラ用。外へは出さない）。
     // org は解決済み tenant_id 配下の group だけから解く（#811・他テナントの group を拾わない）。
     let org = resolve_org(&record.principal, &tenant_id, &state.config.auth);
+    crate::telemetry::record_auth_on_span(&tenant_id, &record.principal.id);
     req.extensions_mut()
         .insert(SessionAccessToken(record.access_token));
     req.extensions_mut().insert(record.principal);

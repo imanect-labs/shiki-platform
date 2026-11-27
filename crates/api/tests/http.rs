@@ -355,6 +355,7 @@ fn base_config() -> AppConfig {
             otlp_endpoint: None,
             service_name: "test".into(),
             log_format: LogFormat::Json,
+            trust_incoming_trace_context: true,
         },
         storage: StorageConfig {
             backend: ObjectStoreBackend::S3,
