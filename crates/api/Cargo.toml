@@ -78,6 +78,8 @@ async-trait.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
+# DB span のテスト（telemetry/db_spans_tests.rs）: InMemorySpanExporter で出た span を確かめる。
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 # collab WS 結合テスト（collab_ws_it.rs）: 実 WS クライアント＋yrs クライアント文書。

@@ -58,6 +58,28 @@ docker compose logs postgres | grep -A 30 "duration:"
 
 `auto_explain.log_timing` は既定で **off** にしてある。ノード単位の計時はそれ自体が重く、`log_analyze` と併用する際に off にするのが定石だからである。行数とバッファ数は取れるので、計画の形（`Seq Scan` / `Sort` / `Bitmap` への退化）を見る用途には十分足りる。
 
+## 2.5 このリクエストのどのクエリが遅かったか（トレース）
+
+§1・§2 は集計（全リクエストの合計・閾値超え）で、「この 1 リクエストのどのクエリが遅かったか」は分からない。
+`telemetry.otlp_endpoint` を設定して OTel を有効にすると、shiki-server は **SQL 1 本ごとに client span** を
+リクエスト span の子として出す（`crates/api/src/telemetry/db_spans.rs`）。Tempo でリクエストのトレースを開くと、
+クエリが実際の所要時間の長さの棒で並ぶ。
+
+| 属性 | 中身 |
+|---|---|
+| span 名・`db.query.summary` | `SELECT documents` のような「操作 主たる表」 |
+| `db.system.name` | `postgresql` |
+| `db.operation.name` | `SELECT`・`INSERT`・`UPDATE`・`DELETE` など（`WITH` は本体の文の操作） |
+| `db.collection.name` | `FROM`・`INTO`・`UPDATE` の直後の表名（副問い合わせ等で取れなければ無し） |
+| `db.response.returned_rows` / `shiki.db.rows_affected` | 返した行数・更新した行数 |
+
+- **SQL 本文とバインド値は載せない。** 同じ表への別のクエリを見分けたいときは、span の時刻で
+  §2 の `auto_explain`・§1 の `pg_stat_statements` と突き合わせる。
+- 親の span が無い（サンプルされていない）クエリ、たとえばバックグラウンドのポーリングは span にしない。
+- 仕組みは sqlx が各クエリの終了時に出す `sqlx::query` イベント（経過時間つき）を受けて後付けで span を作るもので、
+  呼び出し側の計装は要らない。`RUST_LOG` によるログの絞り込みは従来どおりで、SQL がログに出ることは無い。
+- オーバーヘッドの計測: `DATA_BENCH=1 STORAGE_TEST_DATABASE_URL=… cargo test -p shiki-api --all-features --lib db_span_overhead -- --nocapture`
+
 ## 3. 掃除（vacuum）が追いついているか
 
 ```sql
