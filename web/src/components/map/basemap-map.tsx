@@ -247,6 +247,8 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   }
 
   const ready = phase === "ready";
+  // 名前がどれも自分の番号で始まる（「1位 …」「2位 …」）なら、一覧の番号は重ねて出さない。
+  const numberedLabels = figure.markers.every((mk, i) => new RegExp(`^${i + 1}(?!\\d)`).test(mk.label));
   const animate = !prefersReducedMotion();
   const zoomBy = (d: number) => mapRef.current?.zoomTo(mapRef.current.getZoom() + d, { animate });
   const fitAll = () => {
@@ -355,7 +357,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       <div
         role="list"
         aria-label="地点の一覧"
-        className="mt-2 grid gap-x-4 gap-y-0.5 text-[12px] leading-5 text-muted-foreground sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+        className="mt-2 grid gap-x-3 gap-y-0.5 text-[12px] leading-5 text-muted-foreground sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         data-testid="basemap-legend"
       >
         {figure.markers.map((mk, i) => (
@@ -366,10 +368,12 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
               disabled={!ready}
               className="flex w-full min-w-0 items-baseline gap-1.5 rounded px-1 text-left hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:hover:bg-transparent"
             >
-              <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-foreground">{i + 1}.</span>
+              {numberedLabels ? null : (
+                <span className="w-5 shrink-0 text-right font-semibold tabular-nums text-foreground">{i + 1}.</span>
+              )}
               <span className="truncate">
-                <span className="text-foreground">{mk.label}</span>
-                {mk.desc ? <span>　{mk.desc}</span> : null}
+                <span className={cn("text-foreground", numberedLabels && "font-semibold")}>{mk.label}</span>
+                {mk.desc ? <span className="ml-2">{mk.desc}</span> : null}
               </span>
             </button>
           </div>
