@@ -20,6 +20,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import StatusCode
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,11 @@ def setup_tracing(app: FastAPI, tracer_provider: trace.TracerProvider | None = N
 
 
 def _tracer() -> trace.Tracer:
-    provider = _provider if _provider is not None else trace.get_tracer_provider()
-    return provider.get_tracer(_TRACER_NAME)
+    # 送り先が無いアプリでは、グローバルに登録済みの provider（同じプロセスで先に作られた
+    # アプリのもの）へ落ちないよう、明示的に no-op にする。
+    if _provider is None:
+        return trace.NoOpTracer()
+    return _provider.get_tracer(_TRACER_NAME)
 
 
 @contextmanager
@@ -81,5 +85,18 @@ def inference_span(name: str, attributes: Mapping[str, str | int | bool]) -> Ite
     スレッドへ逃がす処理は、`asyncio.to_thread` / Starlette のスレッドプールが contextvars を
     引き継ぐので、その中で開いても親子がつながる。
     """
-    with _tracer().start_as_current_span(name, attributes=dict(attributes)) as span:
-        yield span
+    with _tracer().start_as_current_span(
+        name,
+        attributes=dict(attributes),
+        # 例外のメッセージ（Docling のエラー詳細や HTTPException の detail）には文書の断片が
+        # 混ざり得る。既定の自動記録（exception イベント・status の description）は使わず、
+        # 例外の型名だけを残す。
+        record_exception=False,
+        set_status_on_exception=False,
+    ) as span:
+        try:
+            yield span
+        except BaseException as exc:
+            span.set_attribute("error.type", type(exc).__name__)
+            span.set_status(StatusCode.ERROR)
+            raise

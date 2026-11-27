@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import SpanKind, StatusCode
 
 from ingestion_worker import model_registry, telemetry
 from ingestion_worker import parse as parse_mod
@@ -215,3 +215,63 @@ def test_endpoint_builds_otlp_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
     finally:
         assert provider is not None
         provider.shutdown()
+
+
+def test_parse_failure_records_only_error_type_not_message(
+    traced, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docling のエラー詳細（文書の断片が混ざり得る）は span のイベント・status・属性に載せない。"""
+    secret = "社外秘の本文断片"
+
+    class FailingConverter:
+        def convert(self, *_args, **_kwargs):
+            raise RuntimeError(f"broken page: {secret}")
+
+    holder = SimpleNamespace(get=lambda: FailingConverter())
+    monkeypatch.setattr(parse_mod, "get_converter_holder", lambda: holder)
+    client, exporter = traced
+    resp = client.post(
+        "/parse",
+        json={
+            "tenant_id": "a-corp",
+            "content_base64": base64.b64encode(b"%PDF-1.7").decode(),
+            "content_type": "application/pdf",
+            "file_name": "a.pdf",
+        },
+    )
+    assert resp.status_code == 422
+    spans = exporter.get_finished_spans()
+    span = _span(spans, "worker.parse")
+    assert span.status.status_code == StatusCode.ERROR
+    assert dict(span.attributes or {})["error.type"] == "HTTPException"
+    for s in spans:
+        assert secret not in str(s.status.description or "")
+        assert secret not in _all_attribute_values((s,))
+        for event in s.events:
+            assert secret not in " ".join(str(v) for v in (event.attributes or {}).values())
+
+
+def test_app_without_endpoint_ignores_previously_registered_global_provider(
+    monkeypatch: pytest.MonkeyPatch, worker_env
+) -> None:
+    """送り先なしで作り直したアプリの推論 span は、登録済みのグローバル provider へ流れない。"""
+    exporter = InMemorySpanExporter()
+    global_provider = TracerProvider()
+    global_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(telemetry.trace, "get_tracer_provider", lambda: global_provider)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    client = TestClient(
+        create_app(),
+        headers={"Authorization": f"Bearer {TEST_WORKER_TOKEN}", "traceparent": TRACEPARENT},
+    )
+    original = model_registry.get_registry()
+    model_registry.set_registry_for_tests(FakeRegistry())
+    try:
+        resp = client.post(
+            "/embed", json={"tenant_id": "a-corp", "input_type": "query", "texts": ["x"]}
+        )
+    finally:
+        model_registry.set_registry_for_tests(original)
+        global_provider.shutdown()
+    assert resp.status_code == 200
+    assert exporter.get_finished_spans() == ()
