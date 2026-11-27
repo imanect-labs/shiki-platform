@@ -19,13 +19,13 @@ SLO を割り当てる元になる台帳。[README.md](./README.md) §1 の原�
 | --- | --- | --- | --- | --- | --- |
 | ログイン（OIDC・BFF） | 高 | 実装 | 同期 | KC・Rd・PG | AUTH-1・AUTH-2 |
 | 画面の表示・一覧・詳細（全般） | 高 | 実装 | 同期 | PG・Rd・FGA | API-1・API-2・WEB-1 |
-| ファイルのアップロード（宣言→直 PUT→finalize） | 高 | 実装 | 同期＋後続は非同期 | PG・FGA・OS | API-1・DRV-1・ING-1 |
-| ファイルのダウンロード | 高 | 実装 | 同期（本体は OS 直） | PG・FGA・OS | API-1・API-2・DRV-2 |
+| ファイルのアップロード（宣言→直 PUT→finalize） | 高 | 実装 | 同期＋後続は非同期 | PG・FGA・OS | API-1・DRV-1・DRV-3・ING-1 |
+| ファイルのダウンロード | 高 | 実装 | 同期（本体は OS 直） | PG・FGA・OS | API-1・API-2・DRV-2・DRV-3 |
 | フォルダ操作・移動・ゴミ箱・版 | 中 | 実装 | 同期 | PG・FGA | API-1・API-2 |
 | 共有・共有リンク | 高 | 実装 | 同期 | PG・FGA | API-1・SRCH-3 |
-| 文書の検索 | 高 | 実装 | 同期 | Qd・Tv・IW・FGA・PG | SRCH-1・SRCH-2 |
+| 文書の検索 | 高 | 実装 | 同期 | Qd・Tv・IW・FGA・PG | SRCH-1・SRCH-2・SRCH-2f |
 | アップロードした文書が検索に出る | 高 | 実装 | 非同期 | OS・IW・Qd・Tv・PG | ING-1〜4 |
-| チャットで質問し、回答を見る | 高 | 実装 | 非同期 run＋SSE | PG・Rd・LLM・FGA | CHAT-1〜8 |
+| チャットで質問し、回答を見る | 高 | 実装 | 非同期 run＋SSE | PG・Rd・LLM・FGA | CHAT-1〜5・CHAT-9 |
 | エージェントがツールを使う（文書検索・Web・コード実行） | 高 | 実装（ブラウザはテキストエンジンのみ） | run の中 | SBX・WS・IW・LLM | SRCH-1・SBX-1・SBX-2・CHAT-3・TOOL-1 |
 | 自律エージェント・サブエージェント | 中 | 実装 | 非同期（十数分になりうる） | 同上 | CHAT-3〜5・CHAT-8 |
 | 破壊的操作の承認（human-in-the-loop） | 中 | 実装 | 非同期（承認待ち最大 30 分） | PG | CHAT-3（待ちは除外）・§7 の不変条件 |
@@ -46,9 +46,9 @@ SLO を割り当てる元になる台帳。[README.md](./README.md) §1 の原�
 | 宣言的ミニアプリの実行 | 中 | 実装 | 同期（WF 起動は非同期） | PG・FGA | API-1・API-2 |
 | コードベース・ミニアプリ（公開 API ゲートウェイ :8090・配信 :8091） | 中 | 実装 | 同期 | PG・FGA・KC・LLM | APP-1・APP-2 |
 | ミニアプリのイベント・定時トリガ | 中 | 実装 | 非同期 | PG | TRG-1・TRG-2 |
-| ヘルプ検索 | 低 | 実装 | 同期（チャットのツール） | IW | SRCH-1（T3 の縮退率） |
-| 組織管理・メンバー・ロール・AI 設定 | 低 | 実装 | 同期 | PG・FGA・KC | API-1（admin） |
-| 監査ログの検索・書き出し・検証 | 中（監査対応） | 実装 | 同期（長時間） | PG | API-1（admin）・OPS-4 |
+| ヘルプ検索 | 低 | 実装 | 同期（チャットのツール） | IW | T3（`shiki.help.keyword_fallbacks`・ai-agents §4）・CHAT-4 |
+| 組織管理・メンバー・ロール・AI 設定 | 低 | 実装 | 同期 | PG・FGA・KC | API-1a |
+| 監査ログの検索・書き出し・検証 | 中（監査対応） | 実装 | 同期（長時間） | PG | API-1a・OPS-4 |
 | テナントのプロビジョニング・撤去 | 中（SaaS の契約） | 実装（API・CLI） | 同期（長時間） | KC・FGA・PG・OS | OPS-1 |
 | 職員間メッセージ | — | 計画（Phase 14） | WebSocket | — | 実装時に定める（目標 3 秒以内〔既〕） |
 | サイト公開・フォーム | — | 計画（Phase 13） | — | — | 実装時に定める |
