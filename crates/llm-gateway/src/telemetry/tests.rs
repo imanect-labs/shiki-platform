@@ -17,14 +17,14 @@ fn text(t: &str) -> Result<StreamDelta, LlmError> {
 }
 
 #[tokio::test]
-async fn span_stays_open_until_stream_ends_and_records_usage_and_ttft() {
+async fn span_closes_at_stream_end_and_records_usage_and_ttft() {
     let cap = Captured::default();
     let _g = cap.guard();
     let parent = tracing::info_span!("chat.turn");
     let mut stream = {
         let _p = parent.enter();
-        let span = llm_span("auto");
-        record_target(&span, "gpt-x-2026", "openai");
+        let span = llm_span();
+        record_target(&span, "auto", "gpt-x-2026", "openai");
         trace_stream(
             deltas(vec![
                 Ok(StreamDelta::ReasoningItem {
@@ -60,12 +60,17 @@ async fn span_stays_open_until_stream_ends_and_records_usage_and_ttft() {
     assert!(s.fields.contains_key("gen_ai.server.time_to_first_token"));
     assert_eq!(s.events, vec!["gen_ai.first_token".to_string()]);
 
-    while stream.next().await.is_some() {}
-    assert!(!cap.span("gen_ai.chat").closed, "drop までは閉じない");
-    drop(stream);
-
+    stream.next().await.unwrap().unwrap();
+    stream.next().await.unwrap().unwrap(); // Done
+    assert!(
+        !cap.span("gen_ai.chat").closed,
+        "終端（None）の前は閉じない"
+    );
+    assert!(stream.next().await.is_none());
+    // 終端に達した時点で閉じる（drop を待たない＝消費側の後処理を生成時間に混ぜない）。
     let s = cap.span("gen_ai.chat");
-    assert!(s.closed);
+    assert!(s.closed, "終端で閉じる");
+    drop(stream);
     assert_eq!(
         s.parent.as_deref(),
         Some("chat.turn"),
@@ -78,12 +83,40 @@ async fn span_stays_open_until_stream_ends_and_records_usage_and_ttft() {
     assert_eq!(s.field("gen_ai.provider.name"), "openai");
     assert_eq!(s.field("gen_ai.usage.input_tokens"), "120");
     assert_eq!(s.field("gen_ai.usage.output_tokens"), "30");
-    assert_eq!(s.field("gen_ai.response.finish_reasons"), "end_turn");
+    // finish_reasons は OTel の配列属性として直接載せる（gateway_spans_it で確認）。
     assert_eq!(s.events.len(), 1, "最初のトークンのイベントは 1 回だけ");
+    // 最初のトークンのイベントは時間だけを持つ（本文を持たない）。
+    let ev = &s.event_fields[0];
+    assert!(ev.contains_key("time_to_first_token_s"));
+    assert_eq!(ev.len(), 2, "message と時間だけ: {ev:?}");
     assert!(
         !cap.all_values().iter().any(|v| v.contains("秘密")),
-        "応答本文は span に載せない"
+        "応答本文は span・イベントのどの属性にも載せない"
     );
+}
+
+#[test]
+fn record_target_sets_name_only_after_resolution() {
+    let cap = Captured::default();
+    cap.run(|| {
+        let span = llm_span();
+        drop(span);
+    });
+    let s = cap.span("gen_ai.chat");
+    assert_eq!(s.field("otel.name"), "chat");
+    assert!(!s.fields.contains_key("shiki.llm.model"));
+}
+
+/// 捕捉層自体が、イベントの message 以外の属性に入った文字列も検出できること。
+#[test]
+fn capture_sees_event_fields_other_than_message() {
+    let cap = Captured::default();
+    cap.run(|| {
+        let span = llm_span();
+        let _e = span.enter();
+        tracing::info!(leaked = "秘密の値", "gen_ai.first_token");
+    });
+    assert!(cap.all_values().iter().any(|v| v.contains("秘密の値")));
 }
 
 #[tokio::test]
@@ -95,7 +128,7 @@ async fn tool_use_counts_as_first_token() {
             id: "t1".into(),
             name: "search".into(),
         })]),
-        llm_span("m"),
+        llm_span(),
         Instant::now(),
     );
     stream.next().await.unwrap().unwrap();
@@ -114,7 +147,7 @@ async fn midstream_error_marks_span_without_message() {
             text("a"),
             Err(LlmError::Unavailable("provider body: 秘密".into())),
         ]),
-        llm_span("m"),
+        llm_span(),
         Instant::now(),
     );
     while stream.next().await.is_some() {}

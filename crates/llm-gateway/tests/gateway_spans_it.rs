@@ -90,10 +90,10 @@ async fn stream_span_is_child_of_caller_and_closes_after_stream() {
         );
     }
     assert!(items > 0);
-    drop(stream);
-
+    // 終端に達した時点で閉じている（drop を待たない）。
     let s = cap.span("gen_ai.chat");
     assert!(s.closed);
+    drop(stream);
     assert_eq!(s.parent.as_deref(), Some("chat.turn"));
     assert_eq!(s.field("shiki.llm.model"), "fast");
     assert_eq!(s.field("gen_ai.request.model"), "stub-real-1");
@@ -124,6 +124,9 @@ async fn rejected_call_is_recorded_as_error() {
     assert!(s.closed);
     assert_eq!(s.field("otel.status_code"), "ERROR");
     assert_eq!(s.field("error.type"), "config");
+    // 未検証のモデル名は span 名・属性に載せない。
+    assert_eq!(s.field("otel.name"), "chat");
+    assert!(!cap.all_values().iter().any(|v| v.contains("missing")));
 }
 
 /// Langfuse の trace id と OTel の trace_id が揃う: Langfuse に渡す trace_id（run の trace_id）を
@@ -192,4 +195,15 @@ async fn llm_span_keeps_the_callers_otel_trace_id() {
         .attributes
         .iter()
         .any(|kv| kv.key.as_str() == "gen_ai.request.model" && kv.value.as_str() == "stub-real-1"));
+    // finish_reasons は規約どおり文字列配列。
+    let reasons = llm
+        .attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == "gen_ai.response.finish_reasons")
+        .expect("finish_reasons");
+    assert!(
+        matches!(&reasons.value, opentelemetry::Value::Array(opentelemetry::Array::String(v)) if v.len() == 1),
+        "{:?}",
+        reasons.value
+    );
 }

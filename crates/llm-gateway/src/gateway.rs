@@ -411,7 +411,7 @@ impl LlmGateway {
             .model
             .clone()
             .unwrap_or_else(|| self.inner.config.catalog.default_model.clone());
-        let span = telemetry::llm_span(&logical);
+        let span = telemetry::llm_span();
         match self
             .open_stream(ctx, req, logical)
             .instrument(span.clone())
@@ -470,6 +470,7 @@ impl LlmGateway {
         req.model = Some(entry.resolved_id().to_string());
         telemetry::record_target(
             &tracing::Span::current(),
+            &logical,
             entry.resolved_id(),
             slot.provider.name(),
         );

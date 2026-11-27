@@ -368,4 +368,16 @@ mod tests {
         assert_eq!(s.field("rag.parse.blocks"), "0");
         assert!(!cap.all_values().iter().any(|v| v.contains("人事評価")));
     }
+
+    /// 捕捉層が、イベントの message 以外の属性に入った文字列も検出できること。
+    #[test]
+    fn capture_sees_event_fields_other_than_message() {
+        let cap = Captured::default();
+        cap.run(|| {
+            let span = search_span(1, SearchMode::Dense, false);
+            let _e = span.enter();
+            tracing::info!(leaked = "社外秘の値", "event");
+        });
+        assert!(cap.all_values().iter().any(|v| v.contains("社外秘の値")));
+    }
 }

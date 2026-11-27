@@ -29,7 +29,10 @@ pub struct SpanRec {
     pub name: String,
     pub parent: Option<String>,
     pub fields: HashMap<String, String>,
+    /// イベントの message（名前）。
     pub events: Vec<String>,
+    /// イベントの全フィールド（message を含む）。本文の混入をイベント属性まで検査する。
+    pub event_fields: Vec<HashMap<String, String>>,
     pub closed: bool,
 }
 
@@ -85,7 +88,13 @@ impl Captured {
         let st = self.0.lock().unwrap();
         st.spans
             .iter()
-            .flat_map(|s| s.fields.values().cloned().chain(s.events.clone()))
+            .flat_map(|s| {
+                s.fields
+                    .values()
+                    .cloned()
+                    .chain(s.events.clone())
+                    .chain(s.event_fields.iter().flat_map(|f| f.values().cloned()))
+            })
             .collect()
     }
 }
@@ -139,8 +148,9 @@ where
         event.record(&mut Visitor(&mut fields));
         let mut st = (self.0).0.lock().unwrap();
         if let Some(&idx) = st.by_id.get(&span.id().into_u64()) {
-            let msg = fields.remove("message").unwrap_or_default();
+            let msg = fields.get("message").cloned().unwrap_or_default();
             st.spans[idx].events.push(msg);
+            st.spans[idx].event_fields.push(fields);
         }
     }
 
