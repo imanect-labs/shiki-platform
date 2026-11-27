@@ -156,6 +156,46 @@ async fn invalid_traceparent_is_ignored() {
 }
 
 #[tokio::test]
+async fn unsampled_traceparent_does_not_drop_the_span() {
+    // 外部が flags=00（非サンプリング）を送っても、trace_id は継続しつつ span は記録する。
+    let req = Request::get("/boom")
+        .header(
+            "traceparent",
+            format!("00-{REMOTE_TRACE_ID}-{REMOTE_SPAN_ID}-00"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, spans) = call(req).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let span = request_span(&spans);
+    assert_eq!(
+        span.span_context.trace_id(),
+        TraceId::from_hex(REMOTE_TRACE_ID).unwrap()
+    );
+    assert_eq!(
+        span.parent_span_id,
+        SpanId::from_hex(REMOTE_SPAN_ID).unwrap()
+    );
+    assert!(span.span_context.is_sampled());
+    assert!(matches!(span.status, Status::Error { .. }));
+}
+
+#[tokio::test]
+async fn keeps_legacy_method_and_path_fields() {
+    let req = Request::post("/items/7").body(Body::empty()).unwrap();
+    let (_, _, spans) = call(req).await;
+    let span = request_span(&spans);
+    assert_eq!(
+        attr(span, "method").map(Value::as_str).as_deref(),
+        Some("POST")
+    );
+    assert_eq!(
+        attr(span, "path").map(Value::as_str).as_deref(),
+        Some("/items/7")
+    );
+}
+
+#[tokio::test]
 async fn server_error_marks_span_as_error() {
     let req = Request::get("/boom").body(Body::empty()).unwrap();
     let (status, _, spans) = call(req).await;

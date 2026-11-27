@@ -6,6 +6,7 @@ use axum::extract::{MatchedPath, Request};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method};
 use axum::response::Response;
 use opentelemetry::propagation::Extractor;
+use opentelemetry::trace::{SpanContext, TraceContextExt};
 use tower_http::cors::CorsLayer;
 use tracing::field::Empty;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -69,6 +70,9 @@ pub(super) fn make_request_span(req: &Request) -> tracing::Span {
         http.route = route,
         http.response.status_code = Empty,
         url.path = %req.uri().path(),
+        // 変更前からある名前。ログ（JSON の span 欄）の検索・集計が参照しうるので残す。
+        method = %method,
+        path = %req.uri().path(),
         trace_id = Empty,
     );
     span.set_parent(extract_parent(req.headers()));
@@ -85,8 +89,26 @@ fn span_name(method: &str, route: Option<&str>) -> String {
 }
 
 /// 受信ヘッダから親のトレース文脈を取り出す（global propagator 経由）。
+///
+/// trace_id・親 span id は継続するが、**sampled フラグは信用しない**。ブラウザなど外部の
+/// クライアントが `traceparent` の flags を `00` にすると、ParentBased サンプラが従って
+/// 5xx を含むリクエストの span が記録されなくなるため、受信した親は常に sampled として扱う
+/// （記録するかどうかは api 側の方針で決め、上流に下げさせない）。
 fn extract_parent(headers: &HeaderMap) -> opentelemetry::Context {
-    opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(headers)))
+    let cx =
+        opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(headers)));
+    let remote = cx.span().span_context().clone();
+    if !remote.is_valid() {
+        return cx;
+    }
+    let sampled = SpanContext::new(
+        remote.trace_id(),
+        remote.span_id(),
+        remote.trace_flags().with_sampled(true),
+        true,
+        remote.trace_state().clone(),
+    );
+    opentelemetry::Context::new().with_remote_span_context(sampled)
 }
 
 struct HeaderExtractor<'a>(&'a HeaderMap);
