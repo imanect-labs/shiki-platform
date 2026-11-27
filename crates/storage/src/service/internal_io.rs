@@ -529,8 +529,12 @@ impl StorageService {
             )));
         }
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
-        let bytes = self.store.get_object(&key).await?;
+        let mut tx = crate::db_tenant::begin_tenant_tx(&self.db, ctx.tenant()).await?;
+        let bytes = self
+            .content
+            .read_on(&mut tx, ctx.tenant(), ctx.org(), sha)
+            .await?;
+        tx.commit().await?;
         self.audit
             .record(
                 ctx,

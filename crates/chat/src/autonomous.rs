@@ -26,8 +26,8 @@ pub enum AutonomousMode {
     /// 承認必須（既定）: 全ての破壊系ツールが承認カードで止まる（= `deny_all` 相当）。
     #[default]
     RequireApproval,
-    /// オート: 版管理で復元可能な書込のみ自動承認。不可逆・高影響（fs_delete / shell /
-    /// office.live_edit）は承認を維持する。
+    /// オート: 版管理で復元可能な書込と、隔離サンドボックス内のシェルを自動承認。不可逆・高影響
+    /// （fs_delete / office.live_edit / drive.move）は承認を維持する。
     Auto,
     /// 全自動（危険）: 全ての要確認ツールを自動承認（= `allow_all`）。明示オプトインで、
     /// org 管理者ポリシで禁止できる。
@@ -81,7 +81,7 @@ impl AutonomousMode {
             // 読む操作だけ。持ち出しになり得る操作はツール自身が拒否する（docs/agent/browser.md §6.1）。
             ToolName::Browser,
         ];
-        /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete / shell /
+        /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete /
         /// office.live_edit=開いているセッションへの即時注入）は含めない。
         /// 新規作成（csv.write / save_document / save_sheet・#381）は既存データを壊さず
         /// 削除で戻せるため、csv.write と同じ扱いにする。移動・名前変更（drive.move・#942）は
@@ -104,6 +104,11 @@ impl AutonomousMode {
             ToolName::SaveDocument,
             ToolName::SaveSheet,
         ];
+        /// オートで自動承認する隔離実行。shell は gVisor の使い捨てサンドボックス内で走り、
+        /// 届くのはその run の `/workspace` と egress 許可先だけで、ユーザーのドライブ・文書は
+        /// 直接書き換えられない（code_interpreter と同じ境界）。止めると、オートでも計算・変換の
+        /// 途中で承認カードが出て、誰も押さなければ却下扱いで run が止まる（human 決定・2026-11-15）。
+        const ISOLATED_EXEC: [ToolName; 1] = [ToolName::Shell];
         match self {
             AutonomousMode::RequireApproval => {
                 ApprovalPolicy::auto(READ_ONLY.iter().map(|t| t.as_str().to_string()))
@@ -112,6 +117,7 @@ impl AutonomousMode {
                 READ_ONLY
                     .iter()
                     .chain(VERSIONED_WRITES.iter())
+                    .chain(ISOLATED_EXEC.iter())
                     .map(|t| t.as_str().to_string()),
             ),
             AutonomousMode::Bypass => ApprovalPolicy::allow_all(),
@@ -289,6 +295,7 @@ mod tests {
             "office.word_edit",
             "save_document",
             "save_sheet",
+            "shell",
         ] {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }
@@ -296,7 +303,6 @@ mod tests {
         // 試運転（try_workflow・T04）は本人の権限で書込・送信・レコードの作成を本当に起こすので、オートでも承認を残す。
         for tool in [
             "fs_delete",
-            "shell",
             "office.live_edit",
             "drive.move",
             "try_workflow",

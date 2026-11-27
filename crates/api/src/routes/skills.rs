@@ -24,7 +24,7 @@ use crate::{
 pub struct CreateSkillRequest {
     /// 参照名（tenant 内で kind ごとに一意）。
     pub name: String,
-    /// skill body（SKILL.md 指示文＋知識スコープ＋許可ツール＋モデル既定＋few-shot＋script）。
+    /// skill body（SKILL.md 指示文＋知識スコープ＋使うツール＋モデル既定＋few-shot＋script）。
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
 }

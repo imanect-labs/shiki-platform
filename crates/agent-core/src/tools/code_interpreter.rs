@@ -80,7 +80,13 @@ fn describe(backend: SandboxBackend) -> String {
          計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは \
          /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に\
          注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。\
-         グラフ描画は行わず、結果の数値/表を返すこと。"
+         **呼び出しごとに新しい環境で動く**: 前の呼び出しの変数・import・/workspace に書いた\
+         ファイルは残らない。毎回 import から書き、要るデータはその呼び出しの中で読み直す\
+         （1 回のコードは短く保つ。分けるのは互いに独立した工程だけで、前の呼び出しで作った\
+         ファイルは次の呼び出しに渡らない。保存済みの .xlsx / .docx を確かめるなら office.read で\
+         読む）。matplotlib は無いのでグラフ描画は行わず、結果の数値/表を返すこと。図が要るときは\
+         集計値を office.excel_edit の add_chart（Excel）や office.word_edit の insert_chart（Word）\
+         でグラフにする。"
     )
 }
 
@@ -253,6 +259,17 @@ mod tests {
     use std::sync::Mutex;
 
     /// #384: openpyxl を宣伝するのは rootfs に同梱している native ティアだけ。
+    /// 呼び出しをまたいで状態が残らないことを説明に書く（前の変数・ファイルを当てにして NameError・
+    /// FileNotFoundError を繰り返していた・プレビューの検証で 1 run に 3〜4 回）。
+    #[test]
+    fn description_says_each_call_starts_fresh() {
+        for backend in [SandboxBackend::Gvisor, SandboxBackend::Wasm] {
+            let text = describe(backend);
+            assert!(text.contains("新しい環境"), "{backend:?}: {text}");
+            assert!(text.contains("import から"), "{backend:?}: {text}");
+        }
+    }
+
     #[test]
     fn description_advertises_openpyxl_only_on_native_tiers() {
         for native in [SandboxBackend::Gvisor, SandboxBackend::Firecracker] {
@@ -288,6 +305,8 @@ mod tests {
     struct FakeArtifactStore {
         saved: Mutex<Vec<SavedArtifact>>,
         fail: bool,
+        /// 同名が既にある状態を模す（保存名に ` (2)` を付けて返す）。
+        renamed: bool,
     }
 
     #[async_trait::async_trait]
@@ -303,6 +322,15 @@ mod tests {
             if self.fail {
                 return Err(ToolError::Unavailable("fake save failure".into()));
             }
+            let name = if self.renamed {
+                match name.rsplit_once('.') {
+                    Some((stem, ext)) => format!("{stem} (2).{ext}"),
+                    None => format!("{name} (2)"),
+                }
+            } else {
+                name.to_string()
+            };
+            let name = name.as_str();
             let node_id = format!("node-{}", name);
             self.saved
                 .lock()
@@ -424,6 +452,43 @@ mod tests {
         assert!(!out.is_error);
         assert!(out.artifacts.is_empty());
         assert!(out.content.contains("保存に失敗"));
+    }
+
+    /// 図は Office のグラフで作るよう案内する（matplotlib で描こうとして手描きの図にしない）。
+    #[test]
+    fn description_points_charts_to_office_tools() {
+        for backend in [SandboxBackend::Gvisor, SandboxBackend::Wasm] {
+            let text = describe(backend);
+            assert!(text.contains("matplotlib は無い"), "{text}");
+            assert!(
+                text.contains("add_chart") && text.contains("insert_chart"),
+                "{text}"
+            );
+            assert!(text.contains("office.read"), "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn renamed_artifact_is_reported_with_its_saved_name() {
+        // 同名があって連番付きで保存されたら、実際の保存名を観測に出す（元の名前で探して見失わない）。
+        let sandbox = Arc::new(FakeSandbox::new().with_exec(FakeExecResult {
+            stdout: b"done\n".to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+            artifacts: vec![("/workspace/集計.xlsx".into(), b"x".to_vec())],
+        }));
+        let store = Arc::new(FakeArtifactStore {
+            renamed: true,
+            ..Default::default()
+        });
+        let tool = CodeInterpreterTool::new(sandbox, Some(store), SandboxBackend::Wasm);
+        let out = tool
+            .call(&ctx(), serde_json::json!({"code": "write"}), None)
+            .await
+            .expect("ok");
+        assert!(!out.is_error);
+        assert_eq!(out.artifacts[0].name, "集計 (2).xlsx");
+        assert!(out.content.contains("「集計 (2).xlsx」として保存しました"));
     }
 
     #[tokio::test]

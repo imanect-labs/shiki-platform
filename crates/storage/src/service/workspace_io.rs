@@ -111,8 +111,9 @@ impl StorageService {
         let mut content = match &existing {
             Some(e) => match &e.blob_sha256 {
                 Some(sha) => {
-                    let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
-                    self.store.get_object(&key).await?
+                    self.content
+                        .read_current_on(&mut tx, ctx.tenant(), ctx.org(), sha)
+                        .await?
                 }
                 None => Vec::new(),
             },

@@ -5,6 +5,10 @@
 //! （書込→再索引に自動で乗る）。永続 mount は post-alpha のため round-trip で吸収する。egress は既定遮断。
 //! 任意コマンド＝破壊的なので `requires_confirmation=true`（承認ゲート/事前許可対象・5.6）。
 //!
+//! **削除は同期しない。** オートモードでは shell が自動承認されるため、ゲスト内の `rm` をそのまま
+//! ストレージの削除へ流すと、承認を維持している `fs_delete` を迂回できてしまう。消えたことは注記で
+//! モデルへ返し、本当に消すなら `fs_delete`（承認対象）を使わせる（#1295 のレビュー指摘）。
+//!
 //! sync-back は 2 系統で漏れなく拾う: ①`list_dir` に現れる**新規**ファイル ②seed 済み名の `get_file` を
 //! 取り直しハッシュ比較した**変更**ファイル（実 sidecar は put_file 済みを readdir に出さない quirk があるため）。
 
@@ -198,7 +202,8 @@ impl ShellTool {
         Ok(seeded)
     }
 
-    /// guest `/workspace` の**新規/変更/削除**をワークスペースへ反映し、(保存した参照, 注記) を返す。
+    /// guest `/workspace` の**新規/変更**をワークスペースへ反映し、(保存した参照, 注記) を返す。
+    /// 削除は反映せず注記だけ返す（モジュール doc 参照）。
     async fn sync_back(
         &self,
         ctx: &AuthContext,
@@ -243,11 +248,11 @@ impl ShellTool {
                         Err(e) => notes.push(format!("{name} の保存に失敗: {e}")),
                     }
                 }
-                // seed 済みが消えた（`rm` 等）→ ワークスペースからも削除して反映する（削除の同期）。
+                // seed 済みが消えた（`rm` 等）→ ワークスペースは消さない（fs_delete の承認を迂回させない）。
                 Err(SandboxError::NotFound(_)) if seeded.contains_key(&name) => {
-                    if self.workspace.delete(ctx, &name, trace_id).await.is_ok() {
-                        notes.push(format!("{name} を削除しました。"));
-                    }
+                    notes.push(format!(
+                        "{name} はサンドボックス内で消えましたが、ワークスペースのファイルは残しています。削除するなら fs_delete を使ってください。"
+                    ));
                 }
                 // 一時的な取得失敗はスキップ（次回に拾う）。
                 Err(_) => {}
@@ -344,6 +349,7 @@ mod tests {
     #[derive(Default)]
     struct FakeWorkspace {
         files: Mutex<HashMap<String, Vec<u8>>>,
+        deleted: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -421,9 +427,10 @@ mod tests {
         async fn delete(
             &self,
             _c: &AuthContext,
-            _n: &str,
+            name: &str,
             _t: Option<&str>,
         ) -> Result<(), ToolError> {
+            self.deleted.lock().unwrap().push(name.to_string());
             Ok(())
         }
     }
@@ -503,6 +510,31 @@ mod tests {
         assert!(out.content.contains("終了コード 2"));
         // 失敗しても書かれたファイルは拾う。
         assert!(ws.read(&ctx(), "partial.txt", None).await.is_ok());
+    }
+
+    /// ゲスト内の `rm` はワークスペースの削除にしない（自動承認の shell で fs_delete の承認を迂回させない）。
+    #[tokio::test]
+    async fn guest_rm_does_not_delete_workspace_file() {
+        let ws = Arc::new(FakeWorkspace::default());
+        ws.write(&ctx(), "keep.txt", b"data".to_vec(), "text/plain", None)
+            .await
+            .unwrap();
+        let sandbox = Arc::new(
+            FakeSandbox::new()
+                .with_exec(FakeExecResult::default())
+                .removing_on_exec("/workspace/keep.txt"),
+        );
+        let tool = ShellTool::new(sandbox, ws.clone(), vec![], SandboxBackend::Gvisor);
+        let out = tool
+            .call(&ctx(), serde_json::json!({"cmd": "rm keep.txt"}), None)
+            .await
+            .unwrap();
+        assert!(
+            ws.deleted.lock().unwrap().is_empty(),
+            "削除を同期してはいけない"
+        );
+        assert_eq!(ws.read(&ctx(), "keep.txt", None).await.unwrap(), b"data");
+        assert!(out.content.contains("fs_delete"), "{}", out.content);
     }
 
     #[tokio::test]

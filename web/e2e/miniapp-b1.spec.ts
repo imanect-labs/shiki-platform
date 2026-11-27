@@ -79,18 +79,27 @@ test("B1 アプリ: publish→インストール→シェル起動と opaque ori
     });
     entryId = ((await apiJson(page, "post", `/apps/manifests/${created.id}/publish`, {})) as { id: string }).id;
 
-    // 同意インストール（data.read のみ付与）。
-    await apiJson(page, "post", "/apps/installations", {
-      name,
-      version: "1.0.0",
-      granted_scopes: ["data.read"],
-    });
-    installed = true;
-
-    // シェル一覧（A と同じ「アプリ」ページ）に載る。
+    // 同意インストールは UI から行う（API 直叩きだと Content-Type 欠落の 415 を見逃す・#1135）。
     await page.goto("/apps");
     const section = page.getByRole("heading", { name: "インストール済みアプリ（コード）" });
     await expect(section).toBeVisible();
+    const entry = page.locator("li").filter({ hasText: name }).filter({
+      has: page.getByRole("button", { name: "インストール", exact: true }),
+    });
+    await entry.getByRole("button", { name: "インストール", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("data.read")).toBeVisible();
+    const installReq = page.waitForResponse(
+      (r) => r.url().endsWith("/api/apps/installations") && r.request().method() === "POST",
+    );
+    await dialog.getByRole("button", { name: "同意してインストール" }).click();
+    const installRes = await installReq;
+    installed = installRes.ok();
+    expect(installRes.request().headers()["content-type"]).toContain("application/json");
+    expect(installRes.status(), await installRes.text()).toBeLessThan(300);
+    await expect(dialog).toBeHidden();
+
+    // シェル一覧（A と同じ「アプリ」ページ）に載る。
     await expect(page.getByRole("heading", { name })).toBeVisible();
 
     // 起動 → iframe の隔離属性と配信オリジン。

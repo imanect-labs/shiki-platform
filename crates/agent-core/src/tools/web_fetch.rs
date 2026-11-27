@@ -396,15 +396,31 @@ impl WebFetchTool {
         url_input: &str,
         text_cap: usize,
     ) -> Result<Fetched, ToolError> {
-        let target = validate_url(url_input)?;
+        let mut target = validate_url(url_input)?;
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
         // （関門は public_fetch に一本化・画像プロキシと共有する・#1044）。
-        let addrs = public_fetch::resolve_verified(self.resolver.as_ref(), &target, |addrs| {
-            self.guard(addrs)
-        })
-        .await
-        .map_err(pin_error)?;
+        let mut verified =
+            public_fetch::resolve_verified(self.resolver.as_ref(), &target, |addrs| {
+                self.guard(addrs)
+            })
+            .await;
+        // `www.` 抜きの名前が引けないサイト（soumu.go.jp 等）は `www.` 付きで取り直す（main の 17c25951）。
+        // 候補も同じ関門（解決後 IP の検証・アドレス固定）を通る。取れた URL は結果の見出しに出る。
+        if matches!(verified, Err(PinError::Resolve(_))) {
+            if let Some(alt) = public_fetch::www_variant(&target) {
+                let retried =
+                    public_fetch::resolve_verified(self.resolver.as_ref(), &alt, |addrs| {
+                        self.guard(addrs)
+                    })
+                    .await;
+                if retried.is_ok() {
+                    target = alt;
+                    verified = retried;
+                }
+            }
+        }
+        let addrs = verified.map_err(pin_error)?;
 
         // 外へ出るのに中継が要る環境では、検証済みのアドレスへのトンネルを先に開く（取得を終えるまで持つ・GAP-72）。
         let (client, _tunnel) = match self.client_for(&target, &addrs).await? {

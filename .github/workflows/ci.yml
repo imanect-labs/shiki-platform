@@ -570,20 +570,70 @@ jobs:
         # 全量（main）は --no-fail-fast で落ちたテストをすべて記録する（selection-gap の突き合わせ用）。
         run: |
           set -o pipefail
-          run_tests() {
-            if [ "$FULL" = "true" ]; then
-              cargo llvm-cov --all --no-report --no-fail-fast
-              return
-            fi
+          # cargo の呼出しごとにログを分け、落ちた呼出しのログだけを回し直しの判定に渡す。どれか 1 つでも
+          # 落ちたテストを読み取れない（ビルド失敗など）なら、ほかの回し直しが通っても失敗にするため。
+          failed_logs=()
+          run_stage() {
+            local log=$1
+            shift
+            cargo llvm-cov --no-report --no-fail-fast "$@" 2>&1 | tee "$log" || failed_logs+=("$log")
+          }
+          if [ "$FULL" = "true" ]; then
+            run_stage cargo-test-all.log --all
+          else
+            # 落ちても止めずに両方とも最後まで回す（--no-fail-fast）。下の回し直しは落ちたバイナリだけを回すので、
+            # 途中で止めると、後ろのバイナリや常に回す脅威テストが一度も走らないまま緑になる。
             # 変更したクレート＋依存するクレートのテスト（-p は changes ジョブが組んだもの・語分割させる）。
             # shellcheck disable=SC2086
-            cargo llvm-cov --no-report $CARGO_PACKAGES || return
+            run_stage cargo-test-selected.log $CARGO_PACKAGES
             # 常に回す脅威テストは 1 回の起動でまとめて回す。パッケージごとに `-p` で起動すると依存の
             # フィーチャ集合が変わり、計装ビルドが何度もやり直しになる（--workspace なら main と同じ）。
             # shellcheck disable=SC2086
-            cargo llvm-cov --no-report --workspace $ALWAYS_RUN_TESTS
-          }
-          run_tests 2>&1 | tee cargo-test.log
+            run_stage cargo-test-always.log --workspace $ALWAYS_RUN_TESTS
+          fi
+          # selection-gap（main の失敗時）は 1 本の cargo-test.log を読む。
+          cat cargo-test-*.log > cargo-test.log
+          if [ "${#failed_logs[@]}" -eq 0 ]; then exit 0; fi
+          # 落ちたテストバイナリだけを 1 回回し直す（rust ジョブの nextest retries と同じ扱い・#1355）。
+          # 計装で遅くなる coverage では、時間や並行に依存するテストが毎回違うものが落ち、main が赤いままになっていた。
+          # 通れば flaky として記録し（main は flaky-report が Issue にする）、もう一度落ちたら失敗にする。
+          # 落ちたテストを読み取れない（ビルド失敗など）か、落ちたバイナリが多い（本物の故障）ときは回し直さない。
+          full_flag=""
+          if [ "$FULL" = "true" ]; then full_flag="--full"; fi
+          log_args=()
+          for log in "${failed_logs[@]}"; do log_args+=(--log "$log"); done
+          python3 scripts/ci-select.py coverage-retry "${log_args[@]}" $full_flag --targets retry-targets.txt || exit 1
+          # 全部の対象を回し直してから判定する（途中で止めると、後ろの対象の結果と flaky の記録が欠ける）。
+          # 通った対象のテストは flaky として coverage-flaky.txt に書く（main で flaky-report へ上げる）。
+          : > coverage-flaky.txt
+          still_failing=()
+          n=0
+          while IFS=$'\t' read -r args names; do
+            n=$((n + 1))
+            echo "::group::回し直し: cargo llvm-cov --no-report $args"
+            # shellcheck disable=SC2086
+            # 標準入力は塞ぐ（テストが読むと、ループが読む retry-targets.txt の残りを食われる）。
+            if cargo llvm-cov --no-report $args < /dev/null 2>&1 | tee "retry-$n.log"; then
+              tr '\t' '\n' <<< "$names" >> coverage-flaky.txt
+            else
+              still_failing+=("retry-$n.log")
+              echo "::error::回し直しても落ちた: $args"
+            fi
+            echo "::endgroup::"
+          done < retry-targets.txt
+          if [ -s coverage-flaky.txt ]; then
+            while read -r t; do echo "::warning::flaky（回し直して通った）: $t"; done < coverage-flaky.txt
+            {
+              echo '### 回し直して通ったテスト（flaky）'
+              sed 's/^/- `/;s/$/`/' coverage-flaky.txt
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "${#still_failing[@]}" -gt 0 ]; then
+            # selection-gap（main の失敗時）へは最終結果だけを渡す。回し直して通った対象を落ちたものとして
+            # 数えないよう、cargo-test.log を回し直しでも落ちた対象のログで作り直す（1 回目は cargo-test-*.log に残る）。
+            cat "${still_failing[@]}" > cargo-test.log
+            exit 1
+          fi
       # CI で一度も走らない結合テストの接続先を毎回見える場所に出す（減らすべき負債の一覧）。
       - name: "job summary: CI で走らない結合テスト"
         if: always()
@@ -600,6 +650,15 @@ jobs:
         with:
           name: ci-failures-coverage
           path: cargo-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+      # 回し直して通った flaky を flaky-report ジョブへ渡す（main）。
+      - name: upload flaky tests (main・flaky の集計用)
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-results-coverage
+          path: coverage-flaky.txt
           if-no-files-found: ignore
           retention-days: 7
       - name: coverage report (lcov + summary + job summary)
@@ -1174,14 +1233,14 @@ jobs:
             gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" --body-file gap.md --label area:ci
           fi
 
-  # 再試行（nextest retries = 2・Playwright の CI retries: 1）が吸収した flaky を記録する。CI は緑のままなので、
-  # 記録しないと「たまに落ちるテスト」が直されずに溜まり、いずれ本物の失敗を再試行が隠す。1 テスト 1 件の Issue に
-  # し、同じテストが再び flaky になればコメントを足す（回数が頻度の目安になる）。main だけで回す（PR の flaky は
-  # その PR の変更が原因かもしれないため）。coverage ジョブは cargo test で再試行しないので、そこでの flaky は
-  # 失敗として selection-gap が拾う。
+  # 再試行（nextest retries = 2・coverage の落ちたバイナリ 1 回の回し直し・Playwright の CI retries: 1）が
+  # 吸収した flaky を記録する。CI は緑のままなので、記録しないと「たまに落ちるテスト」が直されずに溜まり、
+  # いずれ本物の失敗を再試行が隠す。1 テスト 1 件の Issue にし、同じテストが再び flaky になればコメントを足す
+  # （回数が頻度の目安になる）。main だけで回す（PR の flaky はその PR の変更が原因かもしれないため）。
+  # 回し直しても落ちたものは、失敗として selection-gap が拾う。
   flaky-report:
     name: flaky の記録（main）
-    needs: [rust, web-e2e]
+    needs: [rust, coverage, web-e2e]
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5

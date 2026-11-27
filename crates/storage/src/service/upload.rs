@@ -204,15 +204,8 @@ impl StorageService {
         )
         .await?;
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
         let url = self
-            .store
-            .presign_get(
-                &key,
-                self.presign_get_ttl,
-                Some(&node.name),
-                node.content_type.as_deref(),
-            )
+            .presign_blob(ctx, sha, &node.name, node.content_type.as_deref())
             .await?;
         self.audit
             .record(
@@ -259,6 +252,10 @@ impl StorageService {
         body: BlobBody<'_>,
     ) -> Result<BlobBump, StorageError> {
         lock_blob(&mut *conn, tenant_id, org, sha256).await?;
+        // テナントの撤去・バックアップの保守と排他する（main の #1299・撤去中なら NotFound）。
+        let tenant =
+            TenantId::parse(tenant_id).map_err(|e| StorageError::Invalid(e.to_string()))?;
+        crate::blob_storage::BlobStorage::protect_lifecycle_on(conn, &tenant).await?;
         // xmax = 0 は、この文が行を挿入した（ON CONFLICT の更新ではない）ことを表す。
         let created: bool = sqlx::query_scalar(
             "INSERT INTO blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
@@ -278,6 +275,17 @@ impl StorageService {
             self.ensure_blob_body(object_key, content_type, body)
                 .await?;
         }
+        // 既にあった blob は、本体（raw）が版の最適化で片付けられていることがある。物理表現から置き直し、
+        // 署名 URL の寿命の間は残す（main の #1299）。新しく作った行は表現が無いので寿命を延ばすだけ。
+        self.content
+            .materialize_on(
+                conn,
+                &tenant,
+                org,
+                sha256,
+                self.presign_get_ttl.max(Duration::from_mins(1)),
+            )
+            .await?;
         Ok(BlobBump { created })
     }
 
@@ -397,7 +405,27 @@ impl StorageService {
         .bind(size)
         .bind(content_type)
         .bind(&ctx.principal().id)
-        .execute(conn)
+        .execute(&mut *conn)
+        .await?;
+        // worker停止中も耐久キューへ記録し、再開後に旧版を取りこぼさない。
+        // 新たに旧版になった直前の保存版から進める（rename等による版番号の欠番も考慮）。
+        let previous: Option<i64> = sqlx::query_scalar(
+            "SELECT version FROM node_version WHERE tenant_id = $1 \
+            AND org = $2 AND node_id = $3 AND version < $4 AND NOT is_proposal ORDER BY version DESC LIMIT 1",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(node_id)
+        .bind(version)
+        .fetch_optional(&mut *conn)
+        .await?;
+        crate::blob_storage::BlobStorage::enqueue_after(
+            conn,
+            ctx.tenant(),
+            ctx.org(),
+            node_id,
+            previous.map_or(0, |v| v.saturating_sub(1)),
+        )
         .await?;
         Ok(())
     }

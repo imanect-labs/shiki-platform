@@ -94,7 +94,17 @@ pub(super) async fn collect_artifacts(
             )
             .await
         {
-            Ok(artifact) => saved.push(artifact),
+            Ok(artifact) => {
+                // 同名が既にあると保存側が連番を付ける。後で読み直す・参照するときに元の名前を
+                // 使って見失わないよう、実際の保存名を明示する。
+                if artifact.name != entry.name {
+                    notes.push(format!(
+                        "{} は同名のファイルが既にあるため「{}」として保存しました。以降はこの名前で参照してください",
+                        entry.name, artifact.name
+                    ));
+                }
+                saved.push(artifact);
+            }
             Err(e) => notes.push(format!("{} の保存に失敗: {e}", entry.name)),
         }
     }

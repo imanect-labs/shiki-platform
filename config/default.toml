@@ -1,4 +1,8 @@
 # 接続情報などの必須設定は環境変数または SHIKI_CONFIG で指定する。
+[storage.version_storage]
+# 旧readerが混在するローリング更新の間だけ false にし、全台更新後に戻す。
+enabled = true
+
 # PR1: 有効化しても disabled はローカル held 受付のみ。
 [bug_report]
 enabled = false

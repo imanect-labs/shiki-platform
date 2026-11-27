@@ -9,7 +9,7 @@
 
 ## 1. 設計原則
 
-1. **モジュラモノリス＋特権分離**: コアは単一バイナリ。特権が要るサンドボックスだけ別プロセス。
+1. **モジュラモノリス＋特権分離**: コアは単一バイナリ。権限・配置・障害境界が異なる処理は別プロセスに隔離する（サンドボックス、script-runtime、設計中のConnect/Ops等）。
 2. **差し替え点はトレイトに集約**: クラウド/オンプレ差は4〜5本のトレイト実装で吸収、アプリ本体は不変。
 3. **単一チョークポイント**: ストレージ・認可・LLM呼出は各々1経路に集約し、権限/監査/イベントをそこで担保。
 4. **枯れた基盤に乗る／コアを自作**: 隔離・認可・認証・パースは既製、サンドボックス制御/RAG/agent/gatewayは自作。
@@ -119,7 +119,7 @@ flowchart LR
 | `DocumentParser` | Docling（ローカル） | Docling / 商用OCR |
 | `EmbeddingProvider` | Ruri / BGE-m3 | 同左 / 外部 |
 | `KeyProvider` | ローカルキーファイル（将来HSM） | Cloud KMS |
-| `SearchProvider` | SearXNG 自己ホスト（エアギャップは機能無効） | Brave Search API |
+| `SearchProvider` | SearXNG 自己ホスト（エアギャップは機能無効） | Brave Search API / TinyFish Search API |
 | `OfficeSuite` | Collabora Online（同梱） | Collabora Online（OnlyOffice へ差し替え可能な退路） |
 
 ## 4. サブシステム設計
@@ -256,6 +256,8 @@ flowchart TB
 ```
 
 - 実体=オブジェクトストア（コンテンツアドレッシングで重複排除＋バージョニング）。
+  論理版と物理保存表現を分離し、旧版の全文圧縮・独立基準版による圧縮・断片共有を選択できる。
+  署名付きURLのlease・物理参照・バックアップholdを含む詳細は [版の物理保存表現](./storage/version-storage.md)。
   論理ツリー/メタ=Postgres（closure table）。権限=OpenFGA。実体に直接権限を持たせない。
 - **FUSE仮想FS**: サンドボックス内で `/workspace` としてマウント。read/write は裏で StorageService を叩き、
   権限/監査/再索引を必ず通る。**API は FUSE 前提で設計**（初版実装は sync 妥協可、後で FUSE 差し替え）。
@@ -471,7 +473,7 @@ flowchart LR
       BM25F のみ（相対カットオフ 0.1・#518）。名前の一覧は 100 件を超えたら名前空間ごとの件数に要約する（#519）。
     - 根拠と再実行手順は `eval/tool-search/`（評価基盤・#516）。
 - **自律の承認 3 モード（#350・thread 単位・実行中トグル可）**: 承認必須（既定・全破壊系が承認カードで停止）/
-  オート（版管理で復元可能な書込のみ自動・fs_delete/shell 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
+  オート（版管理で復元可能な書込と隔離サンドボックス内の shell を自動・fs_delete/drive.move 等の不可逆は承認維持）/ 全自動（危険・明示オプトイン・
   `tenant.allow_autonomous_bypass=false` の org キャップで禁止可・違反は明示エラー/警告でクランプ）。
   モード→`ApprovalPolicy` の写像は `crates/chat/src/autonomous.rs` に集約。read-only（web_search/web_fetch/
   doc_search/doc_read）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
@@ -503,6 +505,9 @@ flowchart LR
   フォルダ未指定は `agent-workspace-<thread>` を自動生成（「未指定なら Drive 全体」は採らない）。
   不変条件テスト: `crates/chat/tests/workspace_containment_it.rs`。
 - **web ツール**: 新トレイト `SearchProvider`（SaaS=Brave Search API / オンプレ=SearXNG / エアギャップ=機能無効）。
+  SaaS の選択肢に TinyFish Search API（`websearch.backend=tinyfish`・API キー必須・#1288）を足す。
+  自己ホストの SearXNG は上流エンジンが送信元 IP 単位で CAPTCHA・403 を返すと全クエリが空になり、
+  検索語を変えても回復しないため、外部 API を選べるようにする（shiki-preview は TinyFish）。
   **ページ取得は検索と別ポリシー**: allowlist に検索プロバイダだけ載せると検索結果 URL が開けないため、
   web ツール有効時、取得はサンドボックスを介さずホスト側で行い（#348・§4.6）、**宛先は解決後 IP の検証＋
   接続アドレス固定**で公開ホストに限定する（シークレット添付なし・リダイレクト非追従）。
@@ -1409,7 +1414,8 @@ PR2 の設定・App 権限・鍵ローテーション・unknown 対応は [配�
   残して keyword へ縮退する。未同梱なら help_search は提示しない。
   出典は専用 HelpCitation/台帳で `[H1]` と採番し（本文では押すと節を開く番号チップ）、サーバ設定の
   base URL と検証済み相対 URL から生成した節リンク、題名・見出し・抜粋、節の図（公開ヘルプの画像 URL・
-  回答の画像の代理取得で表示）、そのページの操作を行う Shiki の画面（アプリ内パス・複数可）を保持する。
+  回答の画像の代理取得で表示。モデルが本文に入れなかった図は表示時に引いた手順の下へ足す）、
+  そのページの操作を行う Shiki の画面（アプリ内パス・複数可）を保持する。
   運用手順は `docs/help-corpus.md`。
 - **管理ダッシュボードは2枚**:
   ①**顧客管理者**（shiki web の通常ページ。SaaS/オンプレ共通）: メンバー/ロール・モデルカタログ/予算・
@@ -1765,6 +1771,20 @@ post-filter で落ちること）。
 
 **外部ユーザーは参加できない。** principal はテナント内に限り、Phase 13 の匿名 `PrincipalKind` を
 messaging の経路へ流さない。
+
+### 4.15 Shiki Connect / Shiki Ops（設計先行）
+
+FR-19/20の将来設計。**この節の追加は実装・配備・PoCコードのマージを意味しない。**
+
+- **Connect**: 業務データ/システム接続。初期はRust file daemonとShiki側Gateway。原本I/OはStorageService、認可はOpenFGA、RAGはpre/postの二段認可を経由する。
+- **Ops**: オンプレの任意の運用・セキュリティ管理。外部LLM/Web proxy、選択的監視送信、署名更新/rollback、弊社fleet管理。SaaS運営コンソールやConnectの業務主体とは権限を分ける。
+- **共有範囲**: outbound TLS、認証部品、再接続/有界配送のライブラリ。プロセス・資格情報・audience・台帳・キュー・特権を共有しない。
+- **外部送信/停止**: 顧客側の最終許可を必須とし、Ops障害をコアreadinessの条件にしない。エアギャップでは外部poll/exportを含め停止する。
+- **既存境界**: 弊社proxyはLlmProvider/SearchProviderのadapterとして追加し、§4.5の認可/会計/監査をオンプレ側に残す。Ops agentは業務本文や任意shellへ到達しない。
+
+詳細は[共通基盤](./connect-ops-foundation.md)、[Connect](./shiki-connect.md)、[Ops](./shiki-ops.md)。
+[PoC記録](./connect-poc-evidence.md)は条件付きの試験事実を示し、本番保証やOpsの実証とは区別する。
+実装順と既存Phase 8との対応は[COトラック](./roadmap/parallel-tracks.md#connect-ops-track)を参照。
 
 ## 5. リポジトリ構成（モノレポ・Rustワークスペース）
 

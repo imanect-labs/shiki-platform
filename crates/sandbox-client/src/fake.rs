@@ -37,6 +37,8 @@ struct FakeState {
     created_specs: Vec<SandboxSpec>,
     destroyed: Vec<String>,
     files: HashMap<String, Vec<u8>>, // "<sandbox_id>:<path>" → bytes
+    /// exec のたびにゲストから消すパス（`rm` の擬似・sync-back の削除検出テスト用）。
+    removed_on_exec: Vec<String>,
 }
 
 /// スクリプト化されたインメモリ Sandbox。`with_exec` で exec 応答を差し込む。
@@ -68,6 +70,17 @@ impl FakeSandbox {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(result);
+        self
+    }
+
+    /// exec のたびに `path` をゲストから消す（`rm` の擬似）。
+    #[must_use]
+    pub fn removing_on_exec(self, path: impl Into<String>) -> Self {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .removed_on_exec
+            .push(path.into());
         self
     }
 
@@ -142,6 +155,9 @@ impl Sandbox for FakeSandbox {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (path, bytes) in &result.artifacts {
                 st.files.insert(key(&handle.id, path), bytes.clone());
+            }
+            for path in st.removed_on_exec.clone() {
+                st.files.remove(&key(&handle.id, &path));
             }
         }
         let mut events = Vec::new();

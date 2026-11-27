@@ -79,6 +79,7 @@ e2e = [
     "chat-scroll-follow.spec.ts",
     "chat-stop-reason.spec.ts",
     "chat.spec.ts",
+    "help-figures.spec.ts",
     "help-search.spec.ts",
     "home-microseason.spec.ts",
     "composer-attach-same-name.spec.ts",
@@ -126,6 +127,7 @@ e2e = [
     "csv-save-name-taken.spec.ts",
     "csv-sql-save-folder.spec.ts",
     "drive-crud.spec.ts",
+    "drive-dnd-move.spec.ts",
     "drive-html-preview.spec.ts",
     "drive-list-paging.spec.ts",
     "drive-mobile-new.spec.ts",
@@ -245,6 +247,7 @@ crates = ["shiki-data"]
 e2e = [
     "admin-data.spec.ts",
     "data-created-by.spec.ts",
+    "data-csv.spec.ts",
     "data-display.spec.ts",
     "data-grid-live.spec.ts",
     "data-grid.spec.ts",

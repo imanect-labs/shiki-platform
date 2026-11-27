@@ -29,6 +29,7 @@ import * as React from "react";
 
 import { CalendarMonth, GalleryGrid, KanbanBoard } from "@/components/data/card-views";
 import { DataGrid, type DataGridHandle, type DataGridStatus } from "@/components/data/data-grid";
+import { ExportButton } from "@/components/data/export-button";
 import { ImportDialog, importProgress, useImportJob } from "@/components/data/import-dialog";
 import { RecordDialog } from "@/components/data/record-dialog";
 import { useFsm } from "@/components/data/transition-editor";
@@ -225,6 +226,12 @@ export function TableWorkspace({
     [table.schema.fields, masked],
   );
 
+  // ビューの名前・所有者の解決に使う最新の値（effect の依存には入れない。一覧の再読込でビューを開き直さないため）。
+  const latest = React.useRef({ views, loaded });
+  React.useEffect(() => {
+    latest.current = { views, loaded };
+  }, [views, loaded]);
+
   // ビューの切替（URL の ?view= が正）。
   React.useEffect(() => {
     let active = true;
@@ -236,12 +243,16 @@ export function TableWorkspace({
     getView(viewParam)
       .then((v) => {
         if (!active) return;
-        const summary = views.find((x) => x.id === v.id);
+        const { views: list, loaded: cur } = latest.current;
+        const summary = list.find((x) => x.id === v.id);
+        // 保存した直後は一覧の再読込が間に合わず、新しいビューがまだ一覧に無い。
+        // 保存で入れた名前・所有者（同じビューのもの）を、一覧より先に使う。
+        const same = cur.viewId === v.id ? cur : null;
         apply({
           viewId: v.id,
-          name: summary?.name ?? "ビュー",
+          name: same?.name ?? summary?.name ?? "ビュー",
           version: v.version,
-          owner: summary?.owner ?? null,
+          owner: same?.owner ?? summary?.owner ?? null,
           spec: v.display ?? defaultSpec(),
           query: v.query,
         });
@@ -255,7 +266,7 @@ export function TableWorkspace({
     return () => {
       active = false;
     };
-    // views はビューの名前の解決にだけ使う（一覧の再読込でビューを開き直さない）。
+    // router・toast は開き直しの契機にしない（名前の解決は latest から読む）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewParam, table.id, apply]);
 
@@ -430,10 +441,19 @@ export function TableWorkspace({
   React.useEffect(() => {
     const prev = prevImportStatus.current;
     prevImportStatus.current = importStatus;
-    if (!prev || prev === importStatus) return;
+    if (prev === importStatus) return;
+    // 画面を開いて最初に見た進捗がもう「完了」のとき（CSV から作った直後など）は、表の最初の読込が取込の完了より
+    // 先に始まったかもしれず、時刻では確かめられない。完了を見たら必ず読み直す（1 回だけ・同じタブで覚えている取込のみ）。
+    // 終わりの通知は、直前（1 分以内）に終わった取込のときだけ出す（開き直すたびに古い通知を出さない）。
+    let announce = true;
+    if (!prev) {
+      if (importStatus !== "done" && importStatus !== "indexing") return;
+      const at = importJob.status?.finished_at;
+      announce = !at || Math.abs(Date.now() - Date.parse(at)) < 60_000;
+    }
     if (importStatus === "done" || importStatus === "indexing") {
       if (prev !== "indexing") gridRef.current?.reload();
-      if (importStatus === "done" && !importOpen) {
+      if (importStatus === "done" && !importOpen && announce) {
         const s = importJob.status;
         toast({
           title: "取込が終わりました",
@@ -650,6 +670,7 @@ export function TableWorkspace({
               <span className="max-sm:sr-only">SQL</span>
             </Link>
           </Button>
+          <ExportButton table={table} masked={masked} />
           {viewer.can_edit ? (
             <Button
               variant="ghost"

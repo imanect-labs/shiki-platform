@@ -112,15 +112,8 @@ impl StorageService {
         .fetch_optional(&self.db)
         .await?;
         let (sha, content_type) = version_row.ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         let url = self
-            .store
-            .presign_get(
-                &key,
-                self.presign_get_ttl,
-                Some(&node.name),
-                Some(&content_type),
-            )
+            .presign_blob(ctx, &sha, &node.name, Some(&content_type))
             .await?;
         self.audit
             .record(

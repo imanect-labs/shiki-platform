@@ -2,11 +2,12 @@
 
 /// 業務データ（構造化データ）のテーブル一覧（Task 15.5）: 自分が使えるテーブル（owner・共有された）と作成。
 
-import { Database, Loader2, Plus, SquareTerminal, Table2, Trash2 } from "lucide-react";
+import { Database, FileUp, Loader2, Plus, SquareTerminal, Table2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
+import { CreateFromCsvDialog } from "@/components/data/create-from-csv";
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { PageContainer } from "@/components/shell/page-container";
 import { Badge } from "@/components/ui/badge";
@@ -153,6 +154,7 @@ export default function DataTablesPage() {
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [moreError, setMoreError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
+  const [creatingCsv, setCreatingCsv] = React.useState(false);
   const [deleting, setDeleting] = React.useState<DataTable | null>(null);
 
   const load = React.useCallback(() => {
@@ -207,6 +209,11 @@ export default function DataTablesPage() {
           </Link>
         </Button>
       ) : null}
+      <Button variant="outline" onClick={() => setCreatingCsv(true)} data-testid="create-table-csv">
+        <FileUp className="size-4" aria-hidden />
+        <span className="sm:hidden">CSV</span>
+        <span className="hidden sm:inline">CSV から作成</span>
+      </Button>
       <Button onClick={() => setCreating(true)} data-testid="create-table">
         <Plus className="size-4" aria-hidden />
         <span className="sm:hidden">新規作成</span>
@@ -319,6 +326,14 @@ export default function DataTablesPage() {
           await deleteTable(deleting.id);
           setItems((xs) => (xs ?? []).filter((x) => x.id !== deleting.id));
           toast({ title: `「${deleting.name}」を削除しました` });
+        }}
+      />
+      <CreateFromCsvDialog
+        open={creatingCsv}
+        onOpenChange={setCreatingCsv}
+        onCreated={(t) => {
+          setCreatingCsv(false);
+          router.push(`/data/${t.id}`);
         }}
       />
       <CreateTableDialog

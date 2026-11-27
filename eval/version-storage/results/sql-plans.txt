@@ -1,0 +1,105 @@
+BEGIN
+SET
+SET
+INSERT 0 100000
+INSERT 0 1
+INSERT 0 100000
+INSERT 0 10000
+ANALYZE
+ANALYZE
+ANALYZE
+ANALYZE
+SET
+  set_config
+--------------
+ version-perf
+(1 row)
+
+                                                                                                                                   QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.33..8.37 rows=1 width=14) (actual time=0.109..0.110 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+   InitPlan 2 (returns $1)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=1)
+   ->  LockRows  (cost=0.30..8.34 rows=1 width=14) (actual time=0.108..0.108 rows=1 loops=1)
+         Buffers: shared hit=4
+         ->  Index Scan using job_queue_version_storage_pending_idx on job_queue  (cost=0.30..8.33 rows=1 width=14) (actual time=0.105..0.105 rows=1 loops=1)
+               Index Cond: ((tenant_id = 'version-perf'::text) AND (storage_coalesce_key = md5(((jsonb_build_object('org', 'version-perf', 'node_id', 5000, 'after_version', 0) - 'after_version'::text))::text)))
+               Filter: ((($0 IS NULL) OR (tenant_id = $1)) AND (queue = 'storage_version_optimize'::text) AND (attempts = 0) AND ((payload - 'after_version'::text) = (jsonb_build_object('org', 'version-perf', 'node_id', 5000, 'after_version', 0) - 'after_version'::text)))
+               Buffers: shared hit=3
+ Planning:
+   Buffers: shared hit=72 read=1
+ Planning Time: 1.316 ms
+ Execution Time: 0.137 ms
+(16 rows)
+
+                                                                           QUERY PLAN
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=283.04..283.05 rows=1 width=41) (actual time=0.142..0.144 rows=16 loops=1)
+   Sort Key: v.version
+   Sort Method: quicksort  Memory: 26kB
+   Buffers: shared hit=71
+   CTE version_window
+     ->  Limit  (cost=0.45..192.44 rows=10 width=74) (actual time=0.032..0.041 rows=16 loops=1)
+           Buffers: shared hit=7
+           InitPlan 1 (returns $0)
+             ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.002..0.002 rows=1 loops=1)
+           InitPlan 2 (returns $1)
+             ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+           ->  Index Scan Backward using node_version_node_idx on node_version  (cost=0.42..192.41 rows=10 width=74) (actual time=0.031..0.039 rows=16 loops=1)
+                 Index Cond: ((node_id = '00000000-0000-4000-8000-000000001297'::uuid) AND (version > 99900))
+                 Filter: ((($0 IS NULL) OR (tenant_id = $1)) AND (tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text))
+                 Buffers: shared hit=7
+   InitPlan 10 (returns $9)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+   InitPlan 11 (returns $10)
+     ->  Result  (cost=0.00..0.01 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=1)
+   ->  Nested Loop  (cost=0.42..90.56 rows=1 width=41) (actual time=0.053..0.126 rows=16 loops=1)
+         Buffers: shared hit=71
+         ->  CTE Scan on version_window v  (cost=0.00..0.20 rows=10 width=41) (actual time=0.033..0.046 rows=16 loops=1)
+               Buffers: shared hit=7
+         ->  Index Scan using blob_pkey on blob b  (cost=0.42..8.44 rows=1 width=419) (actual time=0.005..0.005 rows=1 loops=16)
+               Index Cond: ((tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text) AND (sha256 = v.blob_sha256))
+               Filter: (($9 IS NULL) OR (tenant_id = $10))
+               Buffers: shared hit=64
+         SubPlan 9
+           ->  Seq Scan on node n  (cost=0.03..5.69 rows=1 width=65) (never executed)
+                 Filter: ((($7 IS NULL) OR (tenant_id = $8)) AND (tenant_id = 'version-perf'::text) AND (org = 'version-perf'::text))
+                 InitPlan 7 (returns $7)
+                   ->  Result  (cost=0.00..0.01 rows=1 width=32) (never executed)
+                 InitPlan 8 (returns $8)
+                   ->  Result  (cost=0.00..0.01 rows=1 width=32) (never executed)
+ Planning:
+   Buffers: shared hit=246 read=5
+ Planning Time: 1.621 ms
+ Execution Time: 0.229 ms
+(38 rows)
+
+RESET
+                                                                        QUERY PLAN
+----------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.42..124.17 rows=64 width=107) (actual time=0.644..0.797 rows=64 loops=1)
+   Buffers: shared hit=37 read=4
+   ->  Nested Loop Anti Join  (cost=0.42..468.34 rows=242 width=107) (actual time=0.644..0.792 rows=64 loops=1)
+         Join Filter: (t.tenant_id = b.tenant_id)
+         Rows Removed by Join Filter: 128
+         Buffers: shared hit=37 read=4
+         ->  Index Only Scan using blob_storage_backfill_idx on blob b  (cost=0.42..438.06 rows=244 width=107) (actual time=0.354..0.483 rows=64 loops=1)
+               Index Cond: (size_bytes <= 67108864)
+               Heap Fetches: 64
+               Buffers: shared hit=37 read=3
+         ->  Materialize  (cost=0.00..15.64 rows=4 width=32) (actual time=0.005..0.005 rows=2 loops=64)
+               Buffers: shared read=1
+               ->  Seq Scan on tenant t  (cost=0.00..15.62 rows=4 width=32) (actual time=0.281..0.281 rows=2 loops=1)
+                     Filter: (status = ANY ('{deleting,deleted}'::text[]))
+                     Rows Removed by Filter: 2
+                     Buffers: shared read=1
+ Planning:
+   Buffers: shared hit=52 read=1
+ Planning Time: 0.774 ms
+ Execution Time: 0.818 ms
+(20 rows)
+
+ROLLBACK

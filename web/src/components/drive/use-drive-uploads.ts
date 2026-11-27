@@ -26,7 +26,14 @@ import {
 export type UploadProgress = { id: string; name: string; fraction: number };
 
 /// 同名衝突 1 件。`existing` は同じフォルダにある同名ノード（読めない等で特定できなければ null）。
-export type UploadConflict = { id: string; file: File; existing: NodeResponse | null };
+/// `parentId` は保存先（null=ドライブ直下）。保存先の違うアップロードが同時に進んでも
+/// 取り違えないよう、1 件ごとに持つ。
+export type UploadConflict = {
+  id: string;
+  file: File;
+  existing: NodeResponse | null;
+  parentId: string | null;
+};
 
 export type ConflictResolution = "version" | "both" | "skip";
 
@@ -50,8 +57,6 @@ export function useDriveUploads({
   const nextId = () => `up-${++seq.current}`;
   const onChangedRef = React.useRef(onChanged);
   onChangedRef.current = onChanged;
-  // 衝突の問い合わせ中に別のフォルダへ移っても、選んだ時点のフォルダへ保存する。
-  const conflictFolderRef = React.useRef<string | null>(folderId);
 
   /// 進捗行を出して 1 件送る（成功・失敗にかかわらず行は消す）。
   const send = React.useCallback(
@@ -126,10 +131,11 @@ export function useDriveUploads({
   };
 
   /// 選ばれたファイル群を送る。衝突したものは `conflicts` に積み、問い合わせを待つ。
+  /// `dest` 指定時はそのフォルダへ（一覧のフォルダ行へ D&D した時）、省略時は現在フォルダへ。
   const uploadFiles = React.useCallback(
-    async (files: File[]) => {
+    async (files: File[], dest?: string | null) => {
       if (files.length === 0) return;
-      const parentId = folderId;
+      const parentId = dest === undefined ? folderId : dest;
       // 同じ選択の中で名前が重なるものは 2 件目以降を連番名にする（聞かない）。
       const seen = new Map<string, number>();
       const jobs = files.map((file) => {
@@ -152,7 +158,7 @@ export function useDriveUploads({
       for (const [i, job] of jobs.entries()) {
         const hit = existing[i];
         if (hit) {
-          pending.push({ id: nextId(), file: job.file, existing: hit });
+          pending.push({ id: nextId(), file: job.file, existing: hit, parentId });
           continue;
         }
         try {
@@ -164,32 +170,33 @@ export function useDriveUploads({
         } catch (e) {
           if (isConflict(e)) {
             const found = await findSiblingByName(parentId, job.file.name).catch(() => null);
-            pending.push({ id: nextId(), file: job.file, existing: found });
+            pending.push({ id: nextId(), file: job.file, existing: found, parentId });
           } else {
             failures.push({ name: job.file.name, message: e instanceof Error ? e.message : String(e) });
           }
         }
       }
       report(saved, failures);
-      if (pending.length > 0) {
-        conflictFolderRef.current = parentId;
-        setConflicts((prev) => [...prev, ...pending]);
-      }
+      if (pending.length > 0) setConflicts((prev) => [...prev, ...pending]);
     },
     [folderId, send, sendWithFreeName],
   );
 
-  /// 衝突の問い合わせへの回答を全件に当てる。
+  /// 衝突の問い合わせへの回答を全件に当てる。保存先は各衝突が持つ（選んだ時点のフォルダ。
+  /// 問い合わせ中に別のフォルダへ移っても、別々のフォルダへ落としていても取り違えない）。
   const resolveConflicts = React.useCallback(
     async (resolution: ConflictResolution) => {
       const items = conflicts;
       setConflicts([]);
       if (resolution === "skip" || items.length === 0) return;
-      const parentId = conflictFolderRef.current;
       const saved: NodeResponse[] = [];
       const failures: Failure[] = [];
-      const taken = new Set<string>();
+      // 連番名の予約は保存先ごとに分ける（別フォルダの同名は衝突しない）。
+      const takenByFolder = new Map<string | null, Set<string>>();
       for (const c of items) {
+        const parentId = c.parentId;
+        const taken = takenByFolder.get(parentId) ?? new Set<string>();
+        takenByFolder.set(parentId, taken);
         try {
           // 新しいバージョンは既存の「ファイル」にだけ積める。フォルダと同名・特定できない
           // 同名は版にできないので、名前を変えて両方残す。

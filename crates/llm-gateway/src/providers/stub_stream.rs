@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
 
-use crate::model::{StopReason, StreamDelta, Usage};
+use crate::model::{Block, GenerateRequest, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError};
 
 /// stub のツール呼び出しの id（`stubtool_<並びの番号>_<乱数>`）。
@@ -127,6 +127,32 @@ pub(super) fn thinking_only_stream(thinking: &str, prompt_tokens: u64) -> DeltaS
     .boxed()
 }
 
+/// 思考で出力上限をほぼ使い切り、本文の書き出しだけで止まるストリーム（`MaxTokens`）。
+/// `completion_tokens` は上限いっぱい（見えている本文はその一部だけ）。
+pub(super) fn thinking_then_short_text_stream(
+    thinking: &str,
+    text: &str,
+    prompt_tokens: u64,
+) -> DeltaStream {
+    stream::iter([
+        Ok(StreamDelta::ThinkingDelta {
+            text: thinking.to_string(),
+        }),
+        Ok(StreamDelta::TextDelta {
+            text: text.to_string(),
+        }),
+        Ok(StreamDelta::Done {
+            stop_reason: StopReason::MaxTokens,
+            usage: Usage {
+                prompt_tokens,
+                completion_tokens: 8192,
+                ..Default::default()
+            },
+        }),
+    ])
+    .boxed()
+}
+
 /// 本文だけを流し、指定の停止理由で終えるストリーム（出力の上限での打ち切り `truncate:` など）。
 pub(super) fn text_stream_ending(reply: &str, stop: StopReason, prompt_tokens: u64) -> DeltaStream {
     let words: Vec<String> = reply
@@ -222,6 +248,23 @@ pub(super) fn slow_text_stream(reply: &str, prompt_tokens: u64, hold: Duration) 
             })
         }))
         .boxed()
+}
+
+/// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
+/// prompt に載る）。本文だけにすると、ツールを回し続けるループで prompt が伸びず、
+/// `Spent::fresh_tokens`（#404 で上限判定に使う軸）が永久に増えないため、トークン予算が
+/// 「ステップ上限で先に止まる」ことでしか終われなくなる。
+pub(super) fn prompt_tokens(req: &GenerateRequest) -> u64 {
+    req.messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::Text { text } | Block::ToolResult { content: text, .. } => {
+                Some(text.split_whitespace().count() as u64)
+            }
+            _ => None,
+        })
+        .sum()
 }
 
 #[cfg(test)]

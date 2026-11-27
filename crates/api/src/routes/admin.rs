@@ -205,6 +205,7 @@ pub async fn create_tenant(
     params(("tenant_id" = String, Path, description = "テナント識別子")),
     responses(
         (status = 204, description = "テナントを撤去した（不在/撤去済みでも成功）"),
+        (status = 400, description = "不正なtenant_id、またはバックアップ保護中"),
         (status = 401, description = "provisioner トークンが無効"),
         (status = 409, description = "auth.tenancy=single のためテナントを削除できない"),
     ),
@@ -221,6 +222,10 @@ pub async fn delete_tenant(
     reject_unless_multi_tenant(&state.config.auth)?;
     validate_tenant_id(&tenant_id)
         .map_err(|_| ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into()))?;
+    // 外部副作用より前に保護を確認し、全サブシステムとtombstone完了まで保持する。
+    let typed_tenant = authz::TenantId::parse(tenant_id.as_str())
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let purge_guard = state.storage.begin_tenant_purge(&typed_tenant).await?;
     // 1. deleting へ（不在なら冪等成功）。org は登録簿から得る（無ければ tenant_id と同値とみなす）。
     let tenant = state.tenants.mark_deleting(&tenant_id).await?;
     let org = tenant
@@ -256,7 +261,7 @@ pub async fn delete_tenant(
     }
 
     // 4. データ面の purge（storage / RAG / 構造化データ。audit は保持）。
-    purge_tenant_data(&state, &tenant_id, &org, &actor.0).await?;
+    purge_tenant_data(&state, &purge_guard, &org, &actor.0).await?;
 
     // 5. tombstone 化。
     state.tenants.mark_deleted(&tenant_id).await?;
@@ -517,10 +522,11 @@ pub async fn set_tenant_trash_retention(
 /// 前後の理由は本体のコメント参照（列挙が必要なものは前、索引の再生成入力を断つものは後）。
 async fn purge_tenant_data(
     state: &AppState,
-    tenant_id: &str,
+    guard: &storage::blob_storage::TenantPurgeGuard,
     org: &str,
     actor: &str,
 ) -> Result<(), ApiError> {
+    let tenant_id = guard.tenant().as_str();
     // ⚠️ 順序が重要（Codex P1・#420）: **サブシステムの purge を先に**回す。
     // `storage.purge_tenant` は tenant_id を持つ全テーブルを一掃するようになったため、これを先に
     // 走らせると `data.purge_tenant` が `data_table` を列挙できず、**data_table の FGA タプルと
@@ -538,7 +544,10 @@ async fn purge_tenant_data(
         tracing::info!(%tenant_id, data_tables, "tenant purge: 構造化データを撤去");
     }
     // ② storage: FGA タプル・オブジェクト・tenant_id を持つ全 DB 行（outbox / ジョブ含む）。
-    state.storage.purge_tenant(tenant_id, org, actor).await?;
+    state
+        .storage
+        .purge_tenant_with_guard(guard, org, actor)
+        .await?;
     // ③ RAG を**最後に**（Codex P1・#420）: RAG を先に消すと、まだ残っている
     //    `storage_event_outbox` のイベントや claim 済みジョブがその後に処理され、Qdrant/Tantivy の
     //    索引が**再作成**される。storage が outbox とジョブ行を消した後に走らせれば、索引を

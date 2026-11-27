@@ -1,0 +1,43 @@
+{
+  "recorded_utc": "2026-11-12T13:44:11Z",
+  "python": "3.12.14",
+  "packages": {
+    "boto3": "1.44.1",
+    "botocore": "1.44.1",
+    "fastcdc": "1.7.0",
+    "zstandard": "0.25.0"
+  },
+  "store": "RustFS 1.0.1, local Docker",
+  "cpu_quota": "400000 100000",
+  "cases": 30,
+  "trials": 3,
+  "layouts": 3,
+  "verified_restores": 270,
+  "timing_limits": "Shared development VM, warm object-store caches, Python SDK, 8 concurrent GETs. Not a native Rust codec benchmark or production RTT measurement.",
+  "summary": [
+    {
+      "layout": "pieces",
+      "samples": 90,
+      "median_ms": 112.49813950000001,
+      "median_gets": 62.5,
+      "max_gets": 271,
+      "max_transfer_amplification": 1.0000762939453125
+    },
+    {
+      "layout": "whole_pack",
+      "samples": 90,
+      "median_ms": 7.9393875000000005,
+      "median_gets": 2.0,
+      "max_gets": 10,
+      "max_transfer_amplification": 3.2978620529174805
+    },
+    {
+      "layout": "range_pack",
+      "samples": 90,
+      "median_ms": 8.354929,
+      "median_gets": 2.0,
+      "max_gets": 16,
+      "max_transfer_amplification": 1.0000762939453125
+    }
+  ]
+}

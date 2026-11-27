@@ -59,7 +59,7 @@ export type ChatRole = "user" | "assistant" | "system" | "tool";
 export type RunStatus = components["schemas"]["RunStatus"];
 
 /// 自律 run の承認モード（backend chat::AutonomousMode と一致・#350）。
-/// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込のみ自動 / bypass=全自動（危険）。
+/// require_approval=承認必須（既定）/ auto=版管理で復元可能な書込＋隔離サンドボックスの shell を自動 / bypass=全自動（危険）。
 export type AutonomousMode = "require_approval" | "auto" | "bypass";
 
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344）。

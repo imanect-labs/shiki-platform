@@ -757,3 +757,25 @@
   - [ ] 解決先が上限の CIDR の外なら保存も接続も拒否する（保存後の DNS 付け替えを含む）
   - [ ] web_fetch・画像代理取得からは許可ホストに到達できない
   - [ ] 追加・削除が監査に残る
+
+
+<a id="connect-ops-track"></a>
+
+## トラックCO — Shiki Connect / Shiki Ops（接頭辞 CO.x）
+
+状態: **設計先行・製品実装は未着手**。文書は[共通基盤](../connect-ops-foundation.md) / [Connect](../shiki-connect.md) / [Ops](../shiki-ops.md)。
+[PoC #1321](https://github.com/imanect-labs/shiki-platform/issues/1321)の条件付き結果は[記録](../connect-poc-evidence.md)を参照する。
+本トラックはSaaS優先や既存フェーズの順序を変更せず、実装着手/優先順位は別途決める。
+
+| Task | 対象と依存 | 成立条件（実装時に検証） |
+| --- | --- | --- |
+| CO.1 境界・接続契約 | Phase 0のidentity/tenant、8.10。Connect/Ops独立のenrollment・PKI、protocol/有界配送、redb運用契約 | 製品/顧客/環境token混用・失効・再送・破損を拒否、外部通信なしの配備成立 |
+| CO.2 Connect read-only縦スライス | CO.1＋Phase 1/2/3。Gateway/file daemon、既存Storage/RAG/Drive | 利用者別ACL、原本/索引の版整合、開示直前検証。Ops未導入でも顧客内で成立 |
+| CO.3 Connect本番硬化・限定書込み | CO.2。対応OS/NAS、安定ID/移動、権限/リンク、単独writer、GC/復旧 | 実Windows/Linux/macOS・物理NAS等の対応matrixとfail-closed、負荷/故障の実測。読取保証未達は無効化し、読取保証充足・書込保証のみ未達ならread-only |
+| CO.4 Opsローカル監視と任意export | CO.1＋8.1/8.2/8.5/8.8。ローカルagent、fleet登録、フィールドallowlist | Ops断でもコア継続、他顧客/担当外の拒否、許可撤回後のqueued送信禁止、欠測/古いfeedはunknown |
+| CO.5 Ops外部LLM/Web proxy | CO.1/CO.4＋Phase 3 llm-gateway/検索provider | 顧客内認可/会計維持、送信用途/宛先/保持許可、SSRF/未許可fallback/顧客横断cache拒否、実provider検証 |
+| CO.6 Ops署名更新とrollback | CO.4＋8.8/8.10/8.11/8.12。顧客承認、限定helper、poll、署名bundle | 改竄/古い指示/期限/多重writer拒否、各境界crash復旧、互換rollback、不可逆migration停止、offline搬入と実restore |
+| CO.7 運用規模と配布判定 | CO.3/CO.5/CO.6。既存8.13と接続 | fleet同時復帰/長期断/容量枯渇、release署名鍵rotation、OS配布、通信量/RSS/CPUとSLO、顧客解除/削除 |
+
+CO.1〜CO.7はこの設計PRで完了チェックを付けない。公開API・認可語彙・RBAC・trait変更、SLO、対応matrixは実装PRでレビューする。
+Connectの将来DB/社内API/登録ジョブ/イベントadapterはCO.2の境界を再利用し、ソース固有の認可・承認・隔離を定める別タスクとする。

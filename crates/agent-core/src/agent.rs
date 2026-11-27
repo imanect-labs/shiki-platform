@@ -566,6 +566,17 @@ async fn run_step(
         });
     }
 
+    // 揃った呼び出しがあるのに「自然終了」で届いた応答は、呼び出しを実行する（黙って畳まない・main の #1301）。
+    // 出力上限で止まっても、引数が全部揃っている呼び出しは実行する。このブランチのアダプタは引数の途中で
+    // 切れた呼び出しを渡さない（上の `cut` に入る）ので、`cut` が 1 件でもあれば従来どおり書き直させる。
+    final_stop = crate::agent_observation::settle_stop(
+        final_stop,
+        !calls.is_empty() && cut.is_empty(),
+        calls
+            .iter()
+            .all(|c| crate::agent_observation::has_args(&c.input)),
+    );
+
     // 会計＋Langfuse 計装（attempt/ステップ単位）＋予算の累積更新（Task 5.7）。
     let cost = gateway.estimate_cost_usd_micros(
         opts.model
@@ -716,6 +727,16 @@ async fn run_step(
         && !text_acc.is_empty()
         && can_continue
     {
+        // 本文の書き出しだけで、出力の大半を思考に使い切った: 本文の続きではなく次の手を出させる。
+        if crate::agent_observation::output_mostly_hidden(&text_acc, usage.completion_tokens) {
+            if let Some(nudge) = crate::agent_observation::thinking_exhausted_after_text(
+                &state.messages,
+                opts.max_tokens,
+            ) {
+                state.messages.push(nudge);
+                return Ok(StepOutcome::Continue);
+            }
+        }
         if let Some(nudge) = crate::agent_observation::text_continuation(&state.messages) {
             state.messages.push(nudge);
             return Ok(StepOutcome::Continue);

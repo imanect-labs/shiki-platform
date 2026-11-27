@@ -51,9 +51,10 @@ use futures::stream::{self, StreamExt};
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
-    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, stub_tool_call_id,
-    text_stream, text_stream_ending, thinking_only_stream, tool_call_stream, tool_calls_stream,
-    truncated_text_stream, truncated_tool_call_stream,
+    paced_chunks_stream, paced_thinking_then_text_stream, prompt_tokens, slow_text_stream,
+    stub_tool_call_id, text_stream, text_stream_ending, thinking_only_stream,
+    thinking_then_short_text_stream, tool_call_stream, tool_calls_stream, truncated_text_stream,
+    truncated_tool_call_stream,
 };
 use super::stub_structured::{failure_call, structured_call};
 use super::stub_triggers::{
@@ -148,7 +149,7 @@ fn truncated_text_call(
 /// 1 手目は tools[0] を呼ぶ。結果を受けた応答は思考だけで `MaxTokens` 停止し、催促
 /// （[`crate::THINKING_EXHAUSTED_MARK`]）を受けたら本文を返す。本文には受け取った effort を
 /// 書く（催促後の生成で思考を絞っていることをテストが確かめる）。`thinkonly:forever` は
-/// 催促にも思考だけで止まり続ける。
+/// 催促にも思考だけで止まり続ける。`thinkonly:text` は本文の書き出しだけ付けて止まる。
 fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<DeltaStream> {
     let rest = first_user_text(req)?.strip_prefix("thinkonly:")?;
     if !has_tool_result(req) {
@@ -169,8 +170,26 @@ fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<
     });
     if nudged && rest.trim() != "forever" {
         let effort = req.effort.map_or("none", |e| e.as_str());
+        // 実プロバイダと同じく、書き直しも思考から始まる（`text` は続きの思考を流さないことを見る）。
+        if rest.trim() == "text" {
+            return Some(paced_thinking_then_text_stream(
+                "短く考える",
+                &format!("集計を終えました。回答です（effort={effort}）。"),
+                prompt_tokens,
+                64,
+                Duration::ZERO,
+            ));
+        }
         return Some(text_stream(
             &format!("集計を終えました。回答です（effort={effort}）。"),
+            prompt_tokens,
+        ));
+    }
+    // `thinkonly:text` は思考で上限を使い切り、本文の書き出しだけで止まる（実測の S5）。
+    if rest.trim() == "text" {
+        return Some(thinking_then_short_text_stream(
+            "次に書く 6 枚の原稿を考え続ける",
+            "続きを追記します。",
             prompt_tokens,
         ));
     }
@@ -178,23 +197,6 @@ fn thinking_exhausted_call(req: &GenerateRequest, prompt_tokens: u64) -> Option<
         "どの列を数えるかを考え続ける",
         prompt_tokens,
     ))
-}
-
-/// 履歴の語数を prompt トークンとみなす。**ツール結果も数える**（実プロバイダと同じく観測は
-/// prompt に載る）。本文だけにすると、ツールを回し続けるループで prompt が伸びず、
-/// `Spent::fresh_tokens`（#404 で上限判定に使う軸）が永久に増えないため、トークン予算が
-/// 「ステップ上限で先に止まる」ことでしか終われなくなる。
-fn prompt_tokens(req: &GenerateRequest) -> u64 {
-    req.messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
-            Block::Text { text } | Block::ToolResult { content: text, .. } => {
-                Some(text.split_whitespace().count() as u64)
-            }
-            _ => None,
-        })
-        .sum()
 }
 
 /// これまでにツール結果があるか（＝2 ターン目以降）。

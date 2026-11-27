@@ -99,7 +99,7 @@ export default function SkillsPage() {
   return (
     <PageContainer
       title="スキル"
-      description="指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。"
+      description="指示文・知識スコープ・使うツールをまとめて、チャットに適用できます。"
       className="max-w-4xl"
       actions={
         <Button onClick={() => router.push("/skills/new")}>

@@ -86,4 +86,26 @@ impl RagError {
             | RagError::InvalidTenant(_) => false,
         }
     }
+
+    /// 利用者がアップロードした**文書そのもの**が原因で worker が拒否したなら、その code。
+    ///
+    /// 壊れた・空・未対応形式・上限超過の文書は想定どおりの失敗で、運用者が直すものではない
+    /// （DLQ には送るが ERROR では出さない）。取得失敗・許可外 URL・base64 不正などの
+    /// 基盤や設定側の 422 は含めない（こちらは調べるべき障害なので `None`）。
+    pub fn document_rejection_code(&self) -> Option<&str> {
+        match self {
+            RagError::Parse { code, .. } if DOCUMENT_REJECTION_CODES.contains(&code.as_str()) => {
+                Some(code)
+            }
+            _ => None,
+        }
+    }
 }
+
+/// worker（`ingestion-worker/.../parse.py`）の 422 のうち、文書の中身が原因のもの。
+const DOCUMENT_REJECTION_CODES: &[&str] = &[
+    "parse_failed",
+    "empty_document",
+    "unsupported_content_type",
+    "source_too_large",
+];
