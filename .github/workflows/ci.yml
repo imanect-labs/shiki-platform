@@ -711,6 +711,98 @@ jobs:
         working-directory: deploy/compose
         run: docker compose logs --no-color | tail -200
 
+  # 変更行の変異テスト（imanect の factory が証拠パックに使う）。PR が変えた行にだけ変異を入れ、テストが
+  # 捕まえるかを見る（scripts/check-mutants.sh）。カバレッジ 80% は「行が実行されたか」しか見ないので、
+  # 「テストが振る舞いを確かめているか」をこちらで見る。
+  # **このジョブは PR を止めない**（ci-ok の needs に入れない・常に成功で終わる）。結果は check run
+  # 「mutants-report」として PR の head に付け、factory がそれを読んで、生き残った変異をワーカーに返し、
+  # 検品に出す。結合テストが黙ってスキップされると生き残りが水増しされるので、coverage ジョブと同じ
+  # 依存を立て、SHIKI_REQUIRE_IT=1 で流す。
+  mutants:
+    name: Mutants (変更行の変異テスト・非ブロッキング)
+    needs: [changes, tabular-runner]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # 結果を check run として PR の head に付けるため checks:write を昇格付与する。
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # マージコミット（HEAD^1 = base の先端・HEAD^2 = PR の先端）と比べる。
+          fetch-depth: 2
+      - name: free disk space (不要プリインストール削除)
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.96.0"
+      # このジョブは main で走らないので保存しない。rust ジョブが main で保存した依存のキャッシュを読む。
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: rust
+          save-if: "false"
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-mutants
+      - name: download tabular runner binary (tabular-runner の成果物)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shiki-tabular-runner-bin
+          path: ${{ runner.temp }}/tabular-runner
+      - name: make tabular runner executable
+        run: chmod +x "$RUNNER_TEMP/tabular-runner/shiki-tabular-runner"
+      - name: compose up (postgres + rustfs + openfga + redis + qdrant → healthy 待ち)
+        working-directory: deploy/compose
+        run: |
+          cp .env.example .env
+          docker compose up -d postgres rustfs openfga redis qdrant
+          for svc in postgres rustfs openfga redis qdrant; do
+            ok=""
+            for i in $(seq 1 60); do
+              [ "$(docker compose ps "$svc" --format '{{.Health}}' || true)" = "healthy" ] && { ok=1; break; }
+              sleep 5
+            done
+            [ -n "$ok" ] || { echo "$svc が healthy になりませんでした"; exit 1; }
+          done
+      # 計測が壊れても・長引いても、ジョブは赤にしない（factory は失敗した check run を CI の失敗として
+      # ワーカーに差し戻すため）。そのときは次のステップが status: error の結果を付ける。
+      - name: changed-line mutants (cargo-mutants --in-diff)
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          SHIKI_REQUIRE_IT: "1"
+          OPENFGA_TEST_URL: http://localhost:8082
+          REDIS_TEST_URL: redis://localhost:6379
+          STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
+          STORAGE_TEST_S3_ENDPOINT: http://localhost:9000
+          RAG_TEST_QDRANT_URL: http://localhost:6333
+          RAG_TEST_QDRANT_API_KEY: shiki-qdrant-dev-key
+          SHIKI_TABULAR_RUNNER: ${{ runner.temp }}/tabular-runner/shiki-tabular-runner
+        run: scripts/check-mutants.sh HEAD^1 HEAD
+      # factory が読む結果。名前（mutants-report）と output.text の JSON の形は factory 側の gate と対で決めている。
+      - name: post mutants-report check run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [ -f mutants-report.json ] || echo '{"version":1,"status":"error","total":0,"tested":0,"caught":0,"unviable":0,"missed":[],"timeout":[]}' > mutants-report.json
+          title=$(jq -r '"捕まえた \(.caught) / 生き残り \(.missed | length)（\(.tested)/\(.total) 個を試した・\(.status)）"' mutants-report.json)
+          summary=$(jq -r '"変更行の変異テスト。生き残った変異は、その行の振る舞いをテストが確かめていないことを示します。\n\n" + ([.missed[] | "- `\(.name)`"] | join("\n"))' mutants-report.json)
+          # output.text は 65535 文字まで。JSON を途中で切らないよう、長すぎるときは変異の diff を落とす。
+          text=$(jq -c . mutants-report.json)
+          [ ${#text} -le 60000 ] || text=$(jq -c 'del(.missed[].diff, .timeout[].diff) | .truncated = true' mutants-report.json)
+          printf '### 変更行の変異テスト\n\n%s\n\n%s\n' "$title" "$summary" >> "$GITHUB_STEP_SUMMARY"
+          jq -n --arg sha "$HEAD_SHA" --arg title "$title" --arg summary "$summary" --arg text "$text" \
+            '{name: "mutants-report", head_sha: $sha, status: "completed", conclusion: "neutral",
+              output: {title: $title, summary: ($summary[:60000]), text: $text}}' \
+            | gh api --method POST "repos/$REPO/check-runs" --input - --silent
+
   # 構造化データの行述語の脅威モデルを、読取の全戦略（強制・O3 の交差駆動とバッチ駆動を含む）と
   # O2（統計を作ってからコストで選ぶ）と本体経路（v1・機能フラグ）で回し直す
   # （Task 15.3 / 15.12・PIT-76: コストモデルは速さにだけ効き、結果と認可には効かない）。
