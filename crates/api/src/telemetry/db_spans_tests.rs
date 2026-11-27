@@ -72,6 +72,57 @@ fn summarize_never_returns_literals_or_comments() {
 }
 
 #[test]
+fn summarize_skips_dollar_quotes_nested_comments_and_escaped_strings() {
+    // ドル引用・入れ子コメント・E'' の中の語は表名にならない（中身を OTLP に出さない）。
+    let cases = [
+        "SELECT $$ FROM secret1 $$ FROM t",
+        "SELECT $body$ x FROM secret2 $body$ FROM t",
+        "/* a /* FROM secret3 */ FROM secret4 */ SELECT 1 FROM t",
+        r"SELECT E'it\'s FROM secret5' FROM t",
+        "SELECT 'it''s FROM secret6' FROM t",
+    ];
+    for sql in cases {
+        assert_eq!(summarize(sql), summary("SELECT", Some("t")), "{sql}");
+    }
+    // プレースホルダは語にならず、閉じていないドル引用でも落ちない。
+    assert_eq!(summarize("SELECT $1 FROM t"), summary("SELECT", Some("t")));
+    assert_eq!(summarize("SELECT $q$ FROM secret"), summary("SELECT", None));
+    // 引用符付き識別子は 1 語。空白を含む名前は識別子の形でないので載せない。
+    assert_eq!(
+        summarize(r#"SELECT 1 FROM public."Docs""#),
+        summary("SELECT", Some("public.Docs"))
+    );
+    assert_eq!(
+        summarize(r#"SELECT 1 FROM "My Table""#),
+        summary("SELECT", None)
+    );
+}
+
+#[test]
+fn slow_statement_warn_does_not_put_sql_on_parent_span() {
+    // sqlx は 1 秒超のクエリを WARN で SQL 本文付きで出す。OTel レイヤはこれを span イベントに
+    // しない（SQL を OTLP に出さない）。DB span は従来どおり出る。
+    let h = Harness::new();
+    tracing::subscriber::with_default(h.subscriber(), || {
+        let request = tracing::info_span!("request");
+        let _e = request.enter();
+        tracing::warn!(
+            target: "sqlx::query",
+            summary = "SELECT secret_col FROM",
+            db.statement = "\n\nSELECT secret_col FROM t WHERE a = $1\n",
+            rows_affected = 0u64,
+            rows_returned = 1u64,
+            elapsed_secs = 1.5f64,
+            "slow statement: execution time exceeded alert threshold"
+        );
+    });
+    let spans = h.spans();
+    let request = spans.iter().find(|s| s.name == "request").unwrap();
+    assert!(request.events.is_empty(), "{:?}", request.events);
+    assert!(spans.iter().any(|s| s.name == "SELECT t"));
+}
+
+#[test]
 fn filter_only_enables_sqlx_query_debug() {
     let f = query_events();
     assert!(f.would_enable(SQLX_QUERY_TARGET, &tracing::Level::DEBUG));

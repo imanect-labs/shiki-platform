@@ -222,7 +222,9 @@ struct Token<'a> {
     depth: u32,
 }
 
-/// 括弧の深さ付きで語に分ける。文字列リテラル・コメントは読み飛ばす（値を拾わないため）。
+/// 括弧の深さ付きで語に分ける。値・本文を拾わないため、文字列リテラル（`'…'`・`E'…'`）・
+/// ドル引用（`$$…$$`・`$tag$…$tag$`）・コメント（`--`・入れ子の `/* */`）は読み飛ばす。
+/// 二重引用符の識別子（`"My Table"`）は 1 語として扱う。
 fn tokenize(sql: &str) -> Vec<Token<'_>> {
     let bytes = sql.as_bytes();
     let mut tokens = Vec::new();
@@ -239,13 +241,30 @@ fn tokenize(sql: &str) -> Vec<Token<'_>> {
                 depth = depth.saturating_sub(1);
                 i += 1;
             }
-            b'\'' => i = skip_until(bytes, i + 1, b"'"),
+            b'\'' => {
+                // `E'…'` はバックスラッシュでエスケープできる。直前の語 `E` は語として残さない。
+                let escaped = tokens.last().is_some_and(|t: &Token<'_>| {
+                    t.text.eq_ignore_ascii_case("e") && sql[..i].ends_with(t.text)
+                });
+                if escaped {
+                    tokens.pop();
+                    i = skip_escaped(bytes, i + 1);
+                } else {
+                    i = skip_quoted(bytes, i + 1, b'\'');
+                }
+            }
+            b'$' => i = skip_dollar(bytes, i),
             b'-' if bytes.get(i + 1) == Some(&b'-') => i = skip_until(bytes, i + 2, b"\n"),
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_until(bytes, i + 2, b"*/"),
-            _ if is_ident_byte(c) => {
+            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block_comment(bytes, i + 2),
+            _ if is_ident_byte(c) || c == b'"' => {
+                // 識別子（`public."My Table"` のように引用部分を含んでよい）を 1 語にする。
                 let start = i;
-                while i < bytes.len() && is_ident_byte(bytes[i]) {
-                    i += 1;
+                while i < bytes.len() && (is_ident_byte(bytes[i]) || bytes[i] == b'"') {
+                    i = if bytes[i] == b'"' {
+                        skip_quoted(bytes, i + 1, b'"')
+                    } else {
+                        i + 1
+                    };
                 }
                 tokens.push(Token {
                     text: &sql[start..i],
@@ -259,7 +278,78 @@ fn tokenize(sql: &str) -> Vec<Token<'_>> {
 }
 
 fn is_ident_byte(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"' | b'$')
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.')
+}
+
+/// 引用（`q` で閉じる・`qq` は中の 1 文字）を読み飛ばし、閉じの直後の位置を返す。
+fn skip_quoted(bytes: &[u8], mut i: usize, q: u8) -> usize {
+    while i < bytes.len() {
+        if bytes[i] == q {
+            if bytes.get(i + 1) == Some(&q) {
+                i += 2;
+                continue;
+            }
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+/// `E'…'` の本文（`\\'` と `''` をエスケープとして）を読み飛ばす。
+fn skip_escaped(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'\'' if bytes.get(i + 1) == Some(&b'\'') => i += 2,
+            b'\'' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// `$` から始まるもの。`$1` などのプレースホルダは読み飛ばし、`$tag$…$tag$` のドル引用は本文ごと
+/// 読み飛ばす。
+fn skip_dollar(bytes: &[u8], start: usize) -> usize {
+    let mut j = start + 1;
+    if bytes.get(j).is_some_and(u8::is_ascii_digit) {
+        while bytes.get(j).is_some_and(u8::is_ascii_digit) {
+            j += 1;
+        }
+        return j;
+    }
+    while bytes
+        .get(j)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+    {
+        j += 1;
+    }
+    if bytes.get(j) == Some(&b'$') {
+        let tag = &bytes[start..=j];
+        return skip_until(bytes, j + 1, tag);
+    }
+    start + 1
+}
+
+/// 入れ子の `/* … */` を読み飛ばす（Postgres はブロックコメントの入れ子を許す）。
+fn skip_block_comment(bytes: &[u8], mut i: usize) -> usize {
+    let mut level = 1u32;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            level += 1;
+            i += 2;
+        } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+            level -= 1;
+            i += 2;
+            if level == 0 {
+                return i;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    bytes.len()
 }
 
 /// `from` から `end` を探し、その直後の位置を返す（見つからなければ末尾）。

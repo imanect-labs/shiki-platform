@@ -73,7 +73,7 @@ docker compose logs postgres | grep -A 30 "duration:"
 | `db.collection.name` | `FROM`・`INTO`・`UPDATE` の直後の表名（副問い合わせ等で取れなければ無し） |
 | `db.response.returned_rows` / `shiki.db.rows_affected` | 返した行数・更新した行数 |
 
-- **SQL 本文とバインド値は載せない。** 同じ表への別のクエリを見分けたいときは、span の時刻で
+- **SQL 本文とバインド値は載せない。** 文字列リテラル・ドル引用・コメントの中の語は表名として拾わない。sqlx が 1 秒超のクエリに出す WARN（SQL 本文付き）も OTel には送らない（ログには従来どおり出る）。同じ表への別のクエリを見分けたいときは、span の時刻で
   §2 の `auto_explain`・§1 の `pg_stat_statements` と突き合わせる。
 - 親の span が無い（サンプルされていない）クエリ、たとえばバックグラウンドのポーリングは span にしない。
 - 仕組みは sqlx が各クエリの終了時に出す `sqlx::query` イベント（経過時間つき）を受けて後付けで span を作るもので、

@@ -21,7 +21,9 @@ use opentelemetry_sdk::{
     Resource,
 };
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::FilterExt as _, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 use crate::config::{LogFormat, TelemetryConfig};
 
@@ -59,9 +61,15 @@ where
 {
     let db_layer =
         db_spans::DbSpanLayer::new(tracer.clone()).with_filter(db_spans::filter(env_filter()));
+    // OTel レイヤには `sqlx::query` のイベントを通さない。sqlx は 1 秒超のクエリを WARN で SQL 本文
+    // （`db.statement`）付きで出すので、通すと親 span のイベント属性として SQL が OTLP に出る。
+    // `RUST_LOG=sqlx::query=debug` のような設定でも同じ。遅いクエリは DB span の長さで見る。
+    let no_sqlx_events = tracing_subscriber::filter::filter_fn(|m| {
+        !(m.is_event() && m.target() == db_spans::SQLX_QUERY_TARGET)
+    });
     tracing_opentelemetry::layer()
         .with_tracer(tracer)
-        .with_filter(env_filter())
+        .with_filter(env_filter().and(no_sqlx_events))
         .and_then(db_layer)
 }
 
@@ -134,13 +142,11 @@ pub fn init(cfg: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
 
             Some(tracer)
         } else {
+            tracing::warn!("telemetry.otlp_endpoint 未設定: OpenTelemetry エクスポートは無効");
             None
         };
 
     subscriber(fmt_layer, otel_layer).init();
-    if otlp_endpoint.is_none() {
-        tracing::warn!("telemetry.otlp_endpoint 未設定: OpenTelemetry エクスポートは無効");
-    }
 
     Ok(guard)
 }
