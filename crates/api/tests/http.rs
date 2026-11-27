@@ -355,6 +355,7 @@ fn base_config() -> AppConfig {
             otlp_endpoint: None,
             service_name: "test".into(),
             log_format: LogFormat::Json,
+            trust_incoming_trace_context: true,
         },
         storage: StorageConfig {
             backend: ObjectStoreBackend::S3,
@@ -1372,3 +1373,67 @@ mod bug_reports;
 
 #[path = "http/version_backup.rs"]
 mod version_backup;
+
+/// 実ルータ（`build_router`）で、認証ミドルウェア（`require_session`）が解決したテナントと
+/// プリンシパルの ID がリクエストの root span（`GET /me`）に載り、受信 traceparent も継続される。
+#[tokio::test]
+async fn session_route_root_span_carries_tenant_and_principal() {
+    use opentelemetry::trace::{SpanId, TraceId, TracerProvider as _};
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let app = build_router(state_with(store_with_valid_session().await, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/me")
+                .header(COOKIE, "shiki_session=sid-valid.default")
+                .header(
+                    "traceparent",
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    provider.force_flush().unwrap();
+    let spans = exporter.get_finished_spans().unwrap();
+    let root = spans
+        .iter()
+        .find(|s| s.name == "GET /me")
+        .unwrap_or_else(|| panic!("root span が無い: {spans:?}"));
+    let attr = |key: &str| {
+        root.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().into_owned())
+    };
+    assert_eq!(attr("tenant_id").as_deref(), Some("default"));
+    assert_eq!(
+        attr("enduser.id").as_deref(),
+        Some("00000000-0000-0000-0000-000000000001")
+    );
+    assert_eq!(attr("http.route").as_deref(), Some("/me"));
+    assert_eq!(
+        root.span_context.trace_id(),
+        TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").unwrap()
+    );
+    assert_eq!(
+        root.parent_span_id,
+        SpanId::from_hex("00f067aa0ba902b7").unwrap()
+    );
+}

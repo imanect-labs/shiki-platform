@@ -18,6 +18,15 @@ pub struct TelemetryConfig {
     pub service_name: String,
     /// ログ出力形式（`json` or `pretty`）。
     pub log_format: LogFormat,
+    /// 受信した W3C `traceparent` / `tracestate` を親として継続するか（既定 false）。
+    ///
+    /// 本体の HTTP 面は BFF（Next の rewrites）がブラウザのヘッダを素通しするため、受信した
+    /// 親はクライアントが任意に選べる（trace_id・sampled フラグ）。trace_id は監査ログにも
+    /// 書くので、既定では信用せず毎リクエスト新しいトレースを始める。前段（BFF・ingress）が
+    /// 外部からの `traceparent` を剥がし、自分の span の文脈を付け直す構成でだけ true にする。
+    /// 公開 API ゲートウェイ（第2リスナ）はこの層を通らず、受信した親は継続しない。
+    #[serde(default)]
+    pub trust_incoming_trace_context: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,7 +7,11 @@
 
 use std::{sync::OnceLock, time::Instant};
 
-use axum::{extract::Request, middleware::Next, response::Response};
+use axum::{
+    extract::{MatchedPath, Request},
+    middleware::Next,
+    response::Response,
+};
 use opentelemetry::{
     global,
     metrics::{Counter, Histogram},
@@ -128,30 +132,35 @@ fn http_metrics() -> &'static HttpMetrics {
     })
 }
 
-/// リクエスト span に trace_id を記録し、基本メトリクス（件数/レイテンシ）を計上する。
-/// span は `make_request_span` で `trace_id` フィールドを Empty 宣言済みである前提。
+/// リクエストの root span に trace_id を記録し、基本メトリクス（件数/レイテンシ）を計上する。
+///
+/// root span は `OtelAxumLayer`（server/http_util.rs）が作り、`trace_id` フィールドを Empty
+/// 宣言済みである前提。受信 `traceparent` を継続した場合はその trace_id になるため、監査ログ
+/// （[`crate::extract::TraceId`]）と Tempo の trace_id は一致したままになる。
+/// メトリクスには `http.route`（ルートのテンプレート）を載せ、生 path は載せない（カーディナリティ）。
 pub async fn observe(mut req: Request, next: Next) -> Response {
     let span = tracing::Span::current();
     let trace_id = span.context().span().span_context().trace_id();
     if trace_id != opentelemetry::trace::TraceId::INVALID {
         span.record("trace_id", tracing::field::display(trace_id));
-        // ハンドラ（監査ログ）が trace_id を参照できるよう extension に載せる。
+        // ハンドラ（監査ログ・Langfuse・jobq）が trace_id を参照できるよう extension に載せる。
         req.extensions_mut()
             .insert(crate::extract::TraceId(trace_id.to_string()));
     }
 
     let method = req.method().as_str().to_owned();
     let path = req.uri().path().to_owned();
+    let route = req
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|m| m.as_str().to_owned());
     let start = Instant::now();
     let resp = next.run(req).await;
     let status = resp.status().as_u16();
     let latency_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let metrics = http_metrics();
-    let attrs = [
-        KeyValue::new("method", method.clone()),
-        KeyValue::new("status", i64::from(status)),
-    ];
+    let attrs = metric_attrs(&method, status, route.as_deref());
     metrics.requests.add(1, &attrs);
     metrics
         .duration
@@ -162,12 +171,35 @@ pub async fn observe(mut req: Request, next: Next) -> Response {
         trace_id = %trace_id,
         method = %method,
         path = %path,
+        route = route.as_deref().unwrap_or(""),
         status,
         latency_ms,
         "request"
     );
 
     resp
+}
+
+/// HTTP メトリクスの属性。`http.route` はルートに一致したときだけ付ける（404 等は付けない）。
+fn metric_attrs(method: &str, status: u16, route: Option<&str>) -> Vec<KeyValue> {
+    let mut attrs = vec![
+        KeyValue::new("method", method.to_owned()),
+        KeyValue::new("status", i64::from(status)),
+    ];
+    if let Some(route) = route {
+        attrs.push(KeyValue::new("http.route", route.to_owned()));
+    }
+    attrs
+}
+
+/// 認証済みのリクエストの root span に、テナントとプリンシパルの ID を属性として載せる。
+///
+/// 認証ミドルウェアが `Principal` を解決した直後に呼ぶ（root span の中で動く前提）。
+/// OTel が無効（span が OTel に載らない）なら何もしない。
+pub fn record_auth_on_span(tenant_id: &str, principal_id: &str) {
+    let span = tracing::Span::current();
+    span.set_attribute("tenant_id", tenant_id.to_owned());
+    span.set_attribute("enduser.id", principal_id.to_owned());
 }
 
 #[cfg(test)]
@@ -208,7 +240,37 @@ mod tests {
             otlp_endpoint: otlp_endpoint.map(str::to_string),
             service_name: "shiki-server-test".into(),
             log_format,
+            trust_incoming_trace_context: true,
         }
+    }
+
+    #[test]
+    fn metric_attrs_carry_route_template_not_raw_path() {
+        let attrs = metric_attrs("GET", 200, Some("/files/{id}"));
+        let route = attrs.iter().find(|kv| kv.key.as_str() == "http.route");
+        assert_eq!(
+            route.map(|kv| kv.value.as_str().into_owned()).as_deref(),
+            Some("/files/{id}")
+        );
+        // ルート不一致（404 等）は http.route を付けない。生 path の属性はどちらにも無い。
+        let unmatched = metric_attrs("GET", 404, None);
+        assert!(unmatched.iter().all(|kv| kv.key.as_str() != "http.route"));
+        assert!(attrs
+            .iter()
+            .chain(unmatched.iter())
+            .all(|kv| kv.key.as_str() != "path"));
+    }
+
+    #[test]
+    fn incoming_trace_context_is_untrusted_by_default() {
+        // 設定に書かなければ受信した traceparent を信用しない（監査ログの trace_id を
+        // クライアントに選ばせない）。
+        let cfg: TelemetryConfig = serde_json::from_value(serde_json::json!({
+            "service_name": "s",
+            "log_format": "json",
+        }))
+        .unwrap();
+        assert!(!cfg.trust_incoming_trace_context);
     }
 
     #[test]

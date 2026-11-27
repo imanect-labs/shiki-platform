@@ -586,6 +586,12 @@ services:
       SHIKI__TELEMETRY__OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
       SHIKI__TELEMETRY__SERVICE_NAME: shiki-server
       SHIKI__TELEMETRY__LOG_FORMAT: json
+      # 受信した traceparent を親として継続するか（既定 false = 毎リクエスト新しいトレース）。
+      # 前段が外部の traceparent を剥がして付け直す構成でだけ true にする（監査ログの trace_id に使うため）。
+      SHIKI__TELEMETRY__TRUST_INCOMING_TRACE_CONTEXT: ${SHIKI__TELEMETRY__TRUST_INCOMING_TRACE_CONTEXT:-false}
+      # サンプラ（OTel 標準の環境変数を SDK がそのまま読む）。例: parentbased_traceidratio ＋ ARG=0.1。
+      OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_always_on}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-}
       # **`s3` は enum 改名後のバイナリでしか読めない。** 旧バイナリのイメージが
       # 残っている環境で compose だけ更新して `up -d`（`--build` 無し）すると
       #   unknown variant: found `s3`, expected `minio` or `gcs`

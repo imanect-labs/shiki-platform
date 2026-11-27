@@ -70,6 +70,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
+tracing-opentelemetry-instrumentation-sdk = { workspace = true, features = ["tracing_level_info"] }
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -79,6 +80,7 @@ async-trait.workspace = true
 [dev-dependencies]
 shiki-testenv.workspace = true
 tower = { workspace = true, features = ["util"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 http-body-util = "0.1"
 # collab WS 結合テスト（collab_ws_it.rs）: 実 WS クライアント＋yrs クライアント文書。
 tokio-tungstenite.workspace = true

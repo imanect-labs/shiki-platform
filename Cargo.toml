@@ -108,6 +108,7 @@ opentelemetry_sdk = { version = "0.30", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.30", features = ["grpc-tonic", "trace", "metrics"] }
 opentelemetry-semantic-conventions = "0.30"
 axum-tracing-opentelemetry = "0.29"
+tracing-opentelemetry-instrumentation-sdk = { version = "0.29", features = ["http"] }
 
 # 共通
 anyhow = "1"
