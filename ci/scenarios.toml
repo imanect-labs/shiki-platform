@@ -121,6 +121,7 @@ e2e = [
     "drive-share.spec.ts",
     "drive-versions.spec.ts",
     "pdf-workspace.spec.ts",
+    "share-dialog-layout.spec.ts",
     "immersive-editor.spec.ts",
     "notes-markdown.spec.ts",
     "notes-yui.spec.ts",

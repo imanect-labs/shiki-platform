@@ -331,7 +331,10 @@ export function SharePeoplePanel({
 
       {/* 検索欄の下は 1 つの領域を入れ替える（検索語があれば候補、無ければ共有中の相手）。
           候補を相手一覧の上に差し込まないので、打鍵のたびに一覧が上下しない。 */}
-      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-1">
+      <div
+        data-testid="share-people-scroll"
+        className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-1"
+      >
         {hasQuery ? (
           <div className="flex flex-col gap-3" aria-busy={searching || undefined}>
             {searching && results.length === 0 ? null : results.length === 0 ? (
