@@ -310,14 +310,19 @@ function useProviderStatus(): { status: ProviderStatusResponse | null; error: st
   const [error, setError] = React.useState<string | null>(null);
   React.useEffect(() => {
     let active = true;
-    const load = () =>
-      fetchProviderStatus()
+    // 取得が重なったとき（タブ復帰と定期更新など）、遅れて返った古い結果で上書きしない。
+    let latest = 0;
+    const load = () => {
+      const gen = ++latest;
+      const current = () => active && gen === latest;
+      return fetchProviderStatus()
         .then((r) => {
-          if (!active) return;
+          if (!current()) return;
           setStatus(r);
           setError(null);
         })
-        .catch((e: unknown) => active && setError(e instanceof Error ? e.message : String(e)));
+        .catch((e: unknown) => current() && setError(e instanceof Error ? e.message : String(e)));
+    };
     void load();
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void load();
