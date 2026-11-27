@@ -2,7 +2,8 @@
 //
 // - 背景地図は shiki-server が配る PMTiles から読む。ブラウザは shiki 以外へ接続しない
 //   （スタイルは glyphs・sprite を持たず、文字は端末のフォントで描く）。
-// - 地点は番号付きのピンと名前、道順は Yui と同じく地点を直線で結ぶ。
+// - 地点は点と名前の札（map-markers.ts）、道順は Yui と同じく地点を直線で結ぶ。
+// - 地点の一覧は、会話・ノートの中では地図の下端に重ねたカードの列、全画面では地図の横に出す（map-list.tsx）。
 // - 画面に近づいてから地図を作り、画面から十分離れたら破棄する（WebGL の文脈を溜めない）。
 // - ページのスクロールを奪わない（Ctrl/⌘＋スクロール・2 本指で操作。全画面では通常操作）。
 // - 地図データが無い・読み込めない・WebGL が使えないときは Yui の背景なしの図に戻す。
@@ -18,6 +19,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadBasemapConfig, loadBasemapStyle, peekBasemapConfig, type BasemapConfig } from "@/lib/basemap";
 import { cn } from "@/lib/utils";
+import { MapCardCarousel, MapSideList } from "./map-list";
 import { createFigureMarkers, type FigureMarkers } from "./map-markers";
 import { initialView, routeFeature } from "./yui-map-data";
 
@@ -32,8 +34,10 @@ const COLORS = {
 const FONT_FAMILY =
   '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", Meiryo, sans-serif';
 
-/// 全地点を収めるときの余白（地点のまわりに出す札の大きさと、左の操作ボタンの分）。
-const FIT_PADDING = { top: 48, bottom: 40, left: 96, right: 96 };
+/// 全地点を収めるときの余白（地点のまわりに出す札の大きさと、左上の件数・右上の操作ボタンの分）。
+const FIT_PADDING = { top: 56, bottom: 44, left: 96, right: 104 };
+/// 地図の下端に重ねたカードの列の高さ（測る前の見込み）。
+const OVERLAY_GUESS = 128;
 
 /// これより地点の多い図は、ピンを小さくし、地図を縦に広げる。
 const DENSE_MARKERS = 20;
@@ -92,6 +96,19 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   const [hover, setHover] = React.useState<number | null>(null);
   const [selected, setSelected] = React.useState<number | null>(null);
   const active = hover ?? selected;
+  // 離れた地点がまだ指している地点のときだけ外す（地図の札から一覧の行へ一気に移ると、
+  // 行に入った後で札から離れたことが届くため）。
+  const leave = React.useCallback((i: number) => setHover((cur) => (cur === i ? null : cur)), []);
+  // 会話・ノートの中では地点のカードの列を地図の下端に重ねる（全画面では地図の横の一覧）。
+  // 地点はその列の上に収め、札・カードも列に隠れない所に置く。
+  const overlayRef = React.useRef<HTMLDivElement>(null);
+  const [overlayHeight, setOverlayHeight] = React.useState(OVERLAY_GUESS);
+  const inset = fullscreen ? 0 : overlayHeight;
+  const insetRef = React.useRef(inset);
+  insetRef.current = inset;
+  /// 地図の作成・全地点への合わせ直しで使う余白（その時点の重なりの高さで決める）。
+  const fitPaddingRef = React.useRef(() => ({ ...FIT_PADDING, bottom: Math.max(FIT_PADDING.bottom, insetRef.current + 24) }));
+  const fitPadding = () => fitPaddingRef.current();
   const titleId = React.useId();
 
   // 地図データがあるか（無ければ背景なしの図）。
@@ -170,7 +187,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         style: loaded.style as unknown as import("maplibre-gl").StyleSpecification,
         ...(view.kind === "center"
           ? { center: view.center, zoom: view.zoom }
-          : { bounds: view.bounds, fitBoundsOptions: { padding: FIT_PADDING, maxZoom: view.maxZoom } }),
+          : { bounds: view.bounds, fitBoundsOptions: { padding: fitPadding(), maxZoom: view.maxZoom } }),
         maxZoom: 18,
         attributionControl: false,
         cooperativeGestures: true,
@@ -205,10 +222,11 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         loadedOnce = true;
         // 枠の大きさが決まってから全地点に合わせ直す（作った時点では一覧の幅が反映されていないことがある）。
         m.resize();
-        if (view.kind === "bounds") m.fitBounds(view.bounds, { padding: FIT_PADDING, maxZoom: view.maxZoom, animate: false });
+        if (view.kind === "bounds") m.fitBounds(view.bounds, { padding: fitPadding(), maxZoom: view.maxZoom, animate: false });
         addRouteLayer(m, figure, colors);
         markersRef.current = createFigureMarkers(maplibre, m, figure, {
           onHover: setHover,
+          onLeave: leave,
           onSelect: (i) => setSelected((cur) => (cur === i ? null : i)),
         });
         // 地図の何も無い所を押したら選んだ地点を外す（札の上の押下は札が受ける）。
@@ -232,12 +250,37 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       mapRef.current = null;
       setPhase((p) => (p === "fallback" ? p : "idle"));
     };
-  }, [config, keepAlive, theme, figure]);
+  }, [config, keepAlive, theme, figure, leave]);
 
   // 指している・選んでいる地点を札とカードに映す。
   React.useEffect(() => {
     markersRef.current?.setActive(active);
   }, [active, phase]);
+
+  // カードの列の高さを測る（文字の大きさ・説明の行数で変わる）。
+  React.useEffect(() => {
+    const el = overlayRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setOverlayHeight(Math.round(el.offsetHeight)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fullscreen, phase]);
+  React.useEffect(() => {
+    markersRef.current?.setBottomInset(inset);
+  }, [inset, phase]);
+  // 左上の件数・右上の操作ボタンの大きさ（札とカードがその下に潜らないように）。
+  const countRef = React.useRef<HTMLDivElement>(null);
+  const controlsRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    const size = (el: HTMLElement | null): [number, number] =>
+      el ? [el.offsetLeft + el.offsetWidth + 4, el.offsetTop + el.offsetHeight + 4] : [0, 0];
+    const box = (el: HTMLElement | null): [number, number] => {
+      if (!el?.parentElement) return [0, 0];
+      // 右上の部品は右端からの幅にする。
+      return [el.parentElement.clientWidth - el.offsetLeft + 4, el.offsetTop + el.offsetHeight + 4];
+    };
+    markersRef.current?.setCorners({ topLeft: size(countRef.current), topRight: box(controlsRef.current) });
+  }, [phase, fullscreen, canFullscreen]);
 
   // 全画面の出入り。全画面の間はスクロールで拡大縮小できるようにする。
   React.useEffect(() => {
@@ -249,11 +292,16 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       if (!m) return;
       if (on) m.cooperativeGestures.disable();
       else m.cooperativeGestures.enable();
-      requestAnimationFrame(() => m.resize());
+      // 大きさが変わったら全地点に合わせ直す（全画面で余白だらけ・小さく固まって見えないように）。
+      requestAnimationFrame(() => {
+        m.resize();
+        const v = initialView(figure);
+        if (v.kind === "bounds") m.fitBounds(v.bounds, { padding: fitPaddingRef.current(), maxZoom: v.maxZoom, animate: false });
+      });
     };
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+  }, [figure]);
 
   if (phase === "fallback" || phase === "checking") {
     // 設定を読む間も背景なしの図を出しておく（地図データが無い環境ではそのまま）。
@@ -268,7 +316,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     if (!m) return;
     const v = initialView(figure);
     if (v.kind === "center") m.easeTo({ center: v.center, zoom: v.zoom, animate });
-    else m.fitBounds(v.bounds, { padding: FIT_PADDING, maxZoom: v.maxZoom, animate });
+    else m.fitBounds(v.bounds, { padding: fitPadding(), maxZoom: v.maxZoom, animate });
   };
   const toggleFullscreen = () => {
     const done = document.fullscreenElement ? document.exitFullscreen() : frameRef.current?.requestFullscreen();
@@ -281,133 +329,134 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     const mk = figure.markers[i];
     if (!m || !mk) return;
     setSelected(i);
-    // 画面の外にあるときだけ寄せる（見えているなら、ほかの地点との位置関係を崩さない）。
-    if (!m.getBounds().contains([mk.lng, mk.lat])) m.easeTo({ center: [mk.lng, mk.lat], animate });
+    // 見えていないとき（画面の外・カードの列の下）だけ寄せる（見えているなら、ほかの地点との位置関係を崩さない）。
+    const pt = m.project([mk.lng, mk.lat]);
+    const canvas = m.getCanvas();
+    const hidden = pt.x < 0 || pt.x > canvas.clientWidth || pt.y < 0 || pt.y > canvas.clientHeight - inset - 8;
+    // 寄せる先は、カードの列を除いた範囲の真ん中。
+    if (hidden) m.easeTo({ center: [mk.lng, mk.lat], offset: [0, -inset / 2], animate });
   };
 
+  const listProps = {
+    markers: figure.markers,
+    active,
+    selected,
+    ready,
+    onHover: setHover,
+    onLeave: leave,
+    onPick: focusMarker,
+  };
+
+  const attribution = (
+    <div
+      className={cn(
+        "max-w-full truncate text-[10px] leading-4 text-muted-foreground",
+        // 全画面では地図の右下に重ねる。会話の中ではカードの列の下に置く（列に隠れない）。
+        fullscreen ? "absolute bottom-0 right-0 z-20 rounded-tl-lg bg-background/75 px-2 py-0.5 backdrop-blur" : "px-3 text-right",
+      )}
+      data-testid="basemap-attribution"
+    >
+      {config?.attribution.map((a, i) => (
+        <React.Fragment key={a.url}>
+          {i > 0 ? " " : null}
+          <a href={a.url} target="_blank" rel="noopener noreferrer" className="text-inherit no-underline hover:underline">
+            {a.text}
+          </a>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+
   return (
-    <div className="min-w-0" data-testid="basemap-figure" data-state={phase}>
+    <div className="min-w-0" data-testid="basemap-figure" data-state={phase} data-list={fullscreen ? "side" : "overlay"}>
       {figure.title ? (
         <div id={titleId} className="mb-2 text-[14px] font-semibold leading-snug text-foreground">
           {figure.title}
         </div>
       ) : null}
-      {/* 地図と地点の一覧を 1 枚のカードにまとめる（広い画面は一覧を右に、狭い画面は下に）。 */}
+      {/* 地図と地点の一覧を 1 枚にまとめる。全画面では一覧を地図の横に、会話やノートの中では地図の下端に
+          カードの列を重ねる（本文の幅の中で地図を横に狭めず、縦にも伸ばしすぎない）。 */}
       <div
         ref={frameRef}
         role="region"
         aria-labelledby={figure.title ? titleId : undefined}
         aria-label={figure.title ? undefined : "地図"}
         className={cn(
-          "flex flex-col overflow-hidden border border-border/60 bg-background md:flex-row",
-          // 広い画面は地図と一覧を同じ高さにそろえる（一覧は中でスクロールする）。
+          "flex overflow-hidden bg-background",
           fullscreen
-            ? "h-screen w-screen rounded-none"
-            : cn("rounded-xl", figure.markers.length > DENSE_MARKERS ? "md:h-[520px]" : "md:h-[380px]"),
+            ? "h-screen w-screen flex-row"
+            : "flex-col rounded-2xl border border-border/50 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.04)]",
         )}
       >
         <div
           className={cn(
-            "relative min-w-0 flex-1 bg-secondary/40",
-            // 地点の様子が分かる大きさにする（地点の多い図はさらに縦に広げる）。
-            fullscreen ? "h-full" : figure.markers.length > DENSE_MARKERS ? "h-[380px] md:h-full" : "h-[320px] md:h-full",
+            "relative min-w-0 bg-secondary/40",
+            // 会話・ノートの中は高さを決め打ち（カードの列の分も含む）、全画面は残りの幅を埋める。
+            fullscreen
+              ? "h-full flex-1"
+              : figure.markers.length > DENSE_MARKERS
+                ? "h-[460px] sm:h-[540px]"
+                : "h-[400px] sm:h-[460px]",
           )}
         >
           {/* MapLibre は自分の要素に position: relative を付けるので、絶対配置ではなく大きさで埋める。 */}
           <div ref={containerRef} className="h-full w-full" data-testid="basemap-canvas" />
           {!ready ? (
             <div
-              className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 bg-secondary/60 text-xs text-muted-foreground"
+              className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center gap-2 bg-secondary/60 text-xs text-muted-foreground"
               aria-live="polite"
             >
               <Loader2 className="size-3.5 animate-spin" />
               地図を読み込んでいます…
             </div>
           ) : null}
-          <div className="absolute left-2 top-2 flex flex-col gap-1.5">
-            <div className="flex flex-col overflow-hidden rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur">
-              <MapButton label="拡大" onClick={() => zoomBy(1)} disabled={!ready}>
-                <Plus className="size-4" />
-              </MapButton>
-              <MapButton label="縮小" onClick={() => zoomBy(-1)} disabled={!ready} className="border-t border-border/60">
-                <Minus className="size-4" />
-              </MapButton>
+          {fullscreen ? null : (
+            <div
+              ref={countRef}
+              className="pointer-events-none absolute left-3 top-3 z-20 rounded-full bg-background/90 px-3 py-1 text-[12px] font-semibold tabular-nums text-foreground shadow-[0_2px_10px_rgba(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10"
+              aria-hidden="true"
+            >
+              {figure.markers.length} か所
             </div>
-            <div className="flex flex-col overflow-hidden rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur">
-              <MapButton label="全地点を表示" onClick={fitAll} disabled={!ready}>
-                <Scan className="size-4" />
-              </MapButton>
-            </div>
+          )}
+          <div ref={controlsRef} className="absolute right-3 top-3 z-20 flex flex-col overflow-hidden rounded-xl bg-background/90 shadow-[0_2px_10px_rgba(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10">
+            <MapButton label="拡大" onClick={() => zoomBy(1)} disabled={!ready}>
+              <Plus className="size-4" />
+            </MapButton>
+            <MapButton label="縮小" onClick={() => zoomBy(-1)} disabled={!ready} className="border-t border-border/50">
+              <Minus className="size-4" />
+            </MapButton>
+            <MapButton label="全地点を表示" onClick={fitAll} disabled={!ready} className="border-t border-border/50">
+              <Scan className="size-4" />
+            </MapButton>
             {canFullscreen ? (
-              <div className="flex flex-col overflow-hidden rounded-full border border-border/60 bg-background/95 shadow-sm backdrop-blur">
-                <MapButton
-                  label={fullscreen ? "全画面を終了" : "全画面で表示"}
-                  onClick={toggleFullscreen}
-                  data-testid="basemap-fullscreen"
-                >
-                  {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-                </MapButton>
-              </div>
+              <MapButton
+                label={fullscreen ? "全画面を終了" : "全画面で表示"}
+                onClick={toggleFullscreen}
+                className="border-t border-border/50"
+                data-testid="basemap-fullscreen"
+              >
+                {fullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+              </MapButton>
             ) : null}
           </div>
-          {/* 出典（地図データの利用条件）。閉じたり隠したりできない形で常に出す。 */}
-          <div
-            className="absolute bottom-0 right-0 max-w-full truncate rounded-tl-md bg-background/85 px-1.5 py-0.5 text-[10px] leading-4 text-muted-foreground"
-            data-testid="basemap-attribution"
-          >
-            {config?.attribution.map((a, i) => (
-              <React.Fragment key={a.url}>
-                {i > 0 ? " " : null}
-                <a href={a.url} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                  {a.text}
-                </a>
-              </React.Fragment>
-            ))}
-          </div>
-        </div>
-        {/* 地点の一覧。行に乗せると地図の札とカードが連動し、押すと選ぶ（画面の外なら寄せる）。
-            ノートの本文（prose）の ol/li の装飾を受けないよう、要素ではなく role で一覧にする。 */}
-        <div
-          className={cn(
-            "flex min-h-0 flex-col border-t border-border/60 md:w-[260px] md:shrink-0 md:border-l md:border-t-0",
-            fullscreen ? "" : "max-h-[240px] md:max-h-none",
+          {/* 出典（地図データの利用条件）は閉じたり隠したりできない形で常に出す。 */}
+          {fullscreen ? (
+            attribution
+          ) : (
+            // 地図の下端に重ねるカードの列。下を背景色で薄くぼかして地図と分け、列の下に出典を置く。
+            <div
+              ref={overlayRef}
+              className="absolute inset-x-0 bottom-0 z-20 flex flex-col gap-1.5 bg-gradient-to-t from-background from-[22px] via-background/60 via-55% to-transparent pb-1.5 pt-8"
+            >
+              <MapCardCarousel {...listProps} />
+              {attribution}
+            </div>
           )}
-        >
-          <div className="px-3.5 pb-1.5 pt-3 text-[13px] font-semibold text-foreground">{figure.markers.length} か所</div>
-          <div
-            role="list"
-            aria-label="地点の一覧"
-            className="min-h-0 flex-1 overflow-y-auto pb-1.5"
-            data-testid="basemap-legend"
-            onMouseLeave={() => setHover(null)}
-          >
-            {figure.markers.map((mk, i) => (
-              <div role="listitem" key={`${i}-${mk.label}`} className="min-w-0">
-                <button
-                  type="button"
-                  onClick={() => focusMarker(i)}
-                  onMouseEnter={() => setHover(i)}
-                  onFocus={() => setHover(i)}
-                  onBlur={() => setHover(null)}
-                  disabled={!ready}
-                  aria-pressed={selected === i}
-                  className={cn(
-                    "flex w-full min-w-0 flex-col items-start border-b border-border/40 px-3.5 py-2 text-left transition-colors",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                    active === i ? "bg-accent" : "hover:bg-accent/60",
-                  )}
-                >
-                  <span className="w-full truncate text-[13.5px] font-semibold leading-snug text-foreground">
-                    {mk.label}
-                  </span>
-                  {mk.desc ? (
-                    <span className="w-full truncate text-[12px] leading-snug text-muted-foreground">{mk.desc}</span>
-                  ) : null}
-                </button>
-              </div>
-            ))}
-          </div>
         </div>
+        {/* 全画面では地図の横に一覧を出す。ノートの本文（prose）の ol/li の装飾を受けないよう、
+            要素ではなく role で一覧にする。 */}
+        {fullscreen ? <MapSideList {...listProps} /> : null}
       </div>
     </div>
   );
@@ -425,7 +474,7 @@ function MapButton({
       aria-label={label}
       title={label}
       className={cn(
-        "flex size-8 items-center justify-center text-foreground/80 transition-colors hover:bg-secondary hover:text-foreground",
+        "flex size-9 items-center justify-center text-foreground/75 transition-colors hover:bg-foreground/5 hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40 disabled:hover:bg-transparent",
         className,
       )}

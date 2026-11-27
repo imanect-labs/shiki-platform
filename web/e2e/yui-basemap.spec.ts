@@ -112,7 +112,7 @@ test.describe("背景地図（map の renderMap）", () => {
     await expect(section.getByTestId("basemap-figure")).toHaveCount(0);
   });
 
-  test("地図データがあれば背景地図に番号付きのピンを重ね、shiki 以外へ接続しない", async ({ page, baseURL }) => {
+  test("地図データがあれば背景地図に地点の札を重ね、shiki 以外へ接続しない", async ({ page, baseURL }) => {
     const origin = new URL(baseURL ?? "http://localhost:3000").origin;
     const outside: string[] = [];
     page.on("request", (req) => {
@@ -134,7 +134,7 @@ test.describe("背景地図（map の renderMap）", () => {
     const attribution = figure.getByTestId("basemap-attribution");
     await expect(attribution).toContainText("© OpenStreetMap contributors");
     await expect(attribution).toContainText("© OpenMapTiles");
-    // 地点の一覧（番号・名前）と操作ボタン。
+    // 地点の一覧（名前）と操作ボタン。
     await expect(figure.getByTestId("basemap-legend").getByRole("listitem")).toHaveCount(3);
     await expect(figure.getByTestId("basemap-legend").getByRole("listitem").first()).toContainText("大阪駅");
     // 地図の上の札（名前）が地点の数だけある。
@@ -151,6 +151,26 @@ test.describe("背景地図（map の renderMap）", () => {
     await figure.getByTestId("basemap-tag").first().hover();
     await expect(card).toContainText("大阪駅");
     await expect(card).toContainText("集合場所");
+    // 地図の下端のカードの列は 1 つのタブ位置で、←→ で地点を移れる。移った地点のカードが地図に出る。
+    await expect(figure).toHaveAttribute("data-list", "overlay");
+    await page.mouse.move(0, 0);
+    const cards = figure.getByTestId("basemap-legend").getByRole("button");
+    // タブで止まるのは最後に移ったカード（上で押した 3 つめ）だけ。
+    await expect(figure.getByTestId("basemap-legend").locator('button[tabindex="0"]')).toHaveCount(1);
+    await expect(cards.nth(2)).toHaveAttribute("tabindex", "0");
+    await cards.nth(2).focus();
+    await page.keyboard.press("Home");
+    await expect(cards.first()).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(cards.nth(1)).toBeFocused();
+    await expect(card).toContainText("梅田スカイビル");
+    await page.keyboard.press("End");
+    await expect(cards.nth(2)).toBeFocused();
+    await expect(card).toContainText("本社");
+    // カードの列は地図に重なっていて、地図（キャンバス）の下端に収まっている。
+    const legendBox = await figure.getByTestId("basemap-legend").boundingBox();
+    const mapBox = await figure.locator("canvas.maplibregl-canvas").boundingBox();
+    expect((legendBox?.y ?? 0) + (legendBox?.height ?? 0)).toBeLessThanOrEqual((mapBox?.y ?? 0) + (mapBox?.height ?? 0) + 1);
 
     // 地図の上でホイールを回してもページがスクロールする（地図はスクロールを奪わない）。
     const box = await figure.getByTestId("basemap-canvas").boundingBox();

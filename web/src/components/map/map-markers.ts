@@ -9,30 +9,34 @@ import type { MapFigure } from "@imanect/yui";
 import type { Map as MlMap, Marker } from "maplibre-gl";
 
 /// 札の高さと、点から札までの間隔。
-const TAG_H = 26;
-const GAP = 7;
+const TAG_H = 28;
+const GAP = 8;
 
 type Placement = "above" | "right" | "left" | "below" | "none";
 
 /// 札の置き場所ごとの位置（点が原点）。
 const PLACE_CLASS: Record<Exclude<Placement, "none">, string> = {
-  above: "bottom-[7px] left-1/2 -translate-x-1/2",
-  right: "left-[7px] top-1/2 -translate-y-1/2",
-  left: "right-[7px] top-1/2 -translate-y-1/2",
-  below: "top-[7px] left-1/2 -translate-x-1/2",
+  above: "bottom-[8px] left-1/2 -translate-x-1/2",
+  right: "left-[8px] top-1/2 -translate-y-1/2",
+  left: "right-[8px] top-1/2 -translate-y-1/2",
+  below: "top-[8px] left-1/2 -translate-x-1/2",
 };
 
 const TAG_BASE =
-  "absolute flex h-[26px] max-w-[180px] items-center whitespace-nowrap rounded-full border px-2.5 text-[12.5px] font-semibold " +
-  "leading-none shadow-[0_1px_4px_rgba(0,0,0,0.2)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const TAG_IDLE = "border-border bg-background text-foreground hover:bg-secondary";
-const TAG_ACTIVE = "border-foreground bg-foreground text-background";
+  "absolute flex h-[28px] max-w-[180px] items-center whitespace-nowrap rounded-full px-3 text-[12.5px] font-semibold tracking-tight " +
+  "leading-none shadow-[0_2px_8px_rgba(0,0,0,0.16)] ring-1 transition-[background-color,color,transform] duration-150 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+const TAG_IDLE = "bg-background text-foreground ring-black/5 hover:scale-[1.04] dark:ring-white/10";
+const TAG_ACTIVE = "scale-[1.06] bg-foreground text-background ring-foreground";
 const DOT_BASE =
-  "absolute left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-2 border-background shadow-[0_1px_3px_rgba(0,0,0,0.35)]";
+  "absolute left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-pointer rounded-full border-[2.5px] border-white " +
+  "shadow-[0_1px_4px_rgba(0,0,0,0.4)] transition-[width,height] duration-150";
 
 export type MarkerHandlers = {
-  /// 地点を指した・離れた（i は地点の番号・離れたら null）。
-  onHover: (i: number | null) => void;
+  /// 地点を指した。
+  onHover: (i: number) => void;
+  /// 地点から離れた（指す先がもうほかの地点に移っていれば何もしない）。
+  onLeave: (i: number) => void;
   /// 地点を押した。
   onSelect: (i: number) => void;
 };
@@ -41,6 +45,10 @@ export type MarkerHandlers = {
 export type FigureMarkers = {
   /// 指している・選んでいる地点を強調し、カードを出す（null で消す）。
   setActive: (i: number | null) => void;
+  /// 地図の下端に重なっている部品（カードの列など）の高さ。札とカードはその上だけに置く。
+  setBottomInset: (px: number) => void;
+  /// 地図の左上・右上に重なっている部品（件数・操作ボタン）の大きさ（余白込み）。札とカードはそこを避ける。
+  setCorners: (corners: Corners) => void;
   remove: () => void;
 };
 
@@ -56,6 +64,9 @@ type Entry = {
 };
 
 type Box = { x0: number; y0: number; x1: number; y1: number };
+
+/// 角に重なる部品の幅と高さ（[幅, 高さ]）。
+export type Corners = { topLeft: [number, number]; topRight: [number, number] };
 
 function tagBox(placement: Exclude<Placement, "none">, x: number, y: number, w: number): Box {
   switch (placement) {
@@ -84,7 +95,7 @@ export function createFigureMarkers(
     // MapLibre に渡す要素（大きさ 0 の点）。位置は MapLibre が class と transform で決めるので触らない。
     const root = document.createElement("div");
     root.addEventListener("mouseenter", () => handlers.onHover(i));
-    root.addEventListener("mouseleave", () => handlers.onHover(null));
+    root.addEventListener("mouseleave", () => handlers.onLeave(i));
     const dot = document.createElement("span");
     dot.setAttribute("aria-hidden", "true");
     const tag = document.createElement("button");
@@ -92,7 +103,7 @@ export function createFigureMarkers(
     tag.dataset.testid = "basemap-tag";
     tag.setAttribute("aria-label", mk.desc ? `${mk.label}（${mk.desc}）` : mk.label);
     tag.addEventListener("focus", () => handlers.onHover(i));
-    tag.addEventListener("blur", () => handlers.onHover(null));
+    tag.addEventListener("blur", () => handlers.onLeave(i));
     const select = (e: Event) => {
       e.stopPropagation();
       handlers.onSelect(i);
@@ -118,17 +129,31 @@ export function createFigureMarkers(
     const placement: Placement = e.placement === "none" && on ? "above" : e.placement;
     e.tag.className =
       placement === "none" ? "hidden" : `${TAG_BASE} ${PLACE_CLASS[placement]} ${on ? TAG_ACTIVE : TAG_IDLE}`;
-    e.dot.className = `${DOT_BASE} ${on ? "size-3.5 bg-foreground" : "size-2.5 bg-[#d4442e]"}`;
+    e.dot.className = `${DOT_BASE} ${on ? "size-4 bg-foreground" : "size-3 bg-[#e5484d]"}`;
     // 一覧の順で先の地点、指している地点を上に重ねる。
     e.root.style.zIndex = String(on ? 1000 : placement === "none" ? 1 : 500 - i);
   };
 
   // 札の置き場所を決める（一覧の順で先の地点から、上・右・左・下の順に空いている所へ）。
   let frame = 0;
+  let bottomInset = 0;
+  let corners: Corners = { topLeft: [0, 0], topRight: [0, 0] };
+  /// 角の部品が占める範囲。
+  const cornerBoxes = (view: Box): Box[] => [
+    { x0: view.x0, y0: view.y0, x1: view.x0 + corners.topLeft[0], y1: view.y0 + corners.topLeft[1] },
+    { x0: view.x1 - corners.topRight[0], y0: view.y0, x1: view.x1, y1: view.y0 + corners.topRight[1] },
+  ];
+  /// 札・カードを置ける範囲（地図の下端に重なる部品の分を除く）。
+  const visible = (): Box => {
+    const canvas = map.getCanvas();
+    return { x0: 0, y0: 0, x1: canvas.clientWidth, y1: Math.max(0, canvas.clientHeight - bottomInset) };
+  };
+  // 動かしている間もカードを枠の中に保つ（カードを作った後で入れる）。
+  const follow: { card?: () => void } = {};
   const layout = () => {
     frame = 0;
-    const canvas = map.getCanvas();
-    const view: Box = { x0: 0, y0: 0, x1: canvas.clientWidth, y1: canvas.clientHeight };
+    const view = visible();
+    const blocked = cornerBoxes(view);
     const pts = entries.map((e) => map.project([e.lng, e.lat]));
     // 点はすべて障害物（札で点を隠さない）。
     const dots: Box[] = pts.map((p) => ({ x0: p.x - 6, x1: p.x + 6, y0: p.y - 6, y1: p.y + 6 }));
@@ -143,7 +168,9 @@ export function createFigureMarkers(
           const box = tagBox(c, p.x, p.y, e.width);
           const inside = box.x0 >= view.x0 && box.x1 <= view.x1 && box.y0 >= view.y0 && box.y1 <= view.y1;
           const free =
-            !tags.some((b) => overlaps(b, box)) && !dots.some((b, j) => j !== i && overlaps(b, box, 1));
+            !tags.some((b) => overlaps(b, box)) &&
+            !dots.some((b, j) => j !== i && overlaps(b, box, 1)) &&
+            !blocked.some((b) => overlaps(b, box, 0));
           if (inside && free) {
             tags.push(box);
             next = c;
@@ -156,6 +183,7 @@ export function createFigureMarkers(
         style(i);
       }
     });
+    follow.card?.();
   };
   const schedule = () => {
     if (!frame) frame = requestAnimationFrame(layout);
@@ -174,15 +202,43 @@ export function createFigureMarkers(
   card.dataset.testid = "basemap-card";
   card.setAttribute("role", "status");
   card.className =
-    "pointer-events-none w-max max-w-[260px] rounded-xl border border-border/60 bg-background px-3.5 py-2.5 text-left shadow-[0_4px_16px_rgba(0,0,0,0.16)]";
+    "pointer-events-none w-max max-w-[280px] rounded-2xl bg-background/95 px-4 py-3 text-left shadow-[0_8px_30px_rgba(0,0,0,0.18)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10";
   const cardTitle = document.createElement("div");
-  cardTitle.className = "text-[14px] font-semibold leading-snug text-foreground";
+  cardTitle.className = "text-[15px] font-semibold leading-snug tracking-tight text-foreground";
   const cardDesc = document.createElement("div");
-  cardDesc.className = "mt-0.5 text-[12.5px] leading-snug text-muted-foreground";
+  cardDesc.className = "mt-1 text-[12.5px] leading-relaxed text-muted-foreground";
   card.append(cardTitle, cardDesc);
   const cardRoot = document.createElement("div");
   cardRoot.append(card);
-  const cardMarker = new maplibre.Marker({ element: cardRoot, anchor: "bottom" });
+  // 置き場所は中心を基準に自分で決める（上に入らなければ下、左右は枠の中に収める）。
+  const cardMarker = new maplibre.Marker({ element: cardRoot, anchor: "center" });
+  const MARGIN = 8;
+  const placeCard = (e: Entry) => {
+    const view = visible();
+    const p = map.project([e.lng, e.lat]);
+    const w = card.offsetWidth;
+    const h = card.offsetHeight;
+    const shown = e.placement === "none" ? "above" : e.placement;
+    // 札が点の上（下）にあるときは札をよける。
+    const up = shown === "above" ? GAP + TAG_H + 8 : 12;
+    const down = shown === "below" ? GAP + TAG_H + 8 : 14;
+    const fitsAbove = p.y - up - h >= MARGIN;
+    const fitsBelow = p.y + down + h <= view.y1 - MARGIN;
+    const dy = fitsAbove || !fitsBelow ? -(up + h / 2) : down + h / 2;
+    // 左右は枠の中に収め、角の部品（件数・操作ボタン）に重なるならその内側へずらす。
+    const clamp = (x0: number, lo: number, hi: number) => Math.min(Math.max(x0, lo), Math.max(lo, hi - w));
+    let x0 = clamp(p.x - w / 2, view.x0 + MARGIN, view.x1 - MARGIN);
+    const y0 = p.y + dy - h / 2;
+    const [tl, tr] = cornerBoxes(view);
+    const hits = (b: Box | undefined) => !!b && overlaps(b, { x0, x1: x0 + w, y0, y1: y0 + h }, MARGIN);
+    if (hits(tr)) x0 = clamp(x0, view.x0 + MARGIN, (tr?.x0 ?? view.x1) - MARGIN);
+    if (hits(tl)) x0 = clamp(x0, (tl?.x1 ?? view.x0) + MARGIN, view.x1 - MARGIN);
+    cardMarker.setOffset([x0 - (p.x - w / 2), dy]);
+  };
+  follow.card = () => {
+    const e = active === null ? undefined : entries[active];
+    if (e && cardRoot.isConnected) placeCard(e);
+  };
 
   return {
     setActive: (i) => {
@@ -199,13 +255,19 @@ export function createFigureMarkers(
       cardTitle.textContent = mk.label;
       cardDesc.textContent = mk.desc ?? "";
       cardDesc.hidden = !mk.desc;
-      // カードは点の上に出す（札が点の上にあるときは札をよける）。
-      const above = e.placement === "above" || e.placement === "none";
-      cardMarker
-        .setOffset([0, above ? -(GAP + TAG_H + 8) : -12])
-        .setLngLat([mk.lng, mk.lat])
-        .addTo(map);
+      cardMarker.setLngLat([mk.lng, mk.lat]).addTo(map);
       cardRoot.style.zIndex = "1001";
+      // 大きさは文字を入れて地図に載せてから測る。
+      placeCard(e);
+    },
+    setCorners: (c) => {
+      corners = c;
+      schedule();
+    },
+    setBottomInset: (px) => {
+      if (px === bottomInset) return;
+      bottomInset = px;
+      schedule();
     },
     remove: () => {
       if (frame) cancelAnimationFrame(frame);
