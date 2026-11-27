@@ -223,6 +223,8 @@ export function OptionsEditor({
           placeholder="選択肢を追加（カンマ区切りで複数）"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            // 変換確定の Enter では追加しない（Safari は isComposing が false で keyCode 229 を送る）。
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter") {
               e.preventDefault();
               add();
@@ -563,6 +565,8 @@ export function AddFieldForm({
           maxLength={100}
           onChange={(e) => setLabel(e.target.value)}
           onKeyDown={(e) => {
+            // 日本語の変換を確定する Enter で列が追加されないようにする（Safari は keyCode 229 だけを送る）。
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter" && !missing) {
               e.preventDefault();
               add();
