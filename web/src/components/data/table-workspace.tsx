@@ -201,6 +201,12 @@ export function TableWorkspace({
     [table.schema.fields, masked],
   );
 
+  // ビューの名前・所有者の解決に使う最新の値（effect の依存には入れない。一覧の再読込でビューを開き直さないため）。
+  const latest = React.useRef({ views, loaded });
+  React.useEffect(() => {
+    latest.current = { views, loaded };
+  }, [views, loaded]);
+
   // ビューの切替（URL の ?view= が正）。
   React.useEffect(() => {
     let active = true;
@@ -212,12 +218,16 @@ export function TableWorkspace({
     getView(viewParam)
       .then((v) => {
         if (!active) return;
-        const summary = views.find((x) => x.id === v.id);
+        const { views: list, loaded: cur } = latest.current;
+        const summary = list.find((x) => x.id === v.id);
+        // 保存した直後は一覧の再読込が間に合わず、新しいビューがまだ一覧に無い。
+        // 保存で入れた名前・所有者（同じビューのもの）を、一覧より先に使う。
+        const same = cur.viewId === v.id ? cur : null;
         apply({
           viewId: v.id,
-          name: summary?.name ?? "ビュー",
+          name: same?.name ?? summary?.name ?? "ビュー",
           version: v.version,
-          owner: summary?.owner ?? null,
+          owner: same?.owner ?? summary?.owner ?? null,
           spec: v.display ?? defaultSpec(),
           query: v.query,
         });
@@ -231,7 +241,7 @@ export function TableWorkspace({
     return () => {
       active = false;
     };
-    // views はビューの名前の解決にだけ使う（一覧の再読込でビューを開き直さない）。
+    // router・toast は開き直しの契機にしない（名前の解決は latest から読む）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewParam, table.id, apply]);
 
