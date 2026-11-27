@@ -1,0 +1,264 @@
+//! ジョブの実行を enqueue 元のトレースにつなげる。
+//!
+//! - 投入時（[`crate::enqueue_on`]）: 現在の span の OTel context を W3C `traceparent`
+//!   （`00-<trace_id>-<span_id>-<flags>`）にして `job_queue.traceparent` へ保存する
+//!   （[`current_traceparent`]）。呼び出し側は何も渡さなくてよい。
+//! - 実行時: ワーカーは claim 後に [`ClaimedJob::span`] で span を作り、処理をその中で走らせる。
+//!   保存した context を**親**にするか**リンク**にするかはワーカーが [`JobSpanLink`] で選ぶ。
+//!
+//! 再試行（`fail`・`defer`）は同じ行を使い回すので、何度 claim しても同じ context につながる。
+//! DLQ へ移しても列ごと引き継ぎ、`requeue_dead` で戻せば元のトレースへつながる。
+//!
+//! `traceparent` が無い行（列の追加前に積まれた行・span の外で積まれた行）や壊れた値でも
+//! 落ちない: 親もリンクも無い span になるだけ。
+
+use chrono::Utc;
+use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
+use opentelemetry::Context;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use crate::ClaimedJob;
+
+/// ジョブの span を enqueue 元の span とどうつなぐか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobSpanLink {
+    /// enqueue 元の span の**子**にする（同じトレースに入る）。ユーザーが結果を待っている
+    /// 短いジョブ（チャット生成）向け。
+    Parent,
+    /// 新しいトレースを始め、enqueue 元へ **span link** を張る。長時間のバッチ・バックフィル・
+    /// 保守ジョブ向け（元のリクエストのトレースが何十分も伸びないように）。
+    Link,
+}
+
+/// 現在の span の OTel context を W3C `traceparent` にする。有効な context が無ければ `None`。
+///
+/// `trace_id` が指定されていて現在の span の trace と違うとき（保存済みの trace_id で積み直す
+/// reaper・outbox の relay など、現在の span が enqueue の「元」ではない場合）も `None`:
+/// 親 span が分からないまま別のトレースへつなぐと、因果の違う span が混ざる。
+#[must_use]
+pub fn current_traceparent(trace_id: Option<&str>) -> Option<String> {
+    let cx = tracing::Span::current().context();
+    let sc = cx.span().span_context().clone();
+    if !sc.is_valid() {
+        return None;
+    }
+    let tp = format_traceparent(&sc);
+    if let Some(expected) = trace_id {
+        if !expected.eq_ignore_ascii_case(&sc.trace_id().to_string()) {
+            return None;
+        }
+    }
+    Some(tp)
+}
+
+/// [`SpanContext`] を `traceparent` の文字列にする。
+fn format_traceparent(sc: &SpanContext) -> String {
+    format!(
+        "00-{}-{}-{:02x}",
+        sc.trace_id(),
+        sc.span_id(),
+        sc.trace_flags().to_u8()
+    )
+}
+
+/// `traceparent` を [`SpanContext`]（remote）に戻す。形式が違う・ID が全 0 なら `None`。
+#[must_use]
+pub fn parse_traceparent(value: &str) -> Option<SpanContext> {
+    let mut parts = value.trim().split('-');
+    let (version, trace, span, flags) =
+        (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || version != "00" {
+        return None;
+    }
+    if trace.len() != 32 || span.len() != 16 || flags.len() != 2 {
+        return None;
+    }
+    let trace_id = TraceId::from_hex(trace).ok()?;
+    let span_id = SpanId::from_hex(span).ok()?;
+    let flags = u8::from_str_radix(flags, 16).ok()?;
+    let sc = SpanContext::new(
+        trace_id,
+        span_id,
+        TraceFlags::new(flags) & TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    sc.is_valid().then_some(sc)
+}
+
+impl ClaimedJob {
+    /// このジョブを処理する span を作る。処理は `.instrument(span)` か `span.in_scope` で包む。
+    ///
+    /// 属性: キュー名・ジョブ id・試行回数・テナント・待ち時間（enqueue から claim まで。
+    /// 再試行では最初の enqueue からの経過）。`traceparent` が無く `trace_id` だけある行は、
+    /// 突合用に `job.enqueue_trace_id` を載せる。
+    #[must_use]
+    pub fn span(&self, link: JobSpanLink) -> tracing::Span {
+        let wait_ms = (Utc::now() - self.enqueued_at).num_milliseconds().max(0);
+        let span = tracing::info_span!(
+            "job",
+            otel.name = %format_args!("job {}", self.queue),
+            job.queue = %self.queue,
+            job.id = self.id,
+            job.attempts = self.attempts,
+            job.max_attempts = self.max_attempts,
+            job.wait_ms = wait_ms,
+            job.link = ?link,
+            job.enqueue_trace_id = tracing::field::Empty,
+            tenant_id = %self.tenant_id,
+        );
+        match self.traceparent.as_deref().and_then(parse_traceparent) {
+            Some(sc) => match link {
+                JobSpanLink::Parent => {
+                    span.set_parent(Context::new().with_remote_span_context(sc));
+                }
+                JobSpanLink::Link => span.add_link(sc),
+            },
+            None => {
+                if let Some(trace_id) = self.trace_id.as_deref() {
+                    span.record("job.enqueue_trace_id", trace_id);
+                }
+            }
+        }
+        span
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    const TP: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    fn job(traceparent: Option<&str>, trace_id: Option<&str>) -> ClaimedJob {
+        ClaimedJob {
+            id: 7,
+            queue: "chat_generation".into(),
+            tenant_id: "a-corp".into(),
+            payload: serde_json::json!({}),
+            attempts: 2,
+            max_attempts: 3,
+            trace_id: trace_id.map(str::to_string),
+            traceparent: traceparent.map(str::to_string),
+            enqueued_at: Utc::now() - chrono::Duration::seconds(5),
+        }
+    }
+
+    /// テスト用の exporter を付けた subscriber の下で `f` を走らせ、終わった span を返す。
+    fn capture(f: impl FnOnce()) -> Vec<opentelemetry_sdk::trace::SpanData> {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+        tracing::subscriber::with_default(subscriber, f);
+        provider.force_flush().unwrap();
+        exporter.get_finished_spans().unwrap()
+    }
+
+    fn attr(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.to_string())
+    }
+
+    #[test]
+    fn parse_roundtrips_and_rejects_garbage() {
+        let sc = parse_traceparent(TP).unwrap();
+        assert!(sc.is_remote());
+        assert!(sc.is_sampled());
+        assert_eq!(format_traceparent(&sc), TP);
+        for bad in [
+            "",
+            "trace-1",
+            "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            "00-00000000000000000000000000000000-b7ad6b7169203331-01",
+            "00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-zz",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01-x",
+        ] {
+            assert!(parse_traceparent(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parent_mode_joins_the_enqueue_trace() {
+        let spans = capture(|| {
+            let _g = job(Some(TP), None).span(JobSpanLink::Parent).entered();
+        });
+        assert_eq!(spans.len(), 1);
+        let s = &spans[0];
+        assert_eq!(s.span_context.trace_id().to_string(), &TP[3..35]);
+        assert_eq!(s.parent_span_id.to_string(), &TP[36..52]);
+        assert!(s.links.is_empty());
+        assert_eq!(s.name, "job chat_generation");
+        assert_eq!(attr(s, "job.queue").as_deref(), Some("chat_generation"));
+        assert_eq!(attr(s, "job.attempts").as_deref(), Some("2"));
+        assert_eq!(attr(s, "tenant_id").as_deref(), Some("a-corp"));
+        let wait: i64 = attr(s, "job.wait_ms").unwrap().parse().unwrap();
+        assert!(wait >= 5000, "wait_ms={wait}");
+    }
+
+    #[test]
+    fn link_mode_starts_a_new_trace_with_a_link() {
+        let spans = capture(|| {
+            let _g = job(Some(TP), None).span(JobSpanLink::Link).entered();
+        });
+        let s = &spans[0];
+        assert_ne!(s.span_context.trace_id().to_string(), &TP[3..35]);
+        assert_eq!(s.parent_span_id, SpanId::INVALID);
+        let links: Vec<_> = s.links.iter().collect();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].span_context.trace_id().to_string(), &TP[3..35]);
+        assert_eq!(links[0].span_context.span_id().to_string(), &TP[36..52]);
+    }
+
+    #[test]
+    fn missing_or_broken_traceparent_still_makes_a_root_span() {
+        let spans = capture(|| {
+            job(None, Some("legacy-trace"))
+                .span(JobSpanLink::Parent)
+                .in_scope(|| {});
+            job(Some("garbage"), None)
+                .span(JobSpanLink::Link)
+                .in_scope(|| {});
+        });
+        assert_eq!(spans.len(), 2);
+        for s in &spans {
+            assert_eq!(s.parent_span_id, SpanId::INVALID);
+            assert!(s.links.is_empty());
+        }
+        assert_eq!(
+            attr(&spans[0], "job.enqueue_trace_id").as_deref(),
+            Some("legacy-trace")
+        );
+    }
+
+    #[test]
+    fn current_traceparent_reads_the_active_span() {
+        let mut seen = None;
+        let mut mismatched = Some(String::new());
+        let mut outside = Some(String::new());
+        capture(|| {
+            outside = current_traceparent(None);
+            let span = tracing::info_span!("http_request");
+            let _g = span.enter();
+            seen = current_traceparent(None);
+            let tid = span.context().span().span_context().trace_id().to_string();
+            assert_eq!(current_traceparent(Some(&tid)), seen);
+            mismatched = current_traceparent(Some("0af7651916cd43dd8448eb211c80319c"));
+        });
+        assert!(outside.is_none());
+        let seen = seen.unwrap();
+        assert!(parse_traceparent(&seen).is_some(), "{seen}");
+        assert!(mismatched.is_none());
+    }
+}

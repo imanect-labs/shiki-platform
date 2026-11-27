@@ -5428,6 +5428,8 @@ dependencies = [
  "chrono-tz",
  "futures",
  "imagesize",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5453,6 +5455,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
  "utoipa",
  "uuid",
@@ -5564,11 +5568,16 @@ name = "shiki-jobq"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "serde_json",
  "shiki-testenv",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
 ]
 

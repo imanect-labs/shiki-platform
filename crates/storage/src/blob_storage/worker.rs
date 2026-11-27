@@ -3,6 +3,7 @@ use crate::StorageError;
 use authz::TenantId;
 use serde::Deserialize;
 use std::time::Duration;
+use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -59,6 +60,7 @@ impl BlobStorage {
         };
         let tenant = TenantId::parse(job.tenant_id.clone())
             .map_err(|e| StorageError::Integrity(e.to_string()))?;
+        let span = job.span(jobq::JobSpanLink::Link);
         let result = async {
             let payload: Payload = serde_json::from_value(job.payload)
                 .map_err(|e| StorageError::Integrity(e.to_string()))?;
@@ -88,6 +90,7 @@ impl BlobStorage {
             tx.commit().await?;
             Ok::<_, StorageError>(())
         }
+        .instrument(span)
         .await;
         if let Err(e) = result {
             tracing::warn!(error = %e, job_id = job.id, "旧版の最適化を再試行します");

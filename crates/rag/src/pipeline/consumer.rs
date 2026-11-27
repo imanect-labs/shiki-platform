@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use jobq::{ClaimedJob, FailOutcome};
+use tracing::Instrument;
 
 use super::indexer::{self, IndexOutcome};
 use super::job_state;
@@ -23,9 +24,13 @@ pub async fn consume_once(deps: &Arc<PipelineDeps>) -> Result<usize, RagError> {
     futures::stream::iter(jobs)
         .for_each_concurrent(concurrency, |job| {
             let deps = Arc::clone(deps);
+            // インジェストは長く・再試行もあるので、アップロードしたリクエストのトレースは伸ばさず
+            // リンクでつなぐ。
+            let span = job.span(jobq::JobSpanLink::Link);
             async move {
                 process_job(&deps, job).await;
             }
+            .instrument(span)
         })
         .await;
     Ok(count)

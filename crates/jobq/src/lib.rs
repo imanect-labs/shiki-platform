@@ -15,6 +15,9 @@
 //!
 //! 消費側は payload の冪等キー（RAG なら `(node_id, version, op)`）で二重処理を防ぐこと。
 //!
+//! **トレース**: [`enqueue_on`] は現在の span の context（W3C `traceparent`）を保存し、ワーカーは
+//! claim 後に [`ClaimedJob::span`] で enqueue 元へ親子かリンクでつないだ span を作る（`trace` モジュール）。
+//!
 //! # テナント間の公平性（#816）
 //!
 //! フルプールでは 1 キューを全テナントが共有する。取り出しを到着順（`id`）にすると、1 テナントの
@@ -48,6 +51,10 @@
 //! relay のバッチ）が commit まで同じテナントの他の書込を待たせ、複数キューへ投入する txn 同士で
 //! デッドロックし得る。上振れは「同時に投入しているトランザクション数」倍で有界なので、公平性の
 //! 近似として受け入れる（rag の relay / consumer はリーダー選出で 1 プロセス・並列 2）。
+
+mod trace;
+
+pub use trace::{current_traceparent, parse_traceparent, JobSpanLink};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -87,7 +94,10 @@ pub struct NewJob<'a> {
     pub queue: &'a str,
     pub tenant_id: &'a str,
     pub payload: &'a Value,
-    /// OTel と共有するトレース ID（イベント発生元から引き継ぐ）。
+    /// OTel と共有するトレース ID（イベント発生元から引き継ぐ）。監査ログとの突合に使う。
+    ///
+    /// 親 span ごとの context（`traceparent`）は [`enqueue_on`] が現在の span から取って別列に
+    /// 保存する（[`current_traceparent`]）。
     pub trace_id: Option<&'a str>,
     /// 配信試行の上限。超えると DLQ へ。
     pub max_attempts: i32,
@@ -104,6 +114,8 @@ pub struct ClaimedJob {
     pub attempts: i32,
     pub max_attempts: i32,
     pub trace_id: Option<String>,
+    /// enqueue 元の span の W3C `traceparent`。ワーカーは [`ClaimedJob::span`] で使う。
+    pub traceparent: Option<String>,
     pub enqueued_at: DateTime<Utc>,
 }
 
@@ -130,11 +142,14 @@ pub struct DeadJob {
 
 /// ジョブを 1 件投入する。ドメイン書込と同一トランザクション上で呼べる。
 ///
-/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。
+/// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。現在の span の context を
+/// `traceparent` として保存する（ワーカーがジョブの span をこのトレースへつなぐ。[`trace`]）。
 pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64, JobqError> {
+    let traceparent = current_traceparent(job.trace_id);
     let id: i64 = sqlx::query_scalar(concat!(
-        "insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
-         values ($1, $2, $3, $4, $5, ",
+        "insert into job_queue \
+             (queue, tenant_id, payload, max_attempts, trace_id, traceparent, fair_seq) \
+         values ($1, $2, $3, $4, $5, $6, ",
         fair_seq_expr!("$1", "$2"),
         ") returning id"
     ))
@@ -143,6 +158,7 @@ pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64,
     .bind(job.payload)
     .bind(job.max_attempts)
     .bind(job.trace_id)
+    .bind(traceparent)
     .fetch_one(conn)
     .await?;
     Ok(id)
@@ -213,7 +229,7 @@ pub async fn claim(
                                     attempts = j.attempts + 1 \
              from picked where j.id = picked.id \
              returning j.id, j.queue, j.tenant_id, j.payload, j.attempts, j.max_attempts, \
-                       j.trace_id, j.enqueued_at, j.fair_seq \
+                       j.trace_id, j.traceparent, j.enqueued_at, j.fair_seq \
          ), top as (select max(fair_seq) + 1 as mx from claimed), \
          bumped as ( \
              update job_queue_vtime v set vt = top.mx from top \
@@ -224,7 +240,8 @@ pub async fn claim(
                and not exists (select 1 from job_queue_vtime where queue = $1) \
              on conflict (queue) do nothing returning 1 \
          ) \
-         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at \
+         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
+                enqueued_at \
          from claimed",
     )
     .bind(queue)
@@ -279,8 +296,10 @@ pub async fn fail(
              delete from job_queue where id = $1 and attempts >= max_attempts returning * \
          ) \
          insert into job_queue_dead \
-             (id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, last_error) \
-         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, $2 \
+             (id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
+              enqueued_at, last_error) \
+         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
+                enqueued_at, $2 \
          from dead returning id",
     )
     .bind(id)
@@ -337,8 +356,10 @@ pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool,
     let moved = sqlx::query_scalar::<_, i64>(
         "with dead as (delete from job_queue where id = $1 returning *) \
          insert into job_queue_dead \
-             (id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, last_error) \
-         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, enqueued_at, $2 \
+             (id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
+              enqueued_at, last_error) \
+         select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
+                enqueued_at, $2 \
          from dead returning id",
     )
     .bind(id)
@@ -355,8 +376,9 @@ pub async fn kill(conn: &mut PgConnection, id: i64, error: &str) -> Result<bool,
 pub async fn requeue_dead(conn: &mut PgConnection, id: i64) -> Result<bool, JobqError> {
     let requeued = sqlx::query_scalar::<_, i64>(concat!(
         "with revived as (delete from job_queue_dead where id = $1 returning *) \
-         insert into job_queue (queue, tenant_id, payload, max_attempts, trace_id, fair_seq) \
-         select r.queue, r.tenant_id, r.payload, r.max_attempts, r.trace_id, ",
+         insert into job_queue \
+             (queue, tenant_id, payload, max_attempts, trace_id, traceparent, fair_seq) \
+         select r.queue, r.tenant_id, r.payload, r.max_attempts, r.trace_id, r.traceparent, ",
         fair_seq_expr!("r.queue", "r.tenant_id"),
         " from revived r returning id"
     ))
