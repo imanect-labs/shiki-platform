@@ -70,5 +70,7 @@ COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
 EXPOSE 3000
 ENV PORT=3000 HOSTNAME=0.0.0.0
+# トレース（src/instrumentation.ts）は実行時の env で有効にする。OTEL_EXPORTER_OTLP_ENDPOINT に
+# collector の OTLP/HTTP（例: http://otel-collector:4318）を渡す。未設定ならエクスポートしない。
 # standalone は `next start` ではなく server.js を直接起動する。
 CMD ["node", "server.js"]
