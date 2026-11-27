@@ -287,7 +287,8 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         aria-label={figure.title ? undefined : "地図"}
         className={cn(
           "relative overflow-hidden border border-border/60 bg-secondary/40",
-          fullscreen ? "h-screen w-screen rounded-none" : "h-[300px] rounded-xl sm:h-[380px]",
+          // 高さは Yui の背景なしの図（最大 320px）にそろえる。
+          fullscreen ? "h-screen w-screen rounded-none" : "h-[280px] rounded-xl sm:h-[320px]",
         )}
       >
         {/* MapLibre は自分の要素に position: relative を付けるので、絶対配置ではなく大きさで埋める。 */}
@@ -345,7 +346,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       <div
         role="list"
         aria-label="地点の一覧"
-        className="mt-2 grid gap-x-4 gap-y-0.5 text-[12px] leading-5 text-muted-foreground sm:grid-cols-2"
+        className="mt-2 grid gap-x-4 gap-y-0.5 text-[12px] leading-5 text-muted-foreground sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
         data-testid="basemap-legend"
       >
         {figure.markers.map((mk, i) => (
@@ -416,6 +417,9 @@ function addFigureLayers(
   colors: (typeof COLORS)["light"] | (typeof COLORS)["dark"],
 ) {
   const route = routeFeature(figure);
+  // 地点が多い（20 を超える）図はピンを小さくし、引いた表示でピン同士が塗りつぶし合わないようにする。
+  const dense = figure.markers.length > 20;
+  const pin = dense ? { radius: 8, number: 9, padding: 6 } : { radius: 11, number: 11, padding: 9 };
   m.addSource("yui-points", { type: "geojson", data: markerFeatures(figure) });
   if (route) {
     m.addSource("yui-route", { type: "geojson", data: route });
@@ -427,30 +431,9 @@ function addFigureLayers(
       paint: { "line-color": colors.route, "line-width": 3, "line-dasharray": [2, 1.6] },
     });
   }
-  m.addLayer({
-    id: "yui-pins",
-    type: "circle",
-    source: "yui-points",
-    paint: {
-      "circle-radius": 11,
-      "circle-color": colors.pin,
-      "circle-stroke-color": colors.halo,
-      "circle-stroke-width": 2,
-    },
-  });
-  m.addLayer({
-    id: "yui-pin-numbers",
-    type: "symbol",
-    source: "yui-points",
-    layout: {
-      "text-field": ["to-string", ["get", "n"]],
-      "text-size": 11,
-      "text-allow-overlap": true,
-      "symbol-sort-key": ["get", "n"],
-    },
-    paint: { "text-color": "#ffffff" },
-  });
   // 名前は重なるものを隠す（番号の若い地点を優先）。ピンと番号は必ず出す。
+  // 記号は上のレイヤから順に場所を決めるので、名前は番号より下に置き、番号の後に置き場所を探させる
+  // （名前がほかのピンに重ならない）。
   m.addLayer({
     id: "yui-labels",
     type: "symbol",
@@ -465,5 +448,32 @@ function addFigureLayers(
       "symbol-sort-key": ["get", "n"],
     },
     paint: { "text-color": colors.ink, "text-halo-color": colors.halo, "text-halo-width": 1.6 },
+  });
+  m.addLayer({
+    id: "yui-pins",
+    type: "circle",
+    source: "yui-points",
+    // 近い地点でピンが重なるときは、番号の若いピンを上に描く。
+    layout: { "circle-sort-key": ["-", 0, ["get", "n"]] },
+    paint: {
+      "circle-radius": pin.radius,
+      "circle-color": colors.pin,
+      "circle-stroke-color": colors.halo,
+      "circle-stroke-width": dense ? 1.5 : 2,
+    },
+  });
+  m.addLayer({
+    id: "yui-pin-numbers",
+    type: "symbol",
+    source: "yui-points",
+    layout: {
+      "text-field": ["to-string", ["get", "n"]],
+      "text-size": pin.number,
+      // 番号の当たり判定をピンの円まで広げ、名前がほかのピンに重ならないようにする。
+      "text-padding": pin.padding,
+      "text-allow-overlap": true,
+      "symbol-sort-key": ["-", 0, ["get", "n"]],
+    },
+    paint: { "text-color": "#ffffff" },
   });
 }
