@@ -20,10 +20,11 @@ import { loadBasemapConfig, loadBasemapStyle, peekBasemapConfig, type BasemapCon
 import { cn } from "@/lib/utils";
 import { initialView, markerFeatures, routeFeature } from "./yui-map-data";
 
-/// Yui の図と同じ系列色（s1）と文字色（ink / surface）。ピンと名前を背景なしの図と同じ見た目にする。
+/// ピン・名前・道順の色。背景地図（青い水域・緑の森・淡い道路）のどれとも紛れない朱色にし、
+/// 名前は濃い文字に太い縁取りを付けて道路の上でも読めるようにする。
 const COLORS = {
-  light: { pin: "#398cb8", route: "#2f7aa3", ink: "#18181b", halo: "#fcfcfc" },
-  dark: { pin: "#4d9ac8", route: "#6fb1da", ink: "#f2f2f2", halo: "#0d0d0f" },
+  light: { pin: "#d4442e", route: "#d4442e", ink: "#1c1917", halo: "#ffffff" },
+  dark: { pin: "#f06a52", route: "#f06a52", ink: "#f5f5f4", halo: "#141414" },
 } as const;
 
 /// 文字は端末のフォントで描く（Yui の図と同じ並び）。
@@ -32,6 +33,9 @@ const FONT_FAMILY =
 
 /// 全地点を収めるときの余白（右は操作ボタンの幅と名前の長さの分だけ広く取り、ピンの右に出す名前がボタンの下に入らないようにする）。
 const FIT_PADDING = { top: 40, bottom: 36, left: 40, right: 128 };
+
+/// これより地点の多い図は、ピンを小さくし、地図を縦に広げる。
+const DENSE_MARKERS = 20;
 
 /// 地図を作り始める距離（画面の外側）と、破棄するまでの猶予。
 const LOAD_MARGIN = "300px 0px";
@@ -288,7 +292,12 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         className={cn(
           "relative overflow-hidden border border-border/60 bg-secondary/40",
           // 高さは Yui の背景なしの図（最大 320px）にそろえる。
-          fullscreen ? "h-screen w-screen rounded-none" : "h-[280px] rounded-xl sm:h-[320px]",
+          // 地点の多い図は縦に広げ、ピン同士の間隔を空ける。
+          fullscreen
+            ? "h-screen w-screen rounded-none"
+            : figure.markers.length > DENSE_MARKERS
+              ? "h-[340px] rounded-xl sm:h-[460px]"
+              : "h-[280px] rounded-xl sm:h-[320px]",
         )}
       >
         {/* MapLibre は自分の要素に position: relative を付けるので、絶対配置ではなく大きさで埋める。 */}
@@ -418,8 +427,8 @@ function addFigureLayers(
 ) {
   const route = routeFeature(figure);
   // 地点が多い（20 を超える）図はピンを小さくし、引いた表示でピン同士が塗りつぶし合わないようにする。
-  const dense = figure.markers.length > 20;
-  const pin = dense ? { radius: 8, number: 9, padding: 6 } : { radius: 11, number: 11, padding: 9 };
+  const dense = figure.markers.length > DENSE_MARKERS;
+  const pin = dense ? { radius: 9, number: 10, padding: 6 } : { radius: 12, number: 12, padding: 9 };
   m.addSource("yui-points", { type: "geojson", data: markerFeatures(figure) });
   if (route) {
     m.addSource("yui-route", { type: "geojson", data: route });
@@ -428,7 +437,7 @@ function addFigureLayers(
       type: "line",
       source: "yui-route",
       layout: { "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": colors.route, "line-width": 3, "line-dasharray": [2, 1.6] },
+      paint: { "line-color": colors.route, "line-width": 3.5, "line-opacity": 0.85, "line-dasharray": [2, 1.6] },
     });
   }
   // 名前は重なるものを隠す（番号の若い地点を優先）。ピンと番号は必ず出す。
@@ -440,14 +449,14 @@ function addFigureLayers(
     source: "yui-points",
     layout: {
       "text-field": ["get", "label"],
-      "text-size": 12.5,
+      "text-size": 14,
       "text-variable-anchor": ["left", "right", "top", "bottom"],
       "text-radial-offset": 1.3,
       "text-justify": "auto",
       "text-max-width": 10,
       "symbol-sort-key": ["get", "n"],
     },
-    paint: { "text-color": colors.ink, "text-halo-color": colors.halo, "text-halo-width": 1.6 },
+    paint: { "text-color": colors.ink, "text-halo-color": colors.halo, "text-halo-width": 2.2 },
   });
   m.addLayer({
     id: "yui-pins",
@@ -459,7 +468,7 @@ function addFigureLayers(
       "circle-radius": pin.radius,
       "circle-color": colors.pin,
       "circle-stroke-color": colors.halo,
-      "circle-stroke-width": dense ? 1.5 : 2,
+      "circle-stroke-width": dense ? 2 : 2.5,
     },
   });
   m.addLayer({
@@ -471,8 +480,11 @@ function addFigureLayers(
       "text-size": pin.number,
       // 番号の当たり判定をピンの円まで広げ、名前がほかのピンに重ならないようにする。
       "text-padding": pin.padding,
-      "text-allow-overlap": true,
-      "symbol-sort-key": ["-", 0, ["get", "n"]],
+      // 地点の多い図では、重なったピンの番号は出さない（点だけ見せ、拡大すると番号と名前が出る）。
+      "text-allow-overlap": !dense,
+      // 重ねて描くとき（地点の少ない図）は番号の若いものを上に、重なりを隠すとき（地点の多い図）は
+      // 番号の若いものを先に置く（MapLibre は sort-key の小さいものから置き、大きいものを上に描く）。
+      "symbol-sort-key": dense ? ["get", "n"] : ["-", 0, ["get", "n"]],
     },
     paint: { "text-color": "#ffffff" },
   });
