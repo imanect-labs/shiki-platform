@@ -276,6 +276,10 @@ services:
       # SHIKI__STORAGE__S3__INTERNAL_ENDPOINT のホスト）。それ以外（qdrant:6333 等の内部ホスト・
       # IP リテラル・リダイレクト先）は取りに行かない。空は URL 経路を全て拒否する（#812）。
       SOURCE_URL_ALLOWED_HOSTS: ${INGESTION_SOURCE_URL_ALLOWED_HOSTS-rustfs:9000}
+      # トレースの送り先（shiki-server と同じ OTLP_ENDPOINT・gRPC）。observability profile で
+      # `OTLP_ENDPOINT=http://otel-collector:4317` を渡したときだけ有効。空 = エクスポートしない。
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ingestion-worker
     volumes:
       - hf-cache:/models
     ports:

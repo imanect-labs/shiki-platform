@@ -19,10 +19,12 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from opentelemetry import trace
 
 from .schemas import BlockType, ParsedBlock, ParseRequest, ParseResponse, Prov
 from .security import source_url_rejection
 from .settings import get_settings
+from .telemetry import inference_span
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -515,7 +517,23 @@ def _docling_blocks(document: Any) -> list[ParsedBlock]:
 async def parse(req: ParseRequest) -> ParseResponse:
     content_type = req.content_type.split(";")[0].strip().lower()
     data = await _load(req)
+    # 文書の中身・ファイル名は span に載せない（種別・大きさ・件数だけ）。
+    # content_type は呼び出し側の入力そのもの。受け付ける種別のときだけ載せ、それ以外は
+    # "other" にまとめる（任意の文字列を span 経由で外へ出さない）。
+    known = _PLAIN_TEXT_TYPES | _DOCLING_TYPES | {_SLIDE_TYPE}
+    span_type = content_type if content_type in known else "other"
+    attributes = {"worker.content_type": span_type, "worker.bytes": len(data)}
+    with inference_span("worker.parse", attributes) as span:
+        resp = await _extract(req, data, content_type)
+        span.set_attribute("worker.blocks", len(resp.blocks))
+        span.set_attribute("worker.used_ocr", resp.used_ocr)
+        if content_type not in _DOCLING_TYPES:
+            pages = {b.page for b in resp.blocks if b.page is not None}
+            span.set_attribute("worker.pages", len(pages))
+        return resp
 
+
+async def _extract(req: ParseRequest, data: bytes, content_type: str) -> ParseResponse:
     if content_type in _PLAIN_TEXT_TYPES:
         return ParseResponse(blocks=_plain_text_blocks(data), used_ocr=False)
 
@@ -583,6 +601,9 @@ async def _docling_parse(
         errors = "; ".join(str(e) for e in (result.errors or [])) or str(result.status)
         raise _parse_error("parse_failed", errors)
 
+    # Docling は空ページも数えた文書のページ数を持つ（ブロックから数えるより正確）。
+    span = trace.get_current_span()
+    span.set_attribute("worker.pages", len(getattr(result.document, "pages", None) or {}))
     blocks = _docling_blocks(result.document)
     if not blocks:
         raise _parse_error("empty_document", "抽出可能なテキストがありません")

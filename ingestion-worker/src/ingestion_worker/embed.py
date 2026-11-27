@@ -12,6 +12,7 @@ from fastapi import APIRouter
 from .model_registry import get_registry
 from .schemas import EmbedInputType, EmbedRequest, EmbedResponse
 from .settings import get_settings
+from .telemetry import inference_span
 
 router = APIRouter()
 
@@ -29,10 +30,19 @@ def embed(req: EmbedRequest) -> EmbedResponse:
     logger.info("embed tenant=%s type=%s texts=%d", req.tenant_id, req.input_type, len(req.texts))
     prefix = _QUERY_PREFIX if req.input_type == EmbedInputType.QUERY else _DOCUMENT_PREFIX
     texts = [prefix + t for t in req.texts]
-    vectors = get_registry().embedding().encode(texts)
-    dimension = len(vectors[0]) if vectors else 0
+    settings = get_settings()
+    attributes = {
+        "worker.model": settings.embed_model,
+        "worker.input_type": req.input_type.value,
+        "worker.texts": len(texts),
+        "worker.batch_size": settings.embed_batch_size,
+    }
+    with inference_span("worker.embed.encode", attributes) as span:
+        vectors = get_registry().embedding().encode(texts)
+        dimension = len(vectors[0]) if vectors else 0
+        span.set_attribute("worker.dimension", dimension)
     return EmbedResponse(
         vectors=vectors,
-        model_version=get_settings().embed_model,
+        model_version=settings.embed_model,
         dimension=dimension,
     )

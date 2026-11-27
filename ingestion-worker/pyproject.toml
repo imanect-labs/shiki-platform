@@ -23,6 +23,9 @@ dependencies = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "python-pptx>=1.0",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
 ]
 
 [dependency-groups]
