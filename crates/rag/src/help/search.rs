@@ -190,10 +190,13 @@ impl HelpSearchService {
         let candidates = (top_k * 4).min(80);
         let keyword = self.index.search(query, candidates)?;
         let dense = if self.embedder.model_version() == self.vector_manifest.model_version {
-            match self
-                .embedder
-                .embed(ctx, EmbedInput::Query, &[query.to_string()])
-                .await
+            match crate::telemetry::embed(
+                self.embedder.as_ref(),
+                ctx,
+                EmbedInput::Query,
+                &[query.to_string()],
+            )
+            .await
             {
                 Ok(response)
                     if response.model_version == self.vector_manifest.model_version

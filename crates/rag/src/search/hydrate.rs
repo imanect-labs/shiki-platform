@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use authz::AuthContext;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::anchor::{Anchor, PageBox, TextQuote};
@@ -142,7 +143,19 @@ impl SearchService {
         if passages.is_empty() {
             return Ok(Vec::new());
         }
-        let mut scores = self.reranker.rerank(ctx, query, &passages).await?;
+        let span = tracing::info_span!(
+            "rag.rerank",
+            "rag.rerank.candidates" = passages.len(),
+            "otel.status_code" = tracing::field::Empty,
+            "error.type" = tracing::field::Empty,
+        );
+        let scores = self
+            .reranker
+            .rerank(ctx, query, &passages)
+            .instrument(span.clone())
+            .await;
+        crate::telemetry::record_result(&span, &scores);
+        let mut scores = scores?;
         scores.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
         Ok(scores
             .into_iter()

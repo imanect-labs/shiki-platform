@@ -25,12 +25,14 @@ use crate::providers::{
     openai_responses::OpenAiResponsesProvider, stub::StubProvider,
 };
 use crate::retry::{resume_unsettled, stream_with_retry, MIDSTREAM_RETRIES, UNAVAILABLE_BACKOFF};
+use crate::telemetry;
 use crate::tenant::{
     self, apply_patch, resolve_choice, ChoiceError, ModelChoice, ResolvedChoice, SettingsError,
     SettingsPatch, TenantLlmSettings, TenantLlmStore,
 };
 use crate::usage_report::{UsageFilter, UsageReport, UsageReporter};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
@@ -396,15 +398,40 @@ impl LlmGateway {
     /// 呼び出し元の組織が許可していないモデルはここで拒否する（#553）。チャット・ミニアプリ・
     /// ワークフロー・エージェントのどの経路も必ずここを通るので、管理画面での許可・無効化
     /// （国外処理モデルを止める等）が経路によらず効く。
+    ///
+    /// 呼び出しは GenAI semconv の span で包む（[`crate::telemetry`]）。span は返した
+    /// ストリームの終わり（または drop）まで閉じない。
     pub async fn stream(
         &self,
         ctx: &AuthContext,
-        mut req: GenerateRequest,
+        req: GenerateRequest,
     ) -> Result<DeltaStream, LlmError> {
+        let started = std::time::Instant::now();
         let logical = req
             .model
             .clone()
             .unwrap_or_else(|| self.inner.config.catalog.default_model.clone());
+        let span = telemetry::llm_span(&logical);
+        match self
+            .open_stream(ctx, req, logical)
+            .instrument(span.clone())
+            .await
+        {
+            Ok(stream) => Ok(telemetry::trace_stream(stream, span, started)),
+            Err(e) => {
+                telemetry::record_error(&span, &e);
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Self::stream`] の本体（認可・利用制限・振り分け・再試行）。
+    async fn open_stream(
+        &self,
+        ctx: &AuthContext,
+        mut req: GenerateRequest,
+        logical: String,
+    ) -> Result<DeltaStream, LlmError> {
         let entry = self
             .inner
             .config
@@ -441,6 +468,11 @@ impl LlmGateway {
             req.effort = None;
         }
         req.model = Some(entry.resolved_id().to_string());
+        telemetry::record_target(
+            &tracing::Span::current(),
+            entry.resolved_id(),
+            slot.provider.name(),
+        );
 
         // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
         if let (Some(p), ProviderKind::ChatgptPlan) = (&self.inner.chatgpt_plan, slot.config.kind) {

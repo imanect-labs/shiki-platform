@@ -32,6 +32,7 @@ pub mod model;
 pub mod provider;
 pub mod providers;
 mod retry;
+mod telemetry;
 pub mod tenant;
 pub mod tool_loading;
 pub mod usage_report;

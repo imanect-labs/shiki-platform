@@ -33,6 +33,8 @@ rand.workspace = true
 shiki-testenv.workspace = true
 tokio = { workspace = true }
 axum.workspace = true
+# LLM 呼び出しの span（telemetry.rs）をテストで捕まえる。
+tracing-subscriber.workspace = true
 
 # lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
