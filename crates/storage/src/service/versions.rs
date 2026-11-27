@@ -12,6 +12,17 @@ impl StorageService {
     ///
     /// 内容を持つ版（初版アップロード / 内容更新 / 版復元）だけが並ぶ。同一内容の版は
     /// `blob_sha256` を共有する（content-addressing）。
+    #[tracing::instrument(
+        name = "storage.list_versions",
+        skip_all,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            limit = limit,
+            count = tracing::field::Empty,
+        ),
+    )]
     pub async fn list_versions(
         &self,
         ctx: &AuthContext,
@@ -20,29 +31,31 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<(Vec<FileVersion>, Option<String>), StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
-        if node.kind != NodeKind::File {
-            return Err(StorageError::NotFound);
-        }
-        self.require_read(
-            ctx,
-            &ctx.ns().file(&file_id.to_string()),
-            AuditAction::FileVersionsList,
-            "file",
-            &file_id.to_string(),
-            trace_id,
-        )
-        .await?;
-        let limit = limit.clamp(1, 100);
-        // 版番号は単調増加。カーソルは「この版より前（小さい）」を引く keyset（新しい順）。
-        let before: Option<i64> = match cursor {
-            Some(c) => Some(
-                c.parse::<i64>()
-                    .map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?,
-            ),
-            None => None,
-        };
-        let rows: Vec<VersionRow> = sqlx::query_as(
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, file_id, false).await?;
+                if node.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
+                self.require_read(
+                    ctx,
+                    &ctx.ns().file(&file_id.to_string()),
+                    AuditAction::FileVersionsList,
+                    "file",
+                    &file_id.to_string(),
+                    trace_id,
+                )
+                .await?;
+                let limit = limit.clamp(1, 100);
+                // 版番号は単調増加。カーソルは「この版より前（小さい）」を引く keyset（新しい順）。
+                let before: Option<i64> = match cursor {
+                    Some(c) => Some(
+                        c.parse::<i64>()
+                            .map_err(|_| StorageError::Invalid("カーソルが不正です".into()))?,
+                    ),
+                    None => None,
+                };
+                let rows: Vec<VersionRow> = sqlx::query_as(
             "SELECT tenant_id, version, blob_sha256, size_bytes, content_type, author, created_at, \
                     is_proposal, proposed_by \
              FROM node_version \
@@ -57,29 +70,44 @@ impl StorageService {
         .bind(limit as i64)
         .fetch_all(&self.db)
         .await?;
-        let next_cursor = if rows.len() == limit {
-            rows.last().map(|r| r.version.to_string())
-        } else {
-            None
-        };
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::FileVersionsList,
-                    object_type: "file",
-                    object_id: &file_id.to_string(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "count": rows.len() }),
-                },
-            )
-            .await?;
-        let items = rows.into_iter().map(VersionRow::into_model).collect();
-        Ok((items, next_cursor))
+                let next_cursor = if rows.len() == limit {
+                    rows.last().map(|r| r.version.to_string())
+                } else {
+                    None
+                };
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::FileVersionsList,
+                            object_type: "file",
+                            object_id: &file_id.to_string(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "count": rows.len() }),
+                        },
+                    )
+                    .await?;
+                let items: Vec<FileVersion> =
+                    rows.into_iter().map(VersionRow::into_model).collect();
+                tracing::Span::current().record("count", items.len());
+                Ok((items, next_cursor))
+            }
+            .await,
+        )
     }
 
     /// 特定版の presigned ダウンロード URL を発行する（viewer 権限・短 TTL）。
+    #[tracing::instrument(
+        name = "storage.issue_version_download_url",
+        skip_all,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            version = version,
+        ),
+    )]
     pub async fn issue_version_download_url(
         &self,
         ctx: &AuthContext,
@@ -87,6 +115,7 @@ impl StorageService {
         version: i64,
         trace_id: Option<&str>,
     ) -> Result<DownloadTicket, StorageError> {
+        crate::span_err::storage(async {
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -132,5 +161,7 @@ impl StorageService {
             url,
             expires_in_secs: self.presign_get_ttl.as_secs(),
         })
+    }
+        .await)
     }
 }

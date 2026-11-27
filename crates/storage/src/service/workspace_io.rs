@@ -33,6 +33,11 @@ impl StorageService {
     /// 既存の同名生存ファイルがあれば内容を新版へ差し替え（`WriteOp::Update`）、無ければ新規作成
     /// （`WriteOp::Create`）する。いずれも content-addressing・版記録・監査・書込イベントを 1 txn で
     /// 原子的に確定する（finalize の create/update 経路と対称）。認可は配置先フォルダの `editor`。
+    #[tracing::instrument(
+        name = "storage.write_file_at",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = bytes.len()),
+    )]
     pub async fn write_file_at(
         &self,
         ctx: &AuthContext,
@@ -42,45 +47,50 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<WriteAtOutcome, StorageError> {
-        validate_name(name)?;
-        let size = self.checked_size(bytes.len())?;
-        self.require_workspace_write(ctx, parent_id, trace_id)
-            .await?;
+        crate::span_err::storage(
+            async {
+                validate_name(name)?;
+                let size = self.checked_size(bytes.len())?;
+                self.require_workspace_write(ctx, parent_id, trace_id)
+                    .await?;
 
-        // content-addressing: 所持バイトをハッシュし、新規 blob のみオブジェクトストアへ。
-        // 全文置換は既存内容を読む必要が無いので、txn の**外**で put まで済ませる（ロックを短く保つ）。
-        let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
-        // txn の外なのでプールから 1 本借りて確認する（占有を跨がない）。
-        let mut probe = self.db.acquire().await?;
-        let known = Self::blob_exists(&mut probe, &sha256, ctx).await?;
-        drop(probe);
-        if !known {
-            self.store
-                .put_object(&final_key, bytes.to_vec(), content_type)
-                .await?;
-        }
+                // content-addressing: 所持バイトをハッシュし、新規 blob のみオブジェクトストアへ。
+                // 全文置換は既存内容を読む必要が無いので、txn の**外**で put まで済ませる（ロックを短く保つ）。
+                let sha256 = sha256_hex(bytes);
+                let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
+                // txn の外なのでプールから 1 本借りて確認する（占有を跨がない）。
+                let mut probe = self.db.acquire().await?;
+                let known = Self::blob_exists(&mut probe, &sha256, ctx).await?;
+                drop(probe);
+                if !known {
+                    self.store
+                        .put_object(&final_key, bytes.to_vec(), content_type)
+                        .await?;
+                }
 
-        let mut tx = self.db.begin().await?;
-        let existing = Self::lock_child_file(&mut tx, ctx, parent_id, name).await?;
-        let (node, created) = self
-            .apply_write_at(
-                &mut tx,
-                ctx,
-                parent_id,
-                name,
-                existing.map(|e| e.node_id),
-                &BlobFacts {
-                    sha256: &sha256,
-                    size,
-                    content_type,
-                    object_key: &final_key,
-                },
-                trace_id,
-            )
-            .await?;
-        self.commit_write_at(tx, ctx, parent_id, &node, created)
-            .await
+                let mut tx = self.db.begin().await?;
+                let existing = Self::lock_child_file(&mut tx, ctx, parent_id, name).await?;
+                let (node, created) = self
+                    .apply_write_at(
+                        &mut tx,
+                        ctx,
+                        parent_id,
+                        name,
+                        existing.map(|e| e.node_id),
+                        &BlobFacts {
+                            sha256: &sha256,
+                            size,
+                            content_type,
+                            object_key: &final_key,
+                        },
+                        trace_id,
+                    )
+                    .await?;
+                self.commit_write_at(tx, ctx, parent_id, &node, created)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// 親フォルダ配下の `name` の**末尾へ追記**する（無ければ作成・#392）。
@@ -88,6 +98,11 @@ impl StorageService {
     /// 既存内容 ＋ `suffix` を新しい内容として新版に記録する（版管理上は通常の新版なので、
     /// 過去の台帳もそのまま復元できる）。既存内容の読み出しは `(parent, name)` の advisory lock
     /// 取得**後**に行うため、並行追記で片方の追記が消えることがない。
+    #[tracing::instrument(
+        name = "storage.append_file_at",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", bytes = suffix.len()),
+    )]
     pub async fn append_file_at(
         &self,
         ctx: &AuthContext,
@@ -97,56 +112,61 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<WriteAtOutcome, StorageError> {
-        validate_name(name)?;
-        self.require_workspace_write(ctx, parent_id, trace_id)
-            .await?;
+        crate::span_err::storage(
+            async {
+                validate_name(name)?;
+                self.require_workspace_write(ctx, parent_id, trace_id)
+                    .await?;
 
-        let mut tx = self.db.begin().await?;
-        let existing = Self::lock_child_file(&mut tx, ctx, parent_id, name).await?;
-        // 既存内容を**ロック内で**読む。base が無ければ suffix がそのまま全体になる（新規作成）。
-        let mut content = match &existing {
-            Some(e) => match &e.blob_sha256 {
-                Some(sha) => {
-                    self.content
-                        .read_current_on(&mut tx, ctx.tenant(), ctx.org(), sha)
-                        .await?
+                let mut tx = self.db.begin().await?;
+                let existing = Self::lock_child_file(&mut tx, ctx, parent_id, name).await?;
+                // 既存内容を**ロック内で**読む。base が無ければ suffix がそのまま全体になる（新規作成）。
+                let mut content = match &existing {
+                    Some(e) => match &e.blob_sha256 {
+                        Some(sha) => {
+                            self.content
+                                .read_current_on(&mut tx, ctx.tenant(), ctx.org(), sha)
+                                .await?
+                        }
+                        None => Vec::new(),
+                    },
+                    None => Vec::new(),
+                };
+                content.extend_from_slice(suffix);
+                let size = self.checked_size(content.len())?;
+
+                let sha256 = sha256_hex(&content);
+                let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
+                // 追記は「既存を読んでから」ハッシュが決まるため、put は txn 内になる（ロックを跨ぐ）。
+                // rollback すると参照されない blob オブジェクトが残るが、content-addressed なので
+                // 同一内容の再試行で再利用され、実害は容量のみ（blob 行は commit されない）。
+                if !Self::blob_exists(&mut tx, &sha256, ctx).await? {
+                    self.store
+                        .put_object(&final_key, content, content_type)
+                        .await?;
                 }
-                None => Vec::new(),
-            },
-            None => Vec::new(),
-        };
-        content.extend_from_slice(suffix);
-        let size = self.checked_size(content.len())?;
 
-        let sha256 = sha256_hex(&content);
-        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
-        // 追記は「既存を読んでから」ハッシュが決まるため、put は txn 内になる（ロックを跨ぐ）。
-        // rollback すると参照されない blob オブジェクトが残るが、content-addressed なので
-        // 同一内容の再試行で再利用され、実害は容量のみ（blob 行は commit されない）。
-        if !Self::blob_exists(&mut tx, &sha256, ctx).await? {
-            self.store
-                .put_object(&final_key, content, content_type)
-                .await?;
-        }
-
-        let (node, created) = self
-            .apply_write_at(
-                &mut tx,
-                ctx,
-                parent_id,
-                name,
-                existing.map(|e| e.node_id),
-                &BlobFacts {
-                    sha256: &sha256,
-                    size,
-                    content_type,
-                    object_key: &final_key,
-                },
-                trace_id,
-            )
-            .await?;
-        self.commit_write_at(tx, ctx, parent_id, &node, created)
-            .await
+                let (node, created) = self
+                    .apply_write_at(
+                        &mut tx,
+                        ctx,
+                        parent_id,
+                        name,
+                        existing.map(|e| e.node_id),
+                        &BlobFacts {
+                            sha256: &sha256,
+                            size,
+                            content_type,
+                            object_key: &final_key,
+                        },
+                        trace_id,
+                    )
+                    .await?;
+                self.commit_write_at(tx, ctx, parent_id, &node, created)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// サイズ上限（容量ガード）を通した `i64` サイズ。

@@ -39,6 +39,11 @@ impl StorageService {
     /// 「ACL は変わったが監査が無い」状態を残さない。ただし補償は **実際に付与したとき
     /// （`write_tuple` が `true`）のみ**行う。冪等 no-op（既共有の再共有）を巻き戻すと
     /// 既存共有を誤って剥奪してしまうため（idempotent 補償の逆破壊を防ぐ）。
+    #[tracing::instrument(
+        name = "storage.share_node",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn share_node(
         &self,
         ctx: &AuthContext,
@@ -47,37 +52,42 @@ impl StorageService {
         role: ShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        validate_share_target(target)?;
-        let obj = self
-            .authorize_share_admin(ctx, node_id, AuditAction::NodeShare, trace_id)
-            .await?;
-        // 付与は冪等。granted=true なら実際に新規付与した。
-        let granted = self
-            .authz
-            .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await?;
-        if let Err(e) = self
-            .record_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeShare,
-                target,
-                role,
-                trace_id,
-            )
-            .await
-        {
-            // 実際に付与した時だけ巻き戻す（no-op を剥奪して既存共有を壊さない）。
-            if granted {
-                let _ = self
+        crate::span_err::storage(
+            async {
+                validate_share_target(target)?;
+                let obj = self
+                    .authorize_share_admin(ctx, node_id, AuditAction::NodeShare, trace_id)
+                    .await?;
+                // 付与は冪等。granted=true なら実際に新規付与した。
+                let granted = self
                     .authz
-                    .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
+                    .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
+                    .await?;
+                if let Err(e) = self
+                    .record_share_audit(
+                        ctx,
+                        node_id,
+                        &obj,
+                        AuditAction::NodeShare,
+                        target,
+                        role,
+                        trace_id,
+                    )
+                    .await
+                {
+                    // 実際に付与した時だけ巻き戻す（no-op を剥奪して既存共有を壊さない）。
+                    if granted {
+                        let _ = self
+                            .authz
+                            .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
+                            .await;
+                    }
+                    return Err(e);
+                }
+                Ok(())
             }
-            return Err(e);
-        }
-        Ok(())
+            .await,
+        )
     }
 
     /// 共有を解除する（owner 権限・冪等）。
@@ -85,6 +95,11 @@ impl StorageService {
     /// PIT-11: read 認可は HIGHER_CONSISTENCY で問い合わせるため、剥奪は次リクエストから即時に効く。
     /// 監査失敗時は剥奪を補償付与するが、**実際に剥奪したとき（`delete_tuple` が `true`）のみ**。
     /// 冪等 no-op（未共有の unshare）を巻き戻すと存在しなかった権限を新規付与してしまうため。
+    #[tracing::instrument(
+        name = "storage.unshare_node",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn unshare_node(
         &self,
         ctx: &AuthContext,
@@ -93,37 +108,42 @@ impl StorageService {
         role: ShareRole,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        validate_share_target(target)?;
-        let obj = self
-            .authorize_share_admin(ctx, node_id, AuditAction::NodeUnshare, trace_id)
-            .await?;
-        // 剥奪は冪等。revoked=true なら実際に剥奪した。
-        let revoked = self
-            .authz
-            .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-            .await?;
-        if let Err(e) = self
-            .record_share_audit(
-                ctx,
-                node_id,
-                &obj,
-                AuditAction::NodeUnshare,
-                target,
-                role,
-                trace_id,
-            )
-            .await
-        {
-            // 実際に剥奪した時だけ巻き戻す（no-op を付与して権限昇格を起こさない）。
-            if revoked {
-                let _ = self
+        crate::span_err::storage(
+            async {
+                validate_share_target(target)?;
+                let obj = self
+                    .authorize_share_admin(ctx, node_id, AuditAction::NodeUnshare, trace_id)
+                    .await?;
+                // 剥奪は冪等。revoked=true なら実際に剥奪した。
+                let revoked = self
                     .authz
-                    .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
-                    .await;
+                    .delete_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
+                    .await?;
+                if let Err(e) = self
+                    .record_share_audit(
+                        ctx,
+                        node_id,
+                        &obj,
+                        AuditAction::NodeUnshare,
+                        target,
+                        role,
+                        trace_id,
+                    )
+                    .await
+                {
+                    // 実際に剥奪した時だけ巻き戻す（no-op を付与して権限昇格を起こさない）。
+                    if revoked {
+                        let _ = self
+                            .authz
+                            .write_tuple(&target.subject(&ctx.ns()), role.relation(), &obj)
+                            .await;
+                    }
+                    return Err(e);
+                }
+                Ok(())
             }
-            return Err(e);
-        }
-        Ok(())
+            .await,
+        )
     }
 
     /// このノードの共有相手一覧を返す（owner 権限）。
@@ -132,28 +152,37 @@ impl StorageService {
     /// 親フォルダからの継承は含めない＝「このノードで誰に共有したか」の管理ビュー）。
     /// 相手の表示名（user は email も）は呼び出し元テナント（＋ org）のディレクトリから 1 クエリで
     /// 一括解決する（#741）。解決失敗は非致命（名前は表示補助・一覧自体は返す）。
+    #[tracing::instrument(
+        name = "storage.list_shares",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
+    )]
     pub async fn list_shares(
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareEntry>, StorageError> {
-        let obj = self
-            .authorize_share_admin(ctx, node_id, AuditAction::NodeSharesList, trace_id)
-            .await?;
-        let tuples = self.authz.read_tuples(&obj, None).await?;
-        let mut shares = Vec::new();
-        for t in tuples {
-            // viewer/editor のみ共有として扱う（owner/parent は管理対象外）。
-            let Some(role) = Relation::parse(&t.relation).and_then(ShareRole::from_relation) else {
-                continue;
-            };
-            let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
-                continue;
-            };
-            shares.push((target, role));
-        }
-        let profiles = crate::directory::resolve_share_profiles(
+        crate::span_err::storage(
+            async {
+                let obj = self
+                    .authorize_share_admin(ctx, node_id, AuditAction::NodeSharesList, trace_id)
+                    .await?;
+                let tuples = self.authz.read_tuples(&obj, None).await?;
+                let mut shares = Vec::new();
+                for t in tuples {
+                    // viewer/editor のみ共有として扱う（owner/parent は管理対象外）。
+                    let Some(role) =
+                        Relation::parse(&t.relation).and_then(ShareRole::from_relation)
+                    else {
+                        continue;
+                    };
+                    let Some(target) = ShareTarget::parse_subject(&ctx.ns(), &t.user) else {
+                        continue;
+                    };
+                    shares.push((target, role));
+                }
+                let profiles = crate::directory::resolve_share_profiles(
             &self.db,
             ctx,
             shares.iter().map(|(t, _)| t),
@@ -163,18 +192,22 @@ impl StorageService {
             tracing::warn!(error = %e, "共有相手の表示名解決に失敗（ID 表示へフォールバック）");
             crate::directory::ShareProfiles::default()
         });
-        Ok(shares
-            .into_iter()
-            .map(|(target, role)| {
-                let p = profiles.get(&target);
-                ShareEntry {
-                    target,
-                    role,
-                    display_name: p.display_name,
-                    email: p.email,
-                }
-            })
-            .collect())
+                tracing::Span::current().record("count", shares.len());
+                Ok(shares
+                    .into_iter()
+                    .map(|(target, role)| {
+                        let p = profiles.get(&target);
+                        ShareEntry {
+                            target,
+                            role,
+                            display_name: p.display_name,
+                            email: p.email,
+                        }
+                    })
+                    .collect())
+            }
+            .await,
+        )
     }
 
     /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ）。
@@ -182,6 +215,11 @@ impl StorageService {
     /// OpenFGA の `list-objects`（viewer 実効集合・継承込み）で id を引き、DB で生存ノードの
     /// メタへ keyset `(updated_at, id)` 降順で 1 ページ解決する。作成者本人のノード（≒owner）は
     /// 「共有された」一覧から除く。全件取得はせず `next_cursor` で無限スクロールする。
+    #[tracing::instrument(
+        name = "storage.list_shared_with_me",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
+    )]
     pub async fn list_shared_with_me(
         &self,
         ctx: &AuthContext,
@@ -189,83 +227,89 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
-        let limit = limit.clamp(1, 100);
-        let subject = ctx.subject();
-        let mut ids: Vec<Uuid> = Vec::new();
-        for object_type in [ObjectType::File, ObjectType::Folder] {
-            let objs = self
-                .authz
-                .list_objects(&subject, Relation::Viewer, object_type)
-                .await?;
-            for o in objs {
-                // "file:<tenant>|<uuid>" / "folder:<tenant>|<uuid>" から自テナントの id 部を取り出す。
-                // strip_object_id が tenant 不一致を弾くため、共用ストアでも越境オブジェクトは混入しない
-                // （FGA 側の名前空間化に加え、DB 側 org+tenant フィルタと二重防御）。
-                let Some((_, id_part)) = o.split_once(':') else {
-                    continue;
-                };
-                if let Some(local) = ctx.ns().strip_object_id(id_part) {
-                    if let Ok(uuid) = Uuid::parse_str(local) {
-                        ids.push(uuid);
+        crate::span_err::storage(
+            async {
+                let limit = limit.clamp(1, 100);
+                let subject = ctx.subject();
+                let mut ids: Vec<Uuid> = Vec::new();
+                for object_type in [ObjectType::File, ObjectType::Folder] {
+                    let objs = self
+                        .authz
+                        .list_objects(&subject, Relation::Viewer, object_type)
+                        .await?;
+                    for o in objs {
+                        // "file:<tenant>|<uuid>" / "folder:<tenant>|<uuid>" から自テナントの id 部を取り出す。
+                        // strip_object_id が tenant 不一致を弾くため、共用ストアでも越境オブジェクトは混入しない
+                        // （FGA 側の名前空間化に加え、DB 側 org+tenant フィルタと二重防御）。
+                        let Some((_, id_part)) = o.split_once(':') else {
+                            continue;
+                        };
+                        if let Some(local) = ctx.ns().strip_object_id(id_part) {
+                            if let Ok(uuid) = Uuid::parse_str(local) {
+                                ids.push(uuid);
+                            }
+                        }
                     }
                 }
-            }
-        }
-        if ids.is_empty() {
-            return Ok(ChildPage {
-                items: Vec::new(),
-                next_cursor: None,
-            });
-        }
-        let (after_ts, after_id) = match cursor {
-            Some(c) => {
-                let (ts, id) = decode_ts_cursor(c)?;
-                (Some(ts), Some(id))
-            }
-            None => (None, None),
-        };
-        // FGA の viewer 集合（id）を DB メタへ keyset ページングで解決する。
-        let sql = format!(
-            "SELECT {NODE_COLS} FROM node \
+                if ids.is_empty() {
+                    return Ok(ChildPage {
+                        items: Vec::new(),
+                        next_cursor: None,
+                    });
+                }
+                let (after_ts, after_id) = match cursor {
+                    Some(c) => {
+                        let (ts, id) = decode_ts_cursor(c)?;
+                        (Some(ts), Some(id))
+                    }
+                    None => (None, None),
+                };
+                // FGA の viewer 集合（id）を DB メタへ keyset ページングで解決する。
+                let sql = format!(
+                    "SELECT {NODE_COLS} FROM node \
              WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 \
                AND deleted_at IS NULL AND created_by <> $4 \
                AND ($5::text IS NULL OR (updated_at, id) < ($5::timestamptz, $6)) \
              ORDER BY updated_at DESC, id DESC LIMIT $7"
-        );
-        let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-            .bind(&ids)
-            .bind(ctx.org())
-            .bind(ctx.tenant_id())
-            .bind(&ctx.principal().id)
-            .bind(after_ts.as_deref())
-            .bind(after_id)
-            .bind(limit as i64)
-            .fetch_all(&self.db)
-            .await?;
-        let next_cursor = if rows.len() == limit {
-            rows.last()
-                .map(|r| encode_ts_cursor(&r.updated_at.to_rfc3339(), r.id))
-        } else {
-            None
-        };
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::NodeSharedWithMeList,
-                    object_type: "organization",
-                    object_id: ctx.org(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "count": rows.len() }),
-                },
-            )
-            .await?;
-        let items = rows
-            .into_iter()
-            .map(row_to_node)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ChildPage { items, next_cursor })
+                );
+                let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                    .bind(&ids)
+                    .bind(ctx.org())
+                    .bind(ctx.tenant_id())
+                    .bind(&ctx.principal().id)
+                    .bind(after_ts.as_deref())
+                    .bind(after_id)
+                    .bind(limit as i64)
+                    .fetch_all(&self.db)
+                    .await?;
+                let next_cursor = if rows.len() == limit {
+                    rows.last()
+                        .map(|r| encode_ts_cursor(&r.updated_at.to_rfc3339(), r.id))
+                } else {
+                    None
+                };
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::NodeSharedWithMeList,
+                            object_type: "organization",
+                            object_id: ctx.org(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "count": rows.len() }),
+                        },
+                    )
+                    .await?;
+                let items = rows
+                    .into_iter()
+                    .map(row_to_node)
+                    .collect::<Result<Vec<_>, _>>()?;
+                tracing::Span::current().record("count", items.len());
+                Ok(ChildPage { items, next_cursor })
+            }
+            .await,
+        )
     }
 
     /// 共有管理（share/unshare/list）の前段: ノードの存在確認＋owner 認可。FGA object を返す。

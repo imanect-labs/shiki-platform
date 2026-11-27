@@ -352,6 +352,11 @@ impl StorageService {
     }
 
     /// ファイルのリネーム・移動（[`update_node`](Self::update_node) の種別固定ラッパ）。
+    #[tracing::instrument(
+        name = "storage.update_node",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn update_file(
         &self,
         ctx: &AuthContext,
@@ -360,11 +365,21 @@ impl StorageService {
         new_parent: Option<Option<Uuid>>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.update_node(ctx, file_id, NodeKind::File, new_name, new_parent, trace_id)
-            .await
+        crate::span_err::storage(
+            async {
+                self.update_node(ctx, file_id, NodeKind::File, new_name, new_parent, trace_id)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// フォルダのリネーム・移動（[`update_node`](Self::update_node) の種別固定ラッパ）。
+    #[tracing::instrument(
+        name = "storage.update_node",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", node_id = %folder_id),
+    )]
     pub async fn update_folder(
         &self,
         ctx: &AuthContext,
@@ -373,15 +388,20 @@ impl StorageService {
         new_parent: Option<Option<Uuid>>,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.update_node(
-            ctx,
-            folder_id,
-            NodeKind::Folder,
-            new_name,
-            new_parent,
-            trace_id,
+        crate::span_err::storage(
+            async {
+                self.update_node(
+                    ctx,
+                    folder_id,
+                    NodeKind::Folder,
+                    new_name,
+                    new_parent,
+                    trace_id,
+                )
+                .await
+            }
+            .await,
         )
-        .await
     }
 
     /// リネーム（[`update_file`](Self::update_file) の薄いラッパ）。

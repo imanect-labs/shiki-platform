@@ -132,57 +132,75 @@ fn build_client(endpoint: &str, cfg: &S3Config) -> Client {
 
 #[async_trait::async_trait]
 impl ObjectStore for S3ObjectStore {
+    #[tracing::instrument(name = "objstore.ensure_bucket", skip_all)]
     async fn ensure_bucket(&self) -> Result<(), ObjectStoreError> {
-        let exists = self
-            .internal
-            .head_bucket()
-            .bucket(&self.bucket)
-            .send()
-            .await
-            .is_ok();
-        if !exists {
-            // 既存（BucketAlreadyOwnedByYou 等）は冪等に握りつぶす。
-            if let Err(e) = self
-                .internal
-                .create_bucket()
-                .bucket(&self.bucket)
-                .send()
-                .await
-            {
-                let msg = format!("{e:?}");
-                if !(msg.contains("BucketAlreadyOwnedByYou") || msg.contains("BucketAlreadyExists"))
-                {
-                    return Err(ObjectStoreError::Backend(format!("create_bucket: {e}")));
+        crate::span_err::object_store(
+            async {
+                let exists = self
+                    .internal
+                    .head_bucket()
+                    .bucket(&self.bucket)
+                    .send()
+                    .await
+                    .is_ok();
+                if !exists {
+                    // 既存（BucketAlreadyOwnedByYou 等）は冪等に握りつぶす。
+                    if let Err(e) = self
+                        .internal
+                        .create_bucket()
+                        .bucket(&self.bucket)
+                        .send()
+                        .await
+                    {
+                        let msg = format!("{e:?}");
+                        if !(msg.contains("BucketAlreadyOwnedByYou")
+                            || msg.contains("BucketAlreadyExists"))
+                        {
+                            return Err(ObjectStoreError::Backend(format!("create_bucket: {e}")));
+                        }
+                    }
                 }
+                if !self.cors_allowed_origins.is_empty() {
+                    self.put_bucket_cors().await?;
+                }
+                Ok(())
             }
-        }
-        if !self.cors_allowed_origins.is_empty() {
-            self.put_bucket_cors().await?;
-        }
-        Ok(())
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "objstore.presign_put",
+        skip_all,
+        fields(bytes = content_length, multipart = false),
+    )]
     async fn presign_put(
         &self,
         key: &str,
         ttl: Duration,
         content_length: i64,
     ) -> Result<String, ObjectStoreError> {
-        let pc = PresigningConfig::expires_in(ttl)
-            .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
-        let req = self
-            .presign
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            // content-length を署名に含め、宣言サイズと異なる本文の PUT を弾く。
-            .content_length(content_length)
-            .presigned(pc)
-            .await
-            .map_err(|e| ObjectStoreError::Presign(format!("put_object presign: {e}")))?;
-        Ok(req.uri().to_string())
+        crate::span_err::object_store(
+            async {
+                let pc = PresigningConfig::expires_in(ttl)
+                    .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
+                let req = self
+                    .presign
+                    .put_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    // content-length を署名に含め、宣言サイズと異なる本文の PUT を弾く。
+                    .content_length(content_length)
+                    .presigned(pc)
+                    .await
+                    .map_err(|e| ObjectStoreError::Presign(format!("put_object presign: {e}")))?;
+                Ok(req.uri().to_string())
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(name = "objstore.presign_get", skip_all)]
     async fn presign_get(
         &self,
         key: &str,
@@ -190,41 +208,52 @@ impl ObjectStore for S3ObjectStore {
         filename: Option<&str>,
         content_type: Option<&str>,
     ) -> Result<String, ObjectStoreError> {
-        let pc = PresigningConfig::expires_in(ttl)
-            .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
-        let mut builder = self.presign.get_object().bucket(&self.bucket).key(key);
-        if let Some(ct) = content_type {
-            builder = builder.response_content_type(ct);
-        }
-        if let Some(name) = filename {
-            // " を含むファイル名は壊れた header を避けるため除去する。
-            let safe = name.replace('"', "");
-            builder =
-                builder.response_content_disposition(format!("attachment; filename=\"{safe}\""));
-        }
-        let req = builder
-            .presigned(pc)
-            .await
-            .map_err(|e| ObjectStoreError::Presign(format!("get_object presign: {e}")))?;
-        Ok(req.uri().to_string())
+        crate::span_err::object_store(
+            async {
+                let pc = PresigningConfig::expires_in(ttl)
+                    .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
+                let mut builder = self.presign.get_object().bucket(&self.bucket).key(key);
+                if let Some(ct) = content_type {
+                    builder = builder.response_content_type(ct);
+                }
+                if let Some(name) = filename {
+                    // " を含むファイル名は壊れた header を避けるため除去する。
+                    let safe = name.replace('"', "");
+                    builder = builder
+                        .response_content_disposition(format!("attachment; filename=\"{safe}\""));
+                }
+                let req = builder
+                    .presigned(pc)
+                    .await
+                    .map_err(|e| ObjectStoreError::Presign(format!("get_object presign: {e}")))?;
+                Ok(req.uri().to_string())
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(name = "objstore.presign_get_internal", skip_all)]
     async fn presign_get_internal(
         &self,
         key: &str,
         ttl: Duration,
     ) -> Result<String, ObjectStoreError> {
-        let pc = PresigningConfig::expires_in(ttl)
-            .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
-        let req = self
-            .internal
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .presigned(pc)
-            .await
-            .map_err(|e| ObjectStoreError::Presign(format!("internal get presign: {e}")))?;
-        Ok(req.uri().to_string())
+        crate::span_err::object_store(
+            async {
+                let pc = PresigningConfig::expires_in(ttl)
+                    .map_err(|e| ObjectStoreError::Presign(e.to_string()))?;
+                let req = self
+                    .internal
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .presigned(pc)
+                    .await
+                    .map_err(|e| ObjectStoreError::Presign(format!("internal get presign: {e}")))?;
+                Ok(req.uri().to_string())
+            }
+            .await,
+        )
     }
 
     // NOTE (PIT-6 tension・後続 Issue): これは finalize で blob 全体をオブジェクトストア→API へ読み戻して
@@ -234,193 +263,270 @@ impl ObjectStore for S3ObjectStore {
     // finalize は `head_object` で checksum を読むだけにすれば**再ダウンロード無し**で
     // content-addressing の整合検証が成立する。本 PR では現状の再ハッシュで安全側に倒し、
     // checksum 検証への切替を後続 Issue（ストレージ最適化）で行う。
+    #[tracing::instrument(
+        name = "objstore.read_and_hash",
+        skip_all,
+        fields(bytes = tracing::field::Empty),
+    )]
     async fn read_and_hash(&self, key: &str) -> Result<(String, u64), ObjectStoreError> {
-        let resp = self
-            .internal
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| {
-                let se = e.into_service_error();
-                if se.is_no_such_key() {
-                    ObjectStoreError::NotFound(key.to_string())
-                } else {
-                    ObjectStoreError::Backend(format!("get_object: {se}"))
+        crate::span_err::object_store(
+            async {
+                let resp = self
+                    .internal
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        let se = e.into_service_error();
+                        if se.is_no_such_key() {
+                            ObjectStoreError::NotFound(key.to_string())
+                        } else {
+                            ObjectStoreError::Backend(format!("get_object: {se}"))
+                        }
+                    })?;
+                // 逐次読みしながら sha256 を計算する（メモリにバッファし切らない）。
+                let mut reader = resp.body.into_async_read();
+                let mut hasher = Sha256Hasher::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = reader
+                        .read(&mut buf)
+                        .await
+                        .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
+                    if n == 0 {
+                        break;
+                    }
+                    hasher.update(&buf[..n]);
                 }
-            })?;
-        // 逐次読みしながら sha256 を計算する（メモリにバッファし切らない）。
-        let mut reader = resp.body.into_async_read();
-        let mut hasher = Sha256Hasher::new();
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .await
-                .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
-            if n == 0 {
-                break;
+                let (sha, len) = hasher.finalize();
+                tracing::Span::current().record("bytes", len);
+                Ok((sha, len))
             }
-            hasher.update(&buf[..n]);
-        }
-        Ok(hasher.finalize())
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "objstore.put",
+        skip_all,
+        fields(bytes = bytes.len(), multipart = false),
+    )]
     async fn put_object(
         &self,
         key: &str,
         bytes: Vec<u8>,
         content_type: &str,
     ) -> Result<(), ObjectStoreError> {
-        self.internal
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .content_type(content_type)
-            .body(bytes.into())
-            .send()
-            .await
-            .map_err(|e| ObjectStoreError::Backend(format!("put_object: {e}")))?;
-        Ok(())
-    }
-
-    async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError> {
-        let resp = self
-            .internal
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| {
-                let se = e.into_service_error();
-                if se.is_no_such_key() {
-                    ObjectStoreError::NotFound(key.to_string())
-                } else {
-                    ObjectStoreError::Backend(format!("get_object: {se}"))
-                }
-            })?;
-        let data = resp
-            .body
-            .collect()
-            .await
-            .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
-        Ok(data.into_bytes().to_vec())
-    }
-
-    async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError> {
-        match self
-            .internal
-            .head_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let se = e.into_service_error();
-                if se.is_not_found() {
-                    Ok(false)
-                } else {
-                    Err(ObjectStoreError::Backend(format!("head_object: {se}")))
-                }
+        crate::span_err::object_store(
+            async {
+                self.internal
+                    .put_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .content_type(content_type)
+                    .body(bytes.into())
+                    .send()
+                    .await
+                    .map_err(|e| ObjectStoreError::Backend(format!("put_object: {e}")))?;
+                Ok(())
             }
-        }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "objstore.get",
+        skip_all,
+        fields(bytes = tracing::field::Empty),
+    )]
+    async fn get_object(&self, key: &str) -> Result<Vec<u8>, ObjectStoreError> {
+        crate::span_err::object_store(
+            async {
+                let resp = self
+                    .internal
+                    .get_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        let se = e.into_service_error();
+                        if se.is_no_such_key() {
+                            ObjectStoreError::NotFound(key.to_string())
+                        } else {
+                            ObjectStoreError::Backend(format!("get_object: {se}"))
+                        }
+                    })?;
+                let data = resp
+                    .body
+                    .collect()
+                    .await
+                    .map_err(|e| ObjectStoreError::Backend(format!("read body: {e}")))?;
+                let bytes = data.into_bytes().to_vec();
+                tracing::Span::current().record("bytes", bytes.len());
+                Ok(bytes)
+            }
+            .await,
+        )
+    }
+
+    #[tracing::instrument(
+        name = "objstore.exists",
+        skip_all,
+        fields(exists = tracing::field::Empty),
+    )]
+    async fn exists(&self, key: &str) -> Result<bool, ObjectStoreError> {
+        crate::span_err::object_store(
+            async {
+                let exists = match self
+                    .internal
+                    .head_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        let se = e.into_service_error();
+                        if !se.is_not_found() {
+                            return Err(ObjectStoreError::Backend(format!("head_object: {se}")));
+                        }
+                        false
+                    }
+                };
+                tracing::Span::current().record("exists", exists);
+                Ok(exists)
+            }
+            .await,
+        )
+    }
+
+    #[tracing::instrument(name = "objstore.copy", skip_all)]
     async fn copy(&self, src_key: &str, dst_key: &str) -> Result<(), ObjectStoreError> {
-        // copy_source は `bucket/key`。org/sha256/uuid 由来でパス安全な文字のみ。
-        let copy_source = format!("{}/{}", self.bucket, src_key);
-        self.internal
-            .copy_object()
-            .bucket(&self.bucket)
-            .key(dst_key)
-            .copy_source(copy_source)
-            .send()
-            .await
-            .map_err(|e| ObjectStoreError::Backend(format!("copy_object: {e}")))?;
-        Ok(())
+        crate::span_err::object_store(
+            async {
+                // copy_source は `bucket/key`。org/sha256/uuid 由来でパス安全な文字のみ。
+                let copy_source = format!("{}/{}", self.bucket, src_key);
+                self.internal
+                    .copy_object()
+                    .bucket(&self.bucket)
+                    .key(dst_key)
+                    .copy_source(copy_source)
+                    .send()
+                    .await
+                    .map_err(|e| ObjectStoreError::Backend(format!("copy_object: {e}")))?;
+                Ok(())
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(name = "objstore.delete", skip_all)]
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
-        self.internal
-            .delete_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| ObjectStoreError::Backend(format!("delete_object: {e}")))?;
-        Ok(())
+        crate::span_err::object_store(
+            async {
+                self.internal
+                    .delete_object()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .send()
+                    .await
+                    .map_err(|e| ObjectStoreError::Backend(format!("delete_object: {e}")))?;
+                Ok(())
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "objstore.list_prefix",
+        skip_all,
+        fields(count = tracing::field::Empty),
+    )]
     async fn list_prefix(
         &self,
         prefix: &str,
         continuation: Option<&str>,
     ) -> Result<(Vec<String>, Option<String>), ObjectStoreError> {
-        // 1 ページ最大 1000 件（S3 既定）。全件をメモリへ載せない。
-        let mut req = self
-            .internal
-            .list_objects_v2()
-            .bucket(&self.bucket)
-            .prefix(prefix)
-            .max_keys(1000);
-        if let Some(token) = continuation {
-            req = req.continuation_token(token);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ObjectStoreError::Backend(format!("list_objects_v2: {e}")))?;
-        let keys = resp
-            .contents()
-            .iter()
-            .filter_map(|o| o.key().map(str::to_string))
-            .collect();
-        Ok((keys, resp.next_continuation_token().map(str::to_string)))
+        crate::span_err::object_store(
+            async {
+                // 1 ページ最大 1000 件（S3 既定）。全件をメモリへ載せない。
+                let mut req = self
+                    .internal
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .prefix(prefix)
+                    .max_keys(1000);
+                if let Some(token) = continuation {
+                    req = req.continuation_token(token);
+                }
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| ObjectStoreError::Backend(format!("list_objects_v2: {e}")))?;
+                let keys: Vec<String> = resp
+                    .contents()
+                    .iter()
+                    .filter_map(|o| o.key().map(str::to_string))
+                    .collect();
+                tracing::Span::current().record("count", keys.len());
+                Ok((keys, resp.next_continuation_token().map(str::to_string)))
+            }
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "objstore.delete_batch",
+        skip_all,
+        fields(count = keys.len()),
+    )]
     async fn delete_batch(&self, keys: &[String]) -> Result<(), ObjectStoreError> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        // delete_objects は 1 リクエスト最大 1000 件。存在しないキーは S3 側で成功扱い（冪等）。
-        for chunk in keys.chunks(1000) {
-            let objects: Vec<ObjectIdentifier> = chunk
-                .iter()
-                .map(|k| {
-                    ObjectIdentifier::builder()
-                        .key(k)
+        crate::span_err::object_store(
+            async {
+                if keys.is_empty() {
+                    return Ok(());
+                }
+                // delete_objects は 1 リクエスト最大 1000 件。存在しないキーは S3 側で成功扱い（冪等）。
+                for chunk in keys.chunks(1000) {
+                    let objects: Vec<ObjectIdentifier> = chunk
+                        .iter()
+                        .map(|k| {
+                            ObjectIdentifier::builder().key(k).build().map_err(|e| {
+                                ObjectStoreError::Backend(format!("object id 構築: {e}"))
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let delete = Delete::builder()
+                        .set_objects(Some(objects))
                         .build()
-                        .map_err(|e| ObjectStoreError::Backend(format!("object id 構築: {e}")))
-                })
-                .collect::<Result<_, _>>()?;
-            let delete = Delete::builder()
-                .set_objects(Some(objects))
-                .build()
-                .map_err(|e| ObjectStoreError::Backend(format!("delete 構築: {e}")))?;
-            let resp = self
-                .internal
-                .delete_objects()
-                .bucket(&self.bucket)
-                .delete(delete)
-                .send()
-                .await
-                .map_err(|e| ObjectStoreError::Backend(format!("delete_objects: {e}")))?;
-            // 部分失敗はエラーにする（撤去漏れを黙殺しない。再実行で収束）。
-            let errors = resp.errors();
-            if !errors.is_empty() {
-                let first = &errors[0];
-                return Err(ObjectStoreError::Backend(format!(
-                    "delete_objects 部分失敗 {} 件（先頭: key={:?} code={:?}）",
-                    errors.len(),
-                    first.key(),
-                    first.code(),
-                )));
+                        .map_err(|e| ObjectStoreError::Backend(format!("delete 構築: {e}")))?;
+                    let resp = self
+                        .internal
+                        .delete_objects()
+                        .bucket(&self.bucket)
+                        .delete(delete)
+                        .send()
+                        .await
+                        .map_err(|e| ObjectStoreError::Backend(format!("delete_objects: {e}")))?;
+                    // 部分失敗はエラーにする（撤去漏れを黙殺しない。再実行で収束）。
+                    let errors = resp.errors();
+                    if !errors.is_empty() {
+                        let first = &errors[0];
+                        return Err(ObjectStoreError::Backend(format!(
+                            "delete_objects 部分失敗 {} 件（先頭: key={:?} code={:?}）",
+                            errors.len(),
+                            first.key(),
+                            first.code(),
+                        )));
+                    }
+                }
+                Ok(())
             }
-        }
-        Ok(())
+            .await,
+        )
     }
 }

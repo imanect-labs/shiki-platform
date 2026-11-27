@@ -78,6 +78,11 @@ impl StorageService {
     /// broad タプルを書かず redeem 経由で per-user タプルを発行する。認可通過**後**にパスワードを
     /// ハッシュ化する（未認可で argon2 を走らせない・DoS 対策）。
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "storage.create_share_link",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+    )]
     pub async fn create_share_link(
         &self,
         ctx: &AuthContext,
@@ -89,6 +94,7 @@ impl StorageService {
         label: Option<&str>,
         trace_id: Option<&str>,
     ) -> Result<ShareLink, StorageError> {
+        crate::span_err::storage(async {
         let obj = self
             .authorize_share_admin(ctx, node_id, AuditAction::NodeShareLinkCreate, trace_id)
             .await?;
@@ -196,116 +202,144 @@ impl StorageService {
             redeem_count: 0, // 発行直後は未 redeem。
         })
     }
+        .await)
+    }
 
     /// ノードの active な共有リンク一覧を返す（owner 権限）。失効/期限切れは含めない。
     ///
     /// `redeem_count` は **live な grant のみ**（`revoked_at IS NULL`）を数える。個別取消（#375）は
     /// 台帳行をソフト失効させるので、ここで絞らないと「N 人が解錠済み」が取消後も減らず、owner が
     /// 取消の成否を判断する唯一のフィードバックが壊れる（一覧の「ほか N 人」表示も嘘になる）。
+    #[tracing::instrument(
+        name = "storage.list_share_links",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
+    )]
     pub async fn list_share_links(
         &self,
         ctx: &AuthContext,
         node_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Vec<ShareLink>, StorageError> {
-        self.authorize_share_admin(ctx, node_id, AuditAction::NodeShareLinkList, trace_id)
-            .await?;
-        let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
-            "SELECT l.link_id, l.token, l.audience, l.role, l.expires_at, \
+        crate::span_err::storage(
+            async {
+                self.authorize_share_admin(ctx, node_id, AuditAction::NodeShareLinkList, trace_id)
+                    .await?;
+                let rows: Vec<ShareLinkRow> = sqlx::query_as(&format!(
+                    "SELECT l.link_id, l.token, l.audience, l.role, l.expires_at, \
                     (l.password_hash IS NOT NULL) AS has_password, l.label, l.created_at, \
                     (SELECT COUNT(*) FROM node_share_link_grant g \
                        WHERE g.link_id = l.link_id AND g.revoked_at IS NULL) AS redeem_count \
              FROM node_share_link l \
              WHERE l.node_id = $1 AND l.tenant_id = $2 AND {ACTIVE_PREDICATE} \
              ORDER BY l.created_at DESC",
-        ))
-        .bind(node_id)
-        .bind(ctx.tenant_id())
-        .fetch_all(&self.db)
-        .await?;
-        rows.into_iter().map(ShareLinkRow::into_model).collect()
+                ))
+                .bind(node_id)
+                .bind(ctx.tenant_id())
+                .fetch_all(&self.db)
+                .await?;
+                tracing::Span::current().record("count", rows.len());
+                rows.into_iter().map(ShareLinkRow::into_model).collect()
+            }
+            .await,
+        )
     }
 
     /// 共有リンクを失効する（owner 権限）。broad タプルを reconcile（他 active が要求しない分のみ
     /// 剥奪）し、このリンクの redeem 済み per-user タプルを参照カウントして剥奪する。
+    #[tracing::instrument(
+        name = "storage.revoke_share_link",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn revoke_share_link(
         &self,
         ctx: &AuthContext,
         link_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkRevoke, trace_id)
-            .await?
-        else {
-            return Err(StorageError::Forbidden);
-        };
-        let ns = ctx.ns();
+        crate::span_err::storage(
+            async {
+                let Some((node_id, obj)) = self
+                    .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkRevoke, trace_id)
+                    .await?
+                else {
+                    return Err(StorageError::Forbidden);
+                };
+                let ns = ctx.ns();
 
-        let mut tx = self.db.begin().await?;
-        self.lock_node(&mut tx, node_id).await?;
-        // ソフト失効（active だったものだけ）。
-        let updated = sqlx::query(&format!(
+                let mut tx = self.db.begin().await?;
+                self.lock_node(&mut tx, node_id).await?;
+                // ソフト失効（active だったものだけ）。
+                let updated = sqlx::query(&format!(
             "UPDATE node_share_link SET revoked_at = now(), updated_at = now(), updated_by = $3 \
              WHERE link_id = $1 AND tenant_id = $2 AND {ACTIVE_PREDICATE}",
         ))
-        .bind(link_id)
-        .bind(ctx.tenant_id())
-        .bind(&ctx.principal().id)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() == 0 {
-            // 既に失効/期限切れ＝冪等成功（タプルは reconcile が整合させる）。
-            return Ok(());
-        }
-        // broad タプルを reconcile（このリンクは active から外れた）。
-        let added = self
-            .reconcile_broad(
-                &mut tx,
-                &ns,
-                &obj,
-                node_id,
-                ctx.tenant_id(),
-                ctx.org(),
-                Utc::now(),
-            )
-            .await?;
-        // このリンクの per-user redeem タプルを参照カウントして剥奪。
-        if let Err(e) = self
-            .reconcile_user_grants_for_link(
-                &mut tx,
-                &ns,
-                &obj,
-                link_id,
-                node_id,
-                ctx.tenant_id(),
-                Utc::now(),
-            )
-            .await
-        {
-            self.compensate_broad(&obj, &added).await;
-            return Err(e);
-        }
-        if let Err(e) = self
-            .finalize_share_link_tx(
-                tx,
-                ctx,
-                node_id,
-                kind_of(&obj),
-                AuditAction::NodeShareLinkRevoke,
-                json!({ "link_id": link_id }),
-                trace_id,
-            )
-            .await
-        {
-            self.compensate_broad(&obj, &added).await;
-            return Err(e);
-        }
-        Ok(())
+                .bind(link_id)
+                .bind(ctx.tenant_id())
+                .bind(&ctx.principal().id)
+                .execute(&mut *tx)
+                .await?;
+                if updated.rows_affected() == 0 {
+                    // 既に失効/期限切れ＝冪等成功（タプルは reconcile が整合させる）。
+                    return Ok(());
+                }
+                // broad タプルを reconcile（このリンクは active から外れた）。
+                let added = self
+                    .reconcile_broad(
+                        &mut tx,
+                        &ns,
+                        &obj,
+                        node_id,
+                        ctx.tenant_id(),
+                        ctx.org(),
+                        Utc::now(),
+                    )
+                    .await?;
+                // このリンクの per-user redeem タプルを参照カウントして剥奪。
+                if let Err(e) = self
+                    .reconcile_user_grants_for_link(
+                        &mut tx,
+                        &ns,
+                        &obj,
+                        link_id,
+                        node_id,
+                        ctx.tenant_id(),
+                        Utc::now(),
+                    )
+                    .await
+                {
+                    self.compensate_broad(&obj, &added).await;
+                    return Err(e);
+                }
+                if let Err(e) = self
+                    .finalize_share_link_tx(
+                        tx,
+                        ctx,
+                        node_id,
+                        kind_of(&obj),
+                        AuditAction::NodeShareLinkRevoke,
+                        json!({ "link_id": link_id }),
+                        trace_id,
+                    )
+                    .await
+                {
+                    self.compensate_broad(&obj, &added).await;
+                    return Err(e);
+                }
+                Ok(())
+            }
+            .await,
+        )
     }
 
     /// 共有リンクの有効期限を延長/変更する（owner 権限。`expires_at = None` で無期限化）。
     /// 期限切れだったリンクを未来へ延ばした場合は reconcile で broad タプルを復活させる。
+    #[tracing::instrument(
+        name = "storage.extend_share_link",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+    )]
     pub async fn extend_share_link(
         &self,
         ctx: &AuthContext,
@@ -313,20 +347,22 @@ impl StorageService {
         expires_at: Option<DateTime<Utc>>,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let Some((node_id, obj)) = self
-            .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkExtend, trace_id)
-            .await?
-        else {
-            return Err(StorageError::Forbidden);
-        };
-        // B-5: 延長で過去日を設定させない（無期限化＝None は許可）。
-        reject_past_expiry(expires_at)?;
-        let ns = ctx.ns();
+        crate::span_err::storage(
+            async {
+                let Some((node_id, obj)) = self
+                    .authorize_link_owner(ctx, link_id, AuditAction::NodeShareLinkExtend, trace_id)
+                    .await?
+                else {
+                    return Err(StorageError::Forbidden);
+                };
+                // B-5: 延長で過去日を設定させない（無期限化＝None は許可）。
+                reject_past_expiry(expires_at)?;
+                let ns = ctx.ns();
 
-        let mut tx = self.db.begin().await?;
-        self.lock_node(&mut tx, node_id).await?;
-        // 未失効リンクのみ延長できる（失効済みは対象外）。
-        let updated = sqlx::query(
+                let mut tx = self.db.begin().await?;
+                self.lock_node(&mut tx, node_id).await?;
+                // 未失効リンクのみ延長できる（失効済みは対象外）。
+                let updated = sqlx::query(
             "UPDATE node_share_link SET expires_at = $3, updated_at = now(), updated_by = $4 \
              WHERE link_id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
         )
@@ -336,38 +372,41 @@ impl StorageService {
         .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await?;
-        if updated.rows_affected() == 0 {
-            return Err(StorageError::Forbidden);
-        }
-        // 期限切れ→未来へ延ばした場合に broad タプルを復活（active に戻る）。
-        let added = self
-            .reconcile_broad(
-                &mut tx,
-                &ns,
-                &obj,
-                node_id,
-                ctx.tenant_id(),
-                ctx.org(),
-                Utc::now(),
-            )
-            .await?;
-        if let Err(e) = self
-            .finalize_share_link_tx(
-                tx,
-                ctx,
-                node_id,
-                kind_of(&obj),
-                AuditAction::NodeShareLinkExtend,
-                json!({ "link_id": link_id, "expires_at": expires_at }),
-                trace_id,
-            )
-            .await
-        {
-            self.compensate_broad(&obj, &added).await;
-            return Err(e);
-        }
-        self.expiry_notify.notify_one();
-        Ok(())
+                if updated.rows_affected() == 0 {
+                    return Err(StorageError::Forbidden);
+                }
+                // 期限切れ→未来へ延ばした場合に broad タプルを復活（active に戻る）。
+                let added = self
+                    .reconcile_broad(
+                        &mut tx,
+                        &ns,
+                        &obj,
+                        node_id,
+                        ctx.tenant_id(),
+                        ctx.org(),
+                        Utc::now(),
+                    )
+                    .await?;
+                if let Err(e) = self
+                    .finalize_share_link_tx(
+                        tx,
+                        ctx,
+                        node_id,
+                        kind_of(&obj),
+                        AuditAction::NodeShareLinkExtend,
+                        json!({ "link_id": link_id, "expires_at": expires_at }),
+                        trace_id,
+                    )
+                    .await
+                {
+                    self.compensate_broad(&obj, &added).await;
+                    return Err(e);
+                }
+                self.expiry_notify.notify_one();
+                Ok(())
+            }
+            .await,
+        )
     }
 
     /// link_id からリンク所有 node を解決し、その node の owner 認可を通す（二段認可）。

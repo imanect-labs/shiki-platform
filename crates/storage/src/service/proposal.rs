@@ -21,6 +21,16 @@ impl StorageService {
     /// current（`node.version`・`node.blob_sha256`）は進めない。版番号は
     /// [`NEXT_CONTENT_VERSION`] と同じ「current と履歴最大値の大きい方 + 1」で採番し、
     /// 以後の通常版・提案と衝突しない。返り値は作成した提案の [`FileVersion`]。
+    #[tracing::instrument(
+        name = "storage.propose_file_content",
+        skip_all,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            bytes = bytes.len(),
+        ),
+    )]
     pub async fn propose_file_content_internal(
         &self,
         ctx: &AuthContext,
@@ -29,6 +39,7 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<FileVersion, StorageError> {
+        crate::span_err::storage(async {
         let size = i64::try_from(bytes.len())
             .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
         if size > self.max_upload_size {
@@ -127,11 +138,23 @@ impl StorageService {
         tx.commit().await?;
         Ok(row.into_model())
     }
+        .await)
+    }
 
     /// 提案バージョンを採用し、通常の新バージョンへ昇格する（`editor@file` 認可）。
     ///
     /// 提案の blob を参照する新しい通常版を作成して current を進める（提案行自体は
     /// 履歴として残す）。このとき初めて書込イベント outbox → RAG 再索引が流れる。
+    #[tracing::instrument(
+        name = "storage.adopt_proposal_version",
+        skip_all,
+        fields(
+            tenant_id = ctx.tenant_id(),
+            node_kind = "file",
+            node_id = %file_id,
+            version = version,
+        ),
+    )]
     pub async fn adopt_proposal_version(
         &self,
         ctx: &AuthContext,
@@ -139,6 +162,7 @@ impl StorageService {
         version: i64,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        crate::span_err::storage(async {
         self.require(
             ctx,
             Relation::Editor,
@@ -254,5 +278,7 @@ impl StorageService {
         .await?;
         tx.commit().await?;
         Ok(node)
+    }
+        .await)
     }
 }

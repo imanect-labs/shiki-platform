@@ -40,6 +40,8 @@ aws-sdk-s3.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
+# 子 span の構造（http_request 配下に storage/authz/objstore が出るか）を記録する結合テスト用。
+tracing-subscriber.workspace = true
 tokio = { workspace = true }
 reqwest.workspace = true
 # 一般アクセス有効期限（DateTime<Utc>）を組む結合テスト用（#338）。

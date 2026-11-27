@@ -12,12 +12,18 @@ impl StorageService {
     ///
     /// closure の子孫（自身含む・生存分）を 1 txn でまとめて `deleted_at` する。refcount は
     /// soft-delete では減らさない（復元可能な間は本体を参照し続ける・LbvQZ と対称）。
+    #[tracing::instrument(
+        name = "storage.soft_delete",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", node_id = %folder_id),
+    )]
     pub async fn soft_delete_folder(
         &self,
         ctx: &AuthContext,
         folder_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
+        crate::span_err::storage(async {
         let node = self.load_node(ctx, folder_id, false).await?;
         if node.kind != NodeKind::Folder {
             return Err(StorageError::NotFound);
@@ -92,32 +98,41 @@ impl StorageService {
         tx.commit().await?;
         Ok(())
     }
+        .await)
+    }
 
     /// 論理削除（ゴミ箱）。blob refcount を減らす。
+    #[tracing::instrument(
+        name = "storage.soft_delete",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "file", node_id = %file_id),
+    )]
     pub async fn soft_delete_file(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(), StorageError> {
-        let node = self.load_node(ctx, file_id, false).await?;
-        if node.kind != NodeKind::File {
-            return Err(StorageError::NotFound);
-        }
-        self.require(
-            ctx,
-            Relation::Editor,
-            &ctx.ns().file(&file_id.to_string()),
-            AuditAction::FileDelete,
-            "file",
-            &file_id.to_string(),
-            trace_id,
-        )
-        .await?;
+        crate::span_err::storage(
+            async {
+                let node = self.load_node(ctx, file_id, false).await?;
+                if node.kind != NodeKind::File {
+                    return Err(StorageError::NotFound);
+                }
+                self.require(
+                    ctx,
+                    Relation::Editor,
+                    &ctx.ns().file(&file_id.to_string()),
+                    AuditAction::FileDelete,
+                    "file",
+                    &file_id.to_string(),
+                    trace_id,
+                )
+                .await?;
 
-        let mut tx = self.db.begin().await?;
-        // version も進めて書込イベントの冪等キー (node_id, version) を一意に保つ。
-        let new_version: Option<i64> = sqlx::query_scalar(
+                let mut tx = self.db.begin().await?;
+                // version も進めて書込イベントの冪等キー (node_id, version) を一意に保つ。
+                let new_version: Option<i64> = sqlx::query_scalar(
             "UPDATE node SET deleted_at = now(), updated_at = now(), version = version + 1, \
              updated_by = $4 \
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL \
@@ -129,41 +144,44 @@ impl StorageService {
         .bind(&ctx.principal().id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(new_version) = new_version else {
-            return Err(StorageError::NotFound);
-        };
-        // 論理削除（ゴミ箱）では blob refcount を**減らさない**。復元可能な間は実体を参照し続ける
-        // ため、ここで減らすと将来の refcount GC が復元可能ファイルの本体を消し得る（LbvQZ）。
-        // 減算は永続削除（ゴミ箱の完全削除・将来実装）でのみ行う。
-        audit::record_on(
-            &mut tx,
-            ctx,
-            AuditEntry {
-                action: AuditAction::FileDelete,
-                object_type: "file",
-                object_id: &file_id.to_string(),
-                decision: Decision::Allow,
-                trace_id,
-                metadata: json!({}),
-            },
-            Chain::Yes,
+                let Some(new_version) = new_version else {
+                    return Err(StorageError::NotFound);
+                };
+                // 論理削除（ゴミ箱）では blob refcount を**減らさない**。復元可能な間は実体を参照し続ける
+                // ため、ここで減らすと将来の refcount GC が復元可能ファイルの本体を消し得る（LbvQZ）。
+                // 減算は永続削除（ゴミ箱の完全削除・将来実装）でのみ行う。
+                audit::record_on(
+                    &mut tx,
+                    ctx,
+                    AuditEntry {
+                        action: AuditAction::FileDelete,
+                        object_type: "file",
+                        object_id: &file_id.to_string(),
+                        decision: Decision::Allow,
+                        trace_id,
+                        metadata: json!({}),
+                    },
+                    Chain::Yes,
+                )
+                .await?;
+                // 書込イベント（Task 1.8）。購読側はベクタ/全文/メタを除去する。
+                event::emit_on(
+                    &mut tx,
+                    ctx,
+                    WriteEvent {
+                        node_id: file_id,
+                        version: new_version,
+                        op: WriteOp::Delete,
+                        payload: json!({ "kind": "file" }),
+                    },
+                    trace_id,
+                )
+                .await?;
+                tx.commit().await?;
+                Ok(())
+            }
+            .await,
         )
-        .await?;
-        // 書込イベント（Task 1.8）。購読側はベクタ/全文/メタを除去する。
-        event::emit_on(
-            &mut tx,
-            ctx,
-            WriteEvent {
-                node_id: file_id,
-                version: new_version,
-                op: WriteOp::Delete,
-                payload: json!({ "kind": "file" }),
-            },
-            trace_id,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// ゴミ箱一覧（削除の根ノードのみ）を新しい順に 1 ページ返す。
@@ -173,6 +191,11 @@ impl StorageService {
     /// 復元できる（editor）ものだけを post-filter で返す。keyset `(deleted_at, id)` 降順で
     /// ページングし、全件取得はしない。**システム領域（#392）は出さない** — ドライブに
     /// 見えなかったものがゴミ箱から現れると「隠す」意味が崩れるため。
+    #[tracing::instrument(
+        name = "storage.list_trash",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), limit = limit, count = tracing::field::Empty),
+    )]
     pub async fn list_trash(
         &self,
         ctx: &AuthContext,
@@ -180,100 +203,111 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
-        // ゴミ箱閲覧は org メンバーであること（root 列挙と同格）。
-        self.require(
-            ctx,
-            Relation::Member,
-            &ctx.ns().organization(ctx.org()),
-            AuditAction::TrashList,
-            "organization",
-            ctx.org(),
-            trace_id,
-        )
-        .await?;
+        crate::span_err::storage(
+            async {
+                // ゴミ箱閲覧は org メンバーであること（root 列挙と同格）。
+                self.require(
+                    ctx,
+                    Relation::Member,
+                    &ctx.ns().organization(ctx.org()),
+                    AuditAction::TrashList,
+                    "organization",
+                    ctx.org(),
+                    trace_id,
+                )
+                .await?;
 
-        let limit = limit.clamp(1, 100);
-        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        let (mut after_ts, mut after_id) = match cursor {
-            Some(c) => {
-                let (ts, id) = decode_ts_cursor(c)?;
-                (Some(ts), Some(id))
-            }
-            None => (None, None),
-        };
+                let limit = limit.clamp(1, 100);
+                let batch: i64 = (limit as i64 * 2).clamp(16, 200);
+                let (mut after_ts, mut after_id) = match cursor {
+                    Some(c) => {
+                        let (ts, id) = decode_ts_cursor(c)?;
+                        (Some(ts), Some(id))
+                    }
+                    None => (None, None),
+                };
 
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
-        let mut exhausted = false;
-        while items.len() < limit && !exhausted {
-            // 削除の根: deleted_at あり ＆ 親が生存/無し。keyset は (deleted_at, id) 降順。
-            let sql = format!(
-                "SELECT {NODE_COLS} FROM node n \
+                let mut items: Vec<Node> = Vec::with_capacity(limit);
+                let mut exhausted = false;
+                while items.len() < limit && !exhausted {
+                    // 削除の根: deleted_at あり ＆ 親が生存/無し。keyset は (deleted_at, id) 降順。
+                    let sql = format!(
+                        "SELECT {NODE_COLS} FROM node n \
                  WHERE n.org = $1 AND n.tenant_id = $2 AND n.deleted_at IS NOT NULL \
                    AND n.system = false \
                    AND NOT EXISTS ( \
                      SELECT 1 FROM node p WHERE p.id = n.parent_id AND p.deleted_at IS NOT NULL) \
                    AND ($3::text IS NULL OR (n.deleted_at, n.id) < ($3::timestamptz, $4)) \
                  ORDER BY n.deleted_at DESC, n.id DESC LIMIT $5"
-            );
-            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(ctx.org())
-                .bind(ctx.tenant_id())
-                .bind(after_ts.as_deref())
-                .bind(after_id)
-                .bind(batch)
-                .fetch_all(&self.db)
-                .await?;
-            if (rows.len() as i64) < batch {
-                exhausted = true;
-            }
-            if rows.is_empty() {
-                break;
-            }
-            for row in rows {
-                after_ts = Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
-                after_id = Some(row.id);
-                // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Editor,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
+                    );
+                    let rows: Vec<NodeRow> = sqlx::query_as(&sql)
+                        .bind(ctx.org())
+                        .bind(ctx.tenant_id())
+                        .bind(after_ts.as_deref())
+                        .bind(after_id)
+                        .bind(batch)
+                        .fetch_all(&self.db)
+                        .await?;
+                    if (rows.len() as i64) < batch {
+                        exhausted = true;
+                    }
+                    if rows.is_empty() {
+                        break;
+                    }
+                    // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。
+                    // 判定は BatchCheck にまとめる（子ごとに check すると往復と span が行数ぶん増える）。
+                    // ページ外の行の判定失敗で一覧全体を落とさない（post_filter_front）。
+                    let mut pending = std::collections::VecDeque::from(rows);
+                    while items.len() < limit && !pending.is_empty() {
+                        let decisions = post_filter_front(
+                            self.authz.as_ref(),
+                            ctx,
+                            Relation::Editor,
+                            pending.make_contiguous(),
+                            limit - items.len(),
+                        )
+                        .await?;
+                        let chunk: Vec<NodeRow> = pending.drain(..decisions.len()).collect();
+                        for (row, allowed) in chunk.into_iter().zip(decisions) {
+                            after_ts =
+                                Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
+                            after_id = Some(row.id);
+                            if !allowed {
+                                continue;
+                            }
+                            items.push(row_to_node(row)?);
+                            if items.len() == limit {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let next_cursor = if items.len() == limit {
+                    match (after_ts, after_id) {
+                        (Some(ts), Some(i)) => Some(encode_ts_cursor(&ts, i)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.audit
+                    .record(
+                        ctx,
+                        AuditEntry {
+                            action: AuditAction::TrashList,
+                            object_type: "organization",
+                            object_id: ctx.org(),
+                            decision: Decision::Allow,
+                            trace_id,
+                            metadata: json!({ "returned": items.len() }),
+                        },
                     )
                     .await?;
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
-                    break;
-                }
+                tracing::Span::current().record("count", items.len());
+                Ok(ChildPage { items, next_cursor })
             }
-        }
-        let next_cursor = if items.len() == limit {
-            match (after_ts, after_id) {
-                (Some(ts), Some(i)) => Some(encode_ts_cursor(&ts, i)),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        self.audit
-            .record(
-                ctx,
-                AuditEntry {
-                    action: AuditAction::TrashList,
-                    object_type: "organization",
-                    object_id: ctx.org(),
-                    decision: Decision::Allow,
-                    trace_id,
-                    metadata: json!({ "returned": items.len() }),
-                },
-            )
-            .await?;
-        Ok(ChildPage { items, next_cursor })
+            .await,
+        )
     }
 
     // --- バージョニング（Task 1.7） ---

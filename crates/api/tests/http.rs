@@ -1372,3 +1372,6 @@ mod bug_reports;
 
 #[path = "http/version_backup.rs"]
 mod version_backup;
+
+#[path = "http/request_spans.rs"]
+mod request_spans;

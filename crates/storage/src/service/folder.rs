@@ -84,6 +84,11 @@ impl StorageService {
     /// closure（親継承 ＋ self depth0）を張り、FGA に owner（＋folder 配下なら parent）
     /// タプルを書く。DB と FGA は 2PC できないため、tuple は **commit 前**に書き、
     /// parent 失敗・commit 失敗のどちらでも書けた tuple を revoke して不整合を残さない。
+    #[tracing::instrument(
+        name = "storage.create_folder",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder"),
+    )]
     pub async fn create_folder(
         &self,
         ctx: &AuthContext,
@@ -91,8 +96,13 @@ impl StorageService {
         name: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.create_folder_inner(ctx, parent_id, name, false, trace_id)
-            .await
+        crate::span_err::storage(
+            async {
+                self.create_folder_inner(ctx, parent_id, name, false, trace_id)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// **システム領域**のフォルダを作成する（issue #392・migration 0060）。
@@ -100,6 +110,11 @@ impl StorageService {
     /// 自律エージェントのワークスペースのような「使い捨ての作業領域」用。ドライブ一覧・名前検索・
     /// ゴミ箱一覧に出さず、書込イベントを RAG へ relay しない（配下は `system` を継承する）。
     /// 認可・監査・版管理は通常フォルダと**完全に同一**（隠すことを権限の代わりにしない）。
+    #[tracing::instrument(
+        name = "storage.create_folder",
+        skip_all,
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder"),
+    )]
     pub async fn create_system_folder(
         &self,
         ctx: &AuthContext,
@@ -107,8 +122,13 @@ impl StorageService {
         name: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
-        self.create_folder_inner(ctx, parent_id, name, true, trace_id)
-            .await
+        crate::span_err::storage(
+            async {
+                self.create_folder_inner(ctx, parent_id, name, true, trace_id)
+                    .await
+            }
+            .await,
+        )
     }
 
     /// `create_folder` / `create_system_folder` の実体。`force_system` は「この 1 段を

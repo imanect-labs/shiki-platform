@@ -187,6 +187,7 @@ mod finalize;
 mod folder;
 mod internal_io;
 mod move_rename;
+mod post_filter;
 mod proposal;
 mod read;
 mod restore;
@@ -204,6 +205,7 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
+use post_filter::{ancestor_decisions, post_filter_front};
 pub use restore::RevertOutcome;
 pub use workspace_io::WriteAtOutcome;
 

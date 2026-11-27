@@ -41,6 +41,7 @@ pub mod object_store;
 pub mod outbox_gc;
 pub mod pool_router;
 pub mod service;
+mod span_err;
 pub mod tenant;
 pub mod tenant_scope;
 pub mod upload_gc_timer;
