@@ -105,9 +105,25 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await page.getByTestId("view-save-as").click();
   const viewName = uniqueName("自分用");
   await page.getByLabel("ビューの名前").fill(viewName);
+  // 保存後の一覧の再読込を遅らせ、新しいビューが一覧に無いうちにビューの読込が終わる順を必ず作る（#1136）。
+  const listUrl = `**/api/data/tables/${tableId}/views`;
+  let releaseList = () => {};
+  const listHeld = new Promise<void>((r) => (releaseList = r));
+  await page.route(listUrl, async (route) => {
+    await listHeld;
+    await route.continue();
+  });
+  const opened = page.waitForResponse((r) => /\/api\/data\/views\/[0-9a-f-]{36}$/.test(new URL(r.url()).pathname) && r.request().method() === "GET");
   await page.getByTestId("view-save-confirm").click();
   await page.waitForURL(/\?view=[0-9a-f-]{36}$/);
   const viewId = new URL(page.url()).searchParams.get("view")!;
+  await opened;
+  await expect(page.getByLabel("ビューを読み込み中")).toHaveCount(0);
+  // 保存した直後も、ビューの切替ボタンは保存した名前を出す（「ビュー」に戻らない）。
+  await expect(page.getByTestId("view-switcher")).toContainText(viewName);
+  releaseList();
+  await page.unroute(listUrl);
+  await expect(page.getByTestId("view-switcher")).toContainText(viewName);
 
   // 保存した表示設定は型付きの ViewSpec としてサーバに残る。
   const view = await (await page.request.get(`/api/data/views/${viewId}`)).json();
