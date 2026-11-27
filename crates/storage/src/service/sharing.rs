@@ -148,7 +148,7 @@ impl StorageService {
         name = "storage.list_shares",
         skip_all,
         err,
-        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
     )]
     pub async fn list_shares(
         &self,
@@ -181,6 +181,7 @@ impl StorageService {
             tracing::warn!(error = %e, "共有相手の表示名解決に失敗（ID 表示へフォールバック）");
             crate::directory::ShareProfiles::default()
         });
+        tracing::Span::current().record("count", shares.len());
         Ok(shares
             .into_iter()
             .map(|(target, role)| {

@@ -176,23 +176,32 @@ impl StorageService {
                 break;
             }
             // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
-            // 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
-            let decisions =
-                post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &rows).await?;
-            for (row, allowed) in rows.into_iter().zip(decisions) {
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                after = Some(ChildCursor {
-                    value: child_sort_value(sort.key, &row),
-                    name: row.name.clone(),
-                    id: row.id,
-                    kind,
-                });
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
+            // 判定は残り枠ぶんずつ BatchCheck にまとめる（子ごとに check すると往復と span が
+            // 行数ぶん増える）。ページに入り得ない行は判定しない（不要な行の判定失敗で一覧全体を
+            // 落とさない）。
+            let mut pending = rows.into_iter();
+            while items.len() < limit {
+                let chunk: Vec<NodeRow> = pending.by_ref().take(limit - items.len()).collect();
+                if chunk.is_empty() {
                     break;
+                }
+                let decisions =
+                    post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &chunk).await?;
+                for (row, allowed) in chunk.into_iter().zip(decisions) {
+                    let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                    after = Some(ChildCursor {
+                        value: child_sort_value(sort.key, &row),
+                        name: row.name.clone(),
+                        id: row.id,
+                        kind,
+                    });
+                    if !allowed {
+                        continue;
+                    }
+                    items.push(row_to_node(row)?);
+                    if items.len() == limit {
+                        break;
+                    }
                 }
             }
         }
@@ -321,23 +330,32 @@ impl StorageService {
             if rows.is_empty() {
                 break;
             }
-            // 子ごとの判定は 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
-            let decisions =
-                post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &rows).await?;
-            for (row, allowed) in rows.into_iter().zip(decisions) {
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                after = Some(ChildCursor {
-                    value: child_sort_value(sort.key, &row),
-                    name: row.name.clone(),
-                    id: row.id,
-                    kind,
-                });
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
+            // 判定は残り枠ぶんずつ BatchCheck にまとめる（子ごとに check すると往復と span が
+            // 行数ぶん増える）。ページに入り得ない行は判定しない（不要な行の判定失敗で一覧全体を
+            // 落とさない）。
+            let mut pending = rows.into_iter();
+            while items.len() < limit {
+                let chunk: Vec<NodeRow> = pending.by_ref().take(limit - items.len()).collect();
+                if chunk.is_empty() {
                     break;
+                }
+                let decisions =
+                    post_filter_rows(self.authz.as_ref(), ctx, Relation::Viewer, &chunk).await?;
+                for (row, allowed) in chunk.into_iter().zip(decisions) {
+                    let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                    after = Some(ChildCursor {
+                        value: child_sort_value(sort.key, &row),
+                        name: row.name.clone(),
+                        id: row.id,
+                        kind,
+                    });
+                    if !allowed {
+                        continue;
+                    }
+                    items.push(row_to_node(row)?);
+                    if items.len() == limit {
+                        break;
+                    }
                 }
             }
         }

@@ -110,7 +110,7 @@ impl StorageService {
         name = "storage.create_folder",
         skip_all,
         err,
-        fields(tenant_id = ctx.tenant_id(), node_kind = "folder", system = true),
+        fields(tenant_id = ctx.tenant_id(), node_kind = "folder"),
     )]
     pub async fn create_system_folder(
         &self,

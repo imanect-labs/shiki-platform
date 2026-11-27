@@ -243,7 +243,6 @@ impl AuthzClient for OpenFgaClient {
             tenant_id = span_tenant(object),
             relation = relation.as_str(),
             object_type = span_object_type(object),
-            consistency = consistency.as_str(),
             allowed = tracing::field::Empty,
         )
     )]
@@ -277,7 +276,6 @@ impl AuthzClient for OpenFgaClient {
             tenant_id = items.first().map_or("", |i| span_tenant(&i.object)),
             relation = items.first().map_or("", |i| i.relation.as_str()),
             object_type = items.first().map_or("", |i| span_object_type(&i.object)),
-            consistency = consistency.as_str(),
             count = items.len(),
             allowed_count = tracing::field::Empty,
         )

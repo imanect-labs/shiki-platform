@@ -43,6 +43,21 @@ use uuid::Uuid;
 struct Recorder {
     spans: Arc<Mutex<Vec<SpanRec>>>,
     errors: Arc<Mutex<Vec<String>>>,
+    /// `authz.batch_check` の `count`（判定した問いの数）。
+    batch_counts: Arc<Mutex<Vec<u64>>>,
+}
+
+/// span 属性から `count` を拾う。
+struct CountVisitor(Option<u64>);
+
+impl tracing::field::Visit for CountVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "count" {
+            self.0 = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
 }
 
 #[derive(Debug, Clone)]
@@ -56,10 +71,18 @@ impl<S> Layer<S> for Recorder
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_new_span(&self, _attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(id) else {
             return;
         };
+        if span.name() == "authz.batch_check" {
+            let mut v = CountVisitor(None);
+            attrs.record(&mut v);
+            self.batch_counts
+                .lock()
+                .unwrap()
+                .push(v.0.expect("batch_check の count"));
+        }
         let parent = span.parent().map(|p| p.name());
         let under_request = span.scope().skip(1).any(|s| s.name() == "http_request");
         self.spans.lock().unwrap().push(SpanRec {
@@ -81,6 +104,7 @@ where
 impl Recorder {
     /// 記録を取り出して空にする（1 リクエストずつ数える）。
     fn take(&self) -> (Vec<SpanRec>, Vec<String>) {
+        self.batch_counts.lock().unwrap().clear();
         (
             std::mem::take(&mut *self.spans.lock().unwrap()),
             std::mem::take(&mut *self.errors.lock().unwrap()),
@@ -258,6 +282,9 @@ async fn list_and_download_emit_bounded_child_spans() {
         .await
         .expect("一覧");
     assert_eq!(page.items.len(), 50);
+    // ページ（50 件）に入り得る行だけを判定し、ページ確定後の 10 行は判定しない。
+    let checked: u64 = rec.batch_counts.lock().unwrap().iter().sum();
+    assert_eq!(checked, 50, "ページ外の行まで認可していないこと");
     let (spans, errors) = rec.take();
     let names = names_under_request(&spans);
     println!("ファイル一覧の span 数: {} {names:?}", names.len());

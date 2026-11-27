@@ -212,7 +212,7 @@ impl StorageService {
         name = "storage.list_share_links",
         skip_all,
         err,
-        fields(tenant_id = ctx.tenant_id(), node_id = %node_id),
+        fields(tenant_id = ctx.tenant_id(), node_id = %node_id, count = tracing::field::Empty),
     )]
     pub async fn list_share_links(
         &self,
@@ -235,6 +235,7 @@ impl StorageService {
         .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await?;
+        tracing::Span::current().record("count", rows.len());
         rows.into_iter().map(ShareLinkRow::into_model).collect()
     }
 

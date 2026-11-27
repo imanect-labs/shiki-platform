@@ -248,7 +248,7 @@ impl StorageService {
         name = "storage.list_share_link_grants",
         skip_all,
         err,
-        fields(tenant_id = ctx.tenant_id(), link_id = %link_id),
+        fields(tenant_id = ctx.tenant_id(), link_id = %link_id, count = tracing::field::Empty),
     )]
     pub async fn list_share_link_grants(
         &self,
@@ -280,6 +280,7 @@ impl StorageService {
         .bind(SHARE_LINK_GRANTS_LIMIT)
         .fetch_all(&self.db)
         .await?;
+        tracing::Span::current().record("count", rows.len());
         Ok(rows
             .into_iter()
             .map(|r| ShareLinkGrant {

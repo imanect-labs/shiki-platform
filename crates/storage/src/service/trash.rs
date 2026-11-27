@@ -247,19 +247,28 @@ impl StorageService {
             if rows.is_empty() {
                 break;
             }
-            // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。子ごとの判定は
-            // 1 ラウンド 1 回の BatchCheck にまとめる（往復と span を行数ぶん増やさない）。
-            let decisions =
-                post_filter_rows(self.authz.as_ref(), ctx, Relation::Editor, &rows).await?;
-            for (row, allowed) in rows.into_iter().zip(decisions) {
-                after_ts = Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
-                after_id = Some(row.id);
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
+            // 復元可能（editor）なものだけ見せる。即時剥奪反映のため強整合。
+            // 判定は残り枠ぶんずつ BatchCheck にまとめる（子ごとに check すると往復と span が
+            // 行数ぶん増える）。ページに入り得ない行は判定しない（不要な行の判定失敗で一覧全体を
+            // 落とさない）。
+            let mut pending = rows.into_iter();
+            while items.len() < limit {
+                let chunk: Vec<NodeRow> = pending.by_ref().take(limit - items.len()).collect();
+                if chunk.is_empty() {
                     break;
+                }
+                let decisions =
+                    post_filter_rows(self.authz.as_ref(), ctx, Relation::Editor, &chunk).await?;
+                for (row, allowed) in chunk.into_iter().zip(decisions) {
+                    after_ts = Some(row.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default());
+                    after_id = Some(row.id);
+                    if !allowed {
+                        continue;
+                    }
+                    items.push(row_to_node(row)?);
+                    if items.len() == limit {
+                        break;
+                    }
                 }
             }
         }
