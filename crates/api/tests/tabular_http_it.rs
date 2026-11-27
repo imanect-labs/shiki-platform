@@ -272,6 +272,7 @@ fn config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        map: api::config::MapConfig::default(),
     }
 }
 

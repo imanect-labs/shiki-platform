@@ -62,6 +62,9 @@ pub struct AppConfig {
     /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
     #[serde(default)]
     pub insights: crate::insights::InsightsConfig,
+    /// 背景地図（自前で配る PMTiles・design.md §4.7）。既定は地図データなし。
+    #[serde(default)]
+    pub map: MapConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
@@ -307,6 +310,7 @@ mod auth;
 mod backends;
 #[cfg(test)]
 mod data_tests;
+mod map;
 #[cfg(test)]
 mod tests;
 
@@ -318,6 +322,7 @@ pub use backends::{
     LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
     UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
+pub use map::{MapConfig, BASEMAP_FILE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
