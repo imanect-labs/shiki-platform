@@ -207,3 +207,36 @@ async fn llm_span_keeps_the_callers_otel_trace_id() {
         reasons.value
     );
 }
+
+/// LLM の span がフィルタで無効でも、呼び出し元の span（`otel.name` を持つ）を書き換えない。
+#[tokio::test]
+async fn disabled_llm_span_does_not_touch_the_callers_span() {
+    use tracing::Instrument;
+    let Some(gw) = gateway().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let cap = capture::Captured::default();
+    let _g = cap.guard_without("gen_ai.chat");
+    let parent = tracing::info_span!(
+        "http.request",
+        "otel.name" = "POST /messages",
+        "shiki.llm.model" = tracing::field::Empty,
+        "gen_ai.request.model" = tracing::field::Empty,
+    );
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.model = Some("fast".into());
+    let mut stream = gw
+        .stream(&ctx(&tenant), req)
+        .instrument(parent.clone())
+        .await
+        .unwrap();
+    while let Some(d) = stream.next().await {
+        d.unwrap();
+    }
+    drop(stream);
+    drop(parent);
+    assert!(cap.find("gen_ai.chat").is_none(), "LLM の span は無効");
+    let p = cap.span("http.request");
+    assert_eq!(p.field("otel.name"), "POST /messages");
+    assert!(!p.fields.contains_key("shiki.llm.model"));
+    assert!(!p.fields.contains_key("gen_ai.request.model"));
+}

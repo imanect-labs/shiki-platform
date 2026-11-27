@@ -61,6 +61,16 @@ impl Captured {
         tracing::subscriber::set_default(sub)
     }
 
+    /// [`Self::guard`] と同じだが、名前が `disabled` の span を無効にする（計装先の span が
+    /// フィルタで落ちた状況の再現）。
+    pub fn guard_without(&self, disabled: &'static str) -> tracing::subscriber::DefaultGuard {
+        let filter = tracing_subscriber::filter::filter_fn(move |m| m.name() != disabled);
+        let sub = tracing_subscriber::registry()
+            .with(filter)
+            .with(CaptureLayer(self.clone()));
+        tracing::subscriber::set_default(sub)
+    }
+
     pub fn run(&self, f: impl FnOnce()) {
         let _g = self.guard();
         f();

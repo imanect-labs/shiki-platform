@@ -413,7 +413,7 @@ impl LlmGateway {
             .unwrap_or_else(|| self.inner.config.catalog.default_model.clone());
         let span = telemetry::llm_span();
         match self
-            .open_stream(ctx, req, logical)
+            .open_stream(ctx, req, logical, &span)
             .instrument(span.clone())
             .await
         {
@@ -425,12 +425,14 @@ impl LlmGateway {
         }
     }
 
-    /// [`Self::stream`] の本体（認可・利用制限・振り分け・再試行）。
+    /// [`Self::stream`] の本体（認可・利用制限・振り分け・再試行）。`span` は計装先で、
+    /// `Span::current()` には頼らない（span が無効だと親の span に書いてしまうため）。
     async fn open_stream(
         &self,
         ctx: &AuthContext,
         mut req: GenerateRequest,
         logical: String,
+        span: &tracing::Span,
     ) -> Result<DeltaStream, LlmError> {
         let entry = self
             .inner
@@ -468,12 +470,7 @@ impl LlmGateway {
             req.effort = None;
         }
         req.model = Some(entry.resolved_id().to_string());
-        telemetry::record_target(
-            &tracing::Span::current(),
-            &logical,
-            entry.resolved_id(),
-            slot.provider.name(),
-        );
+        telemetry::record_target(span, &logical, entry.resolved_id(), slot.provider.name());
 
         // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
         if let (Some(p), ProviderKind::ChatgptPlan) = (&self.inner.chatgpt_plan, slot.config.kind) {

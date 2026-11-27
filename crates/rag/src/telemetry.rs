@@ -88,7 +88,7 @@ pub(crate) async fn parse(
 ) -> Result<ParsedDocument, RagError> {
     let span = tracing::info_span!(
         "rag.parse",
-        "rag.parse.content_type" = req.content_type,
+        "rag.parse.content_type" = safe_content_type(req.content_type),
         "rag.parse.blocks" = Empty,
         "otel.status_code" = Empty,
         "error.type" = Empty,
@@ -152,6 +152,28 @@ pub(crate) async fn post_filter(
         Err(e) => record_error(&span, e),
     }
     res
+}
+
+/// span に載せてよい MIME 型（`type/subtype` で英小文字・数字・`.+-` だけ・127 文字まで）。
+/// それ以外（パラメータ付き・任意の文字列）は `other` にして、入力をそのまま外へ出さない。
+fn safe_content_type(ct: &str) -> &str {
+    let ok = ct.len() <= 127
+        && ct.split_once('/').is_some_and(|(t, st)| {
+            let part = |p: &str| {
+                !p.is_empty()
+                    && p.bytes().all(|b| {
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'.' | b'+' | b'-')
+                    })
+            };
+            part(t) && part(st)
+        });
+    if ok {
+        ct
+    } else {
+        "other"
+    }
 }
 
 /// 検索全体（`rag.search`）の span。件数は終わってから [`record_search`] で埋める。
@@ -379,5 +401,27 @@ mod tests {
             tracing::info!(leaked = "社外秘の値", "event");
         });
         assert!(cap.all_values().iter().any(|v| v.contains("社外秘の値")));
+    }
+
+    #[test]
+    fn content_type_is_recorded_only_when_well_formed() {
+        assert_eq!(safe_content_type("application/pdf"), "application/pdf");
+        assert_eq!(
+            safe_content_type(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        for bad in [
+            "text/plain; name=秘密.txt",
+            "社外秘",
+            "Application/PDF",
+            "a/",
+            "/b",
+            "text/plain/extra",
+            &"a/".repeat(100),
+        ] {
+            assert_eq!(safe_content_type(bad), "other", "{bad}");
+        }
     }
 }
