@@ -40,6 +40,11 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
     { id = "RUSTSEC-2026-0369", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
     { id = "RUSTSEC-2026-0429", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
+    # 同じ zip 6.0 の後から出た 3 件（AES の認証コード・legacy-zip の確保・ZipStreamReader の名前）も、bundled の
+    # ビルドでは zip を呼ばないので届かない。ランナー自身の zip 9.3 は 3 件とも修正済み（>= 9.0.5）。
+    { id = "RUSTSEC-2026-0545", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では呼ばない（AES の復号も使わない）。ランナーの zip は修正済みの 9.3。" },
+    { id = "RUSTSEC-2026-0547", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では呼ばない（legacy-zip も無効）。ランナーの zip は修正済みの 9.3。" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では呼ばない（ZipStreamReader も使わない）。ランナーの zip は修正済みの 9.3。" },
     # webpki-roots 0.26.11 は sqlx-core・tokio-tungstenite の推移依存で、自前の証明書を持たず
     # webpki-roots v1 を再エクスポートするだけの互換用クレート（semver trick）。0.26 系に修正版は
     # 出ないため advisory 上は残るが、実体の v1 は 1.0.10（emSign ルートを外した版）に上げてある。
