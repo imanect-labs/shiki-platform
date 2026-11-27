@@ -75,6 +75,7 @@ export async function installApp(input: {
 }): Promise<{ app_id: string; table_ids: string[] }> {
   const res = await apiFetch("/apps/installations", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name: input.name,
       version: input.version,

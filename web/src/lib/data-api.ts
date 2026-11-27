@@ -259,9 +259,12 @@ function fallbackMessage(status: number): string {
   }
 }
 
-async function ok<T>(res: Response): Promise<T> {
+type Reviver = (key: string, value: unknown, context?: { source?: string }) => unknown;
+
+async function ok<T>(res: Response, reviver?: Reviver): Promise<T> {
   if (res.ok) {
     if (res.status === 204) return undefined as T;
+    if (reviver) return JSON.parse(await res.text(), reviver as Parameters<typeof JSON.parse>[1]) as T;
     return (await res.json()) as T;
   }
   let body: Record<string, unknown> | null = null;
@@ -370,6 +373,32 @@ export async function runQuery(
       ...send("POST", body),
       signal: init?.signal,
     }),
+  );
+}
+
+/// JS の number に直すと表記が変わる数値（安全整数の範囲外の整数・桁の多い小数など）の元の表記。
+export class ExactNumber {
+  constructor(readonly source: string) {}
+  toString(): string {
+    return this.source;
+  }
+}
+
+/// 数値の元の表記を残す（JSON.parse の source text access。未対応のブラウザでは丸めた number のまま）。
+const keepExactNumbers: Reviver = (_key, value, context) =>
+  typeof value === "number" && context?.source != null && String(value) !== context.source
+    ? new ExactNumber(context.source)
+    : value;
+
+/// `runQuery` と同じだが、数値を丸めずに読む（CSV の書き出し用。値の数値は `number` か `ExactNumber`）。
+export async function runQueryExact(
+  tableId: string,
+  query: DataQuery,
+  init?: { signal?: AbortSignal },
+): Promise<QueryResult> {
+  return ok<QueryResult>(
+    await apiFetch(`/data/tables/${enc(tableId)}/query`, { ...send("POST", query), signal: init?.signal }),
+    keepExactNumbers,
   );
 }
 

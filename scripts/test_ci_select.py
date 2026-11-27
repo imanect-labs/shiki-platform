@@ -272,6 +272,102 @@ class SelectionGapTest(unittest.TestCase):
         self.assertEqual([i["title"] for i in issues], ["flaky: shiki-a::b t0", "flaky: shiki-a::b t1"])
         self.assertIn("`shiki-a::b t0`", issues[0]["body"])
 
+    COVERAGE_LOG = textwrap.dedent(
+        """
+             Running tests/storage_it.rs (target/llvm-cov-target/debug/deps/storage_it-36eedf5ee346a777)
+        test share_link_ok ... ok
+        test upload_gc_sweeps_across_batch_boundary ... FAILED
+        failures:
+            upload_gc_sweeps_across_batch_boundary
+        test result: FAILED. 51 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.48s
+        error: test failed, to rerun pass `-p shiki-storage --test storage_it`
+             Running unittests src/lib.rs (target/llvm-cov-target/debug/deps/shiki_yui-1)
+        test render::a ... FAILED
+        test render::b - should panic ... FAILED
+        error: test failed, to rerun pass `-p shiki-yui --lib`
+        error: 2 targets failed:
+            `-p shiki-storage --test storage_it`
+            `-p shiki-yui --lib`
+        """
+    )
+
+    def test_cargo_failures_are_grouped_by_binary(self):
+        self.assertEqual(
+            ci.cargo_failures(self.COVERAGE_LOG),
+            [
+                {"package": "shiki-storage", "kind": "test", "name": "storage_it",
+                 "tests": ["upload_gc_sweeps_across_batch_boundary"]},
+                {"package": "shiki-yui", "kind": "lib", "name": "", "tests": ["render::a", "render::b"]},
+            ],
+        )
+
+    def test_retry_args_keep_workspace_features_on_full_runs(self):
+        it = {"package": "shiki-storage", "kind": "test", "name": "storage_it", "tests": []}
+        lib = {"package": "shiki-yui", "kind": "lib", "name": "", "tests": []}
+        self.assertEqual(ci.retry_args(it, True), "--workspace --test storage_it")
+        self.assertEqual(ci.retry_args(it, False), "-p shiki-storage --test storage_it")
+        self.assertEqual(ci.retry_args(lib, True), "-p shiki-yui --lib")
+
+    def test_coverage_retry_writes_targets_and_flaky_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log, targets = Path(tmp, "log"), Path(tmp, "t")
+            log.write_text(self.COVERAGE_LOG)
+            argv = ["coverage-retry", "--log", str(log), "--full", "--targets", str(targets)]
+            self.assertEqual(ci.main(argv), 0)
+            # nextest の JUnit と同じ名前にして、flaky-report の Issue を同じテストでまとめる。
+            # `- should panic` は表示の注記なので名前に入れない。
+            self.assertEqual(
+                [line.split("\t") for line in targets.read_text().splitlines()],
+                [["--workspace --test storage_it", "shiki-storage::storage_it upload_gc_sweeps_across_batch_boundary"],
+                 ["-p shiki-yui --lib", "shiki-yui render::a", "shiki-yui render::b"]],
+            )
+
+    def test_coverage_retry_refuses_build_failures_and_mass_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log, targets = Path(tmp, "log"), Path(tmp, "t")
+            argv = ["coverage-retry", "--log", str(log), "--targets", str(targets)]
+            log.write_text("error[E0308]: mismatched types\nerror: could not compile `shiki-x`\n")
+            self.assertEqual(ci.main(argv), 1)
+            # 片方の呼出しがビルド失敗なら、もう片方に回し直せる失敗があっても回し直さない。
+            ok = Path(tmp, "ok")
+            ok.write_text(self.COVERAGE_LOG)
+            self.assertEqual(ci.main(argv[:2] + [str(ok), "--log"] + argv[2:]), 1)
+            log.write_text("".join(f"error: test failed, to rerun pass `-p shiki-{i} --lib`\n" for i in range(4)))
+            self.assertEqual(ci.main(argv), 1)
+            self.assertEqual(targets.read_text(), "")
+
+    def test_same_binary_from_both_runs_counts_once(self):
+        # 選択したパッケージと常に回す脅威テストの両方で同じバイナリが落ちても、1 個と数える。
+        twice = "".join(
+            f"test {t} ... FAILED\nerror: test failed, to rerun pass `-p shiki-data --test {b}`\n"
+            for b, t in [("policy_threat_it", "a"), ("authz_memo_it", "b"), ("policy_threat_it", "a"), ("policy_threat_it", "c")]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            first, second = Path(tmp, "1"), Path(tmp, "2")
+            first.write_text(twice)
+            second.write_text("test b ... FAILED\nerror: test failed, to rerun pass `-p shiki-data --test authz_memo_it`\n")
+            targets = Path(tmp, "t")
+            argv = ["coverage-retry", "--log", str(first), "--log", str(second), "--targets", str(targets)]
+            self.assertEqual(ci.main(argv), 0)
+            self.assertEqual(
+                [line.split("\t") for line in targets.read_text().splitlines()],
+                [["-p shiki-data --test policy_threat_it", "shiki-data::policy_threat_it a", "shiki-data::policy_threat_it c"],
+                 ["-p shiki-data --test authz_memo_it", "shiki-data::authz_memo_it b"]],
+            )
+
+    def test_coverage_flaky_is_reported_with_nextest_flaky(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "junit.xml").write_text(
+                '<testsuites><testsuite><testcase name="t" classname="shiki-a::b"><flakyFailure/></testcase>'
+                "</testsuite></testsuites>"
+            )
+            Path(tmp, "coverage").mkdir()
+            Path(tmp, "coverage", "coverage-flaky.txt").write_text("shiki-a::b t\nshiki-storage::storage_it x\n")
+            out = Path(tmp, "flaky.json")
+            ci.main(["flaky", "--dir", tmp, "--output", str(out)])
+            titles = [i["title"] for i in json.loads(out.read_text())]
+        self.assertEqual(titles, ["flaky: shiki-a::b t", "flaky: shiki-storage::storage_it x"])
+
     def test_truncated_junit_is_skipped(self):
         self.assertEqual(ci.failed_rust_tests(["<testsuites><testsuite>"], []), set())
 

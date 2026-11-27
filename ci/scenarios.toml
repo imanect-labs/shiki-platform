@@ -215,6 +215,7 @@ pages = ["web/src/app/(auth)/data/**"]
 crates = ["shiki-data"]
 e2e = [
     "admin-data.spec.ts",
+    "data-csv.spec.ts",
     "data-display.spec.ts",
     "data-grid-live.spec.ts",
     "data-grid.spec.ts",

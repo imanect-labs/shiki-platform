@@ -1,6 +1,6 @@
 //! skill の body スキーマ＋検証（Task 6.7 / FR-7）。
 //!
-//! skill = SKILL.md 相当の指示文＋知識スコープ＋許可ツール＋モデル既定＋few-shot＋
+//! skill = SKILL.md 相当の指示文＋知識スコープ＋使うツール（誘導）＋モデル既定＋few-shot＋
 //! （任意）script＋（任意）参照資料のバージョン付きアーティファクト（kind=skill）。
 //! 本モジュールは**保存時検証**（構造・上限・閉語彙照合）を担い、実行面（チャット適用）は
 //! chat 側が [`SkillBody`] を読んで構成する。script は保存のみ（実行は呼び出し面・Stage B）。
@@ -58,7 +58,9 @@ pub struct SkillBody {
     /// 知識スコープ（RAG 参照範囲の限定）。None は全可読範囲。
     #[serde(default)]
     pub knowledge_scope: Option<KnowledgeScope>,
-    /// 許可ツール（None は全提示）。閉語彙照合・**縮小のみ**（破壊系の明示許可要求は無効化しない）。
+    /// 使うツールの宣言（None は宣言なし）。閉語彙照合する。**提示ツールは絞らない** — モデルへの
+    /// 誘導テキストに写すだけ（#344 で再定義・`chat::skill`）。権限の縮小には使えず、承認ゲート
+    /// （破壊系の明示許可）も無効化しない。
     #[serde(default)]
     pub allowed_tools: Option<Vec<ToolName>>,
     /// モデル/パラメータ既定。
