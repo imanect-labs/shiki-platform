@@ -35,6 +35,10 @@ tokio = { workspace = true }
 axum.workspace = true
 # LLM 呼び出しの span（telemetry.rs）をテストで捕まえる。
 tracing-subscriber.workspace = true
+# span の OTel trace_id が呼び出し元（＝Langfuse の trace id を採番した文脈）と揃うことの確認。
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 # lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

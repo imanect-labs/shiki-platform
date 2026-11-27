@@ -125,3 +125,71 @@ async fn rejected_call_is_recorded_as_error() {
     assert_eq!(s.field("otel.status_code"), "ERROR");
     assert_eq!(s.field("error.type"), "config");
 }
+
+/// Langfuse の trace id と OTel の trace_id が揃う: Langfuse に渡す trace_id（run の trace_id）を
+/// 親の文脈に持たせて `stream` を呼ぶと、LLM の span（OTel にエクスポートされるもの）の
+/// trace_id がそれと一致し、親 span の子になる。
+#[tokio::test]
+async fn llm_span_keeps_the_callers_otel_trace_id() {
+    use opentelemetry::trace::{
+        SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState, TracerProvider as _,
+    };
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+    use tracing::Instrument;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let Some(gw) = gateway().await else { return };
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+    let _g = tracing::subscriber::set_default(subscriber);
+
+    // run に永続化され Langfuse の trace id になる値（32-hex）。
+    let langfuse_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let remote = SpanContext::new(
+        TraceId::from_hex(langfuse_trace_id).unwrap(),
+        SpanId::from_hex("00f067aa0ba902b7").unwrap(),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let parent = tracing::info_span!("chat.turn");
+    parent.set_parent(opentelemetry::Context::new().with_remote_span_context(remote));
+
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    req.model = Some("fast".into());
+    let mut stream = gw
+        .stream(&ctx(&tenant), req)
+        .instrument(parent.clone())
+        .await
+        .unwrap();
+    while let Some(d) = stream.next().await {
+        d.unwrap();
+    }
+    drop(stream);
+    drop(parent);
+    provider.force_flush().unwrap();
+
+    let spans = exporter.get_finished_spans().unwrap();
+    let llm = spans
+        .iter()
+        .find(|s| s.name == "chat fast")
+        .unwrap_or_else(|| {
+            panic!(
+                "LLM の span が無い: {:?}",
+                spans.iter().map(|s| &s.name).collect::<Vec<_>>()
+            )
+        });
+    let turn = spans.iter().find(|s| s.name == "chat.turn").unwrap();
+    assert_eq!(llm.span_context.trace_id().to_string(), langfuse_trace_id);
+    assert_eq!(llm.parent_span_id, turn.span_context.span_id());
+    assert!(llm
+        .attributes
+        .iter()
+        .any(|kv| kv.key.as_str() == "gen_ai.request.model" && kv.value.as_str() == "stub-real-1"));
+}
