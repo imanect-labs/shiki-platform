@@ -174,6 +174,16 @@ export function SharePeoplePanel({
     if (resourceRef.current === forResource) setShares(next);
   };
 
+  /// 付与・変更が通ったあとの一覧の取り直し。取り直しに失敗しても操作は通っているので、操作の失敗とは
+  /// 分けて知らせる（手元の一覧は操作の結果で先に更新済み）。
+  const refreshAfterChange = async () => {
+    try {
+      await refresh();
+    } catch {
+      toast({ title: "一覧を最新にできませんでした", description: "閉じて開き直すと最新の共有が表示されます" });
+    }
+  };
+
   // 付与・変更・解除は同時に 1 つだけ（state の更新を待たずに弾けるよう ref で持つ）。処理中に権限を
   // 切り替えて同じ相手をもう一度押し、閲覧と編集を重ねて付けてしまうのを防ぐ。
   const opRef = React.useRef(false);
@@ -193,22 +203,34 @@ export function SharePeoplePanel({
     const role = addRole;
     const target = { type: candidate.kind, id: candidate.id };
     await runExclusive(entryKey({ target, role }), async () => {
+      const forResource = resourceRef.current;
       try {
         await grant(target, role);
-        await refresh();
-        // 検索を閉じて共有中の相手の一覧へ戻す（いま足した相手がそこに見える）。
-        setQuery("");
-        toast({
-          title: "共有しました",
-          description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
-        });
       } catch (e) {
         toast({
           variant: "destructive",
           title: "共有に失敗しました",
           description: e instanceof Error ? e.message : String(e),
         });
+        return;
       }
+      if (resourceRef.current !== forResource) return;
+      // 付与が通った時点で手元の一覧に足す。続く一覧の取り直しが失敗しても「共有中」として扱い、
+      // 次の権限の切り替えが付与の重ねがけ（share）ではなく変更（changeRole）になるようにする。
+      const entry: PeopleEntry = {
+        target,
+        role,
+        display_name: candidate.primary,
+        email: candidate.kind === "user" ? candidate.secondary : null,
+      };
+      setShares((prev) => (prev.some((s) => entryKey(s) === entryKey(entry)) ? prev : [...prev, entry]));
+      // 検索を閉じて共有中の相手の一覧へ戻す（いま足した相手がそこに見える）。
+      setQuery("");
+      toast({
+        title: "共有しました",
+        description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
+      });
+      await refreshAfterChange();
     });
   };
 
@@ -241,6 +263,7 @@ export function SharePeoplePanel({
   ) => {
     if (role === entry.role) return;
     await runExclusive(entryKey(entry), async () => {
+      const forResource = resourceRef.current;
       try {
         const hasNew = sharedKeys.has(entryKey({ target: entry.target, role }));
         if (role === "editor") {
@@ -253,16 +276,26 @@ export function SharePeoplePanel({
           await revoke(entry.target, entry.role);
           if (!hasNew) await grant(entry.target, role);
         }
-        await refresh();
-        if (opts?.clearQuery) setQuery("");
       } catch (e) {
         toast({
           variant: "destructive",
           title: "権限を変更できませんでした",
           description: e instanceof Error ? e.message : String(e),
         });
+        // 途中まで通った分を一覧に映す。
         await refresh().catch(() => undefined);
+        return;
       }
+      if (resourceRef.current !== forResource) return;
+      // 変更が通った時点で手元の一覧を置き換え、取り直しの失敗とは分ける。
+      const next: PeopleEntry = { ...entry, role };
+      setShares((prev) =>
+        prev
+          .filter((s) => entryKey(s) !== entryKey(next))
+          .map((s) => (entryKey(s) === entryKey(entry) ? next : s)),
+      );
+      if (opts?.clearQuery) setQuery("");
+      await refreshAfterChange();
     });
   };
 
