@@ -23,7 +23,9 @@ instructions: string,
  */
 knowledge_scope: KnowledgeScope | null, 
 /**
- * 許可ツール（None は全提示）。閉語彙照合・**縮小のみ**（破壊系の明示許可要求は無効化しない）。
+ * 使うツールの宣言（None は宣言なし）。閉語彙照合する。**提示ツールは絞らない** — モデルへの
+ * 誘導テキストに写すだけ（#344 で再定義・`chat::skill`）。権限の縮小には使えず、承認ゲート
+ * （破壊系の明示許可）も無効化しない。
  */
 allowed_tools: Array<ToolName> | null, 
 /**
