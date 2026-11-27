@@ -16,7 +16,7 @@
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
 
 import * as React from "react";
-import { Loader2, type LucideIcon, Search, Users, X } from "lucide-react";
+import { Loader2, Search, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,7 +32,7 @@ import { searchDirectory, searchRoles } from "@/lib/storage";
 import { seasonAccentStyle } from "@/lib/season";
 import { cn } from "@/lib/utils";
 
-import { GROUP_SEASON, ROLE_LABEL, ROLE_SEASON, RoleDot, RoleTag } from "./role-color";
+import { GROUP_SEASON, ROLE_LABEL, ROLE_SEASON, RoleTag } from "./role-color";
 
 export type PrincipalKind = "user" | "role";
 export type PeopleRole = "viewer" | "editor";
@@ -383,7 +383,7 @@ export function SharePeoplePanel({
         {hasQuery ? (
           <div className="flex flex-col gap-3" aria-busy={searching || undefined}>
             {searching && results.length === 0 ? null : results.length === 0 ? (
-              <Note icon={Search}>該当するメンバー・部署がありません</Note>
+              <Note>該当するメンバー・部署がありません</Note>
             ) : (
               <>
                 {userResults.length > 0 ? (
@@ -411,7 +411,7 @@ export function SharePeoplePanel({
                 読み込み中…
               </div>
             ) : shares.length === 0 ? (
-              <Note icon={Users}>
+              <Note>
                 まだ誰にも共有していません。
                 <span className="mt-0.5 block text-xs">上の検索欄から、メンバーや部署を探して共有できます。</span>
               </Note>
@@ -498,10 +498,9 @@ function Section({
 }
 
 /// 空・該当なしの一言（破線の枠。設定画面の「準備中」の一言と同じ形）。
-function Note({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
+function Note({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
-      <Icon className="size-4 shrink-0" aria-hidden />
+    <div className="rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
       <p className="min-w-0">{children}</p>
     </div>
   );
@@ -511,14 +510,14 @@ function Note({ icon: Icon, children }: { icon: LucideIcon; children: React.Reac
 function PrincipalAvatar({ kind, name }: { kind: PrincipalKind; name?: string }) {
   const initial = name?.trim().charAt(0);
   if (kind === "role") {
-    // 部署・ロールは複数人に届くので、夏（新緑）の差し色で人と見分ける。
+    // 部署・ロールは複数人に届くので、夏（新緑）の淡い面で人（無彩色）と見分ける。頭文字は人と同じ。
     return (
       <span
         aria-hidden
         style={seasonAccentStyle(GROUP_SEASON)}
-        className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--season)]/[0.16] text-[var(--season)]"
+        className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[var(--season)]/[0.2] text-[13px] font-semibold text-foreground/80"
       >
-        <Users className="size-4" />
+        {initial ?? ""}
       </span>
     );
   }
@@ -527,7 +526,7 @@ function PrincipalAvatar({ kind, name }: { kind: PrincipalKind; name?: string })
       aria-hidden
       className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-[13px] font-semibold text-foreground/80"
     >
-      {initial ? initial.toUpperCase() : <Users className="size-4" />}
+      {initial ? initial.toUpperCase() : ""}
     </span>
   );
 }
@@ -564,16 +563,10 @@ function RoleSelect({
       </SelectTrigger>
       <SelectContent align="end" className="min-w-[7rem]">
         <SelectItem value="viewer">
-          <span className="flex items-center gap-1.5">
-            <RoleDot role="viewer" />
-            閲覧
-          </span>
+          閲覧
         </SelectItem>
         <SelectItem value="editor">
-          <span className="flex items-center gap-1.5">
-            <RoleDot role="editor" />
-            編集
-          </span>
+          編集
         </SelectItem>
       </SelectContent>
     </Select>

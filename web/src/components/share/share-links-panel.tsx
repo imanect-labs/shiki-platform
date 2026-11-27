@@ -1,26 +1,12 @@
 "use client";
 
 import * as React from "react";
-import {
-  Building2,
-  Check,
-  Clock,
-  Copy,
-  Link2,
-  Loader2,
-  Lock,
-  type LucideIcon,
-  Plus,
-  ShieldOff,
-  Trash2,
-  UserRound,
-  Users,
-} from "lucide-react";
+import { Loader2, Trash2 } from "lucide-react";
 
 import { ConfirmDialog } from "@/components/drive/dialogs";
-import { IconTile, SoonBadge } from "@/components/settings/settings-ui";
+import { SoonBadge } from "@/components/settings/settings-ui";
 
-import { GROUP_SEASON, RoleTag } from "./role-color";
+import { RoleTag } from "./role-color";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -46,7 +32,6 @@ const AUDIENCES: {
   value: GeneralAccessLevel | "anonymous";
   label: string;
   desc: string;
-  icon: LucideIcon;
   disabled?: boolean;
   testId: string;
 }[] = [
@@ -54,14 +39,12 @@ const AUDIENCES: {
     value: "organization",
     label: "社内の全員",
     desc: "社内（テナント）の全員がリンクから開けます。",
-    icon: Building2,
     testId: "link-audience-organization",
   },
   {
     value: "restricted",
     label: "既存のアクセス権を持つ人のみ",
     desc: "新たな権限は付与しない純粋なリンク（既存の権限者に渡す用）。",
-    icon: Lock,
     testId: "link-audience-restricted",
   },
   // 未対応（選べない）ので、選べる選択肢の後ろに置く。
@@ -69,7 +52,6 @@ const AUDIENCES: {
     value: "anonymous",
     label: "リンクを知っている全員",
     desc: "匿名・社外にも公開します。",
-    icon: Link2,
     disabled: true,
     testId: "link-audience-anonymous",
   },
@@ -359,7 +341,6 @@ export function ShareLinksPanel({
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-2.5 rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
-          <ShieldOff className="size-4 shrink-0" aria-hidden />
           <p>
             共有リンクを管理する権限がありません。
             <span className="mt-0.5 block text-xs">オーナーに発行を依頼してください。</span>
@@ -400,11 +381,6 @@ export function ShareLinksPanel({
                   >
                     {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                      {/* 社内の全員へのリンクは届く範囲が広いので夏（新緑）、既存の権限者のみは無彩色。 */}
-                      <IconTile
-                        icon={link.audience === "restricted" ? Lock : Building2}
-                        season={link.audience === "restricted" ? undefined : GROUP_SEASON}
-                      />
                       <div className="min-w-0 flex-1 basis-40">
                         <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium">
                           <span className="truncate">{AUDIENCE_LABEL[link.audience]}</span>
@@ -420,16 +396,8 @@ export function ShareLinksPanel({
                           )}
                         </p>
                         <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-                          <span className="inline-flex items-center gap-1">
-                            <Clock className="size-3" aria-hidden />
-                            {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
-                          </span>
-                          {link.has_password ? (
-                            <span className="inline-flex items-center gap-1">
-                              <Lock className="size-3" aria-hidden />
-                              パスワード
-                            </span>
-                          ) : null}
+                          <span>{link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}</span>
+                          {link.has_password ? <span>パスワード付き</span> : null}
                         </p>
                       </div>
                       <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -440,11 +408,6 @@ export function ShareLinksPanel({
                           data-testid="link-copy"
                           onClick={() => void copyUrl(link)}
                         >
-                          {copiedId === link.link_id ? (
-                            <Check className="size-4" aria-hidden />
-                          ) : (
-                            <Copy className="size-4" aria-hidden />
-                          )}
                           {copiedId === link.link_id ? "コピー済み" : "コピー"}
                         </Button>
                         <Button
@@ -478,7 +441,7 @@ export function ShareLinksPanel({
                     </div>
                     {editingId === link.link_id ? (
                       // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
-                      <div className="flex flex-wrap items-center gap-1.5 pl-[3.25rem] max-sm:pl-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <Input
                           type="date"
                           aria-label="新しい有効期限"
@@ -502,7 +465,7 @@ export function ShareLinksPanel({
                     ) : null}
                     {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
                     {link.has_password && link.redeem_count > 0 ? (
-                      <div className="flex flex-col gap-1.5 pl-[3.25rem] max-sm:pl-0">
+                      <div className="flex flex-col gap-1.5">
                         <button
                           type="button"
                           data-testid="link-grants-toggle"
@@ -510,7 +473,6 @@ export function ShareLinksPanel({
                           aria-expanded={grantsOpenId === link.link_id}
                           className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
                         >
-                          <Users className="size-3.5" aria-hidden />
                           {link.redeem_count} 人が解錠済み
                         </button>
                         {grantsOpenId === link.link_id ? (
@@ -528,7 +490,6 @@ export function ShareLinksPanel({
                                     data-testid="link-grant-item"
                                     className="flex items-center gap-2 rounded-md bg-muted/50 py-0.5 pl-2 pr-0.5"
                                   >
-                                    <UserRound className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                                     <span className="min-w-0 flex-1 truncate text-xs">
                                       {g.display_name ?? g.user_id}
                                     </span>
@@ -579,7 +540,6 @@ export function ShareLinksPanel({
             data-testid="link-form-open"
             className="self-start"
           >
-            <Plus className="size-4" aria-hidden />
             新しいリンクを作成
           </Button>
         ) : formOpen === null ? null : (
@@ -605,7 +565,6 @@ export function ShareLinksPanel({
               <div role="radiogroup" aria-label="リンクの公開範囲">
                 {AUDIENCES.map((a) => {
                   const active = !a.disabled && audience === a.value;
-                  const Icon = a.icon;
                   return (
                     <button
                       key={a.value}
@@ -621,10 +580,6 @@ export function ShareLinksPanel({
                         a.disabled && "cursor-not-allowed hover:bg-transparent",
                       )}
                     >
-                      <Icon
-                        className={cn("size-[18px] shrink-0", a.disabled ? "text-muted-foreground/50" : "text-foreground/70")}
-                        aria-hidden
-                      />
                       <span className="min-w-0 flex-1">
                         <span
                           className={cn(
@@ -728,7 +683,6 @@ export function ShareLinksPanel({
                 onClick={() => void create()}
                 data-testid="link-create"
               >
-                <Link2 className="size-4" aria-hidden />
                 リンクを作成
               </Button>
             </div>
