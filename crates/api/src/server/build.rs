@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::{http::StatusCode, middleware, Router};
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
-use super::http_util::{cors_layer, make_request_span};
+use super::http_util::{cors_layer, make_request_span, record_response};
 use super::{route_table, AccessPolicy};
 use crate::{
     middleware::{require_org_admin, require_org_auditor, require_session},
@@ -130,7 +130,11 @@ pub fn build_router(state: AppState) -> Router {
     let router = router
         // observe は span 内で動く必要があるため TraceLayer より内側（先に追加）。
         .layer(middleware::from_fn(telemetry::observe))
-        .layer(TraceLayer::new_for_http().make_span_with(make_request_span));
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(make_request_span)
+                .on_response(record_response),
+        );
 
     // CORS: 同一オリジン配信が既定（レイヤ無し）。別オリジン dev のみ、設定された
     // オリジンに限定して credential 付きを許可する（permissive はセッション Cookie と

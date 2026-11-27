@@ -4,6 +4,10 @@
 //!   Tempo/Prometheus へ collector 経由）。
 //! - リクエスト span に trace_id を載せ、ログ行にも trace_id を注入して突合可能にする。
 //! - `otlp_endpoint` 未設定や collector 未起動でも**起動を妨げない**（ログのみ）。
+//! - 受信した W3C `traceparent` はリクエスト span の親として継続する（`server::http_util`）。
+//! - サンプラは SDK 既定の `ParentBased(AlwaysOn)`（全量・上流の判断に従う）。変えるときは
+//!   OTel 標準の環境変数 `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`
+//!   （例: `parentbased_traceidratio` / `0.1`）を使う。
 
 use std::{sync::OnceLock, time::Instant};
 
