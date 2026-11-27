@@ -1,22 +1,12 @@
 "use client";
 
 import * as React from "react";
-import {
-  Building2,
-  Check,
-  Clock,
-  Copy,
-  Link2,
-  Loader2,
-  Lock,
-  type LucideIcon,
-  ShieldOff,
-  Trash2,
-  UserRound,
-  Users,
-} from "lucide-react";
+import { Loader2, Trash2 } from "lucide-react";
 
 import { ConfirmDialog } from "@/components/drive/dialogs";
+import { SoonBadge } from "@/components/settings/settings-ui";
+
+import { RoleTag } from "./role-color";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SegmentedControl } from "@/components/ui/segmented-control";
@@ -42,31 +32,28 @@ const AUDIENCES: {
   value: GeneralAccessLevel | "anonymous";
   label: string;
   desc: string;
-  icon: LucideIcon;
   disabled?: boolean;
   testId: string;
 }[] = [
   {
-    value: "anonymous",
-    label: "リンクを知っている全員",
-    desc: "匿名・社外にも公開（近日対応・#341）。",
-    icon: Link2,
-    disabled: true,
-    testId: "link-audience-anonymous",
-  },
-  {
     value: "organization",
     label: "社内の全員",
     desc: "社内（テナント）の全員がリンクから開けます。",
-    icon: Building2,
     testId: "link-audience-organization",
   },
   {
     value: "restricted",
     label: "既存のアクセス権を持つ人のみ",
     desc: "新たな権限は付与しない純粋なリンク（既存の権限者に渡す用）。",
-    icon: Lock,
     testId: "link-audience-restricted",
+  },
+  // 未対応（選べない）ので、選べる選択肢の後ろに置く。
+  {
+    value: "anonymous",
+    label: "リンクを知っている全員",
+    desc: "匿名・社外にも公開します。",
+    disabled: true,
+    testId: "link-audience-anonymous",
   },
 ];
 
@@ -111,15 +98,23 @@ export function ShareLinksPanel({
   nodeId,
   linkPath,
   passwordSupported,
+  onCountChange,
 }: {
   nodeId: string;
   linkPath: string;
   passwordSupported: boolean;
+  /// 発行済みリンクの件数（読み込み中・権限なしは null）。タブの件数表示に使う。
+  onCountChange?: (count: number | null) => void;
 }) {
   const [links, setLinks] = React.useState<ShareLink[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [forbidden, setForbidden] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
+  // 作成フォームの開閉。null = 未決定（読み込み後、発行済みが無ければ開き、あれば畳む）。
+  // 一度開いたら発行後も開いたままにする（続けて別の範囲のリンクを作れるように）。
+  const [formOpen, setFormOpen] = React.useState<boolean | null>(null);
+  const countRef = React.useRef(onCountChange);
+  countRef.current = onCountChange;
 
   // 発行フォームの状態。broad は organization に統合（A-2）。
   const [audience, setAudience] = React.useState<GeneralAccessLevel>("organization");
@@ -151,11 +146,17 @@ export function ShareLinksPanel({
     let active = true;
     setLoading(true);
     setForbidden(false);
+    setFormOpen(null);
     listShareLinks(nodeId)
-      .then((ls) => active && setLinks(ls))
+      .then((ls) => {
+        if (!active) return;
+        setLinks(ls);
+        setFormOpen(ls.length === 0);
+      })
       .catch((e: unknown) => {
         if (!active) return;
         setLinks([]);
+        setFormOpen(true);
         // 非 owner は 403。空フォームを見せず「権限なし」状態にする（#342 レビュー C-2）。
         const status = (e as { status?: number } | null)?.status;
         const msg = e instanceof Error ? e.message : String(e);
@@ -166,6 +167,10 @@ export function ShareLinksPanel({
       active = false;
     };
   }, [nodeId]);
+
+  React.useEffect(() => {
+    countRef.current?.(loading || forbidden ? null : links.length);
+  }, [loading, forbidden, links.length]);
 
   /// リンクの共有 URL を組む。パスワード付きは token を載せて解錠ヒント（?lt=..&unlock=1）を付す。
   /// broad/既存向けリンクは token を要さず、リソースへのポインタ（bare URL）で開ける。
@@ -190,7 +195,9 @@ export function ShareLinksPanel({
     }
   };
 
-  const pwOn = passwordSupported && pwEnabled;
+  // 既存の権限者のみ（restricted）のリンクはパスワードを持たない（送信時も落とす）。欄も隠れるので、
+  // ここで有効扱いにすると作成ボタンが押せないまま戻れなくなる。
+  const pwOn = passwordSupported && pwEnabled && audience !== "restricted";
   const pwMissing = pwOn && !pwValue;
 
   const create = async () => {
@@ -332,10 +339,13 @@ export function ShareLinksPanel({
   // 非 owner にはフォームを見せない（C-2）。
   if (forbidden) {
     return (
-      <div className="flex flex-col items-center gap-2 py-8 text-center text-sm text-muted-foreground">
-        <ShieldOff className="size-6" aria-hidden />
-        <p>共有リンクを管理する権限がありません。</p>
-        <p className="text-xs">オーナーに発行を依頼してください。</p>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center gap-2.5 rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
+          <p>
+            共有リンクを管理する権限がありません。
+            <span className="mt-0.5 block text-xs">オーナーに発行を依頼してください。</span>
+          </p>
+        </div>
       </div>
     );
   }
@@ -343,311 +353,343 @@ export function ShareLinksPanel({
   const minDate = todayInput();
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* 発行フォーム */}
-      <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card/40 p-3">
-        <p className="text-sm font-medium">共有リンクを作成</p>
-        <div className="flex flex-col" role="radiogroup" aria-label="リンクの公開範囲">
-          {AUDIENCES.map((a) => {
-            const active = !a.disabled && audience === a.value;
-            const Icon = a.icon;
-            return (
-              <button
-                key={a.value}
-                type="button"
-                role="radio"
-                aria-checked={active}
-                disabled={a.disabled}
-                data-testid={a.testId}
-                onClick={() => !a.disabled && setAudience(a.value as GeneralAccessLevel)}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors",
-                  active ? "border-border bg-accent" : "border-transparent hover:bg-accent/40",
-                  a.disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
-                )}
-              >
-                <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium leading-tight">{a.label}</span>
-                  <span className="mt-0.5 block text-xs text-muted-foreground">{a.desc}</span>
-                </span>
-                <span
-                  className={cn(
-                    "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                    active ? "border-foreground/60" : "border-muted-foreground/40",
-                  )}
-                  aria-hidden
-                >
-                  {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* その他の設定（restricted 以外＝権限を配るときのみ） */}
-        {audience !== "restricted" ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm text-muted-foreground">権限</span>
-              <SegmentedControl
-                aria-label="リンクの権限"
-                size="sm"
-                options={ROLE_OPTIONS}
-                value={role}
-                onValueChange={(v) => setRole(v as ShareRole)}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="link-expiry" className="text-sm text-muted-foreground">
-                有効期限
-              </label>
-              <div className="flex items-center gap-1.5">
-                <Input
-                  id="link-expiry"
-                  data-testid="link-expiry"
-                  type="date"
-                  min={minDate}
-                  value={expiry}
-                  onChange={(e) => setExpiry(e.target.value)}
-                  // 文字サイズは Input の既定（スマホ 16px）に任せる（iOS の自動ズームを避ける）。
-                  className="h-8 w-40 max-md:h-10 max-md:w-44"
-                />
-                {expiry ? (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
-                    なし
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between gap-2">
-                <label htmlFor="link-password-toggle" className="text-sm text-muted-foreground">
-                  パスワード保護
-                </label>
-                {passwordSupported ? (
-                  <Switch
-                    id="link-password-toggle"
-                    data-testid="link-password-toggle"
-                    checked={pwEnabled}
-                    onCheckedChange={(v) => {
-                      setPwEnabled(v);
-                      if (!v) setPwValue("");
-                    }}
-                  />
-                ) : (
-                  <span className="text-xs text-muted-foreground">この種別では未対応</span>
-                )}
-              </div>
-              {pwOn ? (
-                <Input
-                  data-testid="link-password"
-                  type="password"
-                  autoComplete="new-password"
-                  value={pwValue}
-                  onChange={(e) => setPwValue(e.target.value)}
-                  placeholder="パスワードを入力"
-                  className="h-8 max-md:h-10"
-                />
+    // 高さはダイアログ側で固定し、ここは残りを埋めて中だけスクロールする（リンクが増えても、
+    // 作成フォームを開いても、ダイアログの大きさは変わらない）。
+    <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-1">
+      <div className="flex flex-col gap-5">
+        {/* 発行済みリンク。いま有効なリンクを先に見せる。0 件なら節ごと出さず作成フォームだけにする。 */}
+        {loading || links.length > 0 ? (
+          <section className="flex flex-col gap-2" data-testid="link-list">
+            <h3 className="flex items-baseline gap-2 px-1 text-[13px] font-semibold tracking-[-0.01em]">
+              発行済みリンク
+              {!loading ? (
+                <span className="text-xs font-normal tabular-nums text-muted-foreground">{links.length} 件</span>
               ) : null}
-            </div>
-          </div>
+            </h3>
+            {loading ? (
+              <div className="flex items-center gap-2 px-1 py-2 text-[13px] text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                読み込み中…
+              </div>
+            ) : (
+              <ul className="rule-soft overflow-hidden rounded-xl border bg-card">
+                {links.map((link) => (
+                  <li
+                    key={link.link_id}
+                    data-testid="link-item"
+                    className="shiki-dash-top flex flex-col gap-2 px-3.5 py-3 first:bg-none"
+                  >
+                    {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <div className="min-w-0 flex-1 basis-40">
+                        <p className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium">
+                          <span className="truncate">{AUDIENCE_LABEL[link.audience]}</span>
+                          {/* 既存の権限者のみのリンクは新しい権限を付けないので、権限の札は出さない。 */}
+                          {link.audience !== "restricted" ? (
+                            <RoleTag role={link.role === "editor" ? "editor" : "viewer"}>
+                              {link.role === "editor" ? "編集できる" : "閲覧できる"}
+                            </RoleTag>
+                          ) : (
+                            <span className="shrink-0 text-xs font-normal text-muted-foreground">
+                              既存のアクセス権のまま
+                            </span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                          <span>{link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}</span>
+                          {link.has_password ? <span>パスワード付き</span> : null}
+                        </p>
+                      </div>
+                      <div className="ml-auto flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          data-testid="link-copy"
+                          onClick={() => void copyUrl(link)}
+                        >
+                          {copiedId === link.link_id ? "コピー済み" : "コピー"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          data-testid="link-extend"
+                          onClick={() => {
+                            setEditingId((id) => (id === link.link_id ? null : link.link_id));
+                            setEditExpiry(isoToDateInput(link.expires_at));
+                          }}
+                        >
+                          延長
+                        </Button>
+                        <button
+                          type="button"
+                          aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                          title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
+                          data-testid="link-revoke"
+                          disabled={pendingId === link.link_id}
+                          onClick={() => setRevokeLinkTarget(link)}
+                          className="flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
+                        >
+                          {pendingId === link.link_id ? (
+                            <Loader2 className="size-4 animate-spin" aria-hidden />
+                          ) : (
+                            <Trash2 className="size-4" aria-hidden />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                    {editingId === link.link_id ? (
+                      // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Input
+                          type="date"
+                          aria-label="新しい有効期限"
+                          min={minDate}
+                          value={editExpiry}
+                          onChange={(e) => setEditExpiry(e.target.value)}
+                          className="h-8 min-w-0 flex-1 basis-36 max-md:h-10 md:max-w-44"
+                        />
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setEditExpiry("")}>
+                          無期限
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          loading={pendingId === link.link_id}
+                          onClick={() => void applyExtend(link)}
+                        >
+                          適用
+                        </Button>
+                      </div>
+                    ) : null}
+                    {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
+                    {link.has_password && link.redeem_count > 0 ? (
+                      <div className="flex flex-col gap-1.5">
+                        <button
+                          type="button"
+                          data-testid="link-grants-toggle"
+                          onClick={() => void toggleGrants(link)}
+                          aria-expanded={grantsOpenId === link.link_id}
+                          className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
+                        >
+                          {link.redeem_count} 人が解錠済み
+                        </button>
+                        {grantsOpenId === link.link_id ? (
+                          grantsLoadingId === link.link_id ? (
+                            <p className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
+                              <Loader2 className="size-3 animate-spin" aria-hidden />
+                              読み込み中…
+                            </p>
+                          ) : (
+                            <>
+                              <ul className="flex flex-col gap-1" data-testid="link-grant-list">
+                                {(grantsMap[link.link_id] ?? []).map((g) => (
+                                  <li
+                                    key={g.user_id}
+                                    data-testid="link-grant-item"
+                                    className="flex items-center gap-2 rounded-md bg-muted/50 py-0.5 pl-2 pr-0.5"
+                                  >
+                                    <span className="min-w-0 flex-1 truncate text-xs">
+                                      {g.display_name ?? g.user_id}
+                                    </span>
+                                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                                      {isoToDateInput(g.granted_at)}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      aria-label="このユーザーのアクセスを取り消す"
+                                      title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
+                                      data-testid="link-grant-revoke"
+                                      onClick={() => setRevokeTarget({ link, grant: g })}
+                                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-11"
+                                    >
+                                      <Trash2 className="size-3.5" aria-hidden />
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                              {/* 一覧は上限 500 件で打ち切られる。総数（redeem_count）より少なければ明示する。 */}
+                              {(grantsMap[link.link_id]?.length ?? 0) < link.redeem_count ? (
+                                <p
+                                  data-testid="link-grants-truncated"
+                                  className="pl-1 text-[11px] text-muted-foreground"
+                                >
+                                  ほか {link.redeem_count - (grantsMap[link.link_id]?.length ?? 0)}{" "}
+                                  人（一覧は上限まで表示）
+                                </p>
+                              ) : null}
+                            </>
+                          )
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         ) : null}
 
-        <div className="flex justify-end">
+        {/* 新しいリンク（発行済みがあれば畳んでおき、ボタンで開く） */}
+        {formOpen === false ? (
           <Button
             type="button"
-            size="sm"
-            loading={creating}
-            disabled={pwMissing}
-            onClick={() => void create()}
-            data-testid="link-create"
+            variant="outline"
+            onClick={() => setFormOpen(true)}
+            data-testid="link-form-open"
+            className="self-start"
           >
-            <Link2 className="size-4" aria-hidden />
-            リンクを作成
+            新しいリンクを作成
           </Button>
-        </div>
-      </div>
-
-      {/* 発行済みリンク一覧 */}
-      <div className="flex flex-col gap-2" data-testid="link-list">
-        <p className="text-sm font-medium">発行済みリンク</p>
-        {loading ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            読み込み中…
-          </div>
-        ) : links.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            まだ発行済みのリンクはありません。
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {links.map((link) => (
-              <li
-                key={link.link_id}
-                data-testid="link-item"
-                className="flex flex-col gap-2 rounded-lg border border-border/60 bg-card/40 px-3 py-2.5"
-              >
-                {/* 狭い幅では操作が 2 行目へ回る（名前を潰さない）。 */}
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                  <div className="min-w-0 flex-1 basis-44">
-                    <p className="truncate text-sm font-medium">
-                      {AUDIENCE_LABEL[link.audience]}
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                        {link.role === "editor" ? "編集" : "閲覧"}
-                      </span>
-                    </p>
-                    <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                      <Clock className="size-3" aria-hidden />
-                      {link.expires_at ? `${isoToDateInput(link.expires_at)} まで` : "無期限"}
-                      {link.has_password ? (
-                        <span className="ml-1 inline-flex items-center gap-0.5">
-                          <Lock className="size-3" aria-hidden />
-                          パスワード
+        ) : formOpen === null ? null : (
+          <section className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2 px-1">
+              <h3 className="text-[13px] font-semibold tracking-[-0.01em]">新しいリンク</h3>
+              {links.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setFormOpen(false)}
+                  // ダイアログ自体の「閉じる」と読み上げが重ならないように名前を分ける。
+                  aria-label="作成フォームを閉じる"
+                  className="-my-1 h-7"
+                >
+                  閉じる
+                </Button>
+              ) : null}
+            </div>
+            <div className="rule-soft overflow-hidden rounded-xl border bg-card">
+              {/* 公開範囲（行の間は破線。選んだ行に淡い面） */}
+              <div role="radiogroup" aria-label="リンクの公開範囲">
+                {AUDIENCES.map((a) => {
+                  const active = !a.disabled && audience === a.value;
+                  return (
+                    <button
+                      key={a.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      disabled={a.disabled}
+                      data-testid={a.testId}
+                      onClick={() => !a.disabled && setAudience(a.value as GeneralAccessLevel)}
+                      className={cn(
+                        "shiki-dash-top flex w-full items-center gap-3 px-3.5 py-2.5 text-left outline-none transition-colors first:bg-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                        active ? "bg-accent/60" : "hover:bg-accent/30",
+                        a.disabled && "cursor-not-allowed hover:bg-transparent",
+                      )}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span
+                          className={cn(
+                            "flex items-center gap-2 text-[13.5px] font-medium",
+                            a.disabled && "text-muted-foreground",
+                          )}
+                        >
+                          {a.label}
+                          {a.disabled ? <SoonBadge /> : null}
                         </span>
-                      ) : null}
-                    </p>
-                  </div>
-                  <div className="ml-auto flex shrink-0 items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="link-copy"
-                      onClick={() => void copyUrl(link)}
-                    >
-                      {copiedId === link.link_id ? (
-                        <Check className="size-4" aria-hidden />
-                      ) : (
-                        <Copy className="size-4" aria-hidden />
-                      )}
-                      {copiedId === link.link_id ? "コピー済み" : "コピー"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      data-testid="link-extend"
-                      onClick={() => {
-                        setEditingId((id) => (id === link.link_id ? null : link.link_id));
-                        setEditExpiry(isoToDateInput(link.expires_at));
-                      }}
-                    >
-                      延長
-                    </Button>
-                    <button
-                      type="button"
-                      aria-label={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                      title={link.has_password ? "リンクを失効" : "この公開範囲を解除"}
-                      data-testid="link-revoke"
-                      disabled={pendingId === link.link_id}
-                      onClick={() => setRevokeLinkTarget(link)}
-                      className="flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11"
-                    >
-                      {pendingId === link.link_id ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden />
-                      ) : (
-                        <Trash2 className="size-4" aria-hidden />
-                      )}
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{a.desc}</span>
+                      </span>
+                      <span
+                        className={cn(
+                          "flex size-4 shrink-0 items-center justify-center rounded-full border",
+                          active ? "border-foreground/60" : "border-muted-foreground/40",
+                          a.disabled && "opacity-40",
+                        )}
+                        aria-hidden
+                      >
+                        {active ? <span className="size-2 rounded-full bg-foreground" /> : null}
+                      </span>
                     </button>
-                  </div>
-                </div>
-                {editingId === link.link_id ? (
-                  // 日付欄は残りの幅いっぱい（固定幅＋ボタン 2 つで狭い幅からはみ出していた）。
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Input
-                      type="date"
-                      aria-label="新しい有効期限"
-                      min={minDate}
-                      value={editExpiry}
-                      onChange={(e) => setEditExpiry(e.target.value)}
-                      className="h-8 min-w-0 flex-1 basis-36 max-md:h-10 md:max-w-44"
+                  );
+                })}
+              </div>
+
+              {/* その他の設定（restricted 以外＝権限を配るときのみ） */}
+              {audience !== "restricted" ? (
+                <>
+                  <div className={FORM_ROW}>
+                    <span className="text-[13px] text-muted-foreground">権限</span>
+                    <SegmentedControl
+                      aria-label="リンクの権限"
+                      size="sm"
+                      options={ROLE_OPTIONS}
+                      value={role}
+                      onValueChange={(v) => setRole(v as ShareRole)}
                     />
-                    <Button type="button" variant="ghost" size="sm" onClick={() => setEditExpiry("")}>
-                      無期限
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      loading={pendingId === link.link_id}
-                      onClick={() => void applyExtend(link)}
-                    >
-                      適用
-                    </Button>
                   </div>
-                ) : null}
-                {/* C-3（#369）: パスワードリンクを解錠した user の可視化・個別取り消し。 */}
-                {link.has_password && link.redeem_count > 0 ? (
-                  <div className="flex flex-col gap-1.5 border-t border-border/40 pt-2">
-                    <button
-                      type="button"
-                      data-testid="link-grants-toggle"
-                      onClick={() => void toggleGrants(link)}
-                      aria-expanded={grantsOpenId === link.link_id}
-                      className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground transition-colors hover:text-foreground pointer-coarse:-mx-1 pointer-coarse:min-h-10 pointer-coarse:px-1"
-                    >
-                      <Users className="size-3.5" aria-hidden />
-                      {link.redeem_count} 人が解錠済み
-                    </button>
-                    {grantsOpenId === link.link_id ? (
-                      grantsLoadingId === link.link_id ? (
-                        <p className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
-                          <Loader2 className="size-3 animate-spin" aria-hidden />
-                          読み込み中…
-                        </p>
-                      ) : (
-                        <>
-                          <ul className="flex flex-col gap-1" data-testid="link-grant-list">
-                            {(grantsMap[link.link_id] ?? []).map((g) => (
-                              <li
-                                key={g.user_id}
-                                data-testid="link-grant-item"
-                                className="flex items-center gap-2 rounded-md bg-muted/40 py-0.5 pl-2 pr-0.5"
-                              >
-                                <UserRound
-                                  className="size-3.5 shrink-0 text-muted-foreground"
-                                  aria-hidden
-                                />
-                                <span className="min-w-0 flex-1 truncate text-xs">
-                                  {g.display_name ?? g.user_id}
-                                </span>
-                                <span className="shrink-0 text-[11px] text-muted-foreground">
-                                  {isoToDateInput(g.granted_at)}
-                                </span>
-                                <button
-                                  type="button"
-                                  aria-label="このユーザーのアクセスを取り消す"
-                                  title="このユーザーのアクセスを取り消す（このリンクからは再解錠できなくなります）"
-                                  data-testid="link-grant-revoke"
-                                  onClick={() => setRevokeTarget({ link, grant: g })}
-                                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive pointer-coarse:size-11"
-                                >
-                                  <Trash2 className="size-3.5" aria-hidden />
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                          {/* 一覧は上限 500 件で打ち切られる。総数（redeem_count）より少なければ明示する。 */}
-                          {(grantsMap[link.link_id]?.length ?? 0) < link.redeem_count ? (
-                            <p
-                              data-testid="link-grants-truncated"
-                              className="pl-1 text-[11px] text-muted-foreground"
-                            >
-                              ほか {link.redeem_count - (grantsMap[link.link_id]?.length ?? 0)}{" "}
-                              人（一覧は上限まで表示）
-                            </p>
-                          ) : null}
-                        </>
-                      )
+                  <div className={FORM_ROW}>
+                    <label htmlFor="link-expiry" className="text-[13px] text-muted-foreground">
+                      有効期限
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        id="link-expiry"
+                        data-testid="link-expiry"
+                        type="date"
+                        min={minDate}
+                        value={expiry}
+                        onChange={(e) => setExpiry(e.target.value)}
+                        // 文字サイズは Input の既定（スマホ 16px）に任せる（iOS の自動ズームを避ける）。
+                        className="h-8 w-40 max-md:h-10 max-md:w-44"
+                      />
+                      {expiry ? (
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setExpiry("")}>
+                          なし
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className={cn(FORM_ROW, "flex-wrap")}>
+                    <label htmlFor="link-password-toggle" className="text-[13px] text-muted-foreground">
+                      パスワード保護
+                    </label>
+                    {passwordSupported ? (
+                      <Switch
+                        id="link-password-toggle"
+                        data-testid="link-password-toggle"
+                        checked={pwEnabled}
+                        onCheckedChange={(v) => {
+                          setPwEnabled(v);
+                          if (!v) setPwValue("");
+                        }}
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">この種別では未対応</span>
+                    )}
+                    {pwOn ? (
+                      <Input
+                        data-testid="link-password"
+                        type="password"
+                        autoComplete="new-password"
+                        value={pwValue}
+                        onChange={(e) => setPwValue(e.target.value)}
+                        placeholder="パスワードを入力"
+                        className="h-8 basis-full max-md:h-10"
+                      />
                     ) : null}
                   </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+                </>
+              ) : null}
+            </div>
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                size="sm"
+                loading={creating}
+                disabled={pwMissing}
+                onClick={() => void create()}
+                data-testid="link-create"
+              >
+                リンクを作成
+              </Button>
+            </div>
+          </section>
         )}
       </div>
+
       <ConfirmDialog
         open={revokeLinkTarget !== null}
         onOpenChange={(open) => !open && setRevokeLinkTarget(null)}
@@ -685,3 +727,6 @@ export function ShareLinksPanel({
     </div>
   );
 }
+
+/// 作成フォームの設定の 1 行（左にラベル・右に操作。行の間は破線）。
+const FORM_ROW = "shiki-dash-top flex items-center justify-between gap-x-3 gap-y-2 px-3.5 py-2.5";
