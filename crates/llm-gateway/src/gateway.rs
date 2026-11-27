@@ -143,7 +143,6 @@ impl LlmGateway {
         let langfuse = match config.langfuse.as_ref() {
             Some(c) => {
                 let lf_http = shiki_http_trace::internal_client_builder()
-                    .timeout(std::time::Duration::from_secs(30))
                     .build()
                     .map_err(|e| LlmError::Config(format!("langfuse http client: {e}")))?;
                 Some(LangfuseClient::new(lf_http, c))

@@ -240,3 +240,51 @@ async fn default_client_would_leak_traceparent_on_redirect() {
     let raw = seen.lock().unwrap().clone().unwrap();
     assert!(header(&raw, "traceparent").is_some(), "{raw}");
 }
+
+#[tokio::test]
+async fn internal_client_follows_same_origin_redirect() {
+    // 同じ origin へのリダイレクトは従来どおり追う（OpenFGA 等の既存の接続を壊さない）。
+    let (sub, _exporter) = otel_subscriber();
+    let _g = tracing::subscriber::set_default(sub);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen2 = seen.clone();
+    tokio::spawn(async move {
+        for i in 0..2 {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            seen2
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf).to_lowercase());
+            let resp = if i == 0 {
+                format!("HTTP/1.1 307 X\r\nlocation: http://{addr}/moved\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+            } else {
+                "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_owned()
+            };
+            sock.write_all(resp.as_bytes()).await.unwrap();
+        }
+    });
+
+    let resp = shiki_http_trace::internal_client_builder()
+        .build()
+        .unwrap()
+        .get(format!("http://{addr}/"))
+        .send_traced()
+        .instrument(tracing::info_span!("caller"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "同一 origin のリダイレクトを追っていない");
+    assert!(seen[1].starts_with("get /moved"), "{}", seen[1]);
+}
