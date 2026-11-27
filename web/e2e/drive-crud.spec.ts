@@ -72,7 +72,7 @@ test("ドライブの CRUD がUIから完結する", async ({ page }) => {
 });
 
 /// 3 点メニューの「ID をコピー」（#1336）: フォルダ・ファイルとも ID がクリップボードに入り、
-/// トーストで知らせる。フォルダの ID は開いたときの URL（?folder=<id>）と一致する。
+/// トーストで知らせる。コピーした ID は、開いたときの URL（フォルダ ?folder=<id>／ファイル /file/<id>）と一致する。
 test("3 点メニューの「ID をコピー」でフォルダ・ファイルの ID をコピーできる", async ({ page }) => {
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await loginViaKeycloak(page);
@@ -91,7 +91,7 @@ test("3 点メニューの「ID をコピー」でフォルダ・ファイルの
   // --- フォルダの ID ---
   await page.getByRole("button", { name: `「${folder}」の操作` }).click();
   await page.getByRole("menuitem", { name: "ID をコピー" }).click();
-  await expect(page.getByText(`「${folder}」の ID をコピーしました。`)).toBeVisible();
+  await expect(page.getByText(`「${folder}」の ID をコピーしました。`, { exact: true })).toBeVisible();
   const folderId = await readClipboard();
   expect(folderId).toMatch(/^[0-9a-f-]{36}$/);
 
@@ -107,8 +107,12 @@ test("3 点メニューの「ID をコピー」でフォルダ・ファイルの
   await expect(page.getByText(fileName, { exact: true })).toBeVisible({ timeout: 20_000 });
   await page.getByRole("button", { name: `「${fileName}」の操作` }).click();
   await page.getByRole("menuitem", { name: "ID をコピー" }).click();
-  await expect(page.getByText(`「${fileName}」の ID をコピーしました。`)).toBeVisible();
+  await expect(page.getByText(`「${fileName}」の ID をコピーしました。`, { exact: true })).toBeVisible();
   const fileId = await readClipboard();
   expect(fileId).toMatch(/^[0-9a-f-]{36}$/);
   expect(fileId).not.toBe(folderId);
+
+  // コピーした値が「そのファイル」の ID であること: ファイルを開いた先の URL（/file/<id>）と一致する。
+  await page.getByText(fileName, { exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/file/${fileId}(?:[?#]|$)`));
 });
