@@ -61,6 +61,7 @@ impl BlobStorage {
         let tenant = TenantId::parse(job.tenant_id.clone())
             .map_err(|e| StorageError::Integrity(e.to_string()))?;
         let span = job.span(jobq::JobSpanLink::Link);
+        let traceparent = job.traceparent.clone();
         let result = async {
             let payload: Payload = serde_json::from_value(job.payload)
                 .map_err(|e| StorageError::Integrity(e.to_string()))?;
@@ -75,12 +76,15 @@ impl BlobStorage {
                 .await?;
             let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, &tenant).await?;
             if batch.checked == 16 {
-                Self::enqueue_after(
-                    &mut tx,
-                    &tenant,
-                    &payload.org,
-                    payload.node_id,
-                    batch.after_version,
+                jobq::continue_trace(
+                    traceparent.as_deref(),
+                    Self::enqueue_after(
+                        &mut tx,
+                        &tenant,
+                        &payload.org,
+                        payload.node_id,
+                        batch.after_version,
+                    ),
                 )
                 .await?;
             }

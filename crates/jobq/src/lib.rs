@@ -54,7 +54,7 @@
 
 mod trace;
 
-pub use trace::{current_traceparent, parse_traceparent, JobSpanLink};
+pub use trace::{continue_trace, current_traceparent, parse_traceparent, JobSpanLink};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -117,7 +117,8 @@ pub struct ClaimedJob {
     /// enqueue 元の span の W3C `traceparent`。ワーカーは [`ClaimedJob::span`] で使う。
     pub traceparent: Option<String>,
     pub enqueued_at: DateTime<Utc>,
-    /// claim した時刻（DB の `now()`）。待ち時間（`claimed_at - enqueued_at`）を DB の時計だけで測る。
+    /// claim した時刻（DB の `clock_timestamp()`＝文の実行時刻。`now()` はトランザクション開始時刻で、
+    /// claim の前に同じ Tx で待つと待ち時間を短く測るため使わない）。待ち時間を DB の時計だけで測る。
     pub claimed_at: DateTime<Utc>,
 }
 
@@ -147,7 +148,7 @@ pub struct DeadJob {
 /// `fair_seq`（テナント間の公平性・モジュール冒頭）を同じ文で振る。現在の span の context を
 /// `traceparent` として保存する（ワーカーがジョブの span をこのトレースへつなぐ。[`trace`]）。
 pub async fn enqueue_on(conn: &mut PgConnection, job: NewJob<'_>) -> Result<i64, JobqError> {
-    let traceparent = current_traceparent(job.trace_id);
+    let traceparent = trace::traceparent_for_enqueue(job.trace_id);
     let id: i64 = sqlx::query_scalar(concat!(
         "insert into job_queue \
              (queue, tenant_id, payload, max_attempts, trace_id, traceparent, fair_seq) \
@@ -243,7 +244,7 @@ pub async fn claim(
              on conflict (queue) do nothing returning 1 \
          ) \
          select id, queue, tenant_id, payload, attempts, max_attempts, trace_id, traceparent, \
-                enqueued_at, now() as claimed_at \
+                enqueued_at, clock_timestamp() as claimed_at \
          from claimed",
     )
     .bind(queue)

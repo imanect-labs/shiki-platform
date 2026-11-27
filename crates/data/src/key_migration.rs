@@ -234,7 +234,7 @@ impl DataStore {
             Ok(progress) => {
                 // 続きがあれば**同じ Tx で**次のジョブを積んでから ack する（取りこぼさない）。
                 if progress.remaining > 0 {
-                    enqueue(&mut tx).await?;
+                    jobq::continue_trace(job.traceparent.as_deref(), enqueue(&mut tx)).await?;
                 }
                 jobq::ack(&mut tx, job.id).await.map_err(map_jobq)?;
                 tx.commit().await.map_err(map_db)?;

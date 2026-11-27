@@ -9,6 +9,9 @@
 //! 再試行（`fail`・`defer`）は同じ行を使い回すので、何度 claim しても同じ context につながる。
 //! DLQ へ移しても列ごと引き継ぎ、`requeue_dead` で戻せば元のトレースへつながる。
 //!
+//! **続きのジョブ**（一括取込・バックフィルの積み直し、outbox から中継するインジェスト）は、積む時点の
+//! span が元の操作ではない。[`continue_trace`] で元の context を指定して積むと、それを引き継ぐ。
+//!
 //! `traceparent` が無い行（列の追加前に積まれた行・span の外で積まれた行）や壊れた値でも
 //! 落ちない: 親もリンクも無い span になるだけ。
 
@@ -27,6 +30,21 @@ pub enum JobSpanLink {
     /// 新しいトレースを始め、enqueue 元へ **span link** を張る。長時間のバッチ・バックフィル・
     /// 保守ジョブ向け（元のリクエストのトレースが何十分も伸びないように）。
     Link,
+}
+
+impl JobSpanLink {
+    /// ユーザーが待っているジョブ向け: 初回（`attempts == 1`）は親子、再試行はリンク。
+    ///
+    /// バックオフ後の再試行を親子にすると、元のリクエストのトレースが何十分も伸びる。
+    /// `defer`（順番待ち）は attempts を消費しないので、先送り明けも初回のまま親子になる。
+    #[must_use]
+    pub fn parent_unless_retry(attempts: i32) -> Self {
+        if attempts > 1 {
+            Self::Link
+        } else {
+            Self::Parent
+        }
+    }
 }
 
 /// 現在の span の OTel context を W3C `traceparent` にする。有効な context が無ければ `None`。
@@ -48,6 +66,31 @@ pub fn current_traceparent(trace_id: Option<&str>) -> Option<String> {
         }
     }
     Some(tp)
+}
+
+tokio::task_local! {
+    /// [`continue_trace`] が指定した、積むジョブへ引き継ぐ context。
+    static INHERITED: Option<String>;
+}
+
+/// `fut` の中で積むジョブに、現在の span ではなく `traceparent`（元のジョブ・outbox の行が持つ
+/// context）を保存させる。`None` を渡したときは何も引き継がない（現在の span も使わない）。
+///
+/// 続きのジョブ・中継のように「積む時点の span が元の操作ではない」ところで使う。元の操作が
+/// 親子なら続きも同じトレースへ、リンクなら同じ元へのリンクになる（続きのたびに鎖にならない）。
+pub async fn continue_trace<F: std::future::Future>(
+    traceparent: Option<&str>,
+    fut: F,
+) -> F::Output {
+    INHERITED.scope(traceparent.map(str::to_string), fut).await
+}
+
+/// [`crate::enqueue_on`] が保存する値: [`continue_trace`] の中ならその値、外なら現在の span。
+pub(crate) fn traceparent_for_enqueue(trace_id: Option<&str>) -> Option<String> {
+    match INHERITED.try_with(Clone::clone) {
+        Ok(inherited) => inherited,
+        Err(_) => current_traceparent(trace_id),
+    }
 }
 
 /// [`SpanContext`] を `traceparent` の文字列にする。
@@ -179,6 +222,14 @@ mod tests {
             .iter()
             .find(|kv| kv.key.as_str() == key)
             .map(|kv| kv.value.to_string())
+    }
+
+    #[test]
+    fn retries_are_linked_not_parented() {
+        assert_eq!(JobSpanLink::parent_unless_retry(0), JobSpanLink::Parent);
+        assert_eq!(JobSpanLink::parent_unless_retry(1), JobSpanLink::Parent);
+        assert_eq!(JobSpanLink::parent_unless_retry(2), JobSpanLink::Link);
+        assert_eq!(JobSpanLink::parent_unless_retry(3), JobSpanLink::Link);
     }
 
     #[test]

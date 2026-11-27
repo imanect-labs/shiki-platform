@@ -303,9 +303,10 @@ impl ChatWorker {
         }
 
         let last_attempt = job.attempts >= job.max_attempts;
-        // ユーザーが待っている生成なので、発話を受けたリクエストのトレースの**子**にする
-        // （順番待ちの先送りは数秒ごとに繰り返すので span を作らない）。
-        let span = job.span(jobq::JobSpanLink::Parent);
+        // 初回はユーザーが待っている生成なので、発話を受けたリクエストのトレースの**子**にする。
+        // 再試行（バックオフ後）はリンクにして、元のリクエストのトレースを何十分も伸ばさない
+        // （順番待ちの先送りは attempts を消費しないので初回のまま。先送りでは span を作らない）。
+        let span = job.span(jobq::JobSpanLink::parent_unless_retry(job.attempts));
         // 生成の間（承認待ちを含む）ジョブを再配信させない。接続は拍ごとに借りるだけ。
         let lease = job_lease::JobLease::start(self.db.clone(), job.id, vt);
         let result = self

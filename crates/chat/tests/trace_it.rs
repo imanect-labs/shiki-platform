@@ -23,6 +23,7 @@ use authz::{
 };
 use chat::{ChatStore, ChatWorker, StreamEventKind, WorkerConfig};
 use futures::stream::StreamExt;
+use futures::FutureExt;
 use llm_gateway::{
     GatewayConfig, LlmGateway, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind,
 };
@@ -116,10 +117,10 @@ async fn isolated_setup(prefix: &str) -> Option<(PgPool, PgPool, String)> {
         .connect(url.as_str())
         .await
         .expect("テスト用 DB へ接続できること");
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("マイグレーション適用");
+    if let Err(e) = sqlx::migrate!("../../migrations").run(&pool).await {
+        drop_isolated(pool, admin, &name).await;
+        panic!("マイグレーション適用: {e}");
+    }
     Some((pool, admin, name))
 }
 
@@ -204,6 +205,17 @@ async fn generation_job_span_is_a_child_of_the_request_span() {
     let Some((pool, admin, db_name)) = isolated_setup("chat_trace").await else {
         return;
     };
+    // アサーションが落ちてもテスト用 DB は消す（共有 Postgres に溜めない）。
+    let outcome = std::panic::AssertUnwindSafe(scenario(pool.clone()))
+        .catch_unwind()
+        .await;
+    drop_isolated(pool, admin, &db_name).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn scenario(pool: PgPool) {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -305,6 +317,4 @@ async fn generation_job_span_is_a_child_of_the_request_span() {
     assert_eq!(attr("tenant_id").as_deref(), Some(tenant.as_str()));
     assert_eq!(attr("job.attempts").as_deref(), Some("1"));
     assert!(attr("job.wait_ms").is_some());
-
-    drop_isolated(pool, admin, &db_name).await;
 }

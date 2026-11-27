@@ -93,10 +93,12 @@ pub async fn emit_on(
     trace_id: Option<&str>,
 ) -> Result<(), StorageError> {
     let payload_str = event.payload.to_string();
+    // 書込んだリクエストの context。relay がインジェストのジョブへ運ぶ（crates/jobq の trace）。
+    let traceparent = jobq::current_traceparent(trace_id);
     sqlx::query(
         "INSERT INTO storage_event_outbox \
-         (org, tenant_id, node_id, version, op, actor, trace_id, payload) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)",
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, traceparent) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)",
     )
     .bind(ctx.org())
     .bind(ctx.tenant_id())
@@ -106,6 +108,7 @@ pub async fn emit_on(
     .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&payload_str)
+    .bind(traceparent)
     .execute(conn)
     .await?;
     Ok(())
@@ -137,10 +140,13 @@ pub async fn emit_many_on(
         payloads.push(e.payload.to_string());
         privates.push(p.as_ref().map(Value::to_string));
     }
+    let traceparent = jobq::current_traceparent(trace_id);
     sqlx::query(
         "INSERT INTO storage_event_outbox \
-         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
-         SELECT $1, $2, e.node_id, e.version, e.op, $3, $4, e.payload::jsonb, e.private::jsonb \
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload, \
+          traceparent) \
+         SELECT $1, $2, e.node_id, e.version, e.op, $3, $4, e.payload::jsonb, e.private::jsonb, \
+                $10 \
          FROM unnest($5::uuid[], $6::int8[], $7::text[], $8::text[], $9::text[]) \
               WITH ORDINALITY AS e(node_id, version, op, payload, private, ord) \
          ORDER BY e.ord",
@@ -154,6 +160,7 @@ pub async fn emit_many_on(
     .bind(&ops)
     .bind(&payloads)
     .bind(&privates)
+    .bind(traceparent)
     .execute(conn)
     .await?;
     Ok(())
@@ -170,6 +177,8 @@ pub struct OutboxEvent {
     pub op: String,
     pub actor: String,
     pub trace_id: Option<String>,
+    /// 書込んだリクエストの W3C `traceparent`。[`claim`] だけが読む（他の経路では `None`）。
+    pub traceparent: Option<String>,
     pub payload: Value,
     pub created_at: DateTime<Utc>,
     /// 対象ノードが**システム領域**か（#392・`node.system`）。
@@ -188,7 +197,7 @@ pub struct OutboxEvent {
 pub async fn claim(conn: &mut PgConnection, limit: i64) -> Result<Vec<OutboxEvent>, StorageError> {
     let rows: Vec<OutboxRow> = sqlx::query_as(
         "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
-                o.payload, o.created_at, coalesce(n.system, false) AS system \
+                o.traceparent, o.payload, o.created_at, coalesce(n.system, false) AS system \
          FROM storage_event_outbox o \
          LEFT JOIN node n ON n.id = o.node_id \
          WHERE o.processed_at IS NULL \
@@ -278,6 +287,9 @@ struct OutboxRow {
     op: String,
     actor: String,
     trace_id: Option<String>,
+    /// 共有の行構造体なので既定 `None`（[`claim`] だけが列を選ぶ。`system` と同じ理由）。
+    #[sqlx(default)]
+    traceparent: Option<String>,
     payload: Value,
     created_at: DateTime<Utc>,
     /// `#[sqlx(default)]`: **この行構造体は 3 つのクエリで共有される**
@@ -301,6 +313,7 @@ impl OutboxRow {
             op: self.op,
             actor: self.actor,
             trace_id: self.trace_id,
+            traceparent: self.traceparent,
             payload: self.payload,
             created_at: self.created_at,
             system: self.system,

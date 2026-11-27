@@ -140,6 +140,7 @@ mod tests {
             op: "update".into(),
             actor: "alice".into(),
             trace_id: None,
+            traceparent: None,
             payload,
             created_at: Utc::now(),
             system: false,

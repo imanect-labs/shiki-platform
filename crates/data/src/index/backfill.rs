@@ -716,7 +716,11 @@ impl DataStore {
                                 .get("op")
                                 .and_then(Value::as_str)
                                 .unwrap_or("backfill");
-                            enqueue(&mut tx, op, &job.tenant_id, table_id).await?;
+                            jobq::continue_trace(
+                                job.traceparent.as_deref(),
+                                enqueue(&mut tx, op, &job.tenant_id, table_id),
+                            )
+                            .await?;
                         }
                     }
                     jobq::ack(&mut tx, job.id)

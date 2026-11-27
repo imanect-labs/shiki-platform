@@ -52,12 +52,16 @@ impl DataStore {
                 Ok(again) => {
                     if again {
                         if let Some((table_id, import_id)) = job_ids(&job.payload) {
-                            enqueue_import(
-                                &mut tx,
-                                &job.tenant_id,
-                                table_id,
-                                import_id,
-                                job.trace_id.as_deref(),
+                            // 続きのジョブも元の取込のリクエストへつなぐ。
+                            jobq::continue_trace(
+                                job.traceparent.as_deref(),
+                                enqueue_import(
+                                    &mut tx,
+                                    &job.tenant_id,
+                                    table_id,
+                                    import_id,
+                                    job.trace_id.as_deref(),
+                                ),
                             )
                             .await?;
                         }

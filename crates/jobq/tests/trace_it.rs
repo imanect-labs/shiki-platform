@@ -191,6 +191,36 @@ async fn no_traceparent_outside_span_or_on_foreign_trace_id() {
     );
 }
 
+/// 続きのジョブ・中継は `continue_trace` で元の context を引き継ぐ（現在の span ではなく）。
+#[tokio::test]
+async fn continue_trace_overrides_the_current_span() {
+    let Some(pool) = setup().await else { return };
+    let (_exporter, _provider, _guard) = otel();
+    let queue = unique_queue("trace-continue");
+    let original = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+
+    // 別の span（ワーカーのループ・前のジョブ）の中で、元の context を指定して積む。
+    let worker = tracing::info_span!("worker");
+    let _g = worker.enter();
+    jobq::continue_trace(Some(original), enqueue(&pool, &queue, None, 3)).await;
+    let job = claim_one(&pool, &queue).await;
+    assert_eq!(job.traceparent.as_deref(), Some(original));
+
+    // 引き継ぐ context が無いときは、現在の span も使わない。
+    jobq::continue_trace(None, enqueue(&pool, &queue, None, 3)).await;
+    let job = claim_one(&pool, &queue).await;
+    assert!(job.traceparent.is_none());
+
+    // scope の外では従来どおり現在の span を保存する。
+    enqueue(&pool, &queue, None, 3).await;
+    let job = claim_one(&pool, &queue).await;
+    let tp = jobq::parse_traceparent(job.traceparent.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        tp.trace_id(),
+        worker.context().span().span_context().trace_id()
+    );
+}
+
 /// 列の追加前に積まれた行（traceparent が null）でもワーカーが落ちない。
 #[tokio::test]
 async fn legacy_rows_without_traceparent_still_work() {

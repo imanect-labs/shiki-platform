@@ -435,6 +435,7 @@ mod tests {
             op: "create".into(),
             actor: String::new(),
             trace_id: None,
+            traceparent: None,
             payload: serde_json::Value::Null,
             created_at: chrono::Utc::now(),
             system: false,
