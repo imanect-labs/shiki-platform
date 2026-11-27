@@ -1,6 +1,6 @@
 //! ツール名語彙の単一ソース（Phase 6 Task 6.9 の前提）。
 //!
-//! ツール名は LLM への提示・承認ポリシ・skill の許可ツール・generative UI のアクション束縛が
+//! ツール名は LLM への提示・承認ポリシ・skill の使うツール宣言・generative UI のアクション束縛が
 //! 共有する認可語彙であり、文字列リテラルの散在は閉じた集合の照合（ハルシネーション境界）を
 //! 壊す。workflow-engine / authz の vocab と同型の `vocab_enum!` で Rust enum を正とし、
 //! `#[derive(TS)]` で TypeScript 型を生成する（codegen が正・手書きミラー禁止）。
@@ -45,7 +45,7 @@ vocab_enum! {
     /// agent-core が提供する全ツールの名前（閉じた集合）。
     ///
     /// 新ツールはここへ variant を足し、`Tool::name()` は `as_str()` を返す。
-    /// skill の許可ツール・UI アクションの tool 束縛はこの語彙へ照合して未知名を弾く。
+    /// skill の使うツール宣言・UI アクションの tool 束縛はこの語彙へ照合して未知名を弾く。
     pub enum ToolName {
         /// スキルのカタログ引き（name+description 一覧から必要時に instructions を読み込む・
         /// 発話ユーザー権限で解決・発動は run イベントに記録・#344 Task 10.11）。
