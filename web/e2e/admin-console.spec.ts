@@ -40,10 +40,11 @@ test.describe("管理コンソール", () => {
     await expect(page.getByRole("button", { name: "変更を保存" })).toBeDisabled();
     await page.getByRole("button", { name: "取り消す" }).click();
 
-    // プロバイダ: 接続先が 1 つ以上出る（秘密は出さない）。
+    // プロバイダ: 接続先が 1 つ以上出る（秘密は出さない）。稼働状況のまとめも出る（#1338）。
     await page.getByRole("link", { name: "プロバイダ" }).click();
     await expect(page.getByRole("heading", { name: "プロバイダ" })).toBeVisible();
     await expect(page.getByText("API キー").first()).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "秒ごとに更新" })).toBeVisible();
   });
 
   test("一般メンバーには管理コンソールが開かない", async ({ page }) => {

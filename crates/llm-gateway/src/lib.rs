@@ -26,6 +26,7 @@ pub mod accounting;
 pub mod chatgpt;
 pub mod config;
 pub mod gateway;
+pub mod health;
 pub mod langfuse;
 pub mod limits;
 pub mod model;

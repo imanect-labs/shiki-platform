@@ -207,6 +207,9 @@ pub struct LlmConfig {
     /// ChatGPT プラン（Sign in with ChatGPT）での個人利用（プレビュー環境向け・#854）。既定は無効。
     #[serde(default)]
     pub chatgpt: LlmChatGptConfig,
+    /// プロバイダの稼働状況の判定の閾値（管理コンソール「AI > プロバイダ」・モデル選択の注意）。
+    #[serde(default)]
+    pub health: llm_gateway::health::HealthThresholds,
 }
 
 /// ChatGPT プランの接続（設定表現・`[llm.chatgpt]`）。既定は無効で、プレビュー環境だけで有効にする。
@@ -323,6 +326,7 @@ impl Default for LlmConfig {
             total_timeout_secs: default_llm_total_timeout_secs(),
             limits: LlmLimitsConfig::default(),
             chatgpt: LlmChatGptConfig::default(),
+            health: llm_gateway::health::HealthThresholds::default(),
         }
     }
 }
