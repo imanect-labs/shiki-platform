@@ -25,9 +25,14 @@ export function apiUrl(path: string): string {
 
 /// セッション Cookie を送る fetch ラッパ（Authorization ヘッダは使わない）。
 /// 状態変更系メソッドには CSRF ヘッダを自動付与する。
+/// 文字列の本文で Content-Type 未指定なら application/json を既定にする（fetch の既定
+/// text/plain だと JSON を受けるハンドラが 415 を返す・#1135）。CSV などは呼び出し側で明示する。
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
   const method = (init?.method ?? "GET").toUpperCase();
+  if (typeof init?.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   if (method !== "GET" && method !== "HEAD") {
     const token = csrfToken();
     if (token) headers.set("X-CSRF-Token", token);
