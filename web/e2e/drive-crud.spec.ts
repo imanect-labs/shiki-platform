@@ -70,3 +70,45 @@ test("ドライブの CRUD がUIから完結する", async ({ page }) => {
   await page.goto("/drive");
   await expect(page.getByText(folder, { exact: true })).toBeVisible();
 });
+
+/// 3 点メニューの「ID をコピー」（#1336）: フォルダ・ファイルとも ID がクリップボードに入り、
+/// トーストで知らせる。フォルダの ID は開いたときの URL（?folder=<id>）と一致する。
+test("3 点メニューの「ID をコピー」でフォルダ・ファイルの ID をコピーできる", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+
+  const folder = uniqueName("ID フォルダ");
+  const fileName = `${uniqueName("ID メモ")}.txt`;
+  const readClipboard = () => page.evaluate(() => navigator.clipboard.readText());
+
+  await page.getByRole("button", { name: "新規フォルダ" }).click();
+  const newFolderDialog = page.getByRole("dialog");
+  await newFolderDialog.getByRole("textbox").fill(folder);
+  await newFolderDialog.getByRole("button", { name: "作成" }).click();
+  await expect(page.getByText(folder, { exact: true })).toBeVisible();
+
+  // --- フォルダの ID ---
+  await page.getByRole("button", { name: `「${folder}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "ID をコピー" }).click();
+  await expect(page.getByText(`「${folder}」の ID をコピーしました。`)).toBeVisible();
+  const folderId = await readClipboard();
+  expect(folderId).toMatch(/^[0-9a-f-]{36}$/);
+
+  await page.getByText(folder, { exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`[?&]folder=${folderId}`));
+
+  // --- ファイルの ID ---
+  await page.locator('input[type="file"][multiple]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from("copy id e2e\n"),
+  });
+  await expect(page.getByText(fileName, { exact: true })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: `「${fileName}」の操作` }).click();
+  await page.getByRole("menuitem", { name: "ID をコピー" }).click();
+  await expect(page.getByText(`「${fileName}」の ID をコピーしました。`)).toBeVisible();
+  const fileId = await readClipboard();
+  expect(fileId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(fileId).not.toBe(folderId);
+});
