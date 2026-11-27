@@ -5,6 +5,7 @@ use authz::AuthContext;
 use base64::Engine as _;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::Deserialize;
+use shiki_http_trace::TracedSend;
 
 use crate::error::RagError;
 use crate::parser::{DocumentParser, ParseRequest, ParseSource};
@@ -109,7 +110,7 @@ impl DocumentParser for HttpDocumentParser {
             .http
             .post(format!("{}/parse", self.base_url))
             .json(&body)
-            .send()
+            .send_traced()
             .await?;
         if !resp.status().is_success() {
             return Err(map_worker_error(resp).await);

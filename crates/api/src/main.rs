@@ -107,7 +107,13 @@ async fn run() -> anyhow::Result<()> {
         base_url: config.authz.base_url.clone(),
         store_name: config.authz.store_name.clone(),
     };
-    let fga = OpenFgaClient::connect(authz_http.clone(), &fga_config, &model::default_model())
+    // OpenFGA 向けは traceparent を付けるため、リダイレクトを追わない内部用クライアントに分ける
+    // （JWKS は外部 IdP を指しうるので authz_http のまま）。
+    let fga_http = shiki_http_trace::internal_client_builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("OpenFGA 用 HTTP クライアントの初期化に失敗")?;
+    let fga = OpenFgaClient::connect(fga_http, &fga_config, &model::default_model())
         .await
         .context("OpenFGA への接続に失敗")?;
     // ユーザーディレクトリ（共有相手検索。storage と同じ db プールを共有）。dev_seed で使う。
@@ -295,7 +301,7 @@ async fn run() -> anyhow::Result<()> {
 
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
-    let compose_http = reqwest::Client::builder()
+    let compose_http = shiki_http_trace::internal_client_builder()
         .timeout(Duration::from_mins(1))
         .default_headers(wiring::worker_headers(&config)?)
         .build()

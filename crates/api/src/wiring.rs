@@ -159,17 +159,17 @@ pub(crate) fn wire_rag(
     // （Qdrant は `Authorization: Bearer` も API キーとして読むため、混ぜると worker の
     // トークンが Qdrant へ漏れる・#812）。
     let worker_headers = worker_headers(config)?;
-    let rag_http = reqwest::Client::builder()
+    let rag_http = shiki_http_trace::internal_client_builder()
         .timeout(Duration::from_mins(1))
         .default_headers(worker_headers.clone())
         .build()
         .context("RAG 用 HTTP クライアントの構築に失敗")?;
-    let parse_http = reqwest::Client::builder()
+    let parse_http = shiki_http_trace::internal_client_builder()
         .timeout(Duration::from_mins(5))
         .default_headers(worker_headers)
         .build()
         .context("parse 用 HTTP クライアントの構築に失敗")?;
-    let qdrant_http = reqwest::Client::builder()
+    let qdrant_http = shiki_http_trace::internal_client_builder()
         .timeout(Duration::from_mins(1))
         .build()
         .context("Qdrant 用 HTTP クライアントの構築に失敗")?;
@@ -506,7 +506,7 @@ pub(crate) async fn wire_chat(
             // 共有トークンを載せた worker 専用クライアント（タイムアウトは従来どおり無し）。
             office: if config.office.enabled {
                 Some(Arc::new(office::OfficeEditor::new(
-                    reqwest::Client::builder()
+                    shiki_http_trace::internal_client_builder()
                         .default_headers(worker_headers(config)?)
                         .build()
                         .context("office 編集用 HTTP クライアントの構築に失敗")?,
@@ -659,7 +659,7 @@ fn wire_help(
     let help_embedder: Arc<dyn rag::EmbeddingProvider> = match search {
         Some(search) => search.embedder(),
         None => Arc::new(rag::HttpEmbeddingProvider::new(
-            reqwest::Client::builder()
+            shiki_http_trace::internal_client_builder()
                 .timeout(Duration::from_secs(15))
                 .default_headers(worker_headers(config)?)
                 .build()?,

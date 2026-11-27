@@ -138,10 +138,17 @@ impl LlmGateway {
         http: reqwest::Client,
         config: GatewayConfig,
     ) -> Result<Self, LlmError> {
-        let langfuse = config
-            .langfuse
-            .as_ref()
-            .map(|c| LangfuseClient::new(http.clone(), c));
+        // Langfuse には traceparent を付けるため、共有 `http`（外部プロバイダ向けでリダイレクトを
+        // 追う）ではなく、リダイレクトを追わない内部用クライアントを使う（shiki-http-trace）。
+        let langfuse = match config.langfuse.as_ref() {
+            Some(c) => {
+                let lf_http = shiki_http_trace::internal_client_builder()
+                    .build()
+                    .map_err(|e| LlmError::Config(format!("langfuse http client: {e}")))?;
+                Some(LangfuseClient::new(lf_http, c))
+            }
+            None => None,
+        };
         let mut providers: HashMap<String, ProviderSlot> = HashMap::new();
         let chatgpt_plan = chatgpt_gate::plan_provider(&http, &config)?;
         for pc in std::iter::once(&config.provider).chain(config.extra_providers.iter()) {

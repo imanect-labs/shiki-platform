@@ -1,0 +1,23 @@
+[package]
+name = "shiki-http-trace"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+description = "内部サービス向けの外向き HTTP に client span と W3C traceparent を付ける"
+
+[dependencies]
+reqwest.workspace = true
+tracing.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }
+tracing-subscriber.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

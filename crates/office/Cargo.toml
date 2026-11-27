@@ -27,6 +27,7 @@ async-trait.workspace = true
 utoipa.workspace = true
 
 # Collabora discovery（/hosting/discovery XML）の取得。
+shiki-http-trace.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 # discovery XML のパース（urlsrc 抽出）。
 quick-xml.workspace = true

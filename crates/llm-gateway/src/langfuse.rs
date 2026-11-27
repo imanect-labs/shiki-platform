@@ -5,6 +5,7 @@
 //! 送信は best-effort（失敗は warn ログのみ・生成本体を止めない）。未設定なら no-op。
 
 use serde_json::{json, Value};
+use shiki_http_trace::TracedSend;
 
 use crate::config::LangfuseConfig;
 use crate::model::Usage;
@@ -124,7 +125,7 @@ impl LangfuseClient {
             .post(&url)
             .basic_auth(&self.public_key, Some(&self.secret_key))
             .json(&batch)
-            .send()
+            .send_traced()
             .await;
         match res {
             Ok(r) if r.status().is_success() => {}

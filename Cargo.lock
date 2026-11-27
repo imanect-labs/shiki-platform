@@ -5248,6 +5248,7 @@ dependencies = [
  "shiki-collab",
  "shiki-data",
  "shiki-gui",
+ "shiki-http-trace",
  "shiki-llm-gateway",
  "shiki-office",
  "shiki-rag",
@@ -5363,13 +5364,18 @@ name = "shiki-authz"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "shiki-http-trace",
  "shiki-testenv",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
 ]
@@ -5560,6 +5566,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiki-http-trace"
+version = "0.0.0"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "reqwest 0.12.28",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "shiki-jobq"
 version = "0.0.0"
 dependencies = [
@@ -5591,17 +5610,22 @@ dependencies = [
  "base64",
  "chrono",
  "futures",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-http-trace",
  "shiki-testenv",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -5625,6 +5649,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shiki-authz",
+ "shiki-http-trace",
  "shiki-storage",
  "shiki-testenv",
  "sqlx",
@@ -5650,6 +5675,7 @@ dependencies = [
  "lindera",
  "lindera-tantivy",
  "opentelemetry",
+ "opentelemetry_sdk",
  "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
@@ -5657,6 +5683,7 @@ dependencies = [
  "sha2 0.10.9",
  "shiki-authz",
  "shiki-data",
+ "shiki-http-trace",
  "shiki-jobq",
  "shiki-storage",
  "shiki-testenv",
@@ -5666,6 +5693,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "utoipa",
  "uuid",

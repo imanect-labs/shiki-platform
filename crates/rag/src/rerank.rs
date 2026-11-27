@@ -7,6 +7,7 @@
 use async_trait::async_trait;
 use authz::AuthContext;
 use serde::Deserialize;
+use shiki_http_trace::TracedSend;
 
 use crate::error::RagError;
 use crate::parser_http::map_worker_error;
@@ -107,7 +108,7 @@ impl Reranker for HttpReranker {
             .http
             .post(format!("{}/rerank", self.base_url))
             .json(&body)
-            .send()
+            .send_traced()
             .await?;
         if !resp.status().is_success() {
             return Err(map_worker_error(resp).await);

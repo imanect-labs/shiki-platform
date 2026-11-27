@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use authz::AuthContext;
 use reqwest::header::HeaderValue;
 use serde_json::{json, Value};
+use shiki_http_trace::TracedSend;
 use uuid::Uuid;
 
 use crate::error::RagError;
@@ -160,7 +161,7 @@ impl VectorStore for QdrantVectorStore {
         // collection 存在確認 → 無ければ作成（並行作成の 409 は成功扱い＝冪等）。
         let exists = self
             .get(self.url(&format!("/collections/{}/exists", self.collection)))
-            .send()
+            .send_traced()
             .await?;
         let exists = Self::ensure_ok(exists).await?["result"]["exists"]
             .as_bool()
@@ -171,7 +172,7 @@ impl VectorStore for QdrantVectorStore {
                 .json(&json!({
                     "vectors": {"size": dimension, "distance": "Cosine"}
                 }))
-                .send()
+                .send_traced()
                 .await?;
             if resp.status() != reqwest::StatusCode::CONFLICT {
                 Self::ensure_ok(resp).await?;
@@ -186,7 +187,7 @@ impl VectorStore for QdrantVectorStore {
                 let resp = self
                     .put(self.url(&format!("/collections/{}/index", self.collection)))
                     .json(&json!({"field_name": field, "field_schema": schema}))
-                    .send()
+                    .send_traced()
                     .await?;
                 if resp.status() != reqwest::StatusCode::CONFLICT {
                     Self::ensure_ok(resp).await?;
@@ -205,7 +206,7 @@ impl VectorStore for QdrantVectorStore {
                     }}
                 ]
             }))
-            .send()
+            .send_traced()
             .await?;
         // delete_alias は初回（alias 不在）に 404 相当で失敗するため、その場合は
         // create のみで再試行する。
@@ -218,7 +219,7 @@ impl VectorStore for QdrantVectorStore {
                         "collection_name": self.collection
                     }}]
                 }))
-                .send()
+                .send_traced()
                 .await?;
             Self::ensure_ok(resp).await?;
         }
@@ -253,7 +254,7 @@ impl VectorStore for QdrantVectorStore {
             let resp = self
                 .put(self.url(&format!("/collections/{ACTIVE_ALIAS}/points?wait=true")))
                 .json(&json!({"points": body_points}))
-                .send()
+                .send_traced()
                 .await?;
             Self::ensure_ok(resp).await?;
         }
@@ -269,7 +270,7 @@ impl VectorStore for QdrantVectorStore {
                 {"key": "tenant_id", "match": {"value": ctx.tenant_id()}},
                 {"key": "node_id", "match": {"value": node_id.to_string()}}
             ]}}))
-            .send()
+            .send_traced()
             .await?;
         // 未インジェスト（collection/alias 不在）の削除は no-op（消すものが無い）。
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -296,7 +297,7 @@ impl VectorStore for QdrantVectorStore {
                 ],
                 "must_not": [{"key": "version", "match": {"value": keep_version}}]
             }}))
-            .send()
+            .send_traced()
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(());
@@ -322,7 +323,7 @@ impl VectorStore for QdrantVectorStore {
                     {"key": "node_id", "match": {"value": node_id.to_string()}}
                 ]}
             }))
-            .send()
+            .send_traced()
             .await?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(());
@@ -344,7 +345,7 @@ impl VectorStore for QdrantVectorStore {
                 "filter": Self::build_filter(ctx, query.prefilter, query.scope_tags, query.exclude),
                 "with_payload": ["node_id"],
             }))
-            .send()
+            .send_traced()
             .await?;
         // 未インジェスト（collection/alias 不在）は「ヒット 0」として扱う。
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
@@ -380,7 +381,7 @@ impl VectorStore for QdrantVectorStore {
             .json(&json!({"filter": {"must": [
                 {"key": "tenant_id", "match": {"value": tenant_id}}
             ]}}))
-            .send()
+            .send_traced()
             .await?;
         // インデックス自体が未作成なら消すものが無い。
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
