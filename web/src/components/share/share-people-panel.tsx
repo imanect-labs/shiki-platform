@@ -47,8 +47,8 @@ export type PeopleEntry = {
 
 const SEARCH_PLACEHOLDER = "名前や部署で検索";
 /// 1 回の検索で出す候補数（メンバー / 部署・ロール）。先頭ページのみで全件は取らない。
-const USER_LIMIT = 6;
-const ROLE_LIMIT = 4;
+const USER_LIMIT = 8;
+const ROLE_LIMIT = 8;
 
 /// 検索結果を種別込みで正規化した 1 候補。
 type Candidate = { kind: PrincipalKind; id: string; primary: string; secondary: string };
@@ -86,6 +86,9 @@ export function SharePeoplePanel({
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
   const loadRef = React.useRef(load);
   loadRef.current = load;
+  // いま開いている共有先。処理の途中で共有先が切り替わったら、前の共有先の結果で一覧を上書きしない。
+  const resourceRef = React.useRef(resourceId);
+  resourceRef.current = resourceId;
   const countRef = React.useRef(onCountChange);
   countRef.current = onCountChange;
 
@@ -165,7 +168,11 @@ export function SharePeoplePanel({
   }, [shares]);
   const sharedKeys = React.useMemo(() => new Set(shares.map(entryKey)), [shares]);
 
-  const refresh = async () => setShares(await loadRef.current());
+  const refresh = async () => {
+    const forResource = resourceRef.current;
+    const next = await loadRef.current();
+    if (resourceRef.current === forResource) setShares(next);
+  };
 
   // 付与・変更・解除は同時に 1 つだけ（state の更新を待たずに弾けるよう ref で持つ）。処理中に権限を
   // 切り替えて同じ相手をもう一度押し、閲覧と編集を重ねて付けてしまうのを防ぐ。
@@ -209,7 +216,9 @@ export function SharePeoplePanel({
     const k = entryKey(entry);
     await runExclusive(k, async () => {
       try {
+        const forResource = resourceRef.current;
         await revoke(entry.target, entry.role);
+        if (resourceRef.current !== forResource) return;
         // 解除した (type, id, role) の行だけを消す。同相手の別ロール共有はサーバ側に残るため、
         // id だけで filter すると画面から消えて「完全に外せた」と誤認する（実際は残存）。
         setShares((prev) => prev.filter((s) => entryKey(s) !== k));
@@ -223,8 +232,8 @@ export function SharePeoplePanel({
     });
   };
 
-  /// 共有中の相手の権限を変える（新しい権限を付けてから古い権限を外す・途中で失敗しても
-  /// アクセスが消えない順序）。
+  /// 共有中の相手の権限を変える。途中で失敗したときは権限が小さい側に倒れる順序にする
+  /// （引き上げは付けてから外す、引き下げは外してから付ける）。
   const changeRole = async (
     entry: PeopleEntry,
     role: PeopleRole,
@@ -233,8 +242,17 @@ export function SharePeoplePanel({
     if (role === entry.role) return;
     await runExclusive(entryKey(entry), async () => {
       try {
-        if (!sharedKeys.has(entryKey({ target: entry.target, role }))) await grant(entry.target, role);
-        await revoke(entry.target, entry.role);
+        const hasNew = sharedKeys.has(entryKey({ target: entry.target, role }));
+        if (role === "editor") {
+          // 引き上げ（閲覧→編集）: 先に編集を付けてから閲覧を外す（途中で失敗してもアクセスが消えない）。
+          if (!hasNew) await grant(entry.target, role);
+          await revoke(entry.target, entry.role);
+        } else {
+          // 引き下げ（編集→閲覧）: 先に編集を外してから閲覧を付ける。途中で失敗しても編集権限が残らない
+          // （権限は小さい側に倒れる。閲覧の付与だけ失敗したら、一覧に出ないので付け直せる）。
+          await revoke(entry.target, entry.role);
+          if (!hasNew) await grant(entry.target, role);
+        }
         await refresh();
         if (opts?.clearQuery) setQuery("");
       } catch (e) {
