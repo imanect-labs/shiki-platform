@@ -751,8 +751,14 @@ flowchart TB
   ②エージェントへのツールマウント（agent.invoke）③ワークフローの skill ノード、の3つ。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。
 - 図の種類（棒・折れ線・円・散布図・流れ図・構成図・地図など）の正本は Yui の仕様（`@imanect/yui`）。
-  地図（`map`）は地点の位置関係と道順だけを描き、背景の地図タイルは読まない（外部接続なし）。タイル表示を足すなら
-  「外部接続必須機能」区分（NFR-2 参照）として扱う。
+  地図（`map`）は Yui が地点の位置関係と道順を描き、背景の地図はホストが `renderMap` で重ねる。背景の地図タイルは
+  shiki-server が配る PMTiles（OSM 由来・OpenMapTiles 形式）から読み、ブラウザは shiki 以外へ接続しない
+  （スタイルは glyphs・sprite を持たず、文字は端末のフォントで描く）。このため NFR-2 の「外部接続必須機能」には当たらない。
+  地図データが配備されていない環境では背景なしの図にする。外部の配信元のタイルを使う設定にした場合だけ
+  「外部接続必須機能」として扱う（現在はその設定を持たず、web もスタイル中の自オリジン以外のソースを読まない）。
+  配信は `GET /map/config`・`/map/style.json`・`/map/basemap.pmtiles`（範囲指定）で、置き場所は `SHIKI__MAP__DATA_DIR`
+  （compose の shiki-server には未配線。使うときは地図データのディレクトリをマウントして設定する）、
+  作り方は `scripts/basemap/build-basemap.sh`。データの古さと範囲外の扱いは PIT-84。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。
 
 ### 4.8 資料作成・Office 統合（Collabora＝docx/xlsx 系・スライドは §4.8.3 の自前実装）

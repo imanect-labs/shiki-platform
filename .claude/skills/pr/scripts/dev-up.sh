@@ -501,6 +501,9 @@ else
   Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
   Q_WORKER_URL=$(printf '%q' "$EFF_WORKER_URL")
   Q_RUNNER=$(printf '%q' "$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner")
+  # 背景地図のデータ（basemap.pmtiles）の置き場所。呼び出し側の SHIKI__MAP__DATA_DIR をそのまま渡す
+  # （未設定なら地図データなし＝背景なしの図。作り方は scripts/basemap/build-basemap.sh）。
+  Q_MAP_DIR=$(printf '%q' "${SHIKI__MAP__DATA_DIR:-}")
   if [ -n "$EFF_CORS" ]; then
     CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
   else
@@ -567,6 +570,8 @@ export SHIKI__GATEWAY__WEB_ORIGIN=http://localhost:3000
 # 閲覧フォールバックに落ちるため、変更が反映されない画面をスクショしてしまう。
 export SHIKI__GATEWAY__BUILTIN_DIR=${ROOT}/web/editor-sandbox/dist
 export SHIKI__CHAT__ENABLED=true
+# 背景地図（design.md §4.7）。空なら地図データなし。
+export SHIKI__MAP__DATA_DIR=${Q_MAP_DIR}
 # 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
 export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true

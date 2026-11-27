@@ -5,7 +5,7 @@
 
 import * as React from "react";
 import { AppWindow, BarChart3, Check, Copy, Download, FileSpreadsheet, FileText, Loader2, Table2 } from "lucide-react";
-import { isEmpty, parseBlock, toText, type Kind } from "@imanect/yui";
+import { isEmpty, parseBlock, toText, type Kind, type MapFigure } from "@imanect/yui";
 import { copyFigure, downloadFigure } from "@imanect/yui/export";
 import { YuiFigure, diagnosticsSummary } from "@imanect/yui/react";
 
@@ -18,6 +18,7 @@ import {
 import Link from "next/link";
 
 import { DrivePicker } from "@/components/chat/drive-picker";
+import { BasemapMap } from "@/components/map/basemap-map";
 import { useOfficeTarget } from "@/components/office/office-target";
 import { toast } from "@/components/ui/use-toast";
 import { ChartInsertError, figureToChartInsert, insertChart, officeTargetKind } from "@/lib/office/chart-insert";
@@ -33,6 +34,11 @@ const HTML_KINDS: ReadonlySet<Kind> = new Set(["app", "ask", "plan", "calc"]);
 /// （広げるとスマホで画面の端からはみ出す）。ノートの図も同じ揃え方にする。
 export function figureBleed(kind: Kind): string | undefined {
   return HTML_KINDS.has(kind) ? undefined : "-mx-3 sm:-mx-4";
+}
+
+/// 地図（map）は背景地図を重ねて描く（地図データが無ければ Yui の背景なしの図に戻る・design.md §4.7）。
+function renderBasemap(figure: MapFigure) {
+  return <BasemapMap figure={figure} fallbackClassName={figureBleed("map")} />;
 }
 
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
@@ -192,6 +198,8 @@ export const UiFigure = React.memo(function UiFigure({
         <YuiFigure
           figure={figure}
           className={figureBleed(figure.kind)}
+          // 生成中は地点が増えるたびに地図を作り直さないよう、書き終わってから背景地図を重ねる。
+          {...(complete ? { renderMap: renderBasemap } : {})}
           {...(actions_?.onAction ? { onAction: actions_.onAction } : {})}
           {...(actions_?.actionDisabledReason ? { actionDisabledReason: actions_.actionDisabledReason } : {})}
           {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}

@@ -390,6 +390,7 @@ fn base_config() -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        map: api::config::MapConfig::default(),
     }
 }
 
@@ -1372,3 +1373,6 @@ mod bug_reports;
 
 #[path = "http/version_backup.rs"]
 mod version_backup;
+
+#[path = "http/map.rs"]
+mod map;
