@@ -22,6 +22,9 @@ thiserror.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+# LLM の span に配列属性（gen_ai.response.finish_reasons）を直接載せる。
+opentelemetry.workspace = true
+tracing-opentelemetry.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 # ChatGPT プラン接続（#854）の PKCE・ID トークンの読み取り。
@@ -33,6 +36,10 @@ rand.workspace = true
 shiki-testenv.workspace = true
 tokio = { workspace = true }
 axum.workspace = true
+# LLM 呼び出しの span（telemetry.rs）をテストで捕まえる。
+tracing-subscriber.workspace = true
+# span の OTel trace_id が呼び出し元（＝Langfuse の trace id を採番した文脈）と揃うことの確認。
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 # lib 名 authz で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]

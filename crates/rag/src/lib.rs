@@ -32,6 +32,7 @@ pub mod rerank;
 pub mod search;
 pub mod search_types;
 pub mod store;
+mod telemetry;
 pub mod types;
 pub mod vector_qdrant;
 pub mod vector_store;

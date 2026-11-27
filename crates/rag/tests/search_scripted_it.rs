@@ -345,3 +345,69 @@ async fn deleted_node_is_hidden_even_if_indexes_are_stale() {
         "削除済み node は索引が stale でもハイドレーションの deleted_at ガードで消える"
     );
 }
+
+/// 計装: 検索 1 回で `rag.search` とその子（pre-filter・埋め込み・取得・post-filter・rerank）の
+/// span が出て、二段 authz の前後の件数が刻まれる。検索語は span に載らない。
+#[tokio::test]
+async fn search_emits_child_spans_with_authz_counts() {
+    let Some(env) = setup().await else { return };
+    let folder_tag = env.ctx.ns().folder("shared").as_str().to_string();
+    let query = "四半期売上の見通し";
+    let denied = seed_chunk(&env, "denied", query, 0.9, &folder_tag).await;
+    seed_chunk(&env, "allowed-a", query, 0.6, &folder_tag).await;
+    seed_chunk(&env, "allowed-b", query, 0.5, &folder_tag).await;
+    let authz = ScriptedAuthz {
+        readable_folders: vec![folder_tag.clone()],
+        readable_files: vec![],
+        denied_files: [env.ctx.ns().file(&denied.to_string()).as_str().to_string()]
+            .into_iter()
+            .collect(),
+    };
+    let config = RagConfig {
+        enabled: true,
+        rerank_pool: 3,
+        ..RagConfig::default()
+    };
+    let cap = common::capture::Captured::default();
+    let output = {
+        let _g = cap.guard();
+        service(&env, authz, config)
+            .search(&env.ctx, query, Some(2), SearchMode::Hybrid, None, None)
+            .await
+            .unwrap()
+    };
+    assert_eq!(output.results.len(), 2);
+
+    let search = cap.span("rag.search");
+    assert!(search.closed);
+    assert_eq!(search.field("rag.search.top_k"), "2");
+    assert_eq!(search.field("rag.search.mode"), "hybrid");
+    assert_eq!(search.field("rag.prefilter.mode"), "tags");
+    assert_eq!(search.field("rag.search.hits"), "2");
+    assert_eq!(search.field("rag.postfilter.denied_files"), "1");
+    assert_eq!(search.field("rag.postfilter.denied_chunks"), "1");
+    assert_eq!(
+        search.field("rag.postfilter.allowed"),
+        (output.debug.fused - 1).to_string()
+    );
+    for child in [
+        "rag.pre_filter",
+        "rag.embed",
+        "rag.vector.search",
+        "rag.keyword.search",
+        "rag.post_filter",
+        "rag.rerank",
+    ] {
+        let s = cap.span(child);
+        assert_eq!(s.parent.as_deref(), Some("rag.search"), "{child} の親");
+        assert!(s.closed, "{child} が閉じている");
+    }
+    let pf = cap.span("rag.post_filter");
+    assert_eq!(pf.field("rag.postfilter.denied_chunks"), "1");
+    assert_eq!(cap.span("rag.embed").field("rag.embed.input_count"), "1");
+    assert_eq!(cap.span("rag.vector.search").field("rag.search.hits"), "3");
+    assert!(
+        !cap.all_values().iter().any(|v| v.contains("四半期")),
+        "検索語は span に載せない"
+    );
+}

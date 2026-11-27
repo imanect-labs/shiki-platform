@@ -187,17 +187,16 @@ async fn index_node(
         .indexer_storage
         .presign_internal_get(ctx.tenant_id(), ctx.org(), blob_sha256)
         .await?;
-    let parsed = deps
-        .parser
-        .parse(
-            ctx,
-            ParseRequest {
-                source: ParseSource::Url(&source_url),
-                content_type: &base_type,
-                file_name: &snapshot.name,
-            },
-        )
-        .await?;
+    let parsed = crate::telemetry::parse(
+        deps.parser.as_ref(),
+        ctx,
+        ParseRequest {
+            source: ParseSource::Url(&source_url),
+            content_type: &base_type,
+            file_name: &snapshot.name,
+        },
+    )
+    .await?;
 
     // chunk（決定的 ID）＋ authz_tags（構造タグ: file 自身＋祖先フォルダ・PIT-1 (b)）。
     let chunks = chunk_document(
@@ -216,10 +215,8 @@ async fn index_node(
     // searchable_text() は本文の String を新規に作る。埋め込みと Tantivy で 2 度呼ぶと
     // 文書全文ぶんの確保が二重に走るので、1 度だけ作って使い回す。
     let texts: Vec<String> = embeddable.iter().map(|c| c.searchable_text()).collect();
-    let embedded = deps
-        .embedder
-        .embed(ctx, EmbedInput::Document, &texts)
-        .await?;
+    let embedded =
+        crate::telemetry::embed(deps.embedder.as_ref(), ctx, EmbedInput::Document, &texts).await?;
     if embedded.vectors.len() != embeddable.len() {
         return Err(RagError::Worker(format!(
             "埋め込み応答数の不一致: 期待 {} 実際 {}",

@@ -19,6 +19,7 @@ use storage::audit::AuditAction;
 use authz::{AuthContext, AuthzClient};
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use tracing::{field::Empty, Instrument};
 use uuid::Uuid;
 
 use crate::authz_filter::{post_filter_by_file, readable_set, PostFilterOutcome};
@@ -153,6 +154,9 @@ impl SearchService {
     /// 候補のファイルは全部の内側になければならない（モデルの絞り込みを交差させた検索で、元の
     /// 知識スコープと絞り込みを渡す・[`Self::search_narrowed`]）。`scope` は索引のタグで絞るため、
     /// 交差を取った後のフォルダ移動や、移動後の非同期な再タグ付けが済む前の古いタグで範囲を外れ得る。
+    ///
+    /// 検索全体を `rag.search` span で包み、pre-filter／post-filter 前後の件数とヒット件数を
+    /// 刻む（[`crate::telemetry`]・本文は載せない）。
     #[allow(clippy::too_many_arguments)] // search の引数＋上限（呼び出しは本モジュール内）。
     pub(super) async fn search_bounded(
         &self,
@@ -166,6 +170,30 @@ impl SearchService {
     ) -> Result<SearchOutput, RagError> {
         let top_k = (top_k.unwrap_or(self.config.default_top_k as u32) as usize)
             .clamp(1, self.config.max_top_k);
+        let span = crate::telemetry::search_span(top_k, mode, scope.is_some());
+        let res = self
+            .search_traced(ctx, query, top_k, mode, scope, bounds, trail)
+            .instrument(span.clone())
+            .await;
+        match &res {
+            Ok(out) => crate::telemetry::record_search(&span, &out.debug, out.results.len()),
+            Err(e) => crate::telemetry::record_error(&span, e),
+        }
+        res
+    }
+
+    /// [`Self::search_bounded`] の本体（`top_k` は丸め済み）。
+    #[allow(clippy::too_many_arguments)]
+    async fn search_traced(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        top_k: usize,
+        mode: SearchMode,
+        scope: Option<&SearchScope>,
+        bounds: &[&SearchScope],
+        trail: crate::AuditTrail<'_>,
+    ) -> Result<SearchOutput, RagError> {
         let mut debug = SearchDebug::default();
         let mut timings = StageTimings::default();
 
@@ -187,8 +215,12 @@ impl SearchService {
 
         // 1. 可読集合（pre-filter）。クエリごとに算出＝grant 即時反映（PIT-3）。
         let t = Instant::now();
-        let readable =
-            readable_set(ctx, self.authz.as_ref(), self.config.readable_tags_max).await?;
+        let readable = crate::telemetry::pre_filter(readable_set(
+            ctx,
+            self.authz.as_ref(),
+            self.config.readable_tags_max,
+        ))
+        .await?;
         timings.readable_set_ms = t.elapsed().as_millis() as u64;
         debug.readable_tags = readable.tags.len() as u32;
         let (prefilter, over_fetch) = if readable.overflowed {
@@ -201,15 +233,7 @@ impl SearchService {
 
         // 2. クエリ埋め込み（keyword 単独モードでは不要）。
         let t = Instant::now();
-        let query_vector = if mode == SearchMode::Keyword {
-            None
-        } else {
-            let resp = self
-                .embedder
-                .embed(ctx, EmbedInput::Query, &[query.to_string()])
-                .await?;
-            resp.vectors.into_iter().next()
-        };
+        let query_vector = self.embed_query(ctx, query, mode).await?;
         timings.embed_ms = t.elapsed().as_millis() as u64;
 
         // 3〜5. 取得 → RRF → post-filter → **hydrate** → バックフィル。
@@ -261,7 +285,12 @@ impl SearchService {
                 denied_chunks,
                 denied_files,
                 file_decisions: decisions,
-            } = post_filter_by_file(ctx, self.authz.as_ref(), fused).await?;
+            } = crate::telemetry::post_filter(
+                debug.backfill_rounds,
+                fused.len(),
+                post_filter_by_file(ctx, self.authz.as_ref(), fused),
+            )
+            .await?;
             post_filter_ms += t_pf.elapsed().as_millis() as u64;
             debug.authz_denied_chunks += denied_chunks as u32;
             debug.authz_denied_files += denied_files as u32;
@@ -358,6 +387,22 @@ impl SearchService {
         kept
     }
 
+    /// クエリを埋め込む（keyword 単独モードでは埋め込まない）。
+    async fn embed_query(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        mode: SearchMode,
+    ) -> Result<Option<Vec<f32>>, RagError> {
+        if mode == SearchMode::Keyword {
+            return Ok(None);
+        }
+        let texts = [query.to_string()];
+        let resp =
+            crate::telemetry::embed(self.embedder.as_ref(), ctx, EmbedInput::Query, &texts).await?;
+        Ok(resp.vectors.into_iter().next())
+    }
+
     /// dense / keyword を並列取得する。
     #[allow(clippy::too_many_arguments)]
     async fn retrieve(
@@ -375,7 +420,15 @@ impl SearchService {
             match (mode, query_vector) {
                 (SearchMode::Keyword, _) | (_, None) => Ok(Vec::new()),
                 (_, Some(vector)) => {
-                    self.vector
+                    let span = tracing::info_span!(
+                        "rag.vector.search",
+                        "rag.search.limit" = fetch_k,
+                        "rag.search.hits" = Empty,
+                        "otel.status_code" = Empty,
+                        "error.type" = Empty,
+                    );
+                    let res = self
+                        .vector
                         .search(
                             ctx,
                             &VectorSearch {
@@ -386,7 +439,10 @@ impl SearchService {
                                 exclude,
                             },
                         )
-                        .await
+                        .instrument(span.clone())
+                        .await;
+                    record_hits(&span, &res);
+                    res
                 }
             }
         };
@@ -401,11 +457,22 @@ impl SearchService {
             let prefilter = prefilter.clone();
             let scope_tags = scope_tags.to_vec();
             let exclude = exclude.to_vec();
-            tokio::task::spawn_blocking(move || {
+            let span = tracing::info_span!(
+                "rag.keyword.search",
+                "rag.search.limit" = fetch_k,
+                "rag.search.hits" = Empty,
+                "otel.status_code" = Empty,
+                "error.type" = Empty,
+            );
+            let res = tokio::task::spawn_blocking(move || {
                 fulltext.search(&ctx, &query, fetch_k, &prefilter, &scope_tags, &exclude)
             })
+            .instrument(span.clone())
             .await
-            .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))?
+            .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))
+            .and_then(|r| r);
+            record_hits(&span, &res);
+            res
         };
         futures::try_join!(dense_fut, keyword_fut)
     }
@@ -467,5 +534,15 @@ impl SearchService {
             )
             .await?;
         Ok(())
+    }
+}
+
+/// 取得系の span にヒット件数か失敗を刻む。
+fn record_hits(span: &tracing::Span, res: &Result<Vec<ScoredChunk>, RagError>) {
+    match res {
+        Ok(hits) => {
+            span.record("rag.search.hits", hits.len());
+        }
+        Err(e) => crate::telemetry::record_error(span, e),
     }
 }

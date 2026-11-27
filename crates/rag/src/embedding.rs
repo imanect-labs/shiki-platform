@@ -20,7 +20,7 @@ pub enum EmbedInput {
 }
 
 impl EmbedInput {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             EmbedInput::Query => "query",
             EmbedInput::Document => "document",

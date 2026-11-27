@@ -11,6 +11,8 @@
     clippy::pedantic
 )]
 
+pub mod capture;
+
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::Duration;
