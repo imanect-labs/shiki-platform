@@ -4,6 +4,7 @@
 //!   Tempo/Prometheus へ collector 経由）。
 //! - リクエスト span に trace_id を載せ、ログ行にも trace_id を注入して突合可能にする。
 //! - `otlp_endpoint` 未設定や collector 未起動でも**起動を妨げない**（ログのみ）。
+//! - OTLP 有効時は DB クエリごとの client span も出す（[`db_spans`]）。
 
 use std::{sync::OnceLock, time::Instant};
 
@@ -20,9 +21,19 @@ use opentelemetry_sdk::{
     Resource,
 };
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::FilterExt as _, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 use crate::config::{LogFormat, TelemetryConfig};
+
+mod db_spans;
+
+/// ログ・トレースの絞り込み（`RUST_LOG`。未設定なら既定）。fmt・OTel の各レイヤに per-layer で掛ける。
+fn env_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,shiki_api=debug,authz=debug"))
+}
 
 /// プロセス終了時に span/metric をフラッシュするためのガード。
 pub struct TelemetryGuard {
@@ -41,11 +52,45 @@ impl Drop for TelemetryGuard {
     }
 }
 
+/// OTLP 有効時に足すレイヤ（OTel ＋ DB クエリの client span）。
+///
+/// DB span のレイヤだけが `sqlx::query` の debug を受ける（OTel・fmt レイヤは `RUST_LOG` のまま）。
+fn otel_layers<S>(tracer: opentelemetry_sdk::trace::SdkTracer) -> impl Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let db_layer =
+        db_spans::DbSpanLayer::new(tracer.clone()).with_filter(db_spans::filter(env_filter()));
+    // OTel レイヤには `sqlx::query` のイベントを通さない。sqlx は 1 秒超のクエリを WARN で SQL 本文
+    // （`db.statement`）付きで出すので、通すと親 span のイベント属性として SQL が OTLP に出る。
+    // `RUST_LOG=sqlx::query=debug` のような設定でも同じ。遅いクエリは DB span の長さで見る。
+    let no_sqlx_events = tracing_subscriber::filter::filter_fn(|m| {
+        !(m.is_event() && m.target() == db_spans::SQLX_QUERY_TARGET)
+    });
+    tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_filter(env_filter().and(no_sqlx_events))
+        .and_then(db_layer)
+}
+
+/// プロセス全体の subscriber。OTLP 無効（`tracer` が `None`）なら従来どおり fmt レイヤだけで、
+/// `sqlx::query` の debug も有効にならない。
+///
+/// 無効時に `Option::<L>::None` のレイヤを足さないこと。`None` のレイヤは「何でも有効」と答えるので、
+/// per-layer フィルタと組むと `enabled!` が真になり、sqlx がクエリごとに SQL を整形してイベントを出す。
+fn subscriber(
+    fmt_layer: Box<dyn Layer<tracing_subscriber::Registry> + Send + Sync>,
+    tracer: Option<opentelemetry_sdk::trace::SdkTracer>,
+) -> Box<dyn tracing::Subscriber + Send + Sync> {
+    let base = tracing_subscriber::registry().with(fmt_layer.with_filter(env_filter()));
+    match tracer {
+        Some(tracer) => Box::new(base.with(otel_layers(tracer))),
+        None => Box::new(base),
+    }
+}
+
 /// tracing / OpenTelemetry を初期化する。
 pub fn init(cfg: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,shiki_api=debug,authz=debug"));
-
     let fmt_layer = match cfg.log_format {
         LogFormat::Json => tracing_subscriber::fmt::layer().json().boxed(),
         LogFormat::Pretty => tracing_subscriber::fmt::layer().pretty().boxed(),
@@ -62,49 +107,46 @@ pub fn init(cfg: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
         .otlp_endpoint
         .as_deref()
         .filter(|e| !e.trim().is_empty());
-    let otel_layer = if let Some(endpoint) = otlp_endpoint {
-        let resource = Resource::builder()
-            .with_service_name(cfg.service_name.clone())
-            .build();
+    let otel_layer: Option<opentelemetry_sdk::trace::SdkTracer> =
+        if let Some(endpoint) = otlp_endpoint {
+            let resource = Resource::builder()
+                .with_service_name(cfg.service_name.clone())
+                .build();
 
-        // トレース
-        let span_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .build()?;
-        let tracer_provider = SdkTracerProvider::builder()
-            .with_batch_exporter(span_exporter)
-            .with_resource(resource.clone())
-            .build();
-        let tracer = tracer_provider.tracer(cfg.service_name.clone());
-        global::set_tracer_provider(tracer_provider.clone());
-        global::set_text_map_propagator(TraceContextPropagator::new());
+            // トレース
+            let span_exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()?;
+            let tracer_provider = SdkTracerProvider::builder()
+                .with_batch_exporter(span_exporter)
+                .with_resource(resource.clone())
+                .build();
+            let tracer = tracer_provider.tracer(cfg.service_name.clone());
+            global::set_tracer_provider(tracer_provider.clone());
+            global::set_text_map_propagator(TraceContextPropagator::new());
 
-        // メトリクス
-        let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .build()?;
-        let meter_provider = SdkMeterProvider::builder()
-            .with_periodic_exporter(metric_exporter)
-            .with_resource(resource)
-            .build();
-        global::set_meter_provider(meter_provider.clone());
+            // メトリクス
+            let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+                .with_tonic()
+                .with_endpoint(endpoint)
+                .build()?;
+            let meter_provider = SdkMeterProvider::builder()
+                .with_periodic_exporter(metric_exporter)
+                .with_resource(resource)
+                .build();
+            global::set_meter_provider(meter_provider.clone());
 
-        guard.tracer_provider = Some(tracer_provider);
-        guard.meter_provider = Some(meter_provider);
+            guard.tracer_provider = Some(tracer_provider);
+            guard.meter_provider = Some(meter_provider);
 
-        Some(tracing_opentelemetry::layer().with_tracer(tracer))
-    } else {
-        tracing::warn!("telemetry.otlp_endpoint 未設定: OpenTelemetry エクスポートは無効");
-        None
-    };
+            Some(tracer)
+        } else {
+            tracing::warn!("telemetry.otlp_endpoint 未設定: OpenTelemetry エクスポートは無効");
+            None
+        };
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(fmt_layer)
-        .with(otel_layer)
-        .init();
+    subscriber(fmt_layer, otel_layer).init();
 
     Ok(guard)
 }
