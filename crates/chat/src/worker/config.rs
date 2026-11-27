@@ -4,9 +4,63 @@
 //! run のライフサイクルだけを持つ。
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use llm_gateway::LlmGateway;
 use rag::SearchService;
+
+/// 試運転（`try_workflow`・T04）の待ち方。待つ間は生成の枠を返す（[`super::slot::RunSlot::park`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TryWaitLimits {
+    /// 終わるまで待つ上限。過ぎたら、その時点の状態（実行中・順番待ち）を返す。
+    pub max_wait: Duration,
+    /// 状態を読む最初の間隔（読むたびに倍にする）。
+    pub first_poll: Duration,
+    /// 状態を読む間隔の上限。
+    pub max_poll: Duration,
+}
+
+impl Default for TryWaitLimits {
+    /// 既定: 30 秒まで、0.5 秒から 2 秒へ伸ばしながら読む（デプロイの設定には出さない）。
+    fn default() -> Self {
+        TryWaitLimits {
+            max_wait: Duration::from_secs(30),
+            first_poll: Duration::from_millis(500),
+            max_poll: Duration::from_secs(2),
+        }
+    }
+}
+
+/// 作成系の道具（emit_workflow など）を使う会話の予算（設定 `chat.app_builder.*`・D-53 の HD-4・T03）。
+///
+/// 通常の会話は、作成系の道具を初めて呼んだときに、手数・トークン・費用・1 応答の上限をこの値まで 1 回だけ
+/// 広げる（(c)・[`agent_core::BudgetExtension`]）。`effort` は作成用の会話（(b)・T09）で最初から当てる値で、
+/// (c) の途中では変えない（思考強度と system を途中で変えるとキャッシュと一貫性が崩れる）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppBuilderConfig {
+    /// 最大ステップ（既定 24 手）。
+    pub max_steps: usize,
+    /// 累積トークン上限（新規ぶん・既定 60 万）。
+    pub max_fresh_tokens: u64,
+    /// 累積コスト上限（マイクロ USD・既定 $2）。
+    pub max_cost_usd_micros: i64,
+    /// 1 応答の出力上限（既定 32768。adaptive thinking も含むので、IR の途中で切れないだけの値）。
+    pub max_response_tokens: u32,
+    /// 作成用の会話の思考強度（既定 medium。組織が指定していなければ当てる・T09 で使う）。
+    pub effort: llm_gateway::Effort,
+}
+
+impl Default for AppBuilderConfig {
+    fn default() -> Self {
+        AppBuilderConfig {
+            max_steps: 24,
+            max_fresh_tokens: 600_000,
+            max_cost_usd_micros: 2_000_000,
+            max_response_tokens: 32_768,
+            effort: llm_gateway::Effort::Medium,
+        }
+    }
+}
 
 /// ワーカーの設定。
 #[derive(Debug, Clone)]
@@ -65,6 +119,12 @@ pub struct WorkerConfig {
     /// system プロンプトに入れる「今日の日付」のタイムゾーン（#546・既定 Asia/Tokyo）。
     /// テナントごとの設定は持たない（必要になったら別途）。
     pub timezone: chrono_tz::Tz,
+    /// web_fetch が通す外への送信の中継（運用者が `egress.proxy_url` に書いたもの・既定は使わない・GAP-72）。
+    pub egress_proxy: Option<agent_core::EgressProxy>,
+    /// 試運転（`try_workflow`）の待ち方（既定は 30 秒まで・0.5 秒から 2 秒の間隔で読む・テストは短くする）。
+    pub try_wait: TryWaitLimits,
+    /// 作成系の道具を使う会話の予算（既定 24 手・60 万トークン・$2・1 応答 32768・effort medium）。
+    pub app_builder: AppBuilderConfig,
 }
 
 impl Default for WorkerConfig {
@@ -130,6 +190,9 @@ impl Default for WorkerConfig {
             // 持たない（「もう一つの正」を作らない）。
             sandbox_backend: agent_core::SandboxBackend::default(),
             timezone: chrono_tz::Asia::Tokyo,
+            egress_proxy: None,
+            try_wait: TryWaitLimits::default(),
+            app_builder: AppBuilderConfig::default(),
         }
     }
 }
@@ -190,7 +253,27 @@ pub struct WorkerDeps {
 
 #[cfg(test)]
 mod tests {
-    use super::WorkerConfig;
+    use super::{AppBuilderConfig, WorkerConfig};
+
+    /// 作成系の道具を使う会話の既定（HD-4・D-53 の推奨どおり）。通常の会話の既定より大きい。
+    #[test]
+    fn app_builder_defaults_are_wider_than_plain_chat() {
+        let config = WorkerConfig::default();
+        assert_eq!(
+            config.app_builder,
+            AppBuilderConfig {
+                max_steps: 24,
+                max_fresh_tokens: 600_000,
+                max_cost_usd_micros: 2_000_000,
+                max_response_tokens: 32_768,
+                effort: llm_gateway::Effort::Medium,
+            }
+        );
+        assert!(config.app_builder.max_steps > config.max_steps);
+        assert!(config.app_builder.max_fresh_tokens > config.chat_max_tokens);
+        assert!(config.app_builder.max_cost_usd_micros > config.chat_max_cost_usd_micros);
+        assert!(config.app_builder.max_response_tokens > config.max_tokens);
+    }
 
     /// 既定のシステムプロンプトは、一般的な質問を検索せずに答えさせる（毎回 RAG を走らせない）。
     #[test]

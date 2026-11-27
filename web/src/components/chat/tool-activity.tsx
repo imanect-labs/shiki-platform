@@ -41,8 +41,8 @@ import {
 import { useRememberedOpen } from "./disclosure-memory";
 
 export type ToolActivityItem = {
-  /// 描画上の一意キー。**呼び出し ID はループで再利用され得る**（stub の `loop:` は毎ステップ
-  /// `stubtool_1` を出す）ため、生成時に採番した「この出現」のキーを使う。
+  /// 描画上の一意キー。**呼び出し ID はループで再利用され得る**（プロバイダが id を使い回す
+  /// 場合。stub は呼び出しごとに一意の id を出す）ため、生成時に採番した「この出現」のキーを使う。
   ///
   /// 配列 index をキーにしてはいけない: ローリングは末尾で窓を切るので、新着のたびに同じ
   /// 項目の index がずれ、motion が別要素とみなして位置アニメーションが壊れる。

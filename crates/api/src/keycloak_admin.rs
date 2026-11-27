@@ -15,8 +15,10 @@ use serde_json::{json, Value};
 use crate::config::AuthConfig;
 
 mod groups;
+mod membership;
 pub mod org_group_migration;
 pub use groups::{GroupPathReferences, KcGroup, RenameOutcome};
+pub use membership::AdminSession;
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeycloakAdminError {

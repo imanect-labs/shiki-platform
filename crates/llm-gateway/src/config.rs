@@ -9,6 +9,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::model::Usage;
+use crate::provider::LlmError;
+use crate::structured::StructuredOutputMode;
 
 /// プロバイダ種別（アダプタ選択）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -23,6 +25,10 @@ pub enum ProviderKind {
     OpenaiResponses,
     /// 連携者の ChatGPT プラン（Sign in with ChatGPT・#854）。接続は [`GatewayConfig::chatgpt`]。
     ChatgptPlan,
+    /// TypeSafe System One 互換の決定モデルの API（判定専用・FEAT-1 の T9・実験的）。文章は生成しないので、
+    /// ここへ振れるのは判定用のモデルだけ（chat モデルを振ると起動が止まる）。既定の接続先は
+    /// `https://api.typesafe.ai`。
+    TypesafeSystemone,
     /// テスト/CI 用の決定的スタブ（外部依存なし）。
     #[default]
     Stub,
@@ -36,6 +42,7 @@ impl ProviderKind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenaiResponses => "openai_responses",
             ProviderKind::ChatgptPlan => "chatgpt_plan",
+            ProviderKind::TypesafeSystemone => "typesafe_systemone",
             ProviderKind::Stub => "stub",
         }
     }
@@ -106,6 +113,8 @@ impl ProviderConfig {
 }
 
 /// モデルカタログの 1 エントリ（許可モデル＋単価）。
+// 真偽の項目（国外処理・opt-in 制・本文の思考・prompt caching）は独立した設定の値そのもの（状態機械ではない）。
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelEntry {
     /// 論理モデル名（UI/リクエストで使う）。
@@ -126,6 +135,13 @@ pub struct ModelEntry {
     /// プロンプトキャッシュ書き込みの単価（マイクロ USD / 100万トークン）。省略はプロンプト単価。
     #[serde(default)]
     pub cache_write_price_micros_per_mtok: Option<u64>,
+    /// Anthropic の prompt caching（要求のトップレベルの自動キャッシュ・5 分）を使うか（T00）。既定 false。
+    ///
+    /// Anthropic へ振る chat モデルでだけ書け、キャッシュの読み出し・書き込みの単価を両方書く（省くと書き込みを
+    /// 入力の単価で数え、1.25 倍の書き込みを少なく記録する）。どちらも構築時に確かめる
+    /// （[`GatewayConfig::check_prompt_cache`]）。
+    #[serde(default)]
+    pub prompt_cache: bool,
     /// コンテキスト窓（入力＋出力の合計トークン上限）。未設定なら窓を知らない扱い。
     ///
     /// agent-core が剪定閾値の天井に使う（#529）。窓の小さいモデルでの溢れ失敗を防ぐ。
@@ -159,12 +175,80 @@ pub struct ModelEntry {
     /// 取り違えて回答から消さないため）。
     #[serde(default)]
     pub reasoning_in_content: bool,
+    /// 構造化出力（[`ResponseFormat`](crate::model::ResponseFormat)）の効かせ方。省略はプロバイダ
+    /// 種別とモデルの既定（[`crate::structured::mode_for`]: Anthropic の対応モデルは `json_schema`、
+    /// OpenAI 互換は `prompt`）。種別が写せないモード（Anthropic の `json_object`・Responses API の
+    /// `json_schema` など）は `prompt` として扱う。どのモードでも呼び出し側が出力を検証する。
+    #[serde(default)]
+    pub structured_output: Option<StructuredOutputMode>,
+    /// モデルの種類（文章を生成する chat か、質問に答えて確からしさを付ける decision か・FEAT-1）。
+    /// 決定モデルはチャットのモデル選択・既定・Auto に出ず、[`LlmGateway::decide`] でだけ使う。
+    ///
+    /// [`LlmGateway::decide`]: crate::gateway::LlmGateway::decide
+    #[serde(default)]
+    pub modality: Modality,
+    /// 決定モデルを LLM に真似させるときの、元にする chat モデルの ID（llm_decider）。決定モデルでだけ書く。
+    /// `provider` はこのモデルと同じにする（会計・利用上限の軸を揃える。構築時に確かめる）。
+    #[serde(default)]
+    pub decision_via: Option<String>,
+    /// llm_decider の出し方（省略は自己申告 1 回・思考の深さ low）。決定モデルでだけ書く。
+    #[serde(default)]
+    pub decision: Option<DecisionTuning>,
+}
+
+/// モデルの種類（[`ModelEntry::modality`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Modality {
+    /// 文章を生成する（チャット・エージェント・`llm.invoke`）。
+    #[default]
+    Chat,
+    /// 質問に決められた選択肢で答え、確からしさを付ける（ワークフローの `ai.decide`）。
+    Decision,
+}
+
+/// llm_decider の出し方（[`ModelEntry::decision`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionTuning {
+    /// 1 回の判定で呼ぶ回数。1 は自己申告の確からしさ、3・5 は多数決の得票率（構築時に 1・3・5 だけ受ける）。
+    #[serde(default = "default_decision_samples")]
+    pub samples: u8,
+    /// 元の chat モデルへ送る思考の深さ（対応しないモデルでは送らない）。
+    #[serde(default = "default_decision_effort")]
+    pub effort: crate::model::Effort,
+}
+
+const fn default_decision_samples() -> u8 {
+    1
+}
+
+const fn default_decision_effort() -> crate::model::Effort {
+    crate::model::Effort::Low
+}
+
+impl Default for DecisionTuning {
+    fn default() -> Self {
+        DecisionTuning {
+            samples: default_decision_samples(),
+            effort: default_decision_effort(),
+        }
+    }
 }
 
 impl ModelEntry {
     /// 送出する実モデル ID。
     pub fn resolved_id(&self) -> &str {
         self.real_id.as_deref().unwrap_or(&self.id)
+    }
+
+    /// 文章を生成するモデルか（チャットのモデル選択・既定・Auto に出してよいか）。
+    pub fn is_chat(&self) -> bool {
+        self.modality == Modality::Chat
+    }
+
+    /// 決定モデルか。
+    pub fn is_decision(&self) -> bool {
+        self.modality == Modality::Decision
     }
 
     /// 振り先プロバイダの ID。
@@ -236,6 +320,17 @@ impl ModelCatalog {
     /// 既定モデルのエントリ。
     pub fn default_entry(&self) -> Option<&ModelEntry> {
         self.get(&self.default_model)
+    }
+
+    /// このプロバイダへ振られ、prompt caching を opt-in したモデルの実 ID（Anthropic のアダプタへ渡す・T00）。
+    pub fn prompt_cache_models<'a>(
+        &'a self,
+        provider_id: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
+        self.models
+            .iter()
+            .filter(move |m| m.prompt_cache && m.provider_id() == provider_id)
+            .map(|m| m.resolved_id().to_string())
     }
 }
 
@@ -417,6 +512,72 @@ pub struct GatewayConfig {
     pub chatgpt: Option<std::sync::Arc<crate::chatgpt::ChatGptAccount>>,
 }
 
+impl GatewayConfig {
+    /// prompt caching の opt-in（[`ModelEntry::prompt_cache`]）を確かめる（構築時・誤りは起動を止める・T00）。
+    ///
+    /// - 振り先が Anthropic であること（ほかの種別では黙って効かない）。振り先のプロバイダが無いモデルは
+    ///   ここでは見ない（構築の別の検査が止める）。
+    /// - キャッシュの読み出し・書き込みの単価を両方書くこと（省くと書き込みを入力の単価で数え、1.25 倍の
+    ///   書き込みを少なく記録する）。
+    /// - chat モデルであること（判定用のモデルは元の chat モデルの実 ID で送るので、こちらに書いても効かない）。
+    /// - 同じプロバイダへ同じ実 ID を送るモデルどうしで opt-in が揃うこと（アダプタは実 ID で見分けるので、
+    ///   片方だけの opt-in はもう片方にも効き、単価を書いていない方の書き込みを少なく記録する）。
+    pub fn check_prompt_cache(&self) -> Result<(), LlmError> {
+        let kind_of = |id: &str| {
+            std::iter::once(&self.provider)
+                .chain(&self.extra_providers)
+                .find(|p| p.effective_id() == id)
+                .map(|p| p.kind)
+        };
+        let bad = |m: &ModelEntry, why: String| {
+            LlmError::Config(format!("model {}: prompt_cache {why}", m.id))
+        };
+        let models = &self.catalog.models;
+        for m in models.iter().filter(|m| m.prompt_cache) {
+            if let Some(kind) = kind_of(m.provider_id()).filter(|k| *k != ProviderKind::Anthropic) {
+                return Err(bad(
+                    m,
+                    format!(
+                        "needs an anthropic provider (provider {} is {})",
+                        m.provider_id(),
+                        kind.as_str()
+                    ),
+                ));
+            }
+            if m.cache_read_price_micros_per_mtok.is_none()
+                || m.cache_write_price_micros_per_mtok.is_none()
+            {
+                return Err(bad(
+                    m,
+                    "needs cache_read_price_micros_per_mtok and cache_write_price_micros_per_mtok"
+                        .into(),
+                ));
+            }
+            if !m.is_chat() {
+                return Err(bad(
+                    m,
+                    "is only for chat models (set it on the decision_via model)".into(),
+                ));
+            }
+            if let Some(o) = models.iter().find(|o| {
+                !o.prompt_cache
+                    && o.provider_id() == m.provider_id()
+                    && o.resolved_id() == m.resolved_id()
+            }) {
+                return Err(bad(
+                    m,
+                    format!(
+                        "must match model {} that sends the same real id {}",
+                        o.id,
+                        m.resolved_id()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +686,30 @@ mod tests {
     }
 
     #[test]
+    fn decision_fields_default_to_a_chat_model_and_read_from_toml_shape() {
+        assert_eq!(ModelEntry::default().modality, Modality::Chat);
+        assert!(ModelEntry::default().is_chat());
+        let m: ModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "decide-haiku",
+            "modality": "decision",
+            "decision_via": "haiku",
+            "decision": { "samples": 5 }
+        }))
+        .unwrap();
+        assert!(m.is_decision() && !m.is_chat());
+        assert_eq!(m.decision_via.as_deref(), Some("haiku"));
+        // 省略した項目は既定（思考の深さ low）。
+        assert_eq!(
+            m.decision,
+            Some(DecisionTuning {
+                samples: 5,
+                effort: crate::model::Effort::Low
+            })
+        );
+        assert_eq!(DecisionTuning::default().samples, 1);
+    }
+
+    #[test]
     fn catalog_lookup() {
         let c = ModelCatalog {
             default_model: "a".into(),
@@ -540,5 +725,72 @@ mod tests {
         assert_eq!(c.get("a").unwrap().resolved_id(), "real-a");
         assert!(c.get("z").is_none());
         assert_eq!(c.default_entry().unwrap().id, "a");
+    }
+
+    /// prompt caching を opt-in した Anthropic の chat モデル（単価 2 つ付き）。
+    fn cached(id: &str, real: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            real_id: Some(real.into()),
+            provider: Some("anthropic".into()),
+            prompt_cache: true,
+            cache_read_price_micros_per_mtok: Some(10_000),
+            cache_write_price_micros_per_mtok: Some(125_000),
+            ..Default::default()
+        }
+    }
+
+    fn anthropic_config(models: Vec<ModelEntry>) -> GatewayConfig {
+        GatewayConfig {
+            extra_providers: vec![ProviderConfig {
+                id: "anthropic".into(),
+                kind: ProviderKind::Anthropic,
+                ..Default::default()
+            }],
+            catalog: ModelCatalog {
+                default_model: "default".into(),
+                models,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prompt_cache_models_are_the_opted_in_real_ids_of_the_provider() {
+        let mut plain = cached("plain", "claude-opus-5-5");
+        plain.prompt_cache = false;
+        let cfg = anthropic_config(vec![cached("haiku", "claude-haiku-5-5"), plain]);
+        assert!(!ModelEntry::default().prompt_cache);
+        let ids: Vec<String> = cfg.catalog.prompt_cache_models("anthropic").collect();
+        assert_eq!(ids, ["claude-haiku-5-5"]);
+        assert_eq!(
+            cfg.catalog.prompt_cache_models(DEFAULT_PROVIDER_ID).count(),
+            0
+        );
+        cfg.check_prompt_cache().unwrap();
+    }
+
+    #[test]
+    fn prompt_cache_on_a_decision_model_or_split_real_id_is_rejected() {
+        let mut decide = cached("decide-haiku", "decide-haiku");
+        decide.modality = Modality::Decision;
+        decide.decision_via = Some("haiku".into());
+        let err = anthropic_config(vec![cached("haiku", "claude-haiku-5-5"), decide])
+            .check_prompt_cache()
+            .unwrap_err();
+        assert!(err.to_string().contains("decide-haiku"), "{err}");
+
+        // 同じ実 ID の片方だけを opt-in すると、もう片方にも効くので止める。
+        let mut other = cached("haiku-fast", "claude-haiku-5-5");
+        other.prompt_cache = false;
+        let err = anthropic_config(vec![cached("haiku", "claude-haiku-5-5"), other])
+            .check_prompt_cache()
+            .unwrap_err();
+        assert!(err.to_string().contains("haiku-fast"), "{err}");
+
+        // 振り先のプロバイダが無いモデルは見ない（構築の別の検査が止める）。
+        let mut lost = cached("lost", "claude-haiku-5-5");
+        lost.provider = Some("nope".into());
+        anthropic_config(vec![lost]).check_prompt_cache().unwrap();
     }
 }

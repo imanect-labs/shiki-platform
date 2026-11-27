@@ -5,6 +5,7 @@
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::tuple_commit::run_to_end;
 
 impl StorageService {
     /// ノード（ファイル/フォルダ）のリネーム・移動を **1 トランザクションで原子的に**適用する。
@@ -311,43 +312,15 @@ impl StorageService {
         //      コミット前付与は移動未確定時の先行アクセスを生むため避ける（Lb76C/LbiSj）。
         // 移動するのは**自ノードの parent タプルのみ**（子は OpenFGA の `from parent` 継承で追従）。
         // 完全失敗時の残留（新親未付与＝過小権限）は再試行 or 書込イベント/outbox（Task 1.8）で収束。
-        if parent_changed {
-            if let Some(op) = old_parent {
-                self.authz
-                    .delete_tuple(
-                        &Subject::object(&ctx.ns().folder(&op.to_string())),
-                        Relation::Parent,
-                        &self_obj,
-                    )
-                    .await?; // 失敗 → tx は drop でロールバック（移動なし＝整合）
-            }
-        }
-        if let Err(e) = tx.commit().await {
-            // 移動が確定しなかったので、剥奪済みの旧親タプルを復元（冪等・best-effort）。
-            if parent_changed {
-                if let Some(op) = old_parent {
-                    let _ = self
-                        .authz
-                        .write_tuple(
-                            &Subject::object(&ctx.ns().folder(&op.to_string())),
-                            Relation::Parent,
-                            &self_obj,
-                        )
-                        .await;
-                }
-            }
-            return Err(StorageError::from(e));
-        }
-        // 現在の親（folder）への parent タプルを冪等に保証する（再試行で修復可能）。
-        if let Some(np) = final_parent {
-            self.authz
-                .write_tuple(
-                    &Subject::object(&ctx.ns().folder(&np.to_string())),
-                    Relation::Parent,
-                    &self_obj,
-                )
-                .await?;
-        }
+        // この区間（旧親を外す → commit → 新親を付ける）は別のタスクで最後まで走る。呼ぶ側が旧親を外した後に
+        // 捨てられても、commit と新親の付与（commit に失敗したら旧親の付け直し）まで進める（BUG-134）。
+        let folder_subject = |p: Uuid| Subject::object(&ctx.ns().folder(&p.to_string()));
+        let parents = ParentSwap {
+            old: old_parent.filter(|_| parent_changed).map(folder_subject),
+            new: final_parent.map(folder_subject),
+            object: self_obj,
+        };
+        run_to_end(parents.commit(self.authz.clone(), tx)).await?;
         row_to_node(row)
     }
 
@@ -430,5 +403,44 @@ impl StorageService {
     ) -> Result<Node, StorageError> {
         self.update_folder(ctx, folder_id, None, Some(new_parent), trace_id)
             .await
+    }
+}
+
+/// move の FGA の parent タプルの付け替え（別のタスクへ渡すので借りずに持つ）。
+struct ParentSwap {
+    /// 外す旧親（親が変わるときだけ）。
+    old: Option<Subject>,
+    /// 付ける今の親（フォルダの中にあるときは、親が変わらなくても冪等に付け直す）。
+    new: Option<Subject>,
+    object: FgaObject,
+}
+
+impl ParentSwap {
+    /// 旧親を外す → commit → 新親を付ける（順と補償の理由は `update_node` の説明）。
+    async fn commit(
+        self,
+        authz: Arc<dyn AuthzClient>,
+        tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    ) -> Result<(), StorageError> {
+        if let Some(old) = &self.old {
+            // 失敗 → tx は drop でロールバック（移動なし＝整合）。
+            authz
+                .delete_tuple(old, Relation::Parent, &self.object)
+                .await?;
+        }
+        if let Err(e) = tx.commit().await {
+            // 移動が確定しなかったので、剥奪済みの旧親タプルを復元（冪等・best-effort）。
+            if let Some(old) = &self.old {
+                let _ = authz.write_tuple(old, Relation::Parent, &self.object).await;
+            }
+            return Err(StorageError::from(e));
+        }
+        // 現在の親（folder）への parent タプルを冪等に保証する（再試行で修復可能）。
+        if let Some(new) = &self.new {
+            authz
+                .write_tuple(new, Relation::Parent, &self.object)
+                .await?;
+        }
+        Ok(())
     }
 }

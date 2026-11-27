@@ -15,13 +15,15 @@ serde_json.workspace = true
 reqwest.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+# 一覧を絞る BatchCheck を数本ずつ並べて送る（visible::holds_any・BUG-149）。
+futures.workspace = true
 ts-rs.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
 tokio = { workspace = true }
-uuid.workspace = true
 
 [lints]
 workspace = true

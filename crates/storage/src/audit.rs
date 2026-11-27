@@ -81,6 +81,23 @@ impl AuditRecorder {
         tx.commit().await?;
         Ok(())
     }
+
+    /// 専用トランザクションで 1 件記録し、**ハッシュチェーンにつなぐ**（[`Self::record`] の対）。
+    ///
+    /// 実データを変える操作のうち、変更そのものが Postgres の外（OpenFGA のタプル・別クレートの
+    /// ストア）にあって同じトランザクションに乗せられない呼び手のための口。変更と監査が別の
+    /// コミットになるので原子的ではない（変更の成功を見届けてから呼ぶ）。同じ txn で残せる
+    /// 呼び手は [`record_on`] に `Chain::Yes` を渡す。
+    pub async fn record_chained(
+        &self,
+        ctx: &AuthContext,
+        entry: AuditEntry<'_>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.db.begin().await?;
+        record_on(&mut tx, ctx, entry, Chain::Yes).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 /// 監査エントリをハッシュチェーンに連結するか。実データ変更操作のみ `Yes`。

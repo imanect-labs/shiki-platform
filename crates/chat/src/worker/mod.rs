@@ -8,6 +8,8 @@
 //! - **協調キャンセル**: ユーザー明示停止（cancel_requested）のみ。ページ離脱はキャンセルしない。
 
 mod approval_policy;
+/// 作成系の道具と、予算の拡張・チェックポイントの保存の条件（T03・D-204・R1）。
+mod builder_tools;
 /// 古典 RAG 注入経路（generate.rs から分割）。
 mod classic;
 /// ワーカーの設定と依存束（mod.rs から分割・行数規約）。
@@ -36,6 +38,8 @@ mod toolset;
 /// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
 pub mod trajectory;
 mod translation_line;
+/// 図のボタンで起動した記録を、履歴に添える文にする（history から分けた）。
+mod ui_runs_history;
 /// ```ui ブロック（Yui）の図の書き方（#530）。
 mod yui;
 /// ```ui の種類の早見と、種類ごとの書き方を返す `ui_reference`（`@imanect/yui/guide` から生成）。
@@ -54,7 +58,7 @@ use uuid::Uuid;
 use crate::model::{ContentBlock, RunStatus, StreamEventKind};
 use crate::store::{ChatStore, ClaimedRun, CHAT_GENERATION_QUEUE};
 use crate::ChatError;
-pub use config::{WorkerConfig, WorkerDeps};
+pub use config::{AppBuilderConfig, TryWaitLimits, WorkerConfig, WorkerDeps};
 use sink::WorkerSink;
 pub use yui::with_yui_guide;
 
@@ -107,6 +111,10 @@ pub struct ChatWorker {
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
     /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
     data: Option<data::DataStore>,
+    /// 試運転（try_workflow・T04）の起動の入口。`workflow_store` と `try_runs` が揃ったときだけ提示する。
+    try_launcher: Option<Arc<workflow_engine::WorkflowRunLauncher>>,
+    /// 試運転の run の要約（try_workflow・T04）。
+    try_runs: Option<Arc<workflow_engine::RunStore>>,
     config: Arc<WorkerConfig>,
 }
 
@@ -155,6 +163,8 @@ impl ChatWorker {
             office_creator,
             office_engine,
             data: None,
+            try_launcher: None,
+            try_runs: None,
             bug_report: None,
             help_search: None,
             config: Arc::new(config),
@@ -196,6 +206,21 @@ impl ChatWorker {
         directory: Arc<dyn crate::workflow_search_tool::WorkflowDirectory>,
     ) -> Self {
         self.workflow_directory = Some(directory);
+        self
+    }
+
+    /// 試運転（try_workflow・T04）の起動の入口と run の要約を配線する。
+    ///
+    /// ワークフローの実行時（`workflow.enabled`）が組んだものを渡す。未配線なら try_workflow を提示しない
+    /// （`WorkerDeps` は変えない・[`Self::with_data`] と同じ理由）。
+    #[must_use]
+    pub fn with_workflow_tries(
+        mut self,
+        launcher: Arc<workflow_engine::WorkflowRunLauncher>,
+        runs: Arc<workflow_engine::RunStore>,
+    ) -> Self {
+        self.try_launcher = Some(launcher);
+        self.try_runs = Some(runs);
         self
     }
 
@@ -396,8 +421,8 @@ impl ChatWorker {
                 .await;
         }
 
-        // resume する run は、チェックポイント境界より後に残る**破棄 attempt のイベント**を
-        // 先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
+        // resume する run（自律 run と、作成系の道具を呼んでチェックポイントを書いた通常の会話）は、
+        // チェックポイント境界より後に残る**破棄 attempt のイベント**を先に削除する（SSE replay の二重表示防止・#351）。この後に積む Status(Running) 以降が
         // 新 attempt の行になる。削除に失敗したまま続行すると、以後の checkpoint の event_seq が
         // 破棄行を包含し、次の takeover の seed（projection 再構築）へ部分出力が混入して
         // message.content の真実まで壊れるため、**続行せず Err で job retry へ回す**。
@@ -443,6 +468,9 @@ impl ChatWorker {
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
         // 自律 run はステップ境界のチェックポイントを durable run 行へ永続化する（resume・#351）。
+        // 通常の会話は、作成系の道具（emit_workflow・try_workflow など）を呼んだステップの終わりから保存を
+        // 始める（sink が呼び出しを見て立てる・R1）。チェックポイントから再開した run は、最初から保存する
+        // （再開の後に作成系の道具を呼ばなくても、次の境界の状態を失わない）。
         let mut worker_sink = WorkerSink::new(
             self.store.clone(),
             &run.tenant_id,
@@ -450,7 +478,7 @@ impl ChatWorker {
             fencing,
             cancel.clone(),
         )
-        .with_checkpoints(run.autonomous)
+        .with_checkpoints(run.autonomous || run.checkpoint.is_some())
         .with_help(self.bug_report.clone(), &ctx);
 
         // 既定では非自律チャットも agent-core ループ（Chat プロファイル）を通す＝モデルが
@@ -488,7 +516,7 @@ impl ChatWorker {
         };
 
         match gen_result {
-            Ok(()) if cancelled => {
+            Ok(_) if cancelled => {
                 self.store
                     .finalize_run_with_ui(
                         run_id,
@@ -503,7 +531,8 @@ impl ChatWorker {
                     )
                     .await?;
             }
-            Ok(()) => {
+            // 途中で止まった理由（GAP-106）は done イベントに載せ、確定がメッセージにも同じ値を残す。
+            Ok(stop_reason) => {
                 self.store
                     .finalize_run_with_ui(
                         run_id,
@@ -513,6 +542,7 @@ impl ChatWorker {
                         None,
                         Some(&StreamEventKind::Done {
                             message_id: run.message_id,
+                            stop_reason,
                         }),
                         &ui_bindings,
                     )

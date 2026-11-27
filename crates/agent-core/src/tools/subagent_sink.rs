@@ -72,6 +72,7 @@ impl EventSink for CollectingSink {
                 self.text.clear();
             }
             // Thinking / ToolResult / 予算警告などは親の**文脈**へは出さない（生の観測を漏らさない）。
+            // 参照カード（BuilderRef・D-204）も捨てる（子に渡る道具は読み取りだけ・chat の `CHILD_TOOLS`）。
             _ => {}
         }
         Ok(())

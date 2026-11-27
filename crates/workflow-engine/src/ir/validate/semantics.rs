@@ -9,8 +9,13 @@
 //! - 比較の左辺・右辺が配列のリテラル
 //! - 左辺が `$from input` で、`input_schema` がその位置を `array` と宣言している
 //! - 右辺が整数値の小数（`1.0`）のリテラル（数値の等値）
+//! - 大小比較（`lt` / `lte` / `gt` / `gte`）の値が、数字を文字列で書いたリテラル（`"50000"`）。数値との
+//!   大小比較は黙って偽にせず `expr_type_error` で step を失敗させるようにした（BUG-14）ので、固定値を
+//!   文字列で保存した金額のしきい値などは、以前の「黙って偽」から run の失敗に変わる
 //!
-//! 保存は止めない（警告）。同じ関数を保存 API・検証 API・`shiki-admin`（保存済み定義の一覧化）が使う。
+//! 保存は止めない（警告）。同じ関数を `shiki-admin`（保存済み定義の一覧化）が使い、保存 API・検証 API・
+//! チャットの emit_workflow は、ほかの保存を止めない警告（テンプレートの書き誤りなど）と合わせた
+//! [`super::save_warnings`] から使う。ここは条件の意味論の切替だけを返す（一覧に別の検出を混ぜない）。
 
 use serde_json::Value;
 
@@ -28,6 +33,7 @@ pub const SEMANTICS_CHANGED: &str = "ir.condition_semantics_changed";
 enum Reason {
     ArrayOperand,
     IntegralFloat,
+    NumericString,
 }
 
 impl Reason {
@@ -47,11 +53,16 @@ impl Reason {
                 "小数表記の整数（例: 1.0）と {op} で比較しています。2026-10 から数値は数値として比較します\
                  （1 と 1.0 は等しい）"
             ),
+            Reason::NumericString => format!(
+                "数字を文字列（引用符つき）で書いた値と {op} で大小比較しています。2026-10 から、数値と文字列の\
+                 大小比較は黙って偽にせず step を失敗させます（expr_type_error）。文字列どうしなら辞書順の比較です\
+                 （\"9\" は \"50000\" より大きい）。数として比べるなら引用符の無い数値で書いてください"
+            ),
         }
     }
 }
 
-/// IR の条件のうち、意味論の切替で振る舞いが変わり得るものを警告として返す。
+/// 意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]）を返す。
 #[must_use]
 pub fn semantics_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     let mut out = Vec::new();
@@ -145,8 +156,30 @@ fn classify(cmp: &Comparison, schema: Option<&Value>) -> Option<Reason> {
         CmpOp::StartsWith | CmpOp::EndsWith | CmpOp::Exists | CmpOp::IsNull if left_array => {
             Some(Reason::ArrayOperand)
         }
+        // 大小比較: 数値と文字列の組は expr_type_error（BUG-14）。数字の文字列のリテラルは、相手が数値なら
+        // 失敗し、文字列なら辞書順になる（どちらも数の比較のつもりなら誤り）。
+        CmpOp::Lt | CmpOp::Lte | CmpOp::Gt | CmpOp::Gte
+            if numeric_string(&cmp.left) || right.is_some_and(numeric_string) =>
+        {
+            Some(Reason::NumericString)
+        }
         _ => None,
     }
+}
+
+/// 数字だけを文字列で書いたリテラル（`"50000"`・`"-1.5"`。日付の `"2026-10-25"` などは含めない）。
+fn numeric_string(e: &ValueExpr) -> bool {
+    let ValueExpr::Literal(Value::String(s)) = e else {
+        return false;
+    };
+    let t = s.trim();
+    let t = t.strip_prefix(['-', '+']).unwrap_or(t);
+    let mut parts = t.splitn(2, '.');
+    let int = parts.next().unwrap_or("");
+    let frac = parts.next();
+    !int.is_empty()
+        && int.bytes().all(|b| b.is_ascii_digit())
+        && frac.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `1.0` のように小数で書かれた整数値（`1` とは JSON の値として異なり、旧評価器では等しくなかった）。
@@ -262,6 +295,42 @@ mod tests {
         assert_eq!(w.len(), 2, "{w:#?}");
         assert!(w[0].message.contains("starts_with"), "{}", w[0].message);
         assert!(w[1].message.contains("ends_with"), "{}", w[1].message);
+    }
+
+    /// BUG-14: 大小比較の値を数字の文字列で書いた条件（UI の固定値が文字列で保存したしきい値）を検出する。
+    #[test]
+    fn flags_numeric_strings_in_ordering_comparisons() {
+        let w = ir(json!({
+            "ir_version": 1, "name": "amount",
+            "nodes": [ branch(json!({ "any": [
+                { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gte", "right": "50000" } },
+                { "cmp": { "left": { "$from": "input", "path": "/t" }, "op": "lt", "right": " -1.5 " } },
+                { "cmp": { "left": "10", "op": "gt", "right": { "$from": "input", "path": "/n" } } },
+                // 数値・日付の文字列・数字でない文字列・等値の比較は対象外。
+                { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gt", "right": 50000 } },
+                { "cmp": { "left": { "$from": "input", "path": "/d" }, "op": "lte", "right": "2026-10-25" } },
+                { "cmp": { "left": { "$from": "input", "path": "/s" }, "op": "gt", "right": "abc" } },
+                { "cmp": { "left": { "$from": "input", "path": "/v" }, "op": "gt", "right": "1." } },
+                { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "eq", "right": "50000" } }
+            ] })) ],
+            "edges": [],
+            "triggers": [
+                { "kind": "interactive" },
+                { "kind": "event", "source": "storage.write", "scope": {},
+                  "filter": { "cmp": { "left": { "$from": "trigger", "path": "/size" }, "op": "gt", "right": "1000" } } }
+            ]
+        }));
+        let w = semantics_warnings(&w);
+        assert_eq!(w.len(), 4, "{w:#?}");
+        assert!(w.iter().all(|e| e.code == SEMANTICS_CHANGED));
+        assert!(w[0].message.contains("大小比較"), "{}", w[0].message);
+        assert_eq!(w[0].path.as_deref(), Some("/triggers/1/filter"));
+        assert_eq!(
+            w.iter()
+                .filter(|e| e.node_id.as_deref() == Some("br"))
+                .count(),
+            3
+        );
     }
 
     #[test]

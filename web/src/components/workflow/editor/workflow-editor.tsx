@@ -26,20 +26,27 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { scopeLabel } from "@/lib/workflow-scopes";
 import { cn } from "@/lib/utils";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
+import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import {
   putLayout,
   updateWorkflow,
   validateWorkflow,
+  WARNING_CODES,
+  warningNoun,
   WorkflowValidationError,
   type EditorLayout,
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
 import { takeDraft, workflowDraftStore } from "./draft-store";
-import { addAction, endTarget, type AddTarget } from "./add-target";
+import { addAction, endTarget, targetLabel, targetPlace, targetRegion, type AddTarget } from "./add-target";
+import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
+import { ErrorsSummary } from "./errors-summary";
 import { useEditorState } from "./ir-state";
 import { MobileFlow } from "./mobile-flow";
 import { Palette } from "./palette";
+import { refusedTypesIn } from "./regions";
+import { saveErrorHint } from "./validation";
 
 type Props = {
   workflowId: string;
@@ -100,14 +107,21 @@ export function WorkflowEditor({
   // C-P1-2）。宣言はエディタで書かせず、ブロックから決まるものとして見せるだけ。
   const [scopes, setScopes] = React.useState<string[]>(initialIr.declared_scopes ?? []);
 
+  // 開いてから、ライブ検証か保存で誤りを受けたか（受けた後に、開いた時点の検証の応答で上書きしない）。
+  const errorsSinceOpen = React.useRef(false);
+
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
     if (!state.dirty) return;
+    const ir = state.ir;
     const timer = setTimeout(() => {
-      validateWorkflow(state.ir)
-        .then(({ errors, warnings, declaredScopes }) => {
-          dispatch({ type: "set_errors", errors });
+      validateWorkflow(ir)
+        .then(({ errors, warnings, declaredScopes, nodePorts }) => {
+          errorsSinceOpen.current = true;
+          dispatch({ type: "set_errors", errors, ir });
           dispatch({ type: "set_warnings", warnings });
+          // 判定のノードの出口（サーバの導出・H15）。設定を変えると、この応答でハンドルが変わる。
+          dispatch({ type: "set_ports", ports: nodePorts, ir });
           if (declaredScopes) setScopes(declaredScopes);
         })
         .catch(() => {
@@ -170,14 +184,19 @@ export function WorkflowEditor({
     }
   }, [restored]);
 
-  // ── 開いた時点の警告（保存済みの定義が意味論の切替で振る舞いを変え得るか）──────────
+  // ── 開いた時点の警告と誤り（保存済みの定義が意味論の切替で振る舞いを変え得るか・保存した後にテーブルの索引を外す
+  // などして、いまは保存できない定義になっていないか・BUG-244）──────────
   React.useEffect(() => {
     let active = true;
     // 下書きを復元したときは、その内容で受ける（保存済みの版の警告で上書きしない）。
-    validateWorkflow(restored.draft?.irDirty ? restored.draft.ir : initialIr)
-      .then(({ warnings, declaredScopes }) => {
+    const openedIr = restored.draft?.irDirty ? restored.draft.ir : initialIr;
+    validateWorkflow(openedIr)
+      .then(({ errors, warnings, declaredScopes, nodePorts }) => {
         if (!active) return;
+        // 誤りはその欄の下に出す（直さないと保存も実行もできない）。先に編集して新しい検証を受けていたら上書きしない。
+        if (!errorsSinceOpen.current) dispatch({ type: "set_errors", errors, ir: openedIr });
         dispatch({ type: "set_warnings", warnings });
+        dispatch({ type: "set_ports", ports: nodePorts, ir: openedIr });
         if (declaredScopes) setScopes(declaredScopes);
       })
       .catch(() => {
@@ -191,13 +210,21 @@ export function WorkflowEditor({
   }, []);
 
   // ── レイアウト自動保存（1s debounce・非バージョン）───────────────────────
+  // 手元の layout は開いた時点で全座標を埋めてあるので、何かを動かすと全ノードの座標が保存される
+  // （座標の無いノードを残すと、次に開いたとき 1 つ動かすだけで全体が平行移動する）。
+  // 送る直前の IR で絞る（IR の編集のたびに保存の待ちをやり直さないよう ref で読む）。
+  const irRef = React.useRef(state.ir);
+  React.useEffect(() => {
+    irRef.current = state.ir;
+  }, [state.ir]);
   React.useEffect(() => {
     if (!state.layoutDirty) return;
     // 送ったスナップショットを渡し、完了時に「まだ最新か」を reducer 側で照合する
     //（古い PUT の完了が新しいドラッグ分の保存をスキップさせない）。
     const snapshot = state.layout;
     const timer = setTimeout(() => {
-      putLayout(workflowId, snapshot)
+      // 手元に残している消したノードの座標（Undo 用）は送らない。
+      putLayout(workflowId, layoutForSave(irRef.current, snapshot))
         .then(() => dispatch({ type: "layout_saved", layout: snapshot }))
         .catch(() => {
           // 座標は化粧品（次回 dagre で復元可能）。失敗は黙って次回に任せる。
@@ -238,13 +265,23 @@ export function WorkflowEditor({
       // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
       dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
       if (saved.declared_scopes) setScopes(saved.declared_scopes);
+      errorsSinceOpen.current = true;
       dispatch({ type: "set_errors", errors: [] });
       dispatch({ type: "set_warnings", warnings: saved.warnings });
+      // 判定のノードの出口（node_ports）は保存の応答に無い。設定を変えてからライブ検証の前に保存すると、dirty が
+      // 下りて検証が走らず、古い出口のまま残る。保存した IR で 1 回だけ確かめて出口を合わせる（best-effort）。
+      validateWorkflow(irToSave)
+        .then(({ nodePorts }) => dispatch({ type: "set_ports", ports: nodePorts, ir: irToSave }))
+        .catch(() => {
+          // 付加情報（保存は済んでいる）。次の編集のライブ検証で改めて受ける。
+        });
       toast(
         saved.warnings.length
           ? {
-              title: `保存しました（v${saved.version}）・確認が必要な条件が ${saved.warnings.length} 件あります`,
-              description: "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。",
+              title: `保存しました（v${saved.version}）・確認が必要な${warningNoun(saved.warnings)}が ${saved.warnings.length} 件あります`,
+              description: saved.warnings.some((w) => w.code === WARNING_CODES.SEMANTICS_CHANGED)
+                ? "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。"
+                : "注意の印のブロックを確認してください。",
             }
           : { title: `保存しました（v${saved.version}）` },
       );
@@ -261,17 +298,31 @@ export function WorkflowEditor({
       return true;
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
-        dispatch({ type: "set_errors", errors: e.errors });
+        errorsSinceOpen.current = true;
+        dispatch({ type: "set_errors", errors: e.errors, ir: irToSave });
+        // ブロックの外（きっかけ・入力項目・全体）の誤りは、ブロックの赤い印に出ないので場所を言う（GAP-35）。
         toast({
           variant: "destructive",
-          title: "保存できません（検証エラー）",
-          description: "赤いバッジのブロックを確認してください。",
+          title: "保存できません",
+          description: saveErrorHint(e.errors),
         });
-      } else if (e instanceof Error && e.message.includes("409")) {
+      } else if ((e as { status?: unknown } | null)?.status === 409) {
+        // 比べたバージョンの後にほかの人が保存した（本文の code は version_conflict・付録 C の §3.5）。文言で状態コードを
+        // 探さない（409 の本文に文言が載るようになった・GAP-41）。
         toast({
           variant: "destructive",
-          title: "他の人が更新しました",
-          description: "ページを再読み込みして最新版から編集し直してください。",
+          title: "ほかの人が先にワークフローを保存しました",
+          description: (
+            <span className="block space-y-2">
+              <span className="block">
+                あなたの変更は保存されていません。最新の内容を読み込むと、保存していない変更は消えます。残したい内容は先に控えてください。
+              </span>
+              <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+                最新の内容を読み込む（変更は消えます）
+              </Button>
+            </span>
+          ),
+          duration: 20_000,
         });
       } else {
         toast({
@@ -312,9 +363,24 @@ export function WorkflowEditor({
       dispatch(addAction(target, nodeType, state.ir, state.layout)),
     [dispatch, state.ir, state.layout],
   );
-  const requestAddAtEnd = React.useCallback(
-    () => setAdding({ target: endTarget(state.ir), label: "流れの末尾に追加" }),
-    [state.ir],
+  const requestAddAtEnd = React.useCallback(() => {
+    const target = endTarget(state.ir, state.serverPorts);
+    // 流れの最後がどこか（分岐の後なら、どの出口の後ろか）を文脈の文で言う（BUG-106・付録 D の N2.10）。
+    setAdding({ target, label: targetLabel(target, state.ir, state.serverPorts) });
+  }, [state.ir, state.serverPorts]);
+  // パレットを押したら流れの最後に追加し、どこに入ったかを知らせる（分岐の後では最初の出口の側に入る・BUG-106）。
+  const pickFromPalette = React.useCallback(
+    (nodeType: string) => {
+      const target = endTarget(state.ir, state.serverPorts);
+      const place = targetPlace(target, state.ir, state.serverPorts);
+      pick(target, nodeType);
+      const name = NODE_CATALOG.find((c) => c.type === nodeType)?.label_ja ?? nodeType;
+      toast({
+        title: `「${name}」を追加しました`,
+        description: place ? `${place}に入れました。` : "流れの最初に置きました。",
+      });
+    },
+    [state.ir, state.serverPorts, pick],
   );
   const togglePalette = React.useCallback(() => setPaletteOpen((p) => !p), []);
   const chromeCtx: EditorChromeContext = {
@@ -341,22 +407,31 @@ export function WorkflowEditor({
                 selection={state.selection}
                 serverErrors={state.serverErrors}
                 serverWarnings={state.serverWarnings}
+                serverPorts={state.serverPorts}
+                serverPortsParams={state.serverPortsParams}
                 dispatch={dispatch}
               />
             </ReactFlowProvider>
-            {desktop && state.serverWarnings.length > 0 ? (
-              <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
-                <WarningsSummary
-                  warnings={state.serverWarnings}
+            {desktop && (state.serverWarnings.length > 0 || state.serverErrors.length > 0) ? (
+              <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 flex-wrap justify-center gap-2">
+                <ErrorsSummary
+                  errors={state.serverErrors}
                   ir={state.ir}
-                  onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                  onSelect={(selection) => dispatch({ type: "select", selection })}
                 />
+                {state.serverWarnings.length > 0 ? (
+                  <WarningsSummary
+                    warnings={state.serverWarnings}
+                    ir={state.ir}
+                    onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                  />
+                ) : null}
               </div>
             ) : null}
             {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
             {paletteOpen && desktop ? (
               <FadeSlide from="left" className="absolute inset-y-3 left-3 z-10 w-64">
-                <Palette onPick={(nodeType) => pick(endTarget(state.ir), nodeType)} />
+                <Palette onPick={pickFromPalette} />
               </FadeSlide>
             ) : null}
             {!desktop ? (
@@ -381,13 +456,20 @@ export function WorkflowEditor({
           <div className="px-4 pb-3 pt-3">
             <ScopesPill scopes={scopes} />
           </div>
-          {state.serverWarnings.length > 0 ? (
-            <div className="px-4 pt-3">
-              <WarningsSummary
-                warnings={state.serverWarnings}
+          {state.serverWarnings.length > 0 || state.serverErrors.length > 0 ? (
+            <div className="flex flex-wrap gap-2 px-4 pb-3">
+              <ErrorsSummary
+                errors={state.serverErrors}
                 ir={state.ir}
-                onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                onSelect={(selection) => dispatch({ type: "select", selection })}
               />
+              {state.serverWarnings.length > 0 ? (
+                <WarningsSummary
+                  warnings={state.serverWarnings}
+                  ir={state.ir}
+                  onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                />
+              ) : null}
             </div>
           ) : null}
           <MobileFlow
@@ -395,6 +477,8 @@ export function WorkflowEditor({
             selection={state.selection}
             serverErrors={state.serverErrors}
             serverWarnings={state.serverWarnings}
+            serverPorts={state.serverPorts}
+            serverPortsParams={state.serverPortsParams}
             dispatch={dispatch}
             onAdd={(target, label) => setAdding({ target, label })}
           />
@@ -414,6 +498,7 @@ export function WorkflowEditor({
         open={adding !== null}
         onOpenChange={(open) => !open && setAdding(null)}
         contextLabel={adding?.label ?? ""}
+        refused={adding ? refusedTypesIn(state.ir, targetRegion(adding.target, state.ir)) : undefined}
         onPick={(nodeType) => {
           if (adding) pick(adding.target, nodeType);
         }}
@@ -478,6 +563,7 @@ function WarningsSummary({
     return w.path?.startsWith("/triggers/") ? "きっかけの条件" : "ワークフロー";
   };
   const [open, setOpen] = React.useState(false);
+  const semantics = warnings.some((w) => w.code === WARNING_CODES.SEMANTICS_CHANGED);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -488,15 +574,21 @@ function WarningsSummary({
           style={{ borderColor: "color-mix(in oklab, var(--season-autumn) 50%, transparent)" }}
         >
           <TriangleAlert className="size-3.5 text-[var(--season-autumn)]" aria-hidden />
-          確認が必要な条件 {warnings.length} 件
+          確認が必要な{warningNoun(warnings)} {warnings.length} 件
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="w-[min(26rem,calc(100vw-2rem))] p-0">
         <div className="border-b px-3 py-2.5">
-          <p className="text-sm font-medium">保存はできますが、結果が変わる場合があります</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            2026-10 から条件の比較のしかたが変わりました（配列は値の集合として比較・1 と 1.0 は等しい）。
-          </p>
+          {semantics ? (
+            <>
+              <p className="text-sm font-medium">保存はできますが、結果が変わる場合があります</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                2026-10 から条件の比較のしかたが変わりました（配列は値の集合として比較・1 と 1.0 は等しい）。
+              </p>
+            </>
+          ) : (
+            <p className="text-sm font-medium">保存はできますが、確認してください</p>
+          )}
         </div>
         <ul className="max-h-72 divide-y overflow-y-auto scrollbar-subtle">
           {warnings.map((w, i) => (

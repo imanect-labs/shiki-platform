@@ -4,17 +4,22 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ir::expr::ValueExpr;
+use crate::ir::patterns::PatternBudget;
+use crate::vocab::AgentTool;
 
 /// `llm.invoke` — llm-gateway 直行（pure・課金あり）。
 ///
-/// `model` はモデルカタログ照合（V3）が必須性を担保する（カタログ未設定環境のみ省略可）。
-/// `effort`/`output_schema` は llm-gateway 経路の enforcement 実装時に追加する（契約に
-/// 「効かないフィールド」を含めない方針・ir.md §7.3）。
+/// `model` は省略可。省略すると実行のたびに実行主体の組織の既定（Auto を含む）で解決する
+/// （チャットと同じ規則・ir.md §7.3）。指定したときは保存時に組織が許可したモデル（本人専用を除く）
+/// へ照合し（V3）、実行時にも照らし直す（使えなければ既定へ戻さずに失敗する）。
+///
+/// `output_schema` を書くと構造化出力になる（GAP-13）。出力に検証済みの `data` が付き、形に合わない出力は
+/// 1 回だけ直させてから `llm_output_invalid` で失敗する（[`crate::ir::output_schema`]）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct LlmInvokeParams {
-    /// モデル id（テナントのモデルカタログへ保存時照合・実行時再照合）。
+    /// モデル id（省略＝組織の既定。指定時は組織が許可したモデルへ保存時照合・実行時再照合）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
@@ -28,24 +33,99 @@ pub struct LlmInvokeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_tokens: Option<ValueExpr>,
+    /// 思考の深さ（省略＝組織の既定。書くと組織の既定〔Auto の思考強度を含む〕より優先する。
+    /// 対応しないモデルでは送らない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub effort: Option<LlmEffort>,
+    /// 出力の形（JSON Schema のサブセット・リテラル）。書くと出力に検証済みの `data` が付く。根は object で、
+    /// オブジェクトは閉じる（additionalProperties は false か省略）。制約は `ir::output_schema` が保存時に検査する。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
-/// `agent.invoke` — サンドボックスで agent-core を実行（best-effort・ティアは admin ポリシー
-/// `chat.sandbox_backend`・既定 gVisor・#346）。
+/// llm.invoke の思考の深さ（3 段階・llm-gateway が各プロバイダの思考の設定へ写す・design.md §4.5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum LlmEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl LlmInvokeParams {
+    /// 項目どうしの整合（`output_schema` の形・上限）。V1 の typed 契約の照合の後に呼ぶ。`pattern` の数は、この
+    /// ブロックの出力の形だけで数える（ワークフローの全体で数えるのは保存時検証の [`crate::ir::validate::validate`]）。
+    ///
+    /// # Errors
+    /// `output_schema` が出力の形の制約に合わないとき（path は `/params/output_schema/...`）。
+    pub fn check_cross_fields(&self) -> Result<(), super::ParamsIssue> {
+        self.check_cross_fields_with(&mut PatternBudget::for_save())
+    }
+
+    /// [`Self::check_cross_fields`] の `pattern` の数を、ワークフローの全体で数える形（`patterns` を全部のブロックで
+    /// 使い回す・BUG-226）。
+    pub(crate) fn check_cross_fields_with(
+        &self,
+        patterns: &mut PatternBudget,
+    ) -> Result<(), super::ParamsIssue> {
+        let Some(schema) = &self.output_schema else {
+            return Ok(());
+        };
+        crate::ir::output_schema::check_saved_output_schema(schema, patterns).map_err(|issue| {
+            super::ParamsIssue {
+                path: format!("/params/output_schema{}", issue.path),
+                message: issue.message,
+            }
+        })
+    }
+}
+
+/// `agent.invoke` — agent-core のツールループを step から 1 回走らせる（ir.md §7.4・BUG-6）。
 ///
-/// サンドボックス設定は**縮小のみ**（実効 = 実行主体 ReBAC ∩ declared_scopes ∩ 本設定）。
-/// `mount_scope`/`allowed_tools`/`model`/`max_tokens` は Phase 5 フルツール構成との結線
-/// （enforcement）実装時に追加する（効かない制限を UI に約束しない・fail-closed）。
+/// 依頼（`instruction`）は自然文。モデルは道具（`allowed_tools`・能力 API の名前）を使って作業し、最後の
+/// 回答を本文に書く。道具の呼び出しはエンジンの能力ゲートウェイ（scope 天井 → 宛先 → 監査）を通ってから
+/// チョークポイント（ReBAC・二段 authz）へ届く。設定は**縮小のみ**（実効 = 実行主体 ReBAC ∩
+/// declared_scopes ∩ 提示した道具の要求スコープ）。
+///
+/// - `allowed_tools` の省略は「道具なし」（旧 IR の到達範囲を再同意なしに広げない・D-29）。書込の道具は
+///   v1 では語彙に無い（書込は後段の能力ノードで行う）。
+/// - `egress_allowlist` は web.fetch の宛先にだけ効き、管理者が決める web の天井
+///   （`workflow.agent.web_allowlist`）の部分集合に限る。天井が空なら web.fetch は提示しない。
+/// - `model` の省略は組織の既定（D-5）。上限（手順・合計トークン・時間）はデプロイ設定を天井に縮めるだけ。
+/// - `mount_scope`・`output_schema` は効くようにしてから足す（効かない設定を契約に入れない）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct AgentInvokeParams {
-    /// エージェントへの指示文。
+    /// エージェントへの依頼（自然文・文字列に解決される）。
     pub instruction: ValueExpr,
-    /// egress allowlist（リテラルのみ・縮小のみ・省略時は外部通信なし）。
+    /// 参考データ（任意の JSON）。モデルには「指示ではないデータ」として依頼とは別に渡す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context: Option<ValueExpr>,
+    /// 使ってよい道具（リテラル・省略は道具なし）。保存時に要るスコープが declared_scopes に補われる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub allowed_tools: Option<Vec<AgentTool>>,
+    /// モデル id（省略＝組織の既定。指定時は組織が許可したモデルへ保存時照合・実行時再照合）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// 手順（モデルの応答）の上限（1〜24・省略は 8）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_steps: Option<u32>,
+    /// この実行全体で使うトークンの上限（デプロイ設定より大きくはできない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_tokens: Option<u64>,
+    /// web.fetch で読んでよいサイト（リテラル・管理者の web の天井の部分集合・最大 20 件）。
     #[serde(default)]
     pub egress_allowlist: Vec<String>,
-    /// 実行時間上限（秒）。
+    /// 実行時間上限（秒・10〜3600・省略は 600）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_duration_sec: Option<ValueExpr>,

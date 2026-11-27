@@ -3,28 +3,32 @@
 //! script-runtime（swc→QuickJS/wasmtime）で 1 回実行し、ゲスト内の `Shiki.*` 同期呼び出しを
 //! **同じ能力ゲートウェイ**（scope ceiling → effect_journal → 監査）へ合流させる（INV-1/INV-2）。
 //! ホスト呼び出しは効果的呼び出し連番 `seq` で冪等キーを `<step冪等キー>#c<seq>` と派生し、
-//! storage.write / workflow.start の高々 1 回を保つ。engine.run は同期ブロッキングのため
+//! storage.write / workflow.start の高々 1 回を保つ。送り先の状態を変えうる `Shiki.http.request` は、試す回数を足した
+//! `<step冪等キー>#a<attempt>#c<seq>` で結果を記録し、リースが切れて拾い直したとき（同じ試行）だけ送り直さない
+//! （やり直しと再開は送る・GAP-28・[`super::outbound`]）。engine.run は同期ブロッキングのため
 //! `spawn_blocking` で回し、非同期ポートは捕捉した `Handle` で `block_on` する（gRPC サーバと同型）。
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use script_runtime::engine::HostFn;
+/// script.run の戻り値の大きさの上限（バイト・script-runtime の単一定義・AI 向けの説明が読む・BUG-264）。
+pub use script_runtime::engine::MAX_RESULT_BYTES;
+use script_runtime::engine::{HostFn, Termination};
 use script_runtime::host::{HostCall, HostResponse};
 use serde_json::{json, Value};
 
 use crate::capability::{
-    check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, JournalDecision, ScopeCeiling,
+    check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, ScopeCeiling,
+    EFFECT_IN_PROGRESS,
 };
-use crate::run::NodeContext;
+use crate::run::{CancelSignal, NodeContext};
 
-use crate::control::eval::resolve_value;
 use crate::ir::params::ScriptRunParams;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{ExecCtx, NodePorts, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, ParamResolver};
+use super::ports::{ExecCtx, NodePorts, PortError, StorageListReq, StorageWriteReq};
+use super::resolver::{as_bytes, opt_param, ParamResolver};
 
 /// `run_script_source` の引数束（script.run と skill.invoke で共用・7 引数制限対応）。
 pub(super) struct ScriptRunReq<'a> {
@@ -47,7 +51,8 @@ impl CapabilityNodeExecutor {
         let engine = self
             .script_engine
             .as_ref()
-            .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+            // スクリプトを動かす仕組みの無い構成（作成者には直せない・やり直しても同じ・BUG-175）。
+            .ok_or_else(|| super::ports::block_not_configured(crate::vocab::NodeType::ScriptRun))?
             .get()
             .await
             .map_err(|e| PortError::unavailable(format!("script engine を準備できません: {e}")))?;
@@ -58,10 +63,9 @@ impl CapabilityNodeExecutor {
             PortError::invalid("script.run: source.inline がありません（artifact 参照は Stage B）")
         })?;
         let r = ParamResolver::new(ctx);
-        let input = p
-            .input
-            .as_ref()
-            .and_then(|e| resolve_value(e, &r))
+        // input を省いたときだけステップ入力を渡す（書いた参照が解決できなければ run 入力全体へ
+        // 黙って差し替えない・BUG-13）。入れ子の $from / $template も展開する。
+        let input = opt_param(p.input.as_ref(), &r, "script.run: input")?
             .unwrap_or_else(|| ctx.input.clone());
         // script.run は node の scope_ceiling をそのまま使う（絞り込みなし）。
         self.run_script_source(ScriptRunReq {
@@ -100,9 +104,18 @@ impl CapabilityNodeExecutor {
             .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
 
         let input_json = input.to_string();
-        let limits = self.script_limits;
+        let mut limits = self.script_limits;
+        // step の時間の上限の期限より長く wasm を走らせない（epoch で止める・engine.md §9.4）。script は
+        // `spawn_blocking` の中で走るので、ワーカーが打ち切っても止まらない。打ち切りが先に起きるよう（失敗の理由を
+        // 時間の上限にする）、期限に少しの余白を足す。
+        if let Some(left) = ctx.cancel.remaining() {
+            limits.epoch_deadline = limits
+                .epoch_deadline
+                .min(left.saturating_add(SCRIPT_DEADLINE_MARGIN));
+        }
         let exec_id = format!("{}:{}", ctx.run_id.simple(), ctx.step_path);
 
+        let halted: Arc<std::sync::OnceLock<PortError>> = Arc::default();
         let bridge = HostBridge {
             ports: Arc::clone(&self.ports),
             journal: self.journal.clone(),
@@ -110,8 +123,11 @@ impl CapabilityNodeExecutor {
             ec: ec.clone(),
             ceiling: ceiling_override.unwrap_or_else(|| ctx.scope_ceiling.clone()),
             base_key: ctx.idempotency_key.clone(),
+            attempt: ctx.attempt,
             http_allowlist: self.http_allowlist.clone(),
             http_timeout_ms: self.http_timeout_ms,
+            cancel: ctx.cancel.clone(),
+            halted: Arc::clone(&halted),
         };
         let handle = tokio::runtime::Handle::current();
         // `Shiki.data.*` の糖衣をユーザーコードの前に置く（ゲスト wasm を再ビルドせずに足す・
@@ -127,24 +143,53 @@ impl CapabilityNodeExecutor {
             engine.run(&exec_id, &compiled_js, &input_json, limits, host_fn)
         })
         .await
-        .map_err(|e| PortError::unavailable(format!("script 実行スレッド: {e}")))?;
+        .map_err(|e| {
+            if e.is_panic() {
+                // スレッドの中の panic は、ほかのブロックの panic と同じ失敗にする（文はログにだけ残す・BUG-215）。
+                tracing::error!(
+                    run_id = %ctx.run_id, step = %ctx.step_path,
+                    panic = crate::run::node_panic::panic_text(e.into_panic().as_ref()),
+                    "script の実行スレッドが panic した"
+                );
+                return PortError::new(
+                    crate::run::node_panic::NODE_PANIC_CODE,
+                    crate::run::node_panic::NODE_PANIC_MESSAGE,
+                    false,
+                );
+            }
+            PortError::unavailable(format!("script 実行スレッド: {e}"))
+        })?;
 
+        // 前の実行の予約が残っていた呼び出しがあれば、script が誤りを捕まえて続けても、その code で step を失敗にする
+        // （試す回数を使わずに待ち、同じ試行で動かし直す・[`HostBridge::halted`]）。
+        let halted = halted.get().cloned();
         self.audit(
             &ec.tenant_id,
             audit_api,
-            outcome.ok,
+            outcome.ok && halted.is_none(),
             &json!({ "termination": format!("{:?}", outcome.termination) }),
         );
+        if let Some(e) = halted {
+            return Err(e);
+        }
         if outcome.ok {
             Ok(outcome.value.unwrap_or(Value::Null))
         } else {
-            let (message, code, retryable) = outcome.error.unwrap_or_else(|| {
+            // 捕まえていないホスト呼び出しの誤りは元の code、作成者が投げた誤りは script_error で返る（D-121）。
+            let (mut message, code, retryable) = outcome.error.unwrap_or_else(|| {
                 (
                     "script 実行に失敗".to_string(),
-                    "script_error".to_string(),
+                    script_runtime::SCRIPT_ERROR.to_string(),
                     false,
                 )
             });
+            // 戻り値が大きすぎる: テーブルに書く行を包んで一括で登録に渡す書き方（説明文の CSV の段）で当たるので、
+            // 分け方を言う（BUG-264）。
+            if let (Termination::ResultTooLarge(bytes), "script.run") =
+                (&outcome.termination, audit_api)
+            {
+                message.push_str(&split_wrapped_rows(*bytes));
+            }
             Err(PortError::new(&code, message, retryable))
         }
     }
@@ -159,9 +204,55 @@ struct HostBridge {
     ec: ExecCtx,
     ceiling: Vec<String>,
     base_key: String,
+    /// いまの試行（外部への送信の記録のキーに入れる。拾い直しと待ちでは変わらず、やり直しと再開で増える）。
+    attempt: i32,
     /// http.request（Shiki.http.request）の egress allowlist（executor と同一値・#344）。
     http_allowlist: Vec<String>,
     http_timeout_ms: u64,
+    /// step の止める合図（時間の上限・run の取り消し・リースの喪失でワーカーが立てる）。
+    cancel: CancelSignal,
+    /// 前の実行の予約が結果の無いまま残っていた呼び出しの誤り（[`EFFECT_IN_PROGRESS`]・最初の 1 つ）。
+    ///
+    /// script は誤りを捕まえて続けられるので、そのまま返すだけでは、待たずに step が成功し、予約した前の実行が
+    /// 送る前に落ちていた送信や書込が一度も行われない。立ったら後の `Shiki.*` は同じ誤りで断り（副作用を起こさない）、
+    /// script が終わったら step をこの誤りで失敗にする（`retry::wait_policy` が待つ）。
+    halted: Arc<std::sync::OnceLock<PortError>>,
+}
+
+/// 包んだ行で戻り値（`bytes`）の上限に当たったときの分け方（説明文の CSV の段と同じ書き方・csv_to_table_it が保存と実行を
+/// 確かめる・BUG-264）。
+///
+/// 分ける数は、それぞれの戻り値が上限に収まる数（行の大きさのばらつきと包む分に 5% の余白をみる・2 つ以上）。行の数は
+/// 分からないので、それぞれの script.run が全体の行の数からその回の範囲を計算する書き方を言う（上限の 2 倍を超えても、
+/// 同じ直し方を繰り返させない）。1 つの data.bulk_upsert に渡せる行の数の上限も添える。
+fn split_wrapped_rows(bytes: u32) -> String {
+    let parts = bytes
+        .saturating_add(bytes / 20)
+        .div_ceil(MAX_RESULT_BYTES)
+        .max(2);
+    format!(
+        "テーブルに書く行を包んで返しているときは、行を {parts} つに分けて包む script.run を {parts} 個置き\
+         （k 個目の source は function main(i) {{ const n = Math.ceil(i.items.length / {parts}); \
+         return {{ rows: i.items.slice(k * n, (k + 1) * n).map((r) => ({{ data: r }})) }}; }} で、k に 0 から {} を書く）、\
+         それぞれの結果を別の data.bulk_upsert に渡してください（1 つの data.bulk_upsert には {} 行まで）。",
+        parts - 1,
+        crate::ir::params::MAX_WORKFLOW_BULK_ROWS
+    )
+}
+
+/// step の時間の上限の期限に足す余白（ワーカーの打ち切りを script の epoch より先にする）。
+const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// 止める合図の後の `Shiki.*` 呼び出しを断るときの code（BUG-96）。
+pub(crate) const SCRIPT_CANCELLED: &str = "step_cancelled";
+
+/// 能力の誤りをゲストへ返す形にする。
+fn host_err(e: PortError) -> HostResponse {
+    HostResponse::Err {
+        message: e.message,
+        code: e.code,
+        retryable: e.retryable,
+    }
 }
 
 impl HostBridge {
@@ -177,6 +268,19 @@ impl HostBridge {
                 }))
             }
             _ => {}
+        }
+        // 止める合図の後は能力を呼ばない（BUG-96）。script は `spawn_blocking` の中で走るので、ワーカーが step を
+        // 時間の上限で打ち切って（フューチャを捨てて）も止まらず、自分の wall-clock 上限まで走り続ける。そのまま
+        // 呼び出しを通すと、失敗にした step の外部への送信や書き込みが後から起き、やり直しの送信と二重になる。
+        if self.cancel.is_cancelled() {
+            return HostResponse::Err {
+                message: "このブロックは止められたため、これ以上の操作はしません".to_string(),
+                code: SCRIPT_CANCELLED.to_string(),
+                retryable: false,
+            };
+        }
+        if let Some(e) = self.halted.get() {
+            return host_err(e.clone());
         }
         // scope ceiling ゲート（script 経路のホスト呼び出しも declared_scopes 内に縛る）。
         let effective: BTreeSet<String> = self.ceiling.iter().cloned().collect();
@@ -194,11 +298,12 @@ impl HostBridge {
         }
         match self.dispatch_capability(call).await {
             Ok(v) => HostResponse::Ok(v),
-            Err(e) => HostResponse::Err {
-                message: e.message,
-                code: e.code,
-                retryable: e.retryable,
-            },
+            Err(e) => {
+                if e.code == EFFECT_IN_PROGRESS {
+                    let _ = self.halted.set(e.clone());
+                }
+                host_err(e)
+            }
         }
     }
 
@@ -223,11 +328,10 @@ impl HostBridge {
                 Ok(out)
             }
             "storage.list" => {
-                let parent = a
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
-                let out = self.ports.storage_list(&self.ec, parent).await?;
+                let out = self
+                    .ports
+                    .storage_list(&self.ec, storage_list_req(a)?)
+                    .await?;
                 self.audit.record(
                     &self.ec.tenant_id,
                     "storage.list",
@@ -242,10 +346,7 @@ impl HostBridge {
                     .and_then(Value::as_str)
                     .ok_or_else(|| PortError::invalid("storage.write: name がありません"))?
                     .to_string();
-                let parent = a
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                let parent = parent_folder(a, "storage.write", "ドライブのトップに保存します")?;
                 let content = a.get("content").cloned().unwrap_or(Value::Null);
                 let bytes = as_bytes(&content);
                 let content_type = a
@@ -266,6 +367,8 @@ impl HostBridge {
                             name,
                             bytes,
                             content_type,
+                            // script の書込は同じ名前があると失敗にする（引数で扱いを選べない・API v1）。
+                            on_name_taken: crate::ir::params::NameTakenPolicy::Fail,
                             idempotency_key: call_key,
                             op_digest: digest,
                         },
@@ -305,8 +408,12 @@ impl HostBridge {
                 let input = a.get("input").cloned().unwrap_or(Value::Null);
                 self.workflow_start_journaled(&call_key, name, &input).await
             }
-            // http.request（実行時は args が concrete のため宛先束縛を照合できる・#344/10.15）。
-            "http.request" => self.http_request(a, &call_key).await,
+            // http.request（実行時は args が concrete のため宛先束縛を照合できる・#344/10.15）。記録のキーには試す回数を
+            // 入れる（送る `Idempotency-Key` は試行によらない `call_key` のまま）。
+            "http.request" => {
+                let effect_key = format!("{}#a{}#c{}", self.base_key, self.attempt, call.seq);
+                self.http_request(a, &call_key, &effect_key).await
+            }
             // 構造化データ（Task 15.7）。node 経路と同じポート・同じ journal（書込はホスト呼び出しごとの冪等キー）。
             api if api.starts_with("data.") => {
                 super::capability_data::script_data_call(
@@ -329,9 +436,13 @@ impl HostBridge {
     /// ノード経路（`node_http_request`）と同じ防御: secret 添付時は URL ホストを
     /// `secret.allowed_hosts`（∩ グローバル allowlist）とリテラル照合し、3xx は一律拒否する。
     /// secret 平文・レスポンス本文は監査に載せない（status + host のみ）。
-    async fn http_request(&self, a: &Value, call_key: &str) -> Result<Value, PortError> {
-        use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
-        use secrets::DestinationBinding;
+    async fn http_request(
+        &self,
+        a: &Value,
+        call_key: &str,
+        effect_key: &str,
+    ) -> Result<Value, PortError> {
+        use super::http::{redirect_denied, summarize_response};
 
         let method = a
             .get("method")
@@ -347,13 +458,120 @@ impl HostBridge {
             .get("secret")
             .and_then(|s| s.get("name"))
             .and_then(Value::as_str);
+        let attach: Option<crate::ir::params::SecretAttach> = a
+            .get("secret")
+            .and_then(|s| s.get("attach"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        // 作成者が決めたヘッダー（BUG-179）。送ってはいけないものは、シークレットを解く前に断る（黙って捨てない）。
+        let secret_header =
+            secret_name.map(|_| super::capability_ai::attach_secret(attach.as_ref(), "").0);
+        let author_headers = self.author_headers(a, secret_header.as_deref())?;
+        check_redirect(a)?;
         let resolved = match secret_name {
             Some(name) => Some(self.ports.resolve_secret(&self.ec, name).await?),
             None => None,
         };
 
+        let host = self.script_destination(&url, resolved.as_ref())?;
+
+        let mut headers: Vec<(String, String)> = Vec::new();
+        if let Some(sec) = resolved.as_ref() {
+            let value = String::from_utf8_lossy(&sec.plaintext).into_owned();
+            let (hname, hval) = super::capability_ai::attach_secret(attach.as_ref(), &value);
+            headers.push((hname, hval));
+        }
+        // 作成者が Idempotency-Key・Content-Type を書いたら、Shiki が付ける値の代わりにそれを送る。
+        let wrote = |name: &str| super::http_headers::has_header(&author_headers, name);
+        if !wrote("Idempotency-Key") {
+            headers.push(("Idempotency-Key".to_string(), call_key.to_string()));
+        }
+        if a.get("body").is_some() && !wrote("Content-Type") {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        headers.extend(author_headers);
+        let body = a.get("body").map(|v| match v {
+            Value::String(s) => s.clone().into_bytes(),
+            other => other.to_string().into_bytes(),
+        });
+
+        // 送り先の状態を変えうる送信は、試す回数と呼び出し連番のキーで結果を記録し、リースが切れて script を拾い直した
+        // とき（同じ試行）に送り直さない（GAP-28）。やり直しと再開は新しい試行なので送る（2xx の応答の中身を見て投げた
+        // script が、原因を直した再開で通るように・本文に時刻を入れる script が再開で effect_conflict にならないように）。
+        let digest = super::outbound::http_digest(&method, &url, body.as_deref(), secret_name);
+        let recorded = super::outbound::changes_remote(&method);
+        let send = async {
+            let resp = self
+                .ports
+                .http_send(
+                    &self.ec,
+                    super::ports::HttpSendReq {
+                        method,
+                        url,
+                        headers,
+                        body,
+                        follow_redirects: false,
+                        timeout_ms: Some(self.http_timeout_ms),
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    // 名前解決の後のアドレスで断った送信も監査に残す（ノードの経路と同じ・BUG-181）。
+                    if super::http::destination_refused(&e.code) {
+                        self.audit.record(
+                            &self.ec.tenant_id,
+                            "http.request",
+                            false,
+                            &json!({ "host": host, "reason": e.code, "via": "script" }),
+                        );
+                    }
+                })?;
+            if redirect_denied(resp.status) {
+                self.audit.record(
+                    &self.ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "host": host, "status": resp.status, "reason": "redirect_denied", "via": "script" }),
+                );
+                return Err(PortError::new(
+                    "redirect_denied",
+                    "リダイレクトは拒否されます（非追従）",
+                    false,
+                ));
+            }
+            let mut meta = summarize_response(resp.status, &host);
+            meta["via"] = json!("script");
+            self.audit
+                .record(&self.ec.tenant_id, "http.request", true, &meta);
+            // 外部の応答に反射した secret の平文は、script へ返す前と記録する前にマスクする（GAP-09 の T0・ノード経路と同じ）。
+            let body = super::capability_ai::response_body(&resp.body, resolved.as_ref());
+            Ok(json!({ "status": resp.status, "host": host, "body": body }))
+        };
+        if recorded {
+            super::outbound::http_once(
+                &self.journal,
+                &self.ec.tenant_id,
+                effect_key,
+                &digest,
+                &host,
+                send,
+            )
+            .await
+        } else {
+            send.await
+        }
+    }
+
+    /// 送り先の照合（宛先束縛 × egress allowlist の AND・URL のホスト部の文字・ノードの経路と同じ）。拒否は監査に残す
+    /// （scripted egress の遮断も監査可能に・レビュー指摘）。照合したホストを返す。
+    fn script_destination(
+        &self,
+        url: &str,
+        resolved: Option<&super::ports::ResolvedSecretView>,
+    ) -> Result<String, PortError> {
+        use super::http::{check_destination, HttpDenied};
+        use secrets::DestinationBinding;
+
         // 宛先束縛（secret 有り）または global allowlist（無し）で照合し、secret 有りは AND。
-        // 拒否は監査に残す（scripted egress の遮断も監査可能に・レビュー指摘）。
         let audit_denied = |reason: &str, detail: &str| {
             self.audit.record(
                 &self.ec.tenant_id,
@@ -380,11 +598,9 @@ impl HostBridge {
                 PortError::invalid("http/https のみ許可")
             }
         };
-        let primary = resolved
-            .as_ref()
-            .map_or_else(|| self.http_allowlist.clone(), |s| s.allowed_hosts.clone());
-        let host =
-            check_destination(&url, &DestinationBinding::new(primary)).map_err(map_denied)?;
+        let primary =
+            resolved.map_or_else(|| self.http_allowlist.clone(), |s| s.allowed_hosts.clone());
+        let host = check_destination(url, &DestinationBinding::new(primary)).map_err(map_denied)?;
         if resolved.is_some() && !self.http_allowlist.is_empty() {
             let global = DestinationBinding::new(self.http_allowlist.clone());
             if !global.allows(&host) {
@@ -394,104 +610,75 @@ impl HostBridge {
                 )));
             }
         }
-
-        let mut headers: Vec<(String, String)> = Vec::new();
-        if let Some(sec) = resolved.as_ref() {
-            let value = String::from_utf8_lossy(&sec.plaintext).into_owned();
-            let attach = a
-                .get("secret")
-                .and_then(|s| s.get("attach"))
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
-            let (hname, hval) = super::capability_ai::attach_secret(attach.as_ref(), &value);
-            headers.push((hname, hval));
-        }
-        headers.push(("Idempotency-Key".to_string(), call_key.to_string()));
-        if a.get("body").is_some() {
-            headers.push(("Content-Type".to_string(), "application/json".to_string()));
-        }
-        let body = a.get("body").map(|v| match v {
-            Value::String(s) => s.clone().into_bytes(),
-            other => other.to_string().into_bytes(),
-        });
-
-        let resp = self
-            .ports
-            .http_send(
-                &self.ec,
-                super::ports::HttpSendReq {
-                    method,
-                    url,
-                    headers,
-                    body,
-                    follow_redirects: false,
-                    timeout_ms: Some(self.http_timeout_ms),
-                },
-            )
-            .await?;
-        if redirect_denied(resp.status) {
-            self.audit.record(
-                &self.ec.tenant_id,
-                "http.request",
-                false,
-                &json!({ "host": host, "status": resp.status, "reason": "redirect_denied", "via": "script" }),
-            );
-            return Err(PortError::new(
-                "redirect_denied",
-                "リダイレクトは拒否されます（非追従）",
-                false,
-            ));
-        }
-        let mut meta = summarize_response(resp.status, &host);
-        meta["via"] = json!("script");
-        self.audit
-            .record(&self.ec.tenant_id, "http.request", true, &meta);
-        Ok(json!({
-            "status": resp.status,
-            "host": host,
-            "body": super::capability_ai::parse_body(&resp.body),
-        }))
+        Ok(host)
     }
 
-    /// workflow.start（cross-TX effect_journal で start-once）。
+    /// `Shiki.http.request` の `headers` と、シークレットを付けるヘッダーの名前を確かめる（BUG-179）。送ってはいけない
+    /// ヘッダー（Shiki が決めるもの・シークレットのヘッダー）を書いた呼び出しは、宛先の拒否と同じく監査に残す。
+    fn author_headers(
+        &self,
+        a: &Value,
+        secret_header: Option<&str>,
+    ) -> Result<Vec<(String, String)>, PortError> {
+        use super::http_headers::{author_headers, check_secret_header, HeaderRefused};
+        let checked = match secret_header {
+            Some(name) => check_secret_header(name),
+            None => Ok(()),
+        }
+        .and_then(|()| author_headers(a.get("headers"), secret_header));
+        checked.map_err(|refused| {
+            if matches!(refused, HeaderRefused::Reserved(_)) {
+                self.audit.record(
+                    &self.ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "reason": "header_not_allowed", "via": "script" }),
+                );
+            }
+            refused.into_port_error()
+        })
+    }
+
+    /// workflow.start（cross-TX effect_journal で start-once・ノードと同じ手順・BUG-188）。
     async fn workflow_start_journaled(
         &self,
         key: &str,
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError> {
-        let digest = op_digest("workflow.start", &json!({ "name": name, "input": input }));
-        match self
-            .journal
-            .check(&self.ec.tenant_id, key, &digest)
-            .await
-            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-        {
-            JournalDecision::Proceed => {
-                let out = self.ports.workflow_start(&self.ec, name, input).await?;
-                self.journal
-                    .record(&self.ec.tenant_id, key, &digest, &out)
-                    .await
-                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-                self.audit.record(
-                    &self.ec.tenant_id,
-                    "workflow.start",
-                    true,
-                    &json!({ "via": "script", "name": name }),
-                );
-                Ok(out)
-            }
-            JournalDecision::AlreadyDone(v) => Ok(v),
-            JournalDecision::InProgress => Err(PortError::new(
-                "effect_in_progress",
-                "別ワーカーが起動処理中",
+        let (out, started) = CapabilityNodeExecutor::workflow_start_once(
+            self.ports.as_ref(),
+            &self.journal,
+            &self.ec,
+            key,
+            name,
+            input,
+        )
+        .await?;
+        if started {
+            self.audit.record(
+                &self.ec.tenant_id,
+                "workflow.start",
                 true,
-            )),
-            JournalDecision::DigestMismatch => Err(PortError::new(
-                "effect_conflict",
-                "同一冪等キーで別の起動要求",
-                false,
-            )),
+                &json!({ "via": "script", "name": name }),
+            );
         }
+        Ok(out)
+    }
+}
+
+/// `Shiki.http.request` の `redirect` は、省略と `"deny"` だけを受ける（GAP-27）。
+///
+/// 移った先へ追う `follow_stripped` はまだ無い（ノードの IR の `RedirectPolicy` も deny だけ）。以前は redirect を読まず、
+/// 何を書いても黙って deny として扱っていた。書いたとおりに動くと思わせないよう、ほかの値は `invalid` で断る。
+fn check_redirect(a: &Value) -> Result<(), PortError> {
+    match a.get("redirect") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(s)) if s == "deny" => Ok(()),
+        Some(_) => Err(PortError::invalid(
+            "Shiki.http.request の redirect に書けるのは \"deny\" だけです。送り先が別の URL へ移るよう返したら、\
+             送るのをやめます（省略しても同じです）。",
+        )),
     }
 }
 
@@ -501,4 +688,43 @@ pub(super) fn sha_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
+}
+
+/// `Shiki.storage.list`・`Shiki.storage.write` のフォルダー（`parent`）。省略と null はドライブのトップ。
+///
+/// UUID でない値（フォルダーの名前・パス・オブジェクトなど）は、ドライブのトップへ黙って落とさずに `invalid` で断る
+/// （D-131・BUG-198）。トップのファイルは親フォルダーの共有を受け継がないので、落とすと、渡すつもりのフォルダーの人に
+/// 届かないまま成功に見える。
+/// `top` は省いたときに何をするか（誤りの文に添える）。
+fn parent_folder(a: &Value, api: &str, top: &str) -> Result<Option<uuid::Uuid>, PortError> {
+    match a.get("parent") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                PortError::invalid(format!(
+                    "Shiki.{api} の parent には、フォルダーの id を渡してください（名前やパスでは指定できません）。\
+                     省くか null にすると、{top}。"
+                ))
+            }),
+    }
+}
+
+/// `Shiki.storage.list(parent, cursor)` の引数（D-131）。フォルダーに読めない値を渡したら、ドライブのトップへ黙って
+/// 落とさずに断る（[`parent_folder`]・続きの位置はフォルダーに束縛される）。続きの位置の省略・null・空の文字は先頭から。
+fn storage_list_req(a: &Value) -> Result<StorageListReq, PortError> {
+    let parent_id = parent_folder(a, "storage.list", "ドライブのトップを読みます")?;
+    let cursor = match a.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(PortError::invalid(
+                "storage.list: cursor が文字列ではありません",
+            ))
+        }
+    };
+    Ok(StorageListReq { parent_id, cursor })
 }

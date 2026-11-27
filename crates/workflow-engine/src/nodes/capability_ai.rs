@@ -1,35 +1,94 @@
-//! 能力呼び出しの本体（llm.invoke / agent.invoke / http.request）。node 経路と `Shiki.*` で共用。
+//! 能力呼び出しの本体（llm.invoke / http.request）。node 経路と `Shiki.*` で共用。
+//! agent.invoke は `capability_agent.rs`（ツールループ・BUG-6）。
 //!
-//! - llm/agent/http は外部 API のためレート制御を通す（`rate_limited` は attempt 非消費）。
+//! - llm/http は外部 API のためレート制御を通す（`rate_limited` は attempt 非消費）。
 //! - http.request は **宛先束縛（secret.allowed_hosts）× egress allowlist の AND** を URL ホスト部
 //!   リテラルで照合し、リダイレクトは既定拒否（SSRF/DNS rebinding/近似ホストを弾く・PIT-36）。
-//! - secret 平文・レスポンス本文は監査/journal に載せない（run 履歴に平文を出さない）。
+//! - secret 平文は監査/journal に載せない（run 履歴に平文を出さない）。レスポンス本文は監査に載せず、step の結果と
+//!   効果の記録（拾い直しで送り直さないため・GAP-28）には反射した平文をマスクしてから載せる。
+//! - llm.invoke と、送り先の状態を変えうる http.request は、結果を効果の記録に残し、リースが切れて拾い直したときに
+//!   呼び直さない（[`super::outbound`]・GAP-28）。
 
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
 
-use crate::control::eval::resolve_value;
-use crate::ir::params::{
-    AgentInvokeParams, HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind,
-};
+use crate::ir::output_schema::{check_output_schema, close_objects};
+use crate::ir::params::{HttpRequestParams, LlmInvokeParams, SecretAttach, SecretAttachKind};
 use crate::run::NodeContext;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
-use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
-use super::ports::{AgentInvokeReq, ExecCtx, HttpSendReq, LlmInvokeReq, PortError};
-use super::resolver::{as_bytes, as_string, as_u32, ParamResolver};
+use super::http::{
+    check_destination, classify_error_status, destination_refused, redirect_denied,
+    summarize_response, HttpDenied,
+};
+use super::ports::{ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView};
+use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
+
+/// 出力に載せる本文の上限（バイト）。
+const BODY_CAP: usize = 1024 * 1024;
 
 /// レスポンス本文を JSON（不能ならテキスト）に整形する（1MB 上限）。
+#[cfg(test)]
 pub(super) fn parse_body(bytes: &[u8]) -> Value {
-    const CAP: usize = 1024 * 1024;
-    let slice: &[u8] = if bytes.len() > CAP {
-        &bytes[..CAP]
-    } else {
-        bytes
+    response_body(bytes, None)
+}
+
+/// 外部の応答の本文を JSON（1MB 以下で読めるとき・不能ならテキスト）に整形し、反射した secret の平文を
+/// `[REDACTED]` に置き換える（この呼び出しで解決した平文だけ・[`secrets::Redactor`] の形）。
+///
+/// テキストにする本文は、全体をマスクしてから 1MB に切る（切れ目が平文に掛かって前半だけが残らないように）。
+pub(super) fn response_body(bytes: &[u8], secret: Option<&ResolvedSecretView>) -> Value {
+    let redactor = reflected_redactor(secret);
+    if bytes.len() <= BODY_CAP {
+        if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+            return match &redactor {
+                Some(r) => r.redact_json(&v),
+                None => v,
+            };
+        }
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let mut text = match &redactor {
+        Some(r) => r.redact_str(&text),
+        None => text.into_owned(),
     };
-    serde_json::from_slice::<Value>(slice)
-        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(slice).into_owned()))
+    if text.len() > BODY_CAP {
+        let mut end = BODY_CAP;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    Value::String(text)
+}
+
+/// llm_invoke ポートの出力から停止理由を外す（instructions だけの skill.invoke の出力の形は `{ text, model }`・
+/// ポートの任意のキー）。
+pub(super) fn without_stop_reason(mut out: Value) -> Value {
+    if let Value::Object(map) = &mut out {
+        map.remove("stop_reason");
+    }
+    out
+}
+
+/// 出力の形の無い llm.invoke の出力に停止理由を必ず置く（ポートが返さなければ自然終了の `end_turn`）。
+///
+/// 打ち切り（`max_tokens`）・拒否（`refusal`）も成功のまま（D-78 (7)）で、後ろの分岐が `/stop_reason` で読み分ける。
+/// 停止理由を返さないポート（既存の fake）や、停止理由を外していた前の版が残した効果の記録（GAP-28）の答えでも、
+/// 参照が解決できるように埋める（カタログの出力の形では、`output_schema` が無ければ必ずある項目）。
+pub(super) fn with_stop_reason(mut out: Value) -> Value {
+    if let Value::Object(map) = &mut out {
+        if !map.get("stop_reason").is_some_and(Value::is_string) {
+            map.insert("stop_reason".into(), Value::String("end_turn".into()));
+        }
+    }
+    out
+}
+
+/// llm_invoke ポートの出力から、実際に使ったモデルの名前を取る（ポートが返さなければ指定値）。
+pub(super) fn resolved_model<'a>(out: &'a Value, requested: Option<&'a str>) -> Option<&'a str> {
+    out.get("model").and_then(Value::as_str).or(requested)
 }
 
 impl CapabilityNodeExecutor {
@@ -44,82 +103,80 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         self.rate_check(ec, "llm.invoke").await?;
         let p: LlmInvokeParams = parse_params(params)?;
-        let prompt = resolve_value(&p.prompt, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("llm.invoke: prompt が解決できません"))?;
-        let model = p.model.clone();
-        let system = p
-            .system
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_string(&v));
-        let max_tokens = p
-            .max_tokens
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_u32(&v));
-        let out = self
-            .ports
-            .llm_invoke(
-                ec,
-                LlmInvokeReq {
-                    model: model.clone(),
-                    system,
-                    prompt,
-                    max_tokens,
-                    idempotency_key: ctx.idempotency_key.clone(),
-                },
-            )
-            .await?;
-        // prompt 本文は監査に載せない（モデル名のみ）。
-        self.audit(
+        let what = "llm.invoke: prompt";
+        let prompt = typed(&param(&p.prompt, r, what)?, what, "文字列", as_string)?;
+        // 空文字は省略と同じ（組織の既定・保存時検証 V3 と揃える）。
+        let model = p.model.clone().filter(|m| !m.is_empty());
+        let what = "llm.invoke: system";
+        let system = opt_param(p.system.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "文字列", as_string))
+            .transpose()?;
+        let what = "llm.invoke: max_tokens";
+        let max_tokens = opt_param(p.max_tokens.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "0 以上の整数", as_u32))
+            .transpose()?;
+        // 出力の形は保存時に検査済み（V1）。保存を通らない経路の IR でも黙って緩く送らない（多層防御）。
+        let schema = match &p.output_schema {
+            Some(s) => {
+                check_output_schema(s).map_err(|issue| {
+                    PortError::new(
+                        "bad_params",
+                        format!("llm.invoke: output_schema{}: {}", issue.path, issue.message),
+                        false,
+                    )
+                })?;
+                Some(close_objects(s))
+            }
+            None => None,
+        };
+        let req = LlmInvokeReq {
+            model: model.clone(),
+            system,
+            prompt,
+            max_tokens,
+            idempotency_key: ctx.idempotency_key.clone(),
+            effort: p.effort,
+            output_schema: schema.clone(),
+            repair: None,
+            call_suffix: None,
+        };
+        // 呼び出し（修復を含む）の結果を記録し、リースが切れて拾い直したときに呼び直さない（二重課金・GAP-28）。
+        let digest = super::outbound::llm_digest(&req);
+        let call = async {
+            match &schema {
+                Some(schema) => {
+                    let (out, repaired) = self.invoke_structured(ec, req, schema).await?;
+                    Ok((out, Some(repaired)))
+                }
+                None => Ok((self.ports.llm_invoke(ec, req).await?, None)),
+            }
+        };
+        let (out, called) = super::outbound::llm_once(
+            &self.journal,
             &ec.tenant_id,
-            "llm.invoke",
-            true,
-            &json!({ "model": model }),
-        );
-        Ok(out)
-    }
-
-    // --- agent.invoke ----------------------------------------------------
-
-    pub(super) async fn node_agent_invoke(
-        &self,
-        params: &Value,
-        _ctx: &NodeContext,
-        ec: &ExecCtx,
-        r: &ParamResolver<'_>,
-    ) -> Result<Value, PortError> {
-        self.rate_check(ec, "agent.invoke").await?;
-        let p: AgentInvokeParams = parse_params(params)?;
-        let code = resolve_value(&p.instruction, r)
-            .and_then(|v| as_string(&v))
-            .ok_or_else(|| PortError::invalid("agent.invoke: instruction が解決できません"))?;
-        // egress_allowlist は縮小のみ（リテラル配列）。ポートが上限として spec を組む。
-        let egress_allowlist = p.egress_allowlist.clone();
-        let timeout_ms = p
-            .max_duration_sec
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_u32(&v))
-            .map(|s| u64::from(s) * 1000);
-        let out = self
-            .ports
-            .agent_invoke(
-                ec,
-                AgentInvokeReq {
-                    code,
-                    timeout_ms,
-                    egress_allowlist,
-                },
-            )
-            .await?;
-        self.audit(
-            &ec.tenant_id,
-            "agent.invoke",
-            true,
-            &json!({ "sandboxed": true }),
-        );
+            &ctx.idempotency_key,
+            &digest,
+            call,
+        )
+        .await?;
+        // 記録した答えを返すときも同じ形にする（停止理由を外していた前の版の記録にも置く）。
+        let out = if schema.is_none() {
+            with_stop_reason(out)
+        } else {
+            out
+        };
+        // 記録した結果を返したとき（前の実行が呼んだ）は、監査を残さない（いま呼んでいない）。
+        let Some(repaired) = called else {
+            return Ok(out);
+        };
+        // prompt 本文は監査に載せない（モデル名のみ）。model は実際に使ったモデル（ポートが解決した名前）、
+        // requested_model はノードの設定（null は組織の既定に従った）。構造化出力なら直させたかも残す。
+        let mut meta =
+            json!({ "model": resolved_model(&out, model.as_deref()), "requested_model": model });
+        if let Some(repaired) = repaired {
+            meta["repaired"] = json!(repaired);
+        }
+        self.audit(&ec.tenant_id, "llm.invoke", true, &meta);
         Ok(out)
     }
 
@@ -136,13 +193,24 @@ impl CapabilityNodeExecutor {
 
         let p: HttpRequestParams = parse_params(params)?;
         let method = p.method.unwrap_or_default().as_str().to_string();
-        let suffix = p
-            .path_suffix
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .and_then(|v| as_string(&v))
+        // path_suffix を書いたのに解決できないときはベース URL へ送らない（BUG-13）。ホスト部の url は
+        // String 型のリテラルで、値式を解決しない（PIT-36 の型防御）。
+        let what = "http.request: path_suffix";
+        let suffix = opt_param(p.path_suffix.as_ref(), r, what)?
+            .map(|v| typed(&v, what, "文字列", as_string))
+            .transpose()?
             .unwrap_or_default();
         let url = format!("{}{suffix}", p.url);
+        // 本文の中の入れ子の $from / $template も展開する（`{"$from":…}` のまま外部へ送らない）。
+        // 値の解決は secret に触れる前に済ませる。
+        let body = opt_param(p.body.as_ref(), r, "http.request: body")?;
+        // オブジェクト・配列の本文は JSON として送る（script 経路の `Shiki.http.request` と揃える・GAP-19）。
+        // 文字列はそのまま・`{ "base64": … }` はバイト列なので、種類を決めつけない。
+        let json_body = body.as_ref().is_some_and(is_json_body);
+        let body = body.map(|v| as_bytes(&v));
+        // シークレットを付けるヘッダーの名前と作成者のヘッダーは、シークレットを解く前に確かめる（保存時の V1 と同じ
+        // 決まり・保存時を通らない定義も送らない・BUG-184・GAP-19）。
+        let author_headers = self.block_headers(&p, r, ec)?;
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
         let resolved_secret = if let Some(sref) = &p.secret {
@@ -162,55 +230,139 @@ impl CapabilityNodeExecutor {
             let (hname, hval) = attach_secret(sref.attach.as_ref(), &value);
             headers.push((hname, hval));
         }
-        headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
+        // 作成者が Idempotency-Key・Content-Type を書いたら、Shiki が付ける値の代わりにそれを送る（script と同じ）。
+        let wrote = |name: &str| super::http_headers::has_header(&author_headers, name);
+        if !wrote("Idempotency-Key") {
+            headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
+        }
+        if json_body && !wrote("Content-Type") {
+            headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        }
+        headers.extend(author_headers);
 
-        let body = p
-            .body
-            .as_ref()
-            .and_then(|e| resolve_value(e, r))
-            .map(|v| as_bytes(&v));
+        // 送り先の状態を変えうる送信は、結果を記録してリースが切れて拾い直したときに送り直さない（GAP-28）。
+        let digest = super::outbound::http_digest(
+            &method,
+            &url,
+            body.as_deref(),
+            p.secret.as_ref().map(|s| s.name.as_str()),
+        );
+        let recorded = super::outbound::changes_remote(&method);
+        let send = async {
+            // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
+            // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
+            // （auto-follow は SSRF/内部 IP rebind の窓になるため絶対に有効化しない）。
+            let resp = self
+                .ports
+                .http_send(
+                    ec,
+                    HttpSendReq {
+                        method,
+                        url,
+                        headers,
+                        body,
+                        follow_redirects: false,
+                        timeout_ms: Some(self.http_timeout_ms),
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    // 名前解決の後のアドレスで断った送信も監査に残す（送り先と理由・BUG-181）。
+                    if destination_refused(&e.code) {
+                        self.audit(
+                            &ec.tenant_id,
+                            "http.request",
+                            false,
+                            &json!({ "host": host, "reason": e.code }),
+                        );
+                    }
+                })?;
 
-        // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
-        // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
-        // （auto-follow は SSRF/内部 IP rebind の窓になるため絶対に有効化しない）。
-        let resp = self
-            .ports
-            .http_send(
-                ec,
-                HttpSendReq {
-                    method: method.clone(),
-                    url,
-                    headers,
-                    body,
-                    follow_redirects: false,
-                    timeout_ms: Some(self.http_timeout_ms),
-                },
-            )
-            .await?;
+            if redirect_denied(resp.status) {
+                self.audit(
+                    &ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "host": host, "status": resp.status, "reason": "redirect_denied" }),
+                );
+                return Err(PortError::new(
+                    "redirect_denied",
+                    "リダイレクトは拒否されます（Stage A は非追従）",
+                    false,
+                ));
+            }
 
-        if redirect_denied(resp.status) {
+            // 監査には本文を載せない（ステータス＋ホストのみ）。送信は済んでいるので、相手の誤りで
+            // ブロックを失敗にするときも送ったことは残す。
             self.audit(
                 &ec.tenant_id,
                 "http.request",
-                false,
-                &json!({ "host": host, "status": resp.status, "reason": "redirect_denied" }),
+                true,
+                &summarize_response(resp.status, &host),
             );
-            return Err(PortError::new(
-                "redirect_denied",
-                "リダイレクトは拒否されます（Stage A は非追従）",
-                false,
-            ));
+            // 相手の誤りでブロックを失敗にする（選んだときだけ・省略は今までどおり成功として次へ渡す・BUG-99）。
+            if p.fail_on_error_status == Some(true) {
+                if let Some((code, retryable)) = classify_error_status(resp.status) {
+                    return Err(PortError::new(
+                        code,
+                        error_status_message(&host, resp.status, retryable),
+                        retryable,
+                    ));
+                }
+            }
+            // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
+            // （実行履歴・画面に返す結果）と効果の記録へ書く前にマスクする（記録時のレダクト・write-only 原則・
+            // GAP-09 の T0）。
+            let body = response_body(&resp.body, resolved_secret.as_ref());
+            Ok(json!({ "status": resp.status, "host": host, "body": body }))
+        };
+        if recorded {
+            super::outbound::http_once(
+                &self.journal,
+                &ec.tenant_id,
+                &ctx.idempotency_key,
+                &digest,
+                &host,
+                send,
+            )
+            .await
+        } else {
+            send.await
         }
+    }
 
-        // 監査/journal には本文を載せない（ステータス＋ホストのみ）。
-        self.audit(
-            &ec.tenant_id,
-            "http.request",
-            true,
-            &summarize_response(resp.status, &host),
-        );
-        // 出力は次ノードへ本文を渡す（履歴・監査には出さない）。
-        Ok(json!({ "status": resp.status, "host": host, "body": parse_body(&resp.body) }))
+    /// 「ヘッダー」の値を解決し、シークレットを付けるヘッダーの名前と合わせて決まりを当てる（BUG-184・GAP-19）。
+    /// 送ってはいけないヘッダー（Shiki が決めるもの・シークレットのヘッダー）は、script と同じく監査に残す。
+    fn block_headers(
+        &self,
+        p: &HttpRequestParams,
+        r: &ParamResolver<'_>,
+        ec: &ExecCtx,
+    ) -> Result<Vec<(String, String)>, PortError> {
+        use super::http_headers::{
+            block_headers, check_secret_header_on, HeaderRefused, HeaderSurface,
+        };
+        let secret_header = p.secret_header();
+        let mut resolved = Vec::new();
+        for (name, value) in p.headers.iter().flatten() {
+            resolved.push((name.clone(), param(value, r, "http.request: headers")?));
+        }
+        let checked = match secret_header {
+            Some(name) => check_secret_header_on(HeaderSurface::Block, name),
+            None => Ok(()),
+        }
+        .and_then(|()| block_headers(&resolved, secret_header));
+        checked.map_err(|refused| {
+            if matches!(refused, HeaderRefused::Reserved(_)) {
+                self.audit(
+                    &ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "reason": "header_not_allowed" }),
+                );
+            }
+            refused.into_port_error()
+        })
     }
 
     /// 宛先束縛（secret.allowed_hosts）× egress allowlist の AND を URL ホスト部リテラルで照合する。
@@ -248,6 +400,45 @@ impl CapabilityNodeExecutor {
     }
 }
 
+/// 相手が誤りを返して失敗にしたときの文言（作成者向け・応答の本文は載せない・BUG-99）。
+fn error_status_message(host: &str, status: u16, retryable: bool) -> String {
+    let next = if retryable {
+        "送り先のサービスが一時的に応じられない状態です。少し待ってから、もう一度実行してください。"
+    } else {
+        "送る内容、URL、使うシークレットを確かめてください。"
+    };
+    format!(
+        "送り先のサービス（{host}）が誤りを返しました（応答のステータスコード {status}）。{next}"
+    )
+}
+
+/// 外部の応答に反射した secret の平文をマスクする Redactor（この呼び出しで解決した平文だけ・無ければ `None`）。
+///
+/// 完全一致と登録した変形（前後の空白を落とした形・JSON のエスケープ・%エンコード）だけをマスクする
+/// （4 文字未満の平文・ほかの符号化はマスクできない・`secrets::Redactor`）。
+fn reflected_redactor(secret: Option<&ResolvedSecretView>) -> Option<secrets::Redactor> {
+    let mut redactor = secrets::Redactor::new();
+    redactor.add(&String::from_utf8_lossy(&secret?.plaintext));
+    (!redactor.is_empty()).then_some(redactor)
+}
+
+/// http.request の本文を JSON として送るか（オブジェクト・配列）。
+///
+/// `{ "base64": "…" }` は [`as_bytes`] がバイト列に戻すので JSON ではない（解読できないときは
+/// JSON のまま送られるので JSON 扱い）。
+fn is_json_body(v: &Value) -> bool {
+    use base64::Engine as _;
+    match v {
+        Value::Array(_) => true,
+        Value::Object(map) => !matches!(
+            map.get("base64"),
+            Some(Value::String(b64))
+                if base64::engine::general_purpose::STANDARD.decode(b64).is_ok()
+        ),
+        _ => false,
+    }
+}
+
 /// secret 添付方式からヘッダ名/値を決める（`bearer` → Authorization: Bearer、`header` → 指定ヘッダ）。
 pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (String, String) {
     match attach.map_or(SecretAttachKind::Bearer, |a| a.kind) {
@@ -263,9 +454,41 @@ pub(super) fn attach_secret(attach: Option<&SecretAttach>, value: &str) -> (Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{attach_secret, parse_body};
+    use super::{attach_secret, is_json_body, parse_body, with_stop_reason, without_stop_reason};
     use crate::ir::params::{SecretAttach, SecretAttachKind};
     use serde_json::json;
+
+    /// 反射した平文は、テキストの本文でも切る前に全体でマスクする（1MB の切れ目に掛かった前半も残さない）。
+    /// JSON のエスケープされた形・キーに載った形もマスクする。
+    #[test]
+    fn reflected_secrets_are_masked_before_the_body_is_cut() {
+        use super::{response_body, BODY_CAP};
+        let secret = super::ResolvedSecretView {
+            plaintext: b"abc/def+ghi=".to_vec(),
+            allowed_hosts: vec![],
+        };
+        let mut big = vec![b'x'; BODY_CAP - 5];
+        big.extend_from_slice(b"abc/def+ghi=");
+        big.extend_from_slice(&[b'y'; 10]);
+        let v = response_body(&big, Some(&secret));
+        let text = v.as_str().unwrap();
+        assert_eq!(text.len(), BODY_CAP);
+        assert!(text.ends_with("x[REDA"), "{}", &text[text.len() - 20..]);
+        // JSON として読めない本文は、エスケープされた形のまま反射しても落とす。
+        let v = response_body(br#"echo: {"auth": "Bearer abc\/def+ghi="#, Some(&secret));
+        assert_eq!(v, json!(r#"echo: {"auth": "Bearer [REDACTED]"#));
+        // JSON の本文はキーも値（%エンコードされた形）もマスクする。
+        let v = response_body(
+            br#"{"abc/def+ghi=": 1, "next": "https://x.test/?t=abc%2Fdef%2Bghi%3D"}"#,
+            Some(&secret),
+        );
+        assert_eq!(
+            v,
+            json!({ "[REDACTED]": 1, "next": "https://x.test/?t=[REDACTED]" })
+        );
+        // secret が無ければそのまま。
+        assert_eq!(response_body(b"abc/def+ghi=", None), json!("abc/def+ghi="));
+    }
 
     #[test]
     fn parse_body_json_text_and_cap() {
@@ -281,6 +504,19 @@ mod tests {
             Some(1024 * 1024),
             "CAP で切り詰め"
         );
+    }
+
+    /// オブジェクト・配列の本文だけを JSON として送る（GAP-19）。
+    #[test]
+    fn json_body_is_objects_and_arrays_but_not_base64_bytes() {
+        assert!(is_json_body(&json!({ "text": "hi" })));
+        assert!(is_json_body(&json!([1, 2])));
+        // 文字列・数値はそのまま（種類を決めつけない）。
+        assert!(!is_json_body(&json!("plain")));
+        assert!(!is_json_body(&json!(3)));
+        // base64 はバイト列に戻る（解読できなければ JSON のまま送られる）。
+        assert!(!is_json_body(&json!({ "base64": "aGk=" })));
+        assert!(is_json_body(&json!({ "base64": "***" })));
     }
 
     #[test]
@@ -318,6 +554,27 @@ mod tests {
         assert_eq!(
             attach_secret(Some(&unnamed), "tok"),
             ("Authorization".to_string(), "tok".to_string())
+        );
+    }
+
+    /// 出力の形の無い llm.invoke の停止理由: ポートの値はそのまま、無い（文字でない）ときは end_turn。
+    #[test]
+    fn plain_llm_output_always_has_a_stop_reason() {
+        let cut = json!({ "text": "途中", "model": "m", "stop_reason": "max_tokens" });
+        assert_eq!(with_stop_reason(cut.clone()), cut);
+        for out in [
+            json!({ "text": "t", "model": "m" }),
+            json!({ "text": "t", "model": "m", "stop_reason": null }),
+        ] {
+            assert_eq!(
+                with_stop_reason(out),
+                json!({ "text": "t", "model": "m", "stop_reason": "end_turn" })
+            );
+        }
+        // skill.invoke（instructions だけ）は従来どおり外す。
+        assert_eq!(
+            without_stop_reason(cut),
+            json!({ "text": "途中", "model": "m" })
         );
     }
 }

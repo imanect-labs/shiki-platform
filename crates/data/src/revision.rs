@@ -72,17 +72,18 @@ impl DataStore {
         limit: i64,
         trace_id: Option<&str>,
     ) -> Result<Vec<RecordRevision>, DataError> {
-        self.require(
-            ctx,
-            table_id,
-            Relation::Viewer,
-            AuditAction::DataRecordRevisions,
-            trace_id,
-        )
-        .await?;
-        // テーブルが生存していること（削除済みテーブルの履歴を残存タプルで読ませない）。
-        let table = self.fetch_live(ctx, table_id).await?;
         let az = self.authz_memo();
+        // テーブル viewer（追加だけの人は自分が作ったレコードの履歴だけ・D-113）とテーブルの生存（削除済み
+        // テーブルの履歴を残存タプルで読ませない）。
+        let table = self
+            .open_for_reader(
+                ctx,
+                &az,
+                table_id,
+                AuditAction::DataRecordRevisions,
+                trace_id,
+            )
+            .await?;
         // 行可視性ゲート: 現存かつ不可視なら 404。削除済み実在履歴は owner のみ。
         if self
             .select_visible_by_id(ctx, &az, &table, record_id)
@@ -105,7 +106,8 @@ impl DataStore {
             if exists {
                 return Err(DataError::NotFound); // 現存だが不可視＝存在しない扱い。
             }
-            self.require(
+            self.require_in(
+                &az,
                 ctx,
                 table_id,
                 Relation::Owner,
@@ -170,7 +172,7 @@ impl DataStore {
     }
 
     /// 履歴の差分のリンク値を、閲覧者本人の権限で見える参照先だけに絞る（リンク列ごとに 1 回で引く）。
-    async fn filter_link_patches(
+    pub(crate) async fn filter_link_patches(
         &self,
         ctx: &AuthContext,
         az: &crate::policy::memo::AuthzMemo<'_>,
@@ -233,7 +235,7 @@ fn link_ids(v: &Value) -> Vec<Uuid> {
 
 /// 履歴の差分に残る v1 の `record_ref` の値（単一 UUID 文字列）を、レコードの読取と同じ配列の形へ寄せる
 /// （値の移行前に記録された差分も、現行の外部形で返す）。
-fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
+pub(crate) fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
     for p in patch {
         if schema
             .field(&p.field)

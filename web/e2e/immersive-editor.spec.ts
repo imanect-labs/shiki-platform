@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// 没入エディタ（human 要望）: エディタを開くとサイドバーが畳まれ、シェル既定の現在地バー
 /// （📁 現在地）が消える。ノート/スライドは usePageChrome で独自のクローム（戻る/名前/AI に依頼）を

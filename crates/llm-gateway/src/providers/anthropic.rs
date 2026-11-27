@@ -13,12 +13,15 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::anthropic_events::EventReader;
+use super::anthropic_headers::{self, RateLimitHeaders};
 use super::identity::IdentityHeaders;
 use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
-use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
+use crate::model::{Block, GenerateRequest, Message, Role, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::structured::{anthropic_format, schema_rejection, with_json_body, ANTHROPIC_SCHEMA_AT};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -31,6 +34,8 @@ pub struct AnthropicProvider {
     default_model: String,
     identity: IdentityHeaders,
     timeouts: LlmTimeouts,
+    /// prompt caching を使うモデル（実 ID・カタログの `prompt_cache`・T00）。
+    prompt_cache_models: HashSet<String>,
 }
 
 impl AnthropicProvider {
@@ -47,7 +52,16 @@ impl AnthropicProvider {
             default_model: default_model.into(),
             identity: IdentityHeaders::default(),
             timeouts: LlmTimeouts::default(),
+            prompt_cache_models: HashSet::new(),
         }
+    }
+
+    /// prompt caching（要求のトップレベルの `cache_control`・5 分）を付けるモデル（実 ID）を指定する。
+    /// ここに無いモデルの要求は変えない（自動キャッシュを受けない送り先へ送っても 400 にならないように）。
+    #[must_use]
+    pub fn with_prompt_cache_models(mut self, models: impl IntoIterator<Item = String>) -> Self {
+        self.prompt_cache_models = models.into_iter().collect();
+        self
     }
 
     /// 送出する User-Agent を指定する。ヘッダ値にできない文字列は設定エラーにする
@@ -97,6 +111,10 @@ impl AnthropicProvider {
         if let Some(sys) = &req.system {
             body["system"] = json!(sys);
         }
+        // 自動キャッシュ: API が最後のキャッシュできるブロックに区切りを置く（system は文字列のまま）。
+        if self.prompt_cache_models.contains(&model) {
+            body["cache_control"] = json!({ "type": "ephemeral" });
+        }
         let tools: Vec<&ToolDef> = if native {
             req.tools.iter().collect()
         } else {
@@ -121,11 +139,23 @@ impl AnthropicProvider {
                 })
                 .collect::<Vec<_>>());
         }
+        // output_config は effort と構造化出力の format を**併合**する（片方で丸ごと上書きすると、
+        // effort 付きの呼び出しで形の指定が黙って消える・GAP-13）。
+        let mut output_config = serde_json::Map::new();
         if let Some(effort) = req.effort {
             // adaptive thinking + effort（Claude 4.6+）。budget_tokens は使わない。
             body["thinking"] = json!({ "type": "adaptive" });
-            body["output_config"] = json!({ "effort": effort.as_str() });
+            output_config.insert("effort".into(), json!(effort.as_str()));
         }
+        // format だけのときは thinking を足さない（思考の既定はモデルに任せる）。
+        if let Some(format) = req.response_format.as_ref().and_then(anthropic_format) {
+            output_config.insert("format".into(), format);
+        }
+        if !output_config.is_empty() {
+            body["output_config"] = Value::Object(output_config);
+        }
+        // temperature / top_p / top_k は送らない（新しいモデルは既定以外を 400 で拒む。決定性は
+        // 構造化出力・版の固定で担保する）。
         body
     }
 }
@@ -261,22 +291,12 @@ fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<(Value, Opti
     }
 }
 
-fn map_stop_reason(sr: Option<&str>) -> StopReason {
-    match sr {
-        Some("tool_use") => StopReason::ToolUse,
-        Some("max_tokens") => StopReason::MaxTokens,
-        Some("end_turn" | "stop_sequence") => StopReason::EndTurn,
-        _ => StopReason::Other,
-    }
-}
-
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     fn name(&self) -> &'static str {
         "anthropic"
     }
 
-    #[allow(clippy::too_many_lines)] // SSE イベント種別ごとの分岐で行数が伸びる（分割は可読性を損なう）。
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/v1/messages", self.base_url);
         let names = ToolNameMap::for_request(req);
@@ -285,13 +305,16 @@ impl LlmProvider for AnthropicProvider {
             .http
             .post(&url)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body);
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        let builder = with_json_body(builder, &body, req, &ANTHROPIC_SCHEMA_AT);
         let clock = RequestClock::start(self.timeouts, "anthropic");
-        let resp = clock
-            .send(self.identity.apply(builder, req.session_id.as_deref()))
-            .await?;
+        let resp = send_waiting_out_rate_limit(
+            &clock,
+            self.identity.apply(builder, req.session_id.as_deref()),
+        )
+        .await?;
         let status = resp.status();
+        anthropic_headers::record(status, resp.headers());
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
             if status.is_client_error() {
@@ -301,21 +324,23 @@ impl LlmProvider for AnthropicProvider {
                         &text,
                     )));
                 }
-                return Err(LlmError::BadRequest(format!("anthropic {status}: {text}")));
+                // 構造化出力のスキーマを拒んだもの（複雑すぎる等）は、本文を出さない定型文にする。
+                if let Some(e) = body
+                    .pointer("/output_config/format")
+                    .and_then(|_| schema_rejection("anthropic", status, &text))
+                {
+                    return Err(e);
+                }
+                return Err(crate::provider::rejection("anthropic", status, &text));
             }
-            return Err(LlmError::Unavailable(format!("anthropic {status}: {text}")));
+            return Err(crate::provider::unavailable("anthropic", status, &text));
         }
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
         tokio::spawn(async move {
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
-            // index → (id, name, accumulated json)
-            let mut tools: std::collections::BTreeMap<i64, (String, String, String)> =
-                std::collections::BTreeMap::new();
-            let mut usage = super::usage::AnthropicUsage::default();
-            let mut stop = StopReason::EndTurn;
-
+            let mut reader = EventReader::new(names);
             while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
@@ -327,113 +352,91 @@ impl LlmProvider for AnthropicProvider {
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = String::from_utf8_lossy(&line);
-                    let line = line.trim();
-                    let Some(data) = line.strip_prefix("data:") else {
-                        continue;
-                    };
-                    let Ok(v): Result<Value, _> = serde_json::from_str(data.trim()) else {
-                        continue;
-                    };
-                    match v.get("type").and_then(Value::as_str) {
-                        Some("message_start") => {
-                            if let Some(u) = v.pointer("/message/usage") {
-                                usage.absorb(u);
-                            }
-                        }
-                        Some("content_block_start") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some(cb) = v.get("content_block") {
-                                if cb.get("type").and_then(Value::as_str) == Some("tool_use") {
-                                    let id = cb
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let name = cb
-                                        .get("name")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let name = names.local(&name);
-                                    tools.insert(idx, (id.clone(), name.clone(), String::new()));
-                                    let _ = tx
-                                        .unbounded_send(Ok(StreamDelta::ToolUseStart { id, name }));
-                                }
-                            }
-                        }
-                        Some("content_block_delta") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some(delta) = v.get("delta") {
-                                match delta.get("type").and_then(Value::as_str) {
-                                    Some("text_delta") => {
-                                        if let Some(t) = delta.get("text").and_then(Value::as_str) {
-                                            let _ = tx.unbounded_send(Ok(StreamDelta::TextDelta {
-                                                text: t.to_string(),
-                                            }));
-                                        }
-                                    }
-                                    Some("thinking_delta") => {
-                                        if let Some(t) =
-                                            delta.get("thinking").and_then(Value::as_str)
-                                        {
-                                            let _ =
-                                                tx.unbounded_send(Ok(StreamDelta::ThinkingDelta {
-                                                    text: t.to_string(),
-                                                }));
-                                        }
-                                    }
-                                    Some("input_json_delta") => {
-                                        if let Some(pj) =
-                                            delta.get("partial_json").and_then(Value::as_str)
-                                        {
-                                            if let Some(e) = tools.get_mut(&idx) {
-                                                e.2.push_str(pj);
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Some("content_block_stop") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some((id, _name, args)) = tools.remove(&idx) {
-                                let input: Value =
-                                    serde_json::from_str(args.trim()).unwrap_or(json!({}));
-                                let _ =
-                                    tx.unbounded_send(Ok(StreamDelta::ToolUseStop { id, input }));
-                            }
-                        }
-                        Some("message_delta") => {
-                            if let Some(sr) =
-                                v.pointer("/delta/stop_reason").and_then(Value::as_str)
-                            {
-                                stop = map_stop_reason(Some(sr));
-                            }
-                            if let Some(u) = v.get("usage") {
-                                usage.absorb(u);
-                            }
-                        }
-                        Some("message_stop") => {
-                            let _ = tx.unbounded_send(Ok(StreamDelta::Done {
-                                stop_reason: stop,
-                                usage: usage.to_usage(),
-                            }));
-                            return;
-                        }
-                        _ => {}
+                    for out in reader.line(&String::from_utf8_lossy(&line)) {
+                        let _ = tx.unbounded_send(out);
+                    }
+                    if reader.finished() {
+                        return;
                     }
                 }
             }
-            let _ = tx.unbounded_send(Ok(StreamDelta::Done {
-                stop_reason: stop,
-                usage: usage.to_usage(),
-            }));
+            // 受け手がストリームを捨てた（読むのをやめた）なら、何も送らずに終える。
+            if tx.is_closed() {
+                return;
+            }
+            // 末尾の改行が無いまま閉じた最後の行も読む。message_stop まで来ていなければ、途中までの応答を完了に
+            // せず誤りにする（BUG-214）。
+            for out in reader.line(&String::from_utf8_lossy(&buf)) {
+                let _ = tx.unbounded_send(out);
+            }
+            if let Some(out) = reader.end() {
+                let _ = tx.unbounded_send(out);
+            }
         });
 
         Ok(rx.boxed())
     }
+}
+
+/// 429 の `retry-after` がこの長さ以下なら、その分だけ待って送り直す（これより長い待ちは、利用者へ
+/// 「上限に達した」と返す）。
+const MAX_RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 429 を待って送り直す回数の上限（最初の送信を除く）。
+const RATE_LIMIT_RETRIES: usize = 2;
+
+/// 送信して応答ヘッダを待つ。429 が短い待ち（`retry-after` の秒数が [`MAX_RATE_LIMIT_WAIT`] 以下）を示すときは、
+/// その分だけ待って [`RATE_LIMIT_RETRIES`] 回まで送り直す。
+///
+/// Anthropic の 429 は 1 分あたりのトークン・要求の枠で、数秒待てば通ることが多い。すぐ失敗にすると会話全体の
+/// やり直しになる（やり直しは適用済みのツールを二重に実行しうる・#889）。送り直さないとき（待ちの指示が無い・
+/// 長すぎる・生成全体の締め切りを越える・回数を使い切った）は 429 の応答をそのまま返し、呼び出し側が
+/// いつもどおり [`LlmError::RateLimited`] にする。ゲートウェイの利用上限はプロバイダへ送る前に断るので、
+/// ここは通らない（送り直されない）。
+async fn send_waiting_out_rate_limit(
+    clock: &RequestClock,
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, LlmError> {
+    let mut builder = builder;
+    let mut retries = 0;
+    loop {
+        let again = builder.try_clone();
+        let resp = clock.send(builder).await?;
+        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || retries == RATE_LIMIT_RETRIES
+        {
+            return Ok(resp);
+        }
+        let wait = rate_limit_wait(resp.headers(), clock.remaining());
+        let (Some(wait), Some(again)) = (wait, again) else {
+            return Ok(resp);
+        };
+        let limits = RateLimitHeaders(resp.headers()).to_string();
+        let body = clock.error_text(resp).await?;
+        retries += 1;
+        tracing::warn!(?wait, retries, rate_limit = %limits, body = %body, "anthropic が 429 で待ちを指示した（待って送り直す）");
+        tokio::time::sleep(wait).await;
+        builder = again;
+    }
+}
+
+/// 429 の応答ヘッダから、送り直す前に待つ長さを決める（送り直さないなら `None`）。
+///
+/// `retry-after` の秒数（整数）だけを読む。HTTP-date の形・読めない値・指示の無いものは送り直さない（待ちを推測で
+/// 決めない）。[`MAX_RATE_LIMIT_WAIT`] を超える待ちと、生成全体の締め切りまでの残り（`remaining`）以上の待ちもしない
+/// （暴走止めの上限を待ちで延ばさない）。
+fn rate_limit_wait(
+    headers: &reqwest::header::HeaderMap,
+    remaining: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let secs = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let wait = std::time::Duration::from_secs(secs);
+    (wait <= MAX_RATE_LIMIT_WAIT && wait < remaining).then_some(wait)
 }
 
 #[cfg(test)]
@@ -459,6 +462,48 @@ mod tests {
         assert!(after.is_none());
     }
     use super::*;
+
+    /// 429 の `retry-after` は 20 秒まで待つ。長い待ち・HTTP-date・読めない値・指示の無いもの・締め切りを越える待ちは
+    /// 送り直さない。
+    #[test]
+    fn rate_limit_wait_honors_only_short_retry_after_seconds() {
+        use std::time::Duration;
+        let at = |v: &str| {
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(reqwest::header::RETRY_AFTER, v.parse().unwrap());
+            h
+        };
+        let plenty = Duration::from_secs(600);
+        assert_eq!(rate_limit_wait(&at("0"), plenty), Some(Duration::ZERO));
+        assert_eq!(
+            rate_limit_wait(&at(" 3 "), plenty),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            rate_limit_wait(&at("20"), plenty),
+            Some(Duration::from_secs(20))
+        );
+        for no in [
+            "21",
+            "86400",
+            "-1",
+            "1.5",
+            "soon",
+            "Wed, 21 Oct 2026 07:28:00 GMT",
+        ] {
+            assert_eq!(rate_limit_wait(&at(no), plenty), None, "{no}");
+        }
+        assert_eq!(
+            rate_limit_wait(&reqwest::header::HeaderMap::new(), plenty),
+            None
+        );
+        // 締め切りまでの残りより長い（等しい）待ちはしない。
+        assert_eq!(rate_limit_wait(&at("5"), Duration::from_secs(5)), None);
+        assert_eq!(
+            rate_limit_wait(&at("4"), Duration::from_secs(5)),
+            Some(Duration::from_secs(4))
+        );
+    }
 
     #[test]
     fn tool_result_maps_to_user_tool_result_block() {
@@ -488,6 +533,70 @@ mod tests {
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["max_tokens"], 4096);
+    }
+
+    fn structured_request() -> GenerateRequest {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "分類して")]);
+        req.response_format = Some(crate::model::ResponseFormat::JsonSchema {
+            name: "triage".into(),
+            schema: json!({
+                "type": "object",
+                "required": ["category"],
+                "properties": {
+                    "category": { "type": "string", "enum": ["billing", "bug"] },
+                    "score": { "type": "integer", "minimum": 1 },
+                },
+            }),
+        });
+        req
+    }
+
+    #[test]
+    fn effort_and_format_are_merged_into_output_config() {
+        // 併合の回帰テスト: effort を書いても format が消えない（以前は output_config を上書きしていた）。
+        let mut req = structured_request();
+        req.effort = Some(crate::model::Effort::Low);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "low");
+        let format = &body["output_config"]["format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["schema"]["additionalProperties"], false);
+        assert_eq!(
+            format["schema"]["properties"]["category"]["enum"],
+            json!(["billing", "bug"])
+        );
+        // 受けない制約は落として説明に書く（正しさは呼び出し側の事後検証）。
+        assert!(format["schema"]["properties"]["score"]
+            .get("minimum")
+            .is_none());
+    }
+
+    #[test]
+    fn format_alone_adds_no_thinking_or_effort() {
+        let req = structured_request();
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        assert!(body.get("thinking").is_none());
+        assert!(body["output_config"].get("effort").is_none());
+        assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+        // スキーマを求めない形は Anthropic に無いので送らない（gateway が指示に落とす）。
+        let mut plain = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        plain.response_format = Some(crate::model::ResponseFormat::JsonObject);
+        let body = provider().build_body(&plain, &ToolNameMap::for_request(&plain));
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn sampling_parameters_are_never_sent() {
+        // 新しいモデル（Haiku 5.5 等）は temperature・top_p・top_k の既定以外を 400 で拒む。
+        // 中立形に temperature が来ても（skill のモデル既定など）送らないことを固定する。
+        let mut req = structured_request();
+        req.temperature = Some(0.0);
+        req.effort = Some(crate::model::Effort::High);
+        let body = provider().build_body(&req, &ToolNameMap::for_request(&req));
+        for key in ["temperature", "top_p", "top_k"] {
+            assert!(body.get(key).is_none(), "{key}: {body}");
+        }
     }
 
     fn provider() -> AnthropicProvider {
@@ -711,4 +820,92 @@ mod tests {
             assert!(supports_tool_search(m), "{m}");
         }
     }
+
+    /// 呼ばれるたびに用意した本文を順に返すモック（尽きたら最後の本文）。呼ばれた回数を数える。
+    async fn scripted(
+        bodies: Vec<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&calls);
+        let app = axum::Router::new().fallback(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let body = bodies[n.min(bodies.len() - 1)];
+            async move { ([("content-type", "text/event-stream")], body) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
+
+    /// gateway の送り直し（まだ何も確定していないときだけ）に通した結果（差分は短い名前、誤りは文言）。
+    async fn through_resume(base: String) -> Vec<String> {
+        let provider: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(
+            AnthropicProvider::new(reqwest::Client::new(), base, "k", "m"),
+        );
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let first = provider.stream(&req).await.unwrap();
+        crate::retry::resume_unsettled(provider, req, first, crate::retry::MIDSTREAM_RETRIES)
+            .map(|d| match d {
+                Ok(StreamDelta::TextDelta { text }) => format!("text:{text}"),
+                Ok(StreamDelta::ThinkingDelta { text }) => format!("think:{text}"),
+                Ok(StreamDelta::ToolUseStart { id, .. }) => format!("start:{id}"),
+                Ok(StreamDelta::Done { .. }) => "done".into(),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("err:{e}"),
+            })
+            .collect()
+            .await
+    }
+
+    /// 思考だけを流して切れた（message_stop の無い・error イベントの）応答は送り直し、本文・ツール呼び出しを
+    /// 出した後に切れた応答は送り直さずに誤りにする（BUG-214・二重に渡さない）。
+    #[tokio::test]
+    async fn cut_streams_are_sent_again_only_while_nothing_is_settled() {
+        use std::sync::atomic::Ordering;
+        const THINK: &str = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"考え中\"}}\n\n";
+        const OVERLOADED: &str = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n";
+        const ANSWER: &str = concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"答え\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        const TEXT_THEN_CLOSE: &str = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n";
+        const TOOL_THEN_CLOSE: &str = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"doc_search\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+        );
+        let think_then_error: &'static str =
+            Box::leak(format!("{THINK}{OVERLOADED}").into_boxed_str());
+
+        // 思考だけで閉じた・思考だけで error イベント → 送り直して答えを流す。
+        for cut in [THINK, think_then_error] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "{out:?}");
+            assert_eq!(out.last().map(String::as_str), Some("done"), "{out:?}");
+            assert!(out.contains(&"text:答え".to_string()), "{out:?}");
+        }
+
+        // 本文を出した後・書きかけのツール呼び出しで閉じた・本文の後の error イベント → 送り直さずに誤り。
+        let text_then_error: &'static str =
+            Box::leak(format!("{TEXT_THEN_CLOSE}{OVERLOADED}").into_boxed_str());
+        for cut in [TEXT_THEN_CLOSE, TOOL_THEN_CLOSE, text_then_error] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{cut}: {out:?}");
+            let last = out.last().unwrap();
+            assert!(
+                last.starts_with("err:llm provider unavailable: cut by provider: anthropic: "),
+                "{cut}: {out:?}"
+            );
+            assert!(!out.iter().any(|o| o == "done"), "{cut}: {out:?}");
+        }
+    }
 }
+
+// prompt caching（T00）の単体（このファイルを太らせないよう分ける）。
+#[cfg(test)]
+#[path = "anthropic_cache_tests.rs"]
+mod cache_tests;

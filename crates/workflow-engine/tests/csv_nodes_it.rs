@@ -20,9 +20,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
+use workflow_engine::ir::params::NameTakenPolicy;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
-    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    name_taken_error, AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq,
+    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -35,7 +36,32 @@ struct CsvPorts {
     query_tables: Mutex<Vec<(String, Uuid)>>,
     patch_calls: Mutex<u32>,
     write_calls: Mutex<u32>,
+    /// 保存先にすでにある名前（csv.write は `name_taken` で断る・BUG-97）。
+    taken_names: Mutex<Vec<String>>,
+    /// 番号を付ける扱いで、ポートの先（StorageService）が付けた名前。`None` は上限まで埋まっている（D-124）。
+    numbered_as: Mutex<Option<String>>,
+    /// 上限まで埋まっていたときに、ポートの先が最後に試した名前（文はポートが組む）。
+    last_tried_as: Mutex<Option<String>>,
+    /// csv.write に渡った要求の並び。
+    writes: Mutex<Vec<CsvWriteTry>>,
+    /// 次の書込（csv.patch・csv.write・workflow.start）が返す誤り（返したら消える・BUG-188）。
+    refuse_next: Mutex<Option<PortError>>,
+    /// workflow.start が子を起動した回数。
+    start_calls: Mutex<u32>,
 }
+
+impl CsvPorts {
+    /// 仕込んだ誤りがあれば返す（1 回きり）。
+    fn refused(&self) -> Result<(), PortError> {
+        match self.refuse_next.lock().unwrap().take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+/// csv.write に渡った（名前・扱い・文字コードを含む中身）。
+type CsvWriteTry = (String, NameTakenPolicy, Vec<u8>);
 
 #[async_trait]
 impl NodePorts for CsvPorts {
@@ -45,7 +71,11 @@ impl NodePorts for CsvPorts {
     async fn storage_read(&self, _c: &ExecCtx, _f: Uuid) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn storage_list(&self, _c: &ExecCtx, _p: Option<Uuid>) -> Result<Value, PortError> {
+    async fn storage_list(
+        &self,
+        _c: &ExecCtx,
+        _: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn rag_search(
@@ -59,7 +89,12 @@ impl NodePorts for CsvPorts {
     async fn llm_invoke(&self, _c: &ExecCtx, _r: LlmInvokeReq) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn agent_invoke(&self, _c: &ExecCtx, _r: AgentInvokeReq) -> Result<Value, PortError> {
+    async fn agent_invoke(
+        &self,
+        _c: &ExecCtx,
+        _r: AgentInvokeReq,
+        _tools: std::sync::Arc<dyn workflow_engine::AgentToolGateway>,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn http_send(&self, _c: &ExecCtx, _r: HttpSendReq) -> Result<HttpSendResp, PortError> {
@@ -84,7 +119,9 @@ impl NodePorts for CsvPorts {
     }
 
     async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
-        unreachable!()
+        self.refused()?;
+        *self.start_calls.lock().unwrap() += 1;
+        Ok(json!({ "run_id": Uuid::new_v4().to_string() }))
     }
     async fn csv_query(&self, _c: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
         let file_id = req.file_id;
@@ -101,14 +138,39 @@ impl NodePorts for CsvPorts {
         }))
     }
     async fn csv_patch(&self, _c: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
+        self.refused()?;
         *self.patch_calls.lock().unwrap() += 1;
         Ok(
             json!({ "node_id": req.file_id.to_string(), "version": req.base_rev + 1, "rows": 3, "cols": 1 }),
         )
     }
     async fn csv_write(&self, _c: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
+        self.refused()?;
+        self.writes.lock().unwrap().push((
+            req.name.clone(),
+            req.on_name_taken,
+            req.csv_bytes.clone(),
+        ));
+        let mut saved = req.name.clone();
+        if self.taken_names.lock().unwrap().contains(&req.name) {
+            // 番号はポートの先が付ける（ここでは付けた名前を仕込んでおく・規則を写さない）。
+            match (req.on_name_taken, self.numbered_as.lock().unwrap().clone()) {
+                (NameTakenPolicy::AddNumber, Some(n)) => saved = n,
+                (NameTakenPolicy::AddNumber, None) => {
+                    let last = self.last_tried_as.lock().unwrap().clone().unwrap();
+                    return Err(name_taken_error(&req.name, Some(&last)));
+                }
+                (NameTakenPolicy::Fail, _) => {
+                    return Err(PortError::new(
+                        workflow_engine::nodes::ports::NAME_TAKEN,
+                        "同じ名前のファイルがすでにあります",
+                        false,
+                    ))
+                }
+            }
+        }
         *self.write_calls.lock().unwrap() += 1;
-        Ok(json!({ "node_id": Uuid::nil().to_string(), "name": req.name, "version": 0 }))
+        Ok(json!({ "node_id": Uuid::nil().to_string(), "name": saved, "version": 0 }))
     }
 }
 
@@ -125,11 +187,32 @@ fn lazy_journal() -> EffectJournal {
     EffectJournal::new(pool)
 }
 
+/// テスト用の DB に繋ぎ、migration を流す（effect_journal は migration が作るので、このファイルだけを新しい DB で
+/// 流しても通す）。接続先が未設定なら `None`（スキップ・CI は `SHIKI_REQUIRE_IT=1` で失敗に変える）。
+async fn test_pool() -> Option<sqlx::PgPool> {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    Some(pool)
+}
+
 fn ctx(scopes: Vec<String>) -> NodeContext {
     NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "n1".into(),
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
@@ -141,6 +224,9 @@ fn ctx(scopes: Vec<String>) -> NodeContext {
         each: None,
         trace_id: Some("trace-1".into()),
         scope_ceiling: scopes,
+        cancel: workflow_engine::run::CancelSignal::default(),
+        workflow_id: Uuid::nil(),
+        cache: None,
     }
 }
 
@@ -342,16 +428,10 @@ async fn csv_patch_rejects_non_array_ops() {
 /// DB 必須: 同一冪等キーでの再試行が csv.patch を高々 1 回しか適用しない（PIT-31）。
 #[tokio::test]
 async fn csv_patch_is_idempotent_across_retry() {
-    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
-        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+    let Some(pool) = test_pool().await else {
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db)
-        .await
-        .expect("test DB 接続");
-    // effect_journal テーブルは storage/workflow の migration で作られる。冪等キーを一意にする。
+    // 冪等キーを一意にする（ほかのテストと記録を共有しない）。
     let key = format!("wf:csvtest:{}", Uuid::new_v4());
     let ports = Arc::new(CsvPorts::default());
     let exec = CapabilityNodeExecutor::new(
@@ -385,4 +465,310 @@ async fn csv_patch_is_idempotent_across_retry() {
         .bind(&key)
         .execute(&pool)
         .await;
+}
+
+/// DB 必須: csv.write は同じ名前があるとき、省略なら失敗にし、番号を付ける扱いなら `集計 (2).csv` で保存する。
+/// エンジンは頼まれた名前（`.csv` を付けた名前）と扱いをポートへ 1 回で渡し、番号はポートの先（StorageService）が
+/// 付ける（名前を変えて呼び直さない・D-124）。journal の書込は 1 つで、再試行は保存し直さない（BUG-97・PIT-31）。
+/// 上限まで埋まっていれば、ポートが最後に試した名前で組んだ文のまま失敗にする。
+#[tokio::test]
+async fn csv_write_numbers_taken_names_once_across_retry() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let ports = Arc::new(CsvPorts::default());
+    *ports.taken_names.lock().unwrap() = vec!["集計.csv".into()];
+    *ports.numbered_as.lock().unwrap() = Some("集計 (2).csv".into());
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    );
+    let keys: Vec<String> = (0..3)
+        .map(|_| format!("wf:csvname:{}", Uuid::new_v4()))
+        .collect();
+
+    // 省略（既存の定義）は失敗にする。.csv は付けてから頼む。
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[0].clone();
+    let res = exec
+        .execute(
+            "csv.write",
+            &json!({ "name": "集計", "content": "a\n1" }),
+            &c,
+        )
+        .await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(!err.retryable);
+    assert!(
+        err.message.contains("同じ名前のファイル「集計.csv」"),
+        "{}",
+        err.message
+    );
+
+    // 番号を付ける: 頼まれた名前と扱いを 1 回で渡し、同じキーの再試行は journal が畳む。
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[1].clone();
+    let params = json!({
+        "name": "集計", "content": "a\n1", "on_name_taken": "add_number", "encoding": "utf8_bom"
+    });
+    let r1 = exec.execute("csv.write", &params, &c).await;
+    assert!(r1.ok, "{:?}", r1.error);
+    assert_eq!(r1.output["name"], "集計 (2).csv");
+    assert_eq!(r1.output["file_id"], r1.output["node_id"]);
+    let r2 = exec.execute("csv.write", &params, &c).await;
+    assert!(r2.ok, "{:?}", r2.error);
+    assert_eq!(r2.output["name"], "集計 (2).csv");
+    assert_eq!(r2.output["file_id"], r2.output["node_id"]);
+    assert_eq!(
+        *ports.write_calls.lock().unwrap(),
+        1,
+        "再試行で保存し直した"
+    );
+    let writes = ports.writes.lock().unwrap().clone();
+    let asked: Vec<(&str, NameTakenPolicy)> =
+        writes.iter().map(|(n, p, _)| (n.as_str(), *p)).collect();
+    assert_eq!(
+        asked,
+        [
+            ("集計.csv", NameTakenPolicy::Fail),
+            ("集計.csv", NameTakenPolicy::AddNumber)
+        ],
+        "エンジンが名前を変えて呼び直した"
+    );
+    // 選んだ文字コード（BOM 付きの UTF-8）のまま、ポートへ 1 回で渡す（D-120）。
+    assert_eq!(writes[1].2, b"\xEF\xBB\xBFa\n1");
+
+    // 上限まで埋まっていれば、ポートが組んだ文（最後に試した名前）のまま失敗にし、呼び直さない。
+    *ports.numbered_as.lock().unwrap() = None;
+    *ports.last_tried_as.lock().unwrap() = Some("集計 (50).csv".into());
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[2].clone();
+    let res = exec.execute("csv.write", &params, &c).await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(!err.retryable);
+    assert!(
+        err.message
+            .contains("「集計.csv」と、番号を付けた「集計 (50).csv」まで"),
+        "{}",
+        err.message
+    );
+    assert_eq!(ports.writes.lock().unwrap().len(), 3);
+
+    for key in &keys {
+        let _ = sqlx::query("DELETE FROM effect_journal WHERE idempotency_key = $1")
+            .bind(key)
+            .execute(&pool)
+            .await;
+    }
+}
+
+/// CSV にできない値（数・表でない項目のまとまり・まとまりでないもののリスト）は、JSON の文字のまま保存せずに
+/// `invalid` で断る（保存の前・journal にも触れない・BUG-178）。
+#[tokio::test]
+async fn csv_write_refuses_values_that_cannot_be_csv() {
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(ports.clone(), lazy_journal(), Arc::new(SilentAudit));
+    for (content, starts) in [
+        (
+            json!(12),
+            "「CSV の内容」に数が入っているため、CSV にできません。",
+        ),
+        (
+            json!({ "total": 3 }),
+            "「CSV の内容」に表でない項目のまとまりが入っているため、CSV にできません。",
+        ),
+        (
+            json!(["a", "b"]),
+            "「CSV の内容」のリストの 1 件目が項目のまとまりではありません。",
+        ),
+    ] {
+        let mut c = ctx(vec!["csv.write".into()]);
+        c.node_outputs = json!({ "calc": { "value": content } });
+        let res = exec
+            .execute(
+                "csv.write",
+                &json!({ "name": "集計", "content": { "$from": "nodes.calc.output", "path": "/value" } }),
+                &c,
+            )
+            .await;
+        assert!(!res.ok);
+        let err = res.error.unwrap();
+        assert_eq!(err.code, "invalid");
+        assert!(!err.retryable);
+        assert!(err.message.starts_with(starts), "{}", err.message);
+    }
+    assert!(
+        ports.writes.lock().unwrap().is_empty(),
+        "断った内容を保存した"
+    );
+}
+
+/// DB 必須: 「CSV を集計」の結果（表）と項目のまとまりのリストは、CSV に組み立ててから選んだ文字コードで保存する
+/// （JSON の文字のまま .csv にしない・BUG-178）。文字の内容はこれまでどおりそのまま保存する。
+#[tokio::test]
+async fn csv_write_builds_csv_from_tables_and_lists() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    );
+    let outputs = json!({
+        "q": {
+            "columns": ["品目", "金額"], "column_types": ["VARCHAR", "BIGINT"],
+            "rows": [["交通費", "1200"], ["=HYPERLINK(\"x\")", "-300"]],
+            "total_rows": 2, "truncated": false, "version": 1
+        },
+        "s": [{ "name": "佐藤", "amount": 1200 }, { "name": "鈴木, 一郎" }],
+        "t": "a,b\n1,2\n"
+    });
+    let cases = [
+        (
+            "q",
+            "utf8_bom",
+            "\u{FEFF}品目,金額\r\n交通費,1200\r\n\"'=HYPERLINK(\"\"x\"\")\",-300\r\n",
+        ),
+        (
+            "s",
+            "utf8",
+            "amount,name\r\n1200,佐藤\r\n,\"鈴木, 一郎\"\r\n",
+        ),
+        ("t", "utf8", "a,b\n1,2\n"),
+    ];
+    let mut keys = Vec::new();
+    for (source, encoding, want) in cases {
+        let key = format!("wf:csvcompose:{}", Uuid::new_v4());
+        keys.push(key.clone());
+        let mut c = ctx(vec!["csv.write".into()]);
+        c.idempotency_key = key;
+        c.node_outputs = outputs.clone();
+        let res = exec
+            .execute(
+                "csv.write",
+                &json!({
+                    "name": format!("集計-{source}"),
+                    "content": { "$from": format!("nodes.{source}.output") },
+                    "encoding": encoding
+                }),
+                &c,
+            )
+            .await;
+        assert!(res.ok, "{source}: {:?}", res.error);
+        let writes = ports.writes.lock().unwrap().clone();
+        let (name, _, bytes) = writes.last().unwrap();
+        assert_eq!(name, &format!("集計-{source}.csv"));
+        assert_eq!(String::from_utf8(bytes.clone()).unwrap(), want, "{source}");
+    }
+    for key in &keys {
+        let _ = sqlx::query("DELETE FROM effect_journal WHERE idempotency_key = $1")
+            .bind(key)
+            .execute(&pool)
+            .await;
+    }
+}
+
+/// DB 必須: 書込のポートが副作用の無い誤り（unavailable 以外）を返したら、effect_journal の予約を外す（data.* と同じ・
+/// BUG-188）。原因を直して同じステップを再開すると、回収の猶予（5 分）を待たずにすぐ書ける。書込が済んだか分からない
+/// 一時障害（unavailable）では予約を残し、同じステップの再実行は二重に書かずに待つ。csv.patch・csv.write・
+/// workflow.start と、script の `Shiki.workflow.start` を確かめる。
+#[tokio::test]
+async fn refused_writes_release_the_journal_reservation() {
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let ports = Arc::new(CsvPorts::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default());
+    let script = json!({ "source": { "inline":
+        "function main(input) { return Shiki.workflow.start(\"子\", { n: 1 }); }" } });
+    let cases: [(&str, Value, &str); 4] = [
+        (
+            "csv.patch",
+            json!({ "file": Uuid::nil().to_string(), "base_rev": 0,
+                    "ops": [{ "op": "cell_update", "row": 0, "col": "n", "value": "9" }] }),
+            "csv.write",
+        ),
+        (
+            "csv.write",
+            json!({ "name": "集計", "content": "a\n1" }),
+            "csv.write",
+        ),
+        (
+            "workflow.start",
+            json!({ "name": "子", "input": { "n": 1 } }),
+            "workflow.start",
+        ),
+        ("script.run", script, "workflow.start"),
+    ];
+    let calls = |ports: &CsvPorts| {
+        *ports.patch_calls.lock().unwrap()
+            + *ports.write_calls.lock().unwrap()
+            + *ports.start_calls.lock().unwrap()
+    };
+    let mut keys = Vec::new();
+    for (node_type, params, scope) in &cases {
+        // 副作用の無い誤り: 権限・名前の衝突・見つからない・入力の誤り。
+        for refusal in [
+            PortError::forbidden("権限なし"),
+            PortError::new(workflow_engine::nodes::ports::NAME_TAKEN, "同じ名前", false),
+            PortError::new("not_found", "見つかりません", false),
+            PortError::invalid("入力が正しくありません"),
+        ] {
+            let key = format!("wf:release:{}", Uuid::new_v4());
+            keys.push(key.clone());
+            let mut c = ctx(vec![(*scope).into()]);
+            c.idempotency_key = key.clone();
+            let code = refusal.code.clone();
+            *ports.refuse_next.lock().unwrap() = Some(refusal);
+            let first = exec.execute(node_type, params, &c).await;
+            assert!(!first.ok, "{node_type}: {code}");
+            assert_eq!(first.error.unwrap().code, code, "{node_type}");
+            let before = calls(&ports);
+            let again = exec.execute(node_type, params, &c).await;
+            assert!(
+                again.ok,
+                "{node_type}: {code} の後の再開が待たされた: {:?}",
+                again.error
+            );
+            assert_eq!(calls(&ports), before + 1, "{node_type}: {code}");
+        }
+        // 書込が済んだか分からない一時障害は予約を残す（同じステップの再実行は書かずに待つ）。
+        let key = format!("wf:release:{}", Uuid::new_v4());
+        keys.push(key.clone());
+        let mut c = ctx(vec![(*scope).into()]);
+        c.idempotency_key = key.clone();
+        *ports.refuse_next.lock().unwrap() = Some(PortError::unavailable("db"));
+        let first = exec.execute(node_type, params, &c).await;
+        assert_eq!(first.error.unwrap().code, "unavailable", "{node_type}");
+        let before = calls(&ports);
+        let again = exec.execute(node_type, params, &c).await;
+        assert_eq!(
+            again.error.map(|e| e.code),
+            Some("effect_in_progress".to_string()),
+            "{node_type}: 一時障害の後に二重に書いた"
+        );
+        assert_eq!(calls(&ports), before, "{node_type}");
+    }
+    // script の書込はホスト呼び出しごとの冪等キー（ステップのキー + #c<seq>）。
+    for key in &keys {
+        let _ = sqlx::query(
+            "DELETE FROM effect_journal WHERE idempotency_key = $1 OR idempotency_key LIKE $1 || '#%'",
+        )
+        .bind(key)
+        .execute(&pool)
+        .await;
+    }
 }

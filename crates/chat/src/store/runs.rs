@@ -280,6 +280,9 @@ impl ChatStore {
     ///
     /// 束縛は本文と**同じトランザクション**で書く。確定した直後に押されても束縛が見え、
     /// 本文が確定しなかった（fencing 不一致）ときは束縛も残らない。
+    ///
+    /// `terminal_event` が `Done` なら、その `stop_reason`（回答が途中で止まった理由・GAP-106）を
+    /// `message.stop_reason` にも書く（それ以外の確定では消す）。
     #[allow(clippy::too_many_arguments)]
     pub async fn finalize_run_with_ui(
         &self,
@@ -321,10 +324,17 @@ impl ChatStore {
             tx.rollback().await.map_err(map_db)?;
             return Ok(false);
         };
+        // 回答が途中で止まった理由（GAP-106）は、終端の done イベントと同じ値を本文と同じ TX で残す
+        // （読み直しても注記が出る・イベントとメッセージで食い違わない）。done 以外の確定は null。
+        let stop_reason = match terminal_event {
+            Some(StreamEventKind::Done { stop_reason, .. }) => *stop_reason,
+            _ => None,
+        };
         // tenant-sql: allow(fencing 済みの run 行から得た message_id で本文確定)
-        sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        sqlx::query("UPDATE message SET content = $2, stop_reason = $3 WHERE id = $1")
             .bind(message_id)
             .bind(Json(content))
+            .bind(stop_reason.map(crate::model::StopReason::as_str))
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;

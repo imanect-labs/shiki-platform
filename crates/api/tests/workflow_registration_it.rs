@@ -117,9 +117,10 @@ impl RunLauncher for CountingLauncher {
         _trigger_kind: &str,
         _trigger_id: &str,
         _payload: &Value,
-    ) -> Option<Uuid> {
+        _event_id: Option<i64>,
+    ) -> workflow_engine::LaunchOutcome {
         self.launches.fetch_add(1, Ordering::SeqCst);
-        Some(Uuid::new_v4())
+        workflow_engine::LaunchOutcome::Started(Uuid::new_v4())
     }
 }
 
@@ -424,4 +425,454 @@ async fn enable_rejects_out_of_scope_grants() {
     // fail-closed: registration は作られない（enabled にならない）。
     let view = service.view(&tenant, wf_id).await.unwrap();
     assert_eq!(view.status, "none");
+}
+
+/// テストで作った registration・委譲・トリガの行を消す（テナントごと・テストの最後に呼ぶ）。
+async fn cleanup(pool: &sqlx::PgPool, tenant: &str) {
+    for sql in [
+        "DELETE FROM workflow_delegation WHERE tenant_id = $1",
+        "DELETE FROM workflow_trigger WHERE tenant_id = $1",
+        "DELETE FROM workflow_registration WHERE tenant_id = $1",
+        "DELETE FROM node_closure WHERE tenant_id = $1",
+        "DELETE FROM node WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(tenant).execute(pool).await.unwrap();
+    }
+}
+
+/// 対象（テーブル・フォルダー）の無いワークフロー: 手動のきっかけとスクリプトだけ。
+fn ir_without_targets(scopes: &[&str]) -> WorkflowIr {
+    WorkflowIr::from_json(&json!({
+        "ir_version": 1,
+        "name": "no-targets",
+        "declared_scopes": scopes,
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }],
+        "nodes": [
+            { "id": "calc", "type": "script.run",
+              "params": { "source": { "inline": "function main(i){ return {}; }" } } }
+        ],
+        "edges": []
+    }))
+    .unwrap()
+}
+
+/// BUG-102・D-90: 対象の無いワークフローは grants が空なので、使ってよい操作の増えた版を軽量切替では受けられない
+/// （409 のまま）。同意の画面からの有効化（consent）は、grants が空でも同意し直して切り替える。
+#[tokio::test]
+async fn consent_switches_a_workflow_without_targets_to_more_scopes() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let wf_id = Uuid::new_v4();
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let v1 = ir_without_targets(&[]);
+    let v2 = ir_without_targets(&["http.egress"]);
+    service
+        .consent(&alice, wf_id, 1, &v1, &[])
+        .await
+        .expect("v1 の同意");
+
+    // 画面を通らない軽量切替は今までどおり拒む（増えた操作の同意を黙って済ませない）。
+    let err = service
+        .enable(&alice, wf_id, 2, &v2, &[])
+        .await
+        .expect_err("軽量切替は拒否");
+    assert!(
+        matches!(&err, EnableError::ScopeExpansion { missing } if missing == &["http.egress".to_string()]),
+        "{err:?}"
+    );
+    assert_eq!(
+        service.view(&tenant, wf_id).await.unwrap().enabled_version,
+        Some(1)
+    );
+
+    // 同意の画面からなら、対象が無くても増えた操作に同意して切り替わる。
+    service
+        .consent(&alice, wf_id, 2, &v2, &[])
+        .await
+        .expect("増えた操作への同意");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "enabled");
+    assert_eq!(view.enabled_version, Some(2));
+    assert_eq!(view.consented_scopes, vec!["http.egress".to_string()]);
+    assert_eq!(
+        service
+            .check_run_start(&tenant, wf_id, &v2.declared_scopes)
+            .await
+            .unwrap(),
+        RunAdmission::Ok,
+        "同意した版は動き出せる"
+    );
+    cleanup(&env.pool, &tenant).await;
+}
+
+/// D-90: 「権限も取り消す」は無効化と一緒に委譲をすべて取り消す（FGA のタプルも外す）。取り消しを選ばない
+/// 無効化は今までどおり委譲を残す。取り消した後は同意もやり直しになる（軽量切替で委譲の無いまま動かさない）。
+#[tokio::test]
+async fn disable_and_revoke_removes_delegations_and_consent() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Viewer, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf_id.to_string());
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir1 = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    let grants = [GrantRequest {
+        scope: "storage.read".into(),
+        object: folder_obj.clone(),
+        relation: Relation::Viewer,
+    }];
+    let workflow_can_read = || async {
+        env.fga
+            .check(
+                &wf_subject,
+                Relation::Viewer,
+                &folder_obj,
+                authz::Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap()
+    };
+    service
+        .consent(&alice, wf_id, 1, &ir1, &grants)
+        .await
+        .expect("有効化");
+    assert!(workflow_can_read().await);
+
+    // 取り消しを選ばない無効化: 委譲は残る（今の挙動のまま）。
+    service.disable(&tenant, wf_id).await.expect("disable");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "disabled");
+    assert_eq!(view.delegations.len(), 1, "オフにしても委譲は残る");
+    assert!(workflow_can_read().await);
+
+    // 権限も取り消す: 委譲の行とタプルが消え、同意（consented_scopes）も空になる。
+    let revoked = service
+        .disable_and_revoke(&tenant, wf_id)
+        .await
+        .expect("取り消し")
+        .delegations;
+    assert_eq!(revoked.len(), 1);
+    assert_eq!(revoked[0].object_ref, folder_obj.as_str());
+    assert_eq!(revoked[0].delegator, "alice");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "disabled");
+    assert!(view.delegations.is_empty(), "{:?}", view.delegations);
+    assert!(view.consented_scopes.is_empty());
+    assert!(!workflow_can_read().await, "タプルも外れる");
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NOT NULL",
+    )
+    .bind(&tenant)
+    .bind(wf_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "台帳の行は revoke として残す（消さない）");
+
+    // 取り消した後は、画面を通らない軽量切替では戻せない（同意が要る）。
+    let err = service
+        .enable(&alice, wf_id, 1, &ir1, &[])
+        .await
+        .expect_err("同意なしでは戻さない");
+    assert!(matches!(err, EnableError::ScopeExpansion { .. }), "{err:?}");
+    // 同意し直せば戻る。
+    service
+        .consent(&alice, wf_id, 1, &ir1, &grants)
+        .await
+        .expect("同意し直し");
+    assert!(workflow_can_read().await);
+    assert_eq!(
+        service
+            .check_run_start(&tenant, wf_id, &ir1.declared_scopes)
+            .await
+            .unwrap(),
+        RunAdmission::Ok
+    );
+    // 取り消すものが無いときは何もしない。
+    service.disable_and_revoke(&tenant, wf_id).await.unwrap();
+    assert!(service
+        .disable_and_revoke(&tenant, wf_id)
+        .await
+        .unwrap()
+        .delegations
+        .is_empty());
+    cleanup(&env.pool, &tenant).await;
+}
+
+/// BUG-130: 再同意で同じ対象の relation を狭めると（editor → viewer）、前の広い委譲のタプルと台帳の行が外れる。
+/// scope が同じでも違っても外れる。同じタプル（relation と対象）を残す組が使っているなら、タプルは残して台帳の行だけ外す。
+#[tokio::test]
+async fn reconsent_with_a_narrower_relation_revokes_the_wider_delegation() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Editor, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf_id.to_string());
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    let grant = |scope: &str, relation: Relation| GrantRequest {
+        scope: scope.into(),
+        object: folder_obj.clone(),
+        relation,
+    };
+    let workflow_holds = |relation: Relation| {
+        let (fga, subject, obj) = (Arc::clone(&env.fga), wf_subject.clone(), folder_obj.clone());
+        async move {
+            // 直接のタプルを見る（editor は viewer を含むので、check では viewer が残ったか分からない）。
+            fga.read_tuples(&obj, Some(relation))
+                .await
+                .unwrap()
+                .iter()
+                .any(|t| t.user == subject.as_str())
+        }
+    };
+    let ledger = || {
+        let (pool, tenant) = (env.pool.clone(), tenant.clone());
+        async move {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT scope, relation FROM workflow_delegation \
+                 WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+                 ORDER BY scope, relation",
+            )
+            .bind(&tenant)
+            .bind(wf_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            rows
+        }
+    };
+
+    // (1) 書き込み（editor）で委譲した対象を、読むだけ（viewer）で同意し直す（scope が違う）。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.write", Relation::Editor)],
+        )
+        .await
+        .expect("editor で同意");
+    assert!(workflow_holds(Relation::Editor).await);
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .expect("viewer だけで同意し直す");
+    assert!(
+        !workflow_holds(Relation::Editor).await,
+        "editor のタプルが外れる"
+    );
+    assert!(workflow_holds(Relation::Viewer).await);
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())],
+        "editor の台帳の行も外れる"
+    );
+
+    // (2) 同じ scope で relation だけを狭める（台帳の行は同じ鍵で上書きされ、editor のタプルは外れる）。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Editor)],
+        )
+        .await
+        .unwrap();
+    assert!(workflow_holds(Relation::Editor).await);
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .unwrap();
+    assert!(
+        !workflow_holds(Relation::Editor).await,
+        "同じ scope でも外れる"
+    );
+    assert!(workflow_holds(Relation::Viewer).await);
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())]
+    );
+
+    // (3) 同じタプル（viewer と対象）を 2 つの scope で使っていて、片方だけを残す: タプルは残し、外した行だけを外す。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[
+                grant("storage.read", Relation::Viewer),
+                grant("rag.query", Relation::Viewer),
+            ],
+        )
+        .await
+        .unwrap();
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .unwrap();
+    assert!(
+        workflow_holds(Relation::Viewer).await,
+        "残す組のタプルは外さない"
+    );
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())]
+    );
+    cleanup(&env.pool, &tenant).await;
+}
+
+/// BUG-131: 「権限も取り消す」は、自動実行で動いている run（実行主体が workflow）を取り消す（engine.md §10.4）。
+/// 人が手で実行した run は本人の権限で動くので止めない。取り消しを選ばない無効化は run を完走させる（§10.2）。
+#[tokio::test]
+async fn revoking_delegations_cancels_the_automated_runs() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Viewer, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[GrantRequest {
+                scope: "storage.read".into(),
+                object: folder_obj.clone(),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("有効化");
+    // 動いている run（どれも step はまだ始まっていない）: 自動実行 2 本と、人が手で実行した 1 本。
+    let ir_json = ir_v1(folder);
+    let graph = workflow_engine::run::graph::RunGraph::build(&ir);
+    let runs =
+        workflow_engine::RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let wf_principal = wf_id.to_string();
+    let mut started = Vec::new();
+    for (principal, kind, trigger) in [
+        (wf_principal.as_str(), "workflow", "schedule"),
+        (wf_principal.as_str(), "workflow", "event"),
+        ("alice", "user", "interactive"),
+    ] {
+        started.push(
+            runs.create_run(
+                &tenant,
+                "acme",
+                wf_id,
+                1,
+                trigger,
+                None,
+                principal,
+                kind,
+                &json!({}),
+                &ir_json,
+                &graph,
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+        );
+    }
+    let [scheduled, on_event, manual] = started[..] else {
+        unreachable!()
+    };
+    let status = |run: Uuid| {
+        let (pool, tenant) = (env.pool.clone(), tenant.clone());
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // 取り消しを選ばない無効化は、動いている run を止めない。
+    service.disable(&tenant, wf_id).await.unwrap();
+    assert_eq!(status(scheduled).await, "running");
+
+    let r = service.disable_and_revoke(&tenant, wf_id).await.unwrap();
+    assert_eq!(r.delegations.len(), 1);
+    let mut cancelled = r.cancelled_runs.clone();
+    cancelled.sort();
+    let mut expected = vec![scheduled, on_event];
+    expected.sort();
+    assert_eq!(cancelled, expected, "自動実行の run だけ");
+    assert_eq!(status(scheduled).await, "cancelled");
+    assert_eq!(status(on_event).await, "cancelled");
+    assert_eq!(
+        status(manual).await,
+        "running",
+        "人が手で実行した run は止めない"
+    );
+
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    cleanup(&env.pool, &tenant).await;
 }

@@ -1,8 +1,12 @@
 //! HTTP ルートハンドラ群。
 
+pub mod access_check;
 pub mod admin;
 pub mod app_install;
 pub mod app_platform;
+pub mod approvals;
+mod approvals_inbox;
+pub mod artifact_list;
 pub mod artifacts;
 pub mod auth;
 pub mod chat;
@@ -25,10 +29,12 @@ pub mod data_imports;
 pub mod data_indexes;
 pub mod data_records;
 pub mod data_stream;
+pub mod data_table_fsm;
 pub mod data_views;
 pub mod directory;
 pub mod doc_blocks;
 pub mod documents;
+pub mod file_text;
 pub mod file_versions;
 pub mod files;
 pub mod folders;
@@ -48,6 +54,7 @@ pub mod org_admin_insights;
 pub mod org_audit;
 pub mod org_audit_verify;
 pub mod search;
+pub mod search_ingest;
 pub mod secrets;
 pub mod share_links;
 pub(crate) mod share_profiles;

@@ -30,6 +30,23 @@ body?: ValueExpr,
  */
 secret?: HttpSecretRef, 
 /**
+ * 作成者が決めるヘッダー（名前 → 値・省略可・GAP-19）。名前はリテラルで、値は差し込み・参照を書ける。
+ *
+ * 送れるヘッダーの決まりと上限は script の `Shiki.http.request` と同じ（`nodes::http_headers`）: Shiki が決める
+ * ヘッダー（Host・Content-Length など）・シークレットを付けるヘッダーと同じ名前・形の誤り・制御文字・重複・上限
+ * （20 個・値 4 KB・合計 8 KB）は、保存時（V1）と実行時に断る。`Idempotency-Key`・`Content-Type` を書くと、Shiki が
+ * 付ける値の代わりにそれを送る。省略はこの項目が無かったころの定義の挙動（作成者のヘッダーを付けない）。
+ */
+headers?: { [key in string]?: ValueExpr }, 
+/**
  * リダイレクトの扱い（既定 deny・Stage A は deny のみ）。
  */
-redirect?: RedirectPolicy, };
+redirect?: RedirectPolicy, 
+/**
+ * 相手が誤り（400 以上）を返したらブロックを失敗にするか（BUG-99・D-95）。
+ *
+ * 省略は `false`（この項目が無かったころの定義の挙動: 誤りの応答も成功として次へ渡す）。エディタで新しく
+ * 置くブロックは `true` を入れる。失敗の code は 4xx が `http_error_status`（やり直さない）、5xx と 408・425・429
+ * が `http_retryable_status`（試す回数の規則でやり直す）。
+ */
+fail_on_error_status?: boolean, };

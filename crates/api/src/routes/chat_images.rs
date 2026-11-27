@@ -5,7 +5,8 @@
 //! - **出所に無い URL は取得しない**（404）。出所はその回答で取得した Web ページの本文と Web の引用の
 //!   抜粋で、判定はサーバ側で行う（`chat::answer_images`）。フロントの判定は見た目だけ。
 //! - 取得するのは出典に書かれていた字句の URL（回答側の書き分けを通信に効かせない）。
-//! - 取得は `web_fetch` と同じ関門（URL 検証・解決後 IP の検証とアドレス固定）を通る。
+//! - 取得は `web_fetch` と同じ関門（URL 検証・解決後 IP の検証とアドレス固定）を通る。運用者が中継
+//!   （`egress.proxy_url`・GAP-72）を設定していれば、`web_fetch` と同じく検証済みの IP へのトンネルで中継を通す。
 //! - 取得した画像はテナント単位で 1 時間、取得の失敗は 5 分キャッシュし、外部への取得は同時実行数を絞る
 //!   （`chat_images_cache`）。
 //!   1 回の要求の取得（リダイレクトを含む）は [`FETCH_DEADLINE`] で打ち切る。
@@ -95,7 +96,12 @@ pub async fn get_answer_image(
     };
     let fetched = tokio::time::timeout(
         FETCH_DEADLINE,
-        fetch_image(&SystemResolver, &source, public_only),
+        fetch_image(
+            &SystemResolver,
+            &source,
+            public_only,
+            state.egress_proxy.as_ref(),
+        ),
     )
     .await
     .unwrap_or_else(|_| Err(ImageFetchError::Upstream("取得の期限を過ぎた".into())));

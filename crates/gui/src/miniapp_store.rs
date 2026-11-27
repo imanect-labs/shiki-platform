@@ -1,25 +1,73 @@
 //! ミニアプリの保存・解決（Task 6.10）。
 //!
-//! 保存時は**作成者の権限**で全ピン（skill/workflow/data_view）の存在・kind・viewer を検証する。画面の
-//! ボタンの実行先がバンドルの別名に限られることは body の検証（[`validate_miniapp_body`]）が見る。
+//! 保存時は**保存する人の権限**でピン（skill/workflow/data_view）の存在・kind・viewer を検証する。確かめるのは
+//! 足したピンと、対象か版を変えたピンだけで、前の版と同じピンは確かめ直さない（共同編集者が、自分の読めない部品を
+//! 束ねたアプリを、その部品に触れずに保存できる・D-16 の (d)・BUG-80）。画面のボタンの実行先がバンドルの別名に
+//! 限られることは body の検証（[`validate_miniapp_body`]）が見る。
+//!
+//! 保存は**下書きの版**になる（D-16 の (a)・GAP-36）。使う人（editor でない viewer）が開く・押すのは公開した版
+//! だけで（`artifact.published_version`・[`ArtifactStore::get_version`] が守る）、editor は下書きを試せる。公開は
+//! [`crate::miniapp_publish`]。画面の書き損じ（[`screen_problems`]）は、下書きには注意つきで保存でき、公開と
+//! AI の経路（[`SaveMode::Strict`]）では止める（D-16 の (c)）。
 //! 解決（実行）時は**ミニアプリ本体の viewer**のみを要求し、部品はバンドル権限
 //! チョークポイント（[`ArtifactStore::get_version_via_bundle`]）で読む — 共有相手は
 //! 部品を個別共有されなくても実行できる（miniapp-platform §7）。
+//!
+//! 解決で読む部品は任意の skill のピンだけ（ワークフロー・保存ビューは、ボタン・表が使うときに読む）。
+//! skill が消えた・本文が壊れているだけならアプリ全体を止めず、skill だけを使えないと返す
+//! （[`ResolvedSkill::Unavailable`]・BUG-17）。
 
 use std::sync::Arc;
 use storage::audit::AuditAction;
 
-use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
-use authz::AuthContext;
+use artifact::{Artifact, ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
+use authz::{AuthContext, Relation};
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::miniapp::{validate_miniapp_body, ComponentPin, MiniAppBody};
+use crate::miniapp::{
+    screen_problems, validate_miniapp_body, ComponentPin, MiniAppBody, NamedComponentPin,
+};
 use crate::skill::{validate_skill_body, SkillBody};
 use crate::store::GuiError;
 use crate::validate::GuiValidationError;
+
+/// 保存の確かめ方（D-16 の (c)）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveMode {
+    /// 人が画面から保存する（下書き）。画面の書き損じは注意（[`SavedMiniApp::warnings`]）として返し、保存する。
+    Draft,
+    /// AI の経路（会話の回答をアプリとして保存する・AI が作る道具）。画面の書き損じも誤りとして止める
+    /// （公開の前の確かめと同じ・[`crate::miniapp_publish`]）。
+    Strict,
+}
+
+/// 保存した版（下書き）。
+#[derive(Debug, Clone)]
+pub struct SavedMiniApp {
+    pub id: Uuid,
+    pub version: i64,
+    pub body: MiniAppBody,
+    /// 公開した版（保存しても変わらない。新しいアプリはまだ公開していないので `None`・D-16）。
+    pub published_version: Option<i64>,
+    /// 画面の書き損じ（保存はできた。直すまで公開できない・[`screen_problems`]）。
+    pub warnings: Vec<GuiValidationError>,
+    /// 画面の入力と、束ねたワークフローの入力項目の食い違い（保存も公開も止めない・GAP-12・
+    /// [`crate::miniapp_inputs::input_warnings`]）。保存する人に読めないワークフローは突き合わせない（BUG-122）。
+    pub input_warnings: Vec<GuiValidationError>,
+}
+
+/// 束ねるワークフローの入力の手がかり（[`MiniAppStore::workflow_inputs`]・ピンの順）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinnedInputs {
+    /// 呼んだ人がその版を読めたか（削除された・見る権限がない・種類の違うものは false）。
+    pub readable: bool,
+    /// 入力の手がかり（読めない・入力項目を決めていないワークフローは `None`＝突き合わせない）。
+    pub inputs: Option<Vec<crate::miniapp_inputs::WorkflowInputHint>>,
+}
 
 /// 解決済みミニアプリ（実行面が使う一式・全て検証済み）。
 #[derive(Debug, Clone)]
@@ -28,8 +76,54 @@ pub struct ResolvedMiniApp {
     pub version: i64,
     /// 検証済みの本文（画面のボタンの実行先は `workflows` の別名に限る）。
     pub body: MiniAppBody,
-    /// skill 本文（ピンがある場合）。
-    pub skill: Option<SkillBody>,
+    /// 束ねた skill（任意のピン）。
+    pub skill: ResolvedSkill,
+    /// 公開した版（まだ公開していなければ `None`・D-16）。`version` と違えば、開いたのは下書き（editor だけ）。
+    pub published_version: Option<i64>,
+    /// 前に公開していた版（公開を戻す先）。
+    pub previous_published_version: Option<i64>,
+    pub published_at: Option<DateTime<Utc>>,
+    /// 最新の版（下書きを含む）。
+    pub latest_version: i64,
+}
+
+impl ResolvedMiniApp {
+    /// 使えない部品（壊れた任意のピン）の理由。`path` が部品の位置（`skill`）。
+    pub fn unavailable(&self) -> Vec<GuiValidationError> {
+        self.skill.unavailable().cloned().into_iter().collect()
+    }
+}
+
+/// 束ねた skill（任意のピン）の解決結果（BUG-17）。
+#[derive(Debug, Clone)]
+pub enum ResolvedSkill {
+    /// ピンが無い。
+    None,
+    /// バンドル権限で読め、本文の検証も通った。
+    Ready(Box<SkillBody>),
+    /// ピンはあるが使えない（skill が削除された・本文が壊れている）。アプリは開けて、skill だけが使えない。
+    ///
+    /// **ピンが無い（[`ResolvedSkill::None`]）のと同じに扱わないこと**。skill の知識スコープ・許可ツールは
+    /// 絞る側なので、外して動かすと広がる（skill の適用は fail-closed・Task 6.7）。
+    Unavailable(GuiValidationError),
+}
+
+impl ResolvedSkill {
+    /// 使える skill の本文（ピンが無い・使えないときは `None`）。
+    pub fn ready(&self) -> Option<&SkillBody> {
+        match self {
+            ResolvedSkill::Ready(body) => Some(body.as_ref()),
+            ResolvedSkill::None | ResolvedSkill::Unavailable(_) => None,
+        }
+    }
+
+    /// 使えない理由（使えないときだけ）。
+    pub fn unavailable(&self) -> Option<&GuiValidationError> {
+        match self {
+            ResolvedSkill::Unavailable(reason) => Some(reason),
+            ResolvedSkill::None | ResolvedSkill::Ready(_) => None,
+        }
+    }
 }
 
 /// ミニアプリの保存/解決。
@@ -50,15 +144,17 @@ impl MiniAppStore {
         }
     }
 
-    /// 新しいミニアプリを保存する（構造検証＋ピン解決 → artifact version 1）。
+    /// 新しいミニアプリを保存する（構造検証＋ピン解決 → artifact version 1）。まだ公開していない（D-16）。
     pub async fn create(
         &self,
         ctx: &AuthContext,
         name: &str,
         raw_body: &serde_json::Value,
+        mode: SaveMode,
         trace_id: Option<&str>,
-    ) -> Result<(Uuid, MiniAppBody), GuiError> {
-        let body = self.validate_pins(ctx, raw_body, trace_id).await?;
+    ) -> Result<SavedMiniApp, GuiError> {
+        let (body, warnings) = self.check_body(ctx, raw_body, None, mode, trace_id).await?;
+        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
         let artifact = self
             .artifacts
             .create(
@@ -71,18 +167,31 @@ impl MiniAppStore {
                 trace_id,
             )
             .await?;
-        Ok((artifact.id, body))
+        Ok(SavedMiniApp {
+            id: artifact.id,
+            version: artifact.current_version,
+            body,
+            published_version: artifact.published_version,
+            warnings,
+            input_warnings,
+        })
     }
 
-    /// 既存ミニアプリに新バージョンを追記する。
+    /// 既存ミニアプリに新バージョン（下書き）を追記する。公開した版は変えない（D-16）。
+    ///
+    /// ピンは、`expected_version`（無ければ最新の版）の本文と比べて、足したものと対象か版を変えたものだけを
+    /// 保存する人の権限で確かめる（BUG-80）。保存できるのはアプリの editor（追記と同じ）で、前の版を読む前に確かめる。
+    /// 追記は比べた版の上にだけ積む（`expected_version` を省いても、比べた版から後に誰かが保存していたら版の競合で
+    /// 断る。比べていない版の上に積むと、その版で外したピンを確かめずに戻してしまう）。
     pub async fn update(
         &self,
         ctx: &AuthContext,
         id: Uuid,
         raw_body: &serde_json::Value,
         expected_version: Option<i64>,
+        mode: SaveMode,
         trace_id: Option<&str>,
-    ) -> Result<(i64, MiniAppBody), GuiError> {
+    ) -> Result<SavedMiniApp, GuiError> {
         let meta = self.artifacts.get(ctx, id, trace_id).await?;
         if meta.kind != ArtifactKind::MiniApp {
             return Err(GuiError::Validation(vec![GuiValidationError::new(
@@ -90,17 +199,73 @@ impl MiniAppStore {
                 "このアーティファクトは mini_app ではありません",
             )]));
         }
-        let body = self.validate_pins(ctx, raw_body, trace_id).await?;
+        self.artifacts
+            .require_relation(
+                ctx,
+                id,
+                Relation::Editor,
+                AuditAction::ArtifactVersionAppend,
+                trace_id,
+            )
+            .await?;
+        let base = expected_version.unwrap_or(meta.current_version);
+        // 比べる前の版。無い版（expected_version の誤り）や今の検証を通らない版なら、すべてのピンを確かめる
+        // （追記は版の競合で断る）。
+        let previous = match self.artifacts.get_version(ctx, id, base, trace_id).await {
+            Ok(v) => validate_miniapp_body(&v.body).ok(),
+            Err(ArtifactError::NotFound) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let (body, warnings) = self
+            .check_body(ctx, raw_body, previous.as_ref(), mode, trace_id)
+            .await?;
+        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
         let version = self
             .artifacts
-            .append_version(ctx, id, raw_body.clone(), expected_version, trace_id)
+            .append_version(ctx, id, raw_body.clone(), Some(base), trace_id)
             .await?;
-        Ok((version.version, body))
+        Ok(SavedMiniApp {
+            id,
+            version: version.version,
+            body,
+            published_version: meta.published_version,
+            warnings,
+            input_warnings,
+        })
+    }
+
+    /// 保存の前の確かめ（構造・画面の書き損じ・ピン）。画面の書き損じは、下書きなら注意として返し、
+    /// [`SaveMode::Strict`] なら誤りに加える。
+    async fn check_body(
+        &self,
+        ctx: &AuthContext,
+        raw_body: &serde_json::Value,
+        previous: Option<&MiniAppBody>,
+        mode: SaveMode,
+        trace_id: Option<&str>,
+    ) -> Result<(MiniAppBody, Vec<GuiValidationError>), GuiError> {
+        let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
+        let problems = screen_problems(&body);
+        let mut errors = self.validate_pins(ctx, &body, previous, trace_id).await;
+        let warnings = match mode {
+            SaveMode::Draft => problems,
+            SaveMode::Strict => {
+                errors.extend(problems);
+                Vec::new()
+            }
+        };
+        if errors.is_empty() {
+            Ok((body, warnings))
+        } else {
+            Err(GuiError::Validation(errors))
+        }
     }
 
     /// ミニアプリを解決する（本体 viewer → 部品はバンドル権限で読み込み・再検証）。
     ///
-    /// `version` 省略時は current。戻りは全て検証済み（実行面はこの結果のみを信用する）。
+    /// `version` 省略時は公開した版（まだ公開していなければ最新の版。開けるのは editor だけ・D-16）。使う人（editor で
+    /// ない viewer）は公開した版しか開けない（[`ArtifactError::NotPublished`]）。戻りは全て検証済み（実行面はこの
+    /// 結果のみを信用する）。
     pub async fn resolve(
         &self,
         ctx: &AuthContext,
@@ -108,30 +273,20 @@ impl MiniAppStore {
         version: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<ResolvedMiniApp, GuiError> {
-        let meta = self.artifacts.get(ctx, id, trace_id).await?;
-        if meta.kind != ArtifactKind::MiniApp {
-            return Err(GuiError::Artifact(ArtifactError::NotFound));
-        }
-        let version = version.unwrap_or(meta.current_version);
-        let v = self
-            .artifacts
-            .get_version(ctx, id, version, trace_id)
-            .await?;
-        // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
-        let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
+        let (meta, version, body) = self.load_saved(ctx, id, version, trace_id).await?;
 
-        let skill = match &body.skill {
-            Some(pin) => {
-                let s = self
-                    .artifacts
-                    .get_version_via_bundle(ctx, id, pin.artifact_id, pin.version, trace_id)
-                    .await?;
-                Some(validate_skill_body(&s.body).map_err(GuiError::Validation)?)
-            }
-            None => None,
+        let skill = match body.skill {
+            Some(pin) => self.resolve_skill(ctx, id, pin, trace_id).await?,
+            None => ResolvedSkill::None,
         };
 
         // 解決を監査に残す（誰が・どの版を・どのピン集合で実行面へ持ち出したか・Task 6.12）。
+        // 使えなかった部品も残す（壊れたピンのまま開いた事実を追えるように・BUG-17）。
+        let unavailable: Vec<serde_json::Value> = skill
+            .unavailable()
+            .map(|e| json!({ "path": e.path, "code": e.code }))
+            .into_iter()
+            .collect();
         let entry = AuditEntry {
             action: AuditAction::MiniappResolve,
             object_type: "artifact",
@@ -143,6 +298,7 @@ impl MiniAppStore {
                 "skill": body.skill,
                 "workflows": body.workflows,
                 "data_views": body.data_views,
+                "unavailable": unavailable,
             }),
         };
         if let Err(e) = self.audit.record(ctx, entry).await {
@@ -154,33 +310,128 @@ impl MiniAppStore {
             version,
             body,
             skill,
+            published_version: meta.published_version,
+            previous_published_version: meta.previous_published_version,
+            published_at: meta.published_at,
+            latest_version: meta.current_version,
         })
     }
 
-    /// 保存時のピン解決（**作成者の権限**で存在・kind・viewer を検証する）。
+    /// 保存済みの版の本文を読み、検証し直す（本体の viewer・kind・版の実在）。部品は読まず、監査も残さない。
+    ///
+    /// [`Self::resolve`] の前段で、画面の表の描画・ページ送りはこれだけを毎回通す（BUG-24）。権限は呼ぶたびに
+    /// 確かめ直す（剥奪は次の呼び出しから効く）。開いたことの監査（`miniapp.resolve`）は開いたときの解決が残し、
+    /// 表の 1 回ごとの操作は `ui_action.invoke` が残すので、ページを送るたびに解決をやり直して監査を重ねない。
+    ///
+    /// `version` を省くと公開した版（まだ公開していなければ最新の版）。使う人（editor でない viewer）が読めるのは
+    /// 公開した版だけで、ほかの版・まだ公開していないアプリは [`ArtifactError::NotPublished`]（D-16）。
+    pub(crate) async fn load_saved(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: Option<i64>,
+        trace_id: Option<&str>,
+    ) -> Result<(Artifact, i64, MiniAppBody), GuiError> {
+        let meta = self.artifacts.get(ctx, id, trace_id).await?;
+        if meta.kind != ArtifactKind::MiniApp {
+            return Err(GuiError::Artifact(ArtifactError::NotFound));
+        }
+        let version = version
+            .or(meta.published_version)
+            .unwrap_or(meta.current_version);
+        let v = self
+            .artifacts
+            .get_version(ctx, id, version, trace_id)
+            .await?;
+        // 描画前再検証: 保存済みでも壊れた本文（旧形式を含む）を実行面へ流さない。
+        let body = validate_miniapp_body(&v.body).map_err(GuiError::Validation)?;
+        Ok((meta, version, body))
+    }
+
+    /// 任意の skill のピンをバンドル権限で読む（BUG-17）。
+    ///
+    /// skill が消えた（論理削除・版が無い）・本文が今の検証を通らないだけなら、アプリ全体を「見つかりません」に
+    /// せず skill だけを使えないと返す。権限の不足と内部の誤りは隠さずに返す（本体の viewer は直前に
+    /// 確かめているので、ここでの不足は剥奪との競合で、アプリごと開けないのが正しい）。
+    async fn resolve_skill(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+        pin: ComponentPin,
+        trace_id: Option<&str>,
+    ) -> Result<ResolvedSkill, GuiError> {
+        let read = self
+            .artifacts
+            .get_version_via_bundle(ctx, app_id, pin.artifact_id, pin.version, trace_id)
+            .await;
+        let reason = match read {
+            Ok(v) => match validate_skill_body(&v.body) {
+                Ok(body) => return Ok(ResolvedSkill::Ready(Box::new(body))),
+                Err(errors) => {
+                    tracing::warn!(
+                        app_id = %app_id,
+                        skill_id = %pin.artifact_id,
+                        version = pin.version,
+                        errors = ?errors,
+                        "ミニアプリの skill の本文が検証を通らない（skill だけを使えないとする）"
+                    );
+                    skill_broken(pin.version)
+                }
+            },
+            Err(ArtifactError::NotFound) => GuiValidationError::new(
+                "miniapp.pin_unresolved",
+                format!(
+                    "スキル（v{}）が見つかりません（削除されたか、その版がありません）",
+                    pin.version
+                ),
+            ),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(ResolvedSkill::Unavailable(reason.at("skill")))
+    }
+
+    /// 保存時のピン解決（**保存する人の権限**で存在・kind・viewer を検証する）。誤りの一覧を返す（無ければ空）。
+    ///
+    /// 確かめるのは、前の版（`previous`）に無いピン（足したもの・対象か版を変えたもの）だけ（D-16 の (d)・
+    /// BUG-80）。前の版と同じピンは、その版を保存した人が確かめてあり、版は不変なので確かめ直さない（共同編集者が
+    /// 読めない部品も、触れなければそのまま保存できる）。束ねたスキルは本文も今の検証に通す（BUG-79・保存ビューの
+    /// `data_view_broken` と同じ）。
     async fn validate_pins(
         &self,
         ctx: &AuthContext,
-        raw_body: &serde_json::Value,
+        body: &MiniAppBody,
+        previous: Option<&MiniAppBody>,
         trace_id: Option<&str>,
-    ) -> Result<MiniAppBody, GuiError> {
-        let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
+    ) -> Vec<GuiValidationError> {
         let mut errors = Vec::new();
-        if let Some(pin) = &body.skill {
-            if let Err(e) = self
-                .check_pin(ctx, pin, ArtifactKind::Skill, trace_id)
+        if let Some(pin) = body
+            .skill
+            .filter(|p| previous.and_then(|b| b.skill) != Some(*p))
+        {
+            let what = format!("スキル（v{}）", pin.version);
+            match self
+                .check_pin(ctx, &pin, ArtifactKind::Skill, &what, trace_id)
                 .await
             {
-                errors.push(e.at("skill"));
+                Ok(raw) => {
+                    if validate_skill_body(&raw).is_err() {
+                        errors.push(skill_broken(pin.version).at("skill"));
+                    }
+                }
+                Err(e) => errors.push(e.at("skill")),
             }
         }
         for (i, wf) in body.workflows.iter().enumerate() {
+            if unchanged(previous.map(|b| b.workflows.as_slice()), wf) {
+                continue;
+            }
             let pin = ComponentPin {
                 artifact_id: wf.artifact_id,
                 version: wf.version,
             };
+            let what = format!("ワークフロー「{}」（v{}）", wf.alias, wf.version);
             if let Err(e) = self
-                .check_pin(ctx, &pin, ArtifactKind::Workflow, trace_id)
+                .check_pin(ctx, &pin, ArtifactKind::Workflow, &what, trace_id)
                 .await
             {
                 errors.push(e.at(format!("workflows[{i}]")));
@@ -189,13 +440,17 @@ impl MiniAppStore {
         // 保存ビュー（Task 15.7）: 保存する人が**その版を読める**こと（viewer・kind・版の実在）を
         // 確かめて版に固定する。データの権限はここでは広げない（実行時に閲覧者本人で毎回評価する）。
         for (i, view) in body.data_views.iter().enumerate() {
+            if unchanged(previous.map(|b| b.data_views.as_slice()), view) {
+                continue;
+            }
             let pin = ComponentPin {
                 artifact_id: view.artifact_id,
                 version: view.version,
             };
             let path = format!("data_views[{i}]");
+            let what = format!("保存ビュー「{}」（v{}）", view.alias, view.version);
             match self
-                .check_pin(ctx, &pin, ArtifactKind::DataView, trace_id)
+                .check_pin(ctx, &pin, ArtifactKind::DataView, &what, trace_id)
                 .await
             {
                 Ok(raw) => {
@@ -203,10 +458,7 @@ impl MiniAppStore {
                         errors.push(
                             GuiValidationError::new(
                                 "miniapp.data_view_broken",
-                                format!(
-                                    "保存ビュー {}（v{}）の本文を読めません",
-                                    view.artifact_id, view.version
-                                ),
+                                format!("{what}の本文を読めません（古い形式か、壊れています）"),
                             )
                             .at(path),
                         );
@@ -215,56 +467,131 @@ impl MiniAppStore {
                 Err(e) => errors.push(e.at(path)),
             }
         }
-        if errors.is_empty() {
-            Ok(body)
-        } else {
-            Err(GuiError::Validation(errors))
-        }
+        errors
     }
 
-    /// 1 ピンの存在・kind・viewer 検証（作成者権限・存在秘匿の同一メッセージ）。
-    async fn check_pin(
+    /// 束ねるワークフローの版の入力の手がかりを、呼んだ人の権限で読む（GAP-12・ピンの順）。
+    ///
+    /// 読めない版（削除された・見る権限がない・ワークフローでない）は `readable: false` で返し、ほかの誤りは返す
+    /// （読めないと決めつけない・BUG-122）。画面のエディタの部品の候補と、保存のときの突き合わせが使う。
+    pub async fn workflow_inputs(
+        &self,
+        ctx: &AuthContext,
+        pins: &[ComponentPin],
+        trace_id: Option<&str>,
+    ) -> Result<Vec<PinnedInputs>, GuiError> {
+        let mut out = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let body = self
+                .read_pin(ctx, pin, ArtifactKind::Workflow, trace_id)
+                .await?;
+            out.push(PinnedInputs {
+                readable: body.is_some(),
+                inputs: body
+                    .and_then(|b| crate::miniapp_inputs::input_hints(b.get("input_schema"))),
+            });
+        }
+        Ok(out)
+    }
+
+    /// 保存のときの、画面の入力と束ねたワークフローの入力項目の突き合わせ（注意だけ・保存を止めない）。
+    ///
+    /// 保存する人の権限で読めるワークフローだけを突き合わせる（共同編集者が読めない部品は言わない・BUG-122）。
+    /// 読めなかったときの誤りは保存を止めず、そのワークフローを突き合わせない。
+    async fn input_warnings(
+        &self,
+        ctx: &AuthContext,
+        body: &MiniAppBody,
+        trace_id: Option<&str>,
+    ) -> Vec<GuiValidationError> {
+        let mut inputs = std::collections::BTreeMap::new();
+        for wf in &body.workflows {
+            let pin = ComponentPin {
+                artifact_id: wf.artifact_id,
+                version: wf.version,
+            };
+            let hints = match self
+                .read_pin(ctx, &pin, ArtifactKind::Workflow, trace_id)
+                .await
+            {
+                Ok(body) => {
+                    body.and_then(|b| crate::miniapp_inputs::input_hints(b.get("input_schema")))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, workflow = %wf.artifact_id, "入力項目の突き合わせのために版を読めない（突き合わせない）");
+                    None
+                }
+            };
+            inputs.insert(wf.alias.clone(), hints);
+        }
+        crate::miniapp_inputs::input_warnings(body, &inputs)
+    }
+
+    /// 1 ピンの版の本文を、呼んだ人の権限で読む。無い・読めない・種類の違うものは `None`（存在を区別しない）。
+    async fn read_pin(
         &self,
         ctx: &AuthContext,
         pin: &ComponentPin,
         kind: ArtifactKind,
         trace_id: Option<&str>,
-    ) -> Result<serde_json::Value, GuiValidationError> {
-        let unresolved = || {
-            GuiValidationError::new(
-                "miniapp.pin_unresolved",
-                format!(
-                    "参照 {}（kind={}）が見つからないか権限がありません",
-                    pin.artifact_id,
-                    kind.as_str()
-                ),
-            )
+    ) -> Result<Option<serde_json::Value>, ArtifactError> {
+        let meta = match self.artifacts.get(ctx, pin.artifact_id, trace_id).await {
+            Ok(m) => m,
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => return Ok(None),
+            Err(e) => return Err(e),
         };
-        let meta = self
-            .artifacts
-            .get(ctx, pin.artifact_id, trace_id)
-            .await
-            .map_err(|e| match e {
-                ArtifactError::NotFound | ArtifactError::Forbidden => unresolved(),
-                other => GuiValidationError::new(
-                    "miniapp.pin_resolve_error",
-                    format!("参照解決に失敗しました: {other}"),
-                ),
-            })?;
         if meta.kind != kind {
-            return Err(unresolved());
+            return Ok(None);
         }
-        let v = self
+        match self
             .artifacts
             .get_version(ctx, pin.artifact_id, pin.version, trace_id)
             .await
-            .map_err(|e| match e {
-                ArtifactError::NotFound | ArtifactError::Forbidden => unresolved(),
-                other => GuiValidationError::new(
-                    "miniapp.pin_resolve_error",
-                    format!("参照解決に失敗しました: {other}"),
-                ),
-            })?;
-        Ok(v.body)
+        {
+            Ok(v) => Ok(Some(v.body)),
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
+
+    /// 1 ピンの存在・kind・viewer 検証（作成者権限・存在秘匿の同一メッセージ）。
+    ///
+    /// `what` は誤りの文言で部品を指す言い方（例: `ワークフロー「expense」（v1）`）。文言は利用者に出るので、
+    /// 部品の id は入れない（BUG-80）。無い・kind が違う・読めないは同じ文言にする（存在を区別させない）。
+    async fn check_pin(
+        &self,
+        ctx: &AuthContext,
+        pin: &ComponentPin,
+        kind: ArtifactKind,
+        what: &str,
+        trace_id: Option<&str>,
+    ) -> Result<serde_json::Value, GuiValidationError> {
+        match self.read_pin(ctx, pin, kind, trace_id).await {
+            Ok(Some(body)) => Ok(body),
+            Ok(None) => Err(GuiValidationError::new(
+                "miniapp.pin_unresolved",
+                format!("{what}が見つからないか、あなたには読めません"),
+            )),
+            Err(other) => Err(GuiValidationError::new(
+                "miniapp.pin_resolve_error",
+                format!("参照解決に失敗しました: {other}"),
+            )),
+        }
+    }
+}
+
+/// 前の版にも同じ部品の同じ版のピンがあるか（別名は問わない。別名だけを変えたピンも確かめ直さない・BUG-80）。
+fn unchanged(previous: Option<&[NamedComponentPin]>, pin: &NamedComponentPin) -> bool {
+    previous.is_some_and(|pins| {
+        pins.iter()
+            .any(|p| p.artifact_id == pin.artifact_id && p.version == pin.version)
+    })
+}
+
+/// 束ねたスキルの本文が今の検証を通らない（古い形式か壊れている）ときの理由（保存と解決で同じ文言）。
+fn skill_broken(version: i64) -> GuiValidationError {
+    GuiValidationError::new(
+        "miniapp.skill_broken",
+        format!("スキル（v{version}）の本文を読めません（古い形式か、壊れています）"),
+    )
 }

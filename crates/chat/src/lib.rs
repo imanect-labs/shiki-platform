@@ -28,6 +28,8 @@ pub mod approver;
 pub mod artifacts;
 pub mod attachments;
 pub mod autonomous;
+/// 作る道具（テーブル・ビュー・アプリ・ワークフロー）の参照カードと観測の共通部品（T02・D-204）。
+pub mod builder_obs;
 pub mod csv_tool;
 pub mod custom_instructions;
 pub mod data_tool;
@@ -54,12 +56,18 @@ pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;
+/// 回答が途中で止まった理由（GAP-106）。`model` から再エクスポートしている。
+pub mod stop_reason;
 pub mod store;
 /// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
 pub mod stream_event;
+/// 道具の object の引数の受け口（JSON の文字列で来たものを 1 段だけ読む・GAP-130）。
+pub(crate) mod tool_args;
 pub mod worker;
 pub mod workflow_search_tool;
 pub mod workflow_tool;
+/// 会話の AI の試運転 `try_workflow`（T04・D-197）。
+pub mod workflow_try_tool;
 pub mod workspace;
 /// 回答の本文の ```ui（Yui）のボタン（#604）。
 pub mod yui_actions;
@@ -74,7 +82,7 @@ pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, LastModelChoice, Message, PendingApproval, PlanSubtask,
-    Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StreamEvent,
+    Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StopReason, StreamEvent,
     StreamEventKind, Thread, ThreadRole, UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
 pub use preferences::UserPreferences;
@@ -88,7 +96,12 @@ pub use store::{
     BranchTarget, ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext,
     ThreadOrigin, YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
-pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
+pub use worker::{
+    parse_timezone, with_yui_guide, ChatWorker, TryWaitLimits, WorkerConfig, WorkerDeps,
+};
 pub use workflow_search_tool::{SearchWorkflowsTool, WorkflowDirectory};
-pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
+pub use workflow_tool::{
+    DecisionModel, EmitWorkflowTool, ListWorkflowsTool, ReadWorkflowTool, WorkflowCatalogSource,
+};
+pub use workflow_try_tool::{TryScope, TryWorkflowDeps, TryWorkflowTool, MAX_TRIALS_PER_ANSWER};
 pub use workspace::StorageWorkspaceStore;

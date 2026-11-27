@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteArtifactApi, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルとビューを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 業務データのグリッド（Task 15.5）: テーブル作成 → 列追加 → レコード編集 → ビュー保存。
 ///
@@ -53,6 +57,7 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await page.getByTestId("create-table-submit").click();
   await page.waitForURL(/\/data\/[0-9a-f-]{36}$/);
   const tableId = new URL(page.url()).pathname.split("/").pop()!;
+  cleanup.add(() => deleteTableApi(page, tableId));
   await expect(page.getByTestId("data-grid")).toBeVisible();
 
   // 2. 列を追加する（数値の「金額」）。
@@ -117,6 +122,7 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await page.getByTestId("view-save-confirm").click();
   await page.waitForURL(/\?view=[0-9a-f-]{36}$/);
   const viewId = new URL(page.url()).searchParams.get("view")!;
+  cleanup.add(() => deleteArtifactApi(page, viewId));
   await opened;
   await expect(page.getByLabel("ビューを読み込み中")).toHaveCount(0);
   // 保存した直後も、ビューの切替ボタンは保存した名前を出す（「ビュー」に戻らない）。
@@ -169,6 +175,7 @@ async function seedTable(page: Page, codes: string[]) {
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   for (const [i, code] of codes.entries()) {
     const r = await page.request.post(`/api/data/tables/${tableId}/records`, {
       headers,

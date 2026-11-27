@@ -10,9 +10,12 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::run::failure::{failure_code, resume_hint};
+use crate::run::outcome::ResumeHint;
 use crate::vocab::RunEventKind;
 
 use super::advance::advance_downstream;
+use super::outcome::FAILURE_CODE_COLUMNS;
 use super::{append_event, map_db, RunStore, RunStoreError};
 
 /// キャンセル要求の結果。
@@ -33,6 +36,9 @@ pub enum ResumeOutcome {
     Resumed,
     /// failed でない run は再開できない。
     NotFailed(String),
+    /// 再開しても同じ結果になる失敗か、実行の期限を過ぎた run なので再開しない（D-116・BUG-138）。勧め方と理由は
+    /// 実行履歴の詳細の `resume` と同じ単一定義（[`crate::run::failure::resume_hint`]）で決める。
+    NotResumable(ResumeHint),
     /// run が存在しない。
     NotFound,
 }
@@ -157,21 +163,40 @@ impl RunStore {
         run_id: Uuid,
     ) -> Result<ResumeOutcome, RunStoreError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let row: Option<(String, sqlx::types::Json<Value>)> = sqlx::query_as(
-            "SELECT status, ir_snapshot FROM workflow_run \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3 FOR UPDATE",
-        )
+        type Row = (
+            String,
+            sqlx::types::Json<Value>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        // 失敗の理由の code は実行履歴の詳細と同じ式で引く（run 行のロックの中で決める・画面の出し分けと同じ定義）。
+        let row: Option<Row> = sqlx::query_as(&format!(
+            "SELECT r.status, r.ir_snapshot, r.fail_reason, {FAILURE_CODE_COLUMNS} \
+             FROM workflow_run r \
+             WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.run_id = $3 FOR UPDATE OF r"
+        ))
         .bind(tenant_id)
         .bind(workflow_id)
         .bind(run_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        let Some((status, ir_snapshot)) = row else {
+        let Some((status, ir_snapshot, fail_reason, step_code, item_code)) = row else {
             return Ok(ResumeOutcome::NotFound);
         };
         if status != "failed" {
             return Ok(ResumeOutcome::NotFailed(status));
+        }
+        // 再開しても同じ結果になる失敗・実行の期限を過ぎた run は、step を戻さずに断る（画面がボタンを出さないのと
+        // 同じ定義・D-116）。期限を過ぎた run を戻すと、期限を延ばさないまま失敗した step が動き、書き込みが走って
+        // からまた期限で止まりうる。
+        let hint = resume_hint(
+            failure_code(step_code.as_deref(), item_code.as_deref()),
+            fail_reason.as_deref(),
+        );
+        if !hint.offer {
+            return Ok(ResumeOutcome::NotResumable(hint));
         }
         // readiness 再計算は run 開始時と同じくピン済み ir_snapshot のグラフで行う。
         let ir = crate::ir::WorkflowIr::from_json(&ir_snapshot.0)
@@ -179,9 +204,12 @@ impl RunStore {
         let graph = crate::run::graph::RunGraph::build(&ir);
         // 未処理失敗 step（error ポート解決済みは除外 = taken_ports 空）を ready に戻す。
         // attempt は据え置き（リトライ上限の消費分は履歴として残す）。
+        // 取り込み待ちの上限を過ぎて失敗した step も、再開すると待ち直す（待ち始めた時刻を消す・D-125）。
+        // 拾い直しの回数（BUG-215）も数え直す（上限で止めた step を再開したら、また上限まで拾い直せる）。
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', next_retry_at = now(), \
-                 lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+                 lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, \
+                 wait_since = NULL, lease_reclaims = 0, updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'failed' \
                AND taken_ports = '{}'",
         )
@@ -195,7 +223,8 @@ impl RunStore {
         // 試行の消費だけを数える（rate_limited の順番待ちや claim 自体では増えない）ので、attempt=0 は
         // 「一度も claim されていない」を意味しない（#438）。
         sqlx::query(
-            "UPDATE step_execution SET status = 'pending', updated_at = now() \
+            "UPDATE step_execution SET status = 'pending', wait_code = NULL, wait_since = NULL, \
+                 lease_reclaims = 0, updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token = 0",
         )
         .bind(tenant_id)
@@ -220,7 +249,8 @@ impl RunStore {
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', \
                  next_retry_at = greatest(now(), updated_at + ($3 || ' seconds')::interval), \
-                 lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+                 lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, wait_since = NULL, \
+                 lease_reclaims = 0, updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token > 0",
         )
         .bind(tenant_id)
@@ -252,6 +282,41 @@ impl RunStore {
         tx.commit().await.map_err(map_db)?;
         Ok(ResumeOutcome::Resumed)
     }
+}
+
+/// その場でドレインする run の上限（[`cancel_runs_within`]・1 つの Tx を長くしない）。残りは取り消しを求めた印
+/// （`cancel_requested`）だけ付け、scheduler の tick（[`RunStore::drain_cancel_requested`]）がドレインする。印の付いた
+/// run は claim されず（新しい step を始めない）、受信箱にも出ない。
+const INLINE_DRAIN_MAX: usize = 100;
+
+/// ワークフローの動いている run（`queued`・`running`）の取り消しを求め、実行中でない step をその場でドレインする
+/// （呼び出し側 Tx・[`RunStore::request_cancel`] と同じ経路。保留中の承認の取り下げ・待ちの購読の消し込みを含む）。
+///
+/// `principal_kind` を渡すと、その実行主体の種類の run だけ（自動実行の `workflow`・BUG-131）。`None` はすべての run
+/// （ワークフローを消したとき・BUG-128）。返すのは取り消しを求めた run（実行中の step があれば、完走後に cancelled
+/// になる）。
+pub(crate) async fn cancel_runs_within(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    principal_kind: Option<&str>,
+) -> Result<Vec<Uuid>, RunStoreError> {
+    let runs: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE workflow_run SET cancel_requested = true, updated_at = now() \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running') \
+           AND ($3::text IS NULL OR principal_kind = $3) \
+         RETURNING run_id",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(principal_kind)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    for run_id in runs.iter().take(INLINE_DRAIN_MAX) {
+        drain_one(tx, tenant_id, *run_id).await?;
+    }
+    Ok(runs)
 }
 
 /// 1 run のドレイン: 実行中でない step を cancelled 化し、running が残らなければ run を
@@ -301,6 +366,8 @@ pub(super) async fn drain_one(
     .execute(&mut **tx)
     .await
     .map_err(map_db)?;
+    // 保留中の承認は取り消す（受信箱から消える・GAP-08）。
+    super::approval::cancel_pending(tx, tenant_id, run_id).await?;
     // running（リース有効）が残っていれば完走待ち（checkpoint 側 finalize が cancelled 化する）。
     let running: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM step_execution \

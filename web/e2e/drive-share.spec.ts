@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginAs, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+/// 画面から作ったフォルダーを、テストの後にゴミ箱へ移す（ドライブのトップに残さない・失敗したテストでも走る・
+/// BUG-125・BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// 共有ダイアログのテナント分離＋共有付与を検証する（issue #20 受け入れ条件: 個人へ権限付与）。
 /// alice(tenant a-corp) の検索に bob は出るが charlie(tenant b-corp) は出ない。
@@ -46,11 +52,11 @@ test("共有ダイアログ: テナント分離と共有付与", async ({ page, 
 
   // --- bob として別コンテキストでログインし、共有済みに当該フォルダが出ることを確認 ---
   const bobCtx = await browser.newContext();
+  cleanup.add(() => bobCtx.close());
   const bobPage = await bobCtx.newPage();
   await loginAs(bobPage, "bob");
   await bobPage.goto("/drive/shared");
   await expect(bobPage.getByText(folder, { exact: true })).toBeVisible({ timeout: 15_000 });
-  await bobCtx.close();
 });
 
 /// 部署・ロール共有（#76）を検証する。alice が「営業部」ロール（dev_seed: alice/bob 所属）へ

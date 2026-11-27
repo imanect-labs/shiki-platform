@@ -58,7 +58,7 @@ fn minimal_ir(name: &str) -> Value {
     })
 }
 
-/// api::wiring の LauncherWorkflowStarter と同じ結線（テストから private のため同型を組む）。
+/// api::wiring の LauncherWorkflowStarter と同じ結線（テストから private のため同型を組む・誤りの写しは同じ関数）。
 struct TestStarter(WorkflowRunLauncher);
 
 #[async_trait::async_trait]
@@ -73,10 +73,7 @@ impl gui::WorkflowStarter for TestStarter {
         self.0
             .start_interactive_version(ctx, workflow_id, version, input)
             .await
-            .map_err(|e| match e {
-                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                other => gui::ActionError::Internal(format!("run 起動: {other}")),
-            })
+            .map_err(gui::from_launcher_error)
     }
 
     async fn start_pinned_via_bundle(
@@ -90,10 +87,7 @@ impl gui::WorkflowStarter for TestStarter {
         self.0
             .start_interactive_via_bundle(ctx, bundle_id, workflow_id, version, input)
             .await
-            .map_err(|e| match e {
-                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                other => gui::ActionError::Internal(format!("run 起動: {other}")),
-            })
+            .map_err(gui::from_launcher_error)
     }
 }
 

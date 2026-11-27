@@ -1,0 +1,964 @@
+{
+  "scenario": "expense_policy",
+  "app": "APP-01",
+  "title": "経費の申請の規程と内容の確認",
+  "description": "経費の表に申請が追加されたら、まず「受付中」にして申請者が書き換えられないようにし、受け付けた値で規程（金額・人数・曜日・領収書・重複）を script で確かめて規程のフラグを出し、申請者（行の作成者）と上長（承認者の表から引く）を書き込む。判定用のモデルで中身（目的と費目の不一致・私的な利用の疑い・経理の確認の要否）を判定する。規程のフラグが 1 つ以上（上長が決まらないときを含む）、AI の経理の確認が「はい」、確からしさがしきい値に届かない、判定に失敗した、のどれかなら「経理確認」にして経理の担当者の承認を待つ。どれでもなければ「上長承認待ち」にして上長の承認を待つ。AI は確認を足すことしかできず、規程で要る確認を外せない。自動で却下する経路は無い（申請者は摘要に指示を書けるので、AI の判定だけで承認・却下を決めない）。自己承認は状態の遷移の規則で塞ぐ（上長の承認・経理の確認とも、申請者本人には進められない）。申請者が行を書けるのは申請中の間だけ。",
+  "dataset": "expense_policy",
+  "theta": 0.7,
+  "prompt_version": "v3",
+  "placeholders": {
+    "{{table.expense_claims}}": "経費の申請の表の id（tables の ref=expense_claims を作ったもの）",
+    "{{table.approvers}}": "承認者の表の id（tables の ref=approvers を作ったもの。申請者 → 上長の行は運用で埋める）",
+    "{{model.decide}}": "判定用のモデルの id（評価と同じ decide-haiku・E2E は stub の決定器）",
+    "{{role.accounting}}": "経理の部署（role id）。経理確認の承認の担当で、申請中から先へ進める遷移と、申請中を過ぎた行の書き込みもこの部署だけに許す（ワークフローは経理の担当者が有効化する）"
+  },
+  "tables": [
+    {
+      "ref": "expense_claims",
+      "name": "経費の申請",
+      "schema": {
+        "fields": [
+          {
+            "key": "title",
+            "display_name": "件名",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "status",
+            "display_name": "状態",
+            "type": "select",
+            "options": [
+              "申請中",
+              "受付中",
+              "経理確認",
+              "上長承認待ち",
+              "承認",
+              "却下"
+            ],
+            "indexed": true
+          },
+          {
+            "key": "amount",
+            "display_name": "金額",
+            "type": "number",
+            "required": true,
+            "indexed": true,
+            "numeric_spec": {
+              "scale": 0,
+              "min": 1
+            }
+          },
+          {
+            "key": "applicant_name",
+            "display_name": "申請者名",
+            "type": "text",
+            "required": true
+          },
+          {
+            "key": "applicant",
+            "display_name": "申請者",
+            "description": "申請した人（ワークフローが行の作成者を入れる。申請者は書かない）",
+            "type": "user_ref",
+            "indexed": true
+          },
+          {
+            "key": "category",
+            "display_name": "費目",
+            "type": "select",
+            "required": true,
+            "options": [
+              "交通費",
+              "出張旅費",
+              "会議費",
+              "接待交際費",
+              "消耗品費",
+              "書籍費",
+              "通信費",
+              "研修費"
+            ]
+          },
+          {
+            "key": "used_on",
+            "display_name": "利用日",
+            "type": "date",
+            "required": true,
+            "indexed": true
+          },
+          {
+            "key": "ai_check",
+            "display_name": "AI の判定",
+            "type": "select",
+            "options": [
+              "要確認",
+              "問題なし",
+              "確からしさ不足",
+              "判定の失敗"
+            ],
+            "indexed": true
+          },
+          {
+            "key": "rule_flags",
+            "display_name": "規程の確認",
+            "type": "multi_select",
+            "options": [
+              "金額が 0 以下か数でない",
+              "会議費の 1 人あたりの上限（5,000 円）を超える",
+              "接待交際費の 1 人あたりの上限（15,000 円）を超える",
+              "人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）",
+              "領収書が無く 5,000 円以上",
+              "休日の飲食（会議費・接待交際費）",
+              "10 万円以上は資産の計上の対象（消耗品費では申請できない）",
+              "同じ申請者・利用日・金額の申請が既にある（重複の疑い）",
+              "上長が決まらない（承認者の表に無いか、申請者本人）"
+            ]
+          },
+          {
+            "key": "ai_risk",
+            "display_name": "AI のリスク",
+            "type": "select",
+            "options": [
+              "問題なし",
+              "要確認",
+              "疑義大"
+            ]
+          },
+          {
+            "key": "ai_note",
+            "display_name": "AI の判定の内訳",
+            "type": "text"
+          },
+          {
+            "key": "department",
+            "display_name": "部署",
+            "type": "text"
+          },
+          {
+            "key": "people",
+            "display_name": "人数",
+            "type": "number"
+          },
+          {
+            "key": "attendees",
+            "display_name": "参加者",
+            "type": "text"
+          },
+          {
+            "key": "payee",
+            "display_name": "支払先",
+            "type": "text"
+          },
+          {
+            "key": "item",
+            "display_name": "品名・内容",
+            "type": "text"
+          },
+          {
+            "key": "purpose",
+            "display_name": "摘要",
+            "type": "text"
+          },
+          {
+            "key": "receipt",
+            "display_name": "領収書",
+            "type": "select",
+            "options": [
+              "あり",
+              "なし"
+            ],
+            "required": true
+          },
+          {
+            "key": "approver",
+            "display_name": "上長",
+            "description": "承認する上長（ワークフローが承認者の表から入れる。申請者は書かない）",
+            "type": "user_ref",
+            "indexed": true
+          }
+        ],
+        "status_field": "status",
+        "row_policy": {
+          "read": {
+            "any": [
+              "is_owner",
+              {
+                "field_cmp": {
+                  "field": "approver",
+                  "op": "eq",
+                  "value": "user_id"
+                }
+              },
+              {
+                "has_role": {
+                  "role": "{{role.accounting}}",
+                  "subtree": true
+                }
+              }
+            ]
+          },
+          "write": {
+            "any": [
+              {
+                "all": [
+                  "is_owner",
+                  {
+                    "field_cmp": {
+                      "field": "status",
+                      "op": "eq",
+                      "value": {
+                        "lit": "申請中"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "has_role": {
+                  "role": "{{role.accounting}}",
+                  "subtree": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      "fsm": {
+        "states": [
+          "申請中",
+          "受付中",
+          "経理確認",
+          "上長承認待ち",
+          "承認",
+          "却下"
+        ],
+        "transitions": [
+          {
+            "from": "申請中",
+            "to": "受付中",
+            "actor": {
+              "has_role": {
+                "role": "{{role.accounting}}",
+                "subtree": true
+              }
+            }
+          },
+          {
+            "from": "受付中",
+            "to": "経理確認",
+            "actor": {
+              "has_role": {
+                "role": "{{role.accounting}}",
+                "subtree": true
+              }
+            }
+          },
+          {
+            "from": "受付中",
+            "to": "上長承認待ち",
+            "actor": {
+              "has_role": {
+                "role": "{{role.accounting}}",
+                "subtree": true
+              }
+            }
+          },
+          {
+            "from": "経理確認",
+            "to": "上長承認待ち",
+            "actor": {
+              "all": [
+                {
+                  "has_role": {
+                    "role": "{{role.accounting}}",
+                    "subtree": true
+                  }
+                },
+                {
+                  "field_cmp": {
+                    "field": "applicant",
+                    "op": "ne",
+                    "value": "user_id"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "from": "経理確認",
+            "to": "却下",
+            "actor": {
+              "has_role": {
+                "role": "{{role.accounting}}",
+                "subtree": true
+              }
+            }
+          },
+          {
+            "from": "上長承認待ち",
+            "to": "承認",
+            "actor": {
+              "all": [
+                {
+                  "field_cmp": {
+                    "field": "approver",
+                    "op": "eq",
+                    "value": "user_id"
+                  }
+                },
+                {
+                  "field_cmp": {
+                    "field": "applicant",
+                    "op": "ne",
+                    "value": "user_id"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "from": "上長承認待ち",
+            "to": "却下",
+            "actor": {
+              "field_cmp": {
+                "field": "approver",
+                "op": "eq",
+                "value": "user_id"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "ref": "approvers",
+      "name": "承認者",
+      "schema": {
+        "fields": [
+          {
+            "key": "member",
+            "display_name": "申請者",
+            "type": "user_ref",
+            "required": true,
+            "unique": true,
+            "indexed": true
+          },
+          {
+            "key": "manager",
+            "display_name": "上長",
+            "type": "user_ref",
+            "required": true
+          }
+        ]
+      }
+    }
+  ],
+  "grants": [
+    {
+      "scope": "data.read",
+      "table": "expense_claims",
+      "relation": "viewer"
+    },
+    {
+      "scope": "data.write",
+      "table": "expense_claims",
+      "relation": "editor"
+    },
+    {
+      "scope": "data.read",
+      "table": "approvers",
+      "relation": "viewer"
+    }
+  ],
+  "workflow": {
+    "ir_version": 1,
+    "name": "expense-policy-check",
+    "display_name": "経費の申請の確認",
+    "description": "受け付けた申請の規程と AI の判定のどちらかで引っかかったものを経理確認へ回し、それ以外を上長の承認へ回す（APP-01・自己承認は状態の遷移の規則で塞ぐ）",
+    "triggers": [
+      {
+        "kind": "event",
+        "source": "data.record.created",
+        "scope": {
+          "table": "{{table.expense_claims}}"
+        }
+      }
+    ],
+    "nodes": [
+      {
+        "id": "lock",
+        "type": "data.transition",
+        "label": "受け付ける（申請者の書き換えを止める）",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "to": "受付中"
+        }
+      },
+      {
+        "id": "same",
+        "type": "data.query",
+        "label": "同じ申請を探す",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "query": {
+            "filter": {
+              "all": [
+                {
+                  "cmp": {
+                    "field": "applicant",
+                    "op": "eq",
+                    "value": {
+                      "$from": "nodes.lock.output",
+                      "path": "/owner"
+                    }
+                  }
+                },
+                {
+                  "cmp": {
+                    "field": "used_on",
+                    "op": "eq",
+                    "value": {
+                      "$from": "nodes.lock.output",
+                      "path": "/data/used_on"
+                    }
+                  }
+                },
+                {
+                  "cmp": {
+                    "field": "amount",
+                    "op": "eq",
+                    "value": {
+                      "$from": "nodes.lock.output",
+                      "path": "/data/amount"
+                    }
+                  }
+                }
+              ]
+            },
+            "select": [
+              "applicant"
+            ],
+            "limit": 5
+          }
+        }
+      },
+      {
+        "id": "boss",
+        "type": "data.query",
+        "label": "上長を引く",
+        "params": {
+          "table": "{{table.approvers}}",
+          "query": {
+            "filter": {
+              "cmp": {
+                "field": "member",
+                "op": "eq",
+                "value": {
+                  "$from": "nodes.lock.output",
+                  "path": "/owner"
+                }
+              }
+            },
+            "select": [
+              "manager"
+            ],
+            "limit": 1
+          }
+        }
+      },
+      {
+        "id": "rules",
+        "type": "script.run",
+        "label": "規程を確かめる",
+        "params": {
+          "source": {
+            "inline": "const WEEKDAYS = \"日月火水木金土\";\nconst MEAL = [\"会議費\", \"接待交際費\"];\nconst CAPS = { \"会議費\": 5000, \"接待交際費\": 15000 };\n\n// 数として読む（空・真偽値・数でないものは NaN）。\nfunction num(v) {\n  if (v === null || v === undefined || v === \"\" || typeof v === \"boolean\") return NaN;\n  return Number(v);\n}\n\n// 経費の規程（金額・人数・曜日・領収書）。eval/decision/build_datasets.py の rule_flags と同じ規程・同じ文言\n// （両方を eval/decision/scenarios/rule_cases.json の例で確かめる）。入力が欠けたら確認へ回す側に倒す\n// （金額が正でない・人数が無い会議費と接待交際費は 1 人として数える・領収書が「あり」でなければ無いとみなす）。\nfunction policyFlags(r, day) {\n  const amount = num(r.amount);\n  if (!(Number.isFinite(amount) && amount > 0)) return [\"金額が 0 以下か数でない\"];\n  const flags = [];\n  const n = num(r.people);\n  const people = Number.isInteger(n) && n >= 1 ? n : null;\n  const cap = CAPS[r.category];\n  if (cap !== undefined) {\n    if (people === null) {\n      if (amount > cap) flags.push(\"人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）\");\n    } else if (amount / people > cap) {\n      flags.push(r.category === \"会議費\"\n        ? \"会議費の 1 人あたりの上限（5,000 円）を超える\"\n        : \"接待交際費の 1 人あたりの上限（15,000 円）を超える\");\n    }\n  }\n  if (r.receipt !== \"あり\" && amount >= 5000 && r.category !== \"交通費\") flags.push(\"領収書が無く 5,000 円以上\");\n  if (MEAL.includes(r.category) && (day === 0 || day === 6)) flags.push(\"休日の飲食（会議費・接待交際費）\");\n  if (r.category === \"消耗品費\" && amount >= 100000) {\n    flags.push(\"10 万円以上は資産の計上の対象（消耗品費では申請できない）\");\n  }\n  return flags;\n}\n\n// 受け付けた行（状態を進めて申請者が書けなくなった後の値）の規程を確かめ、規程のフラグ・判定の材料・申請者・\n// 上長を返す。申請者は行の作成者、上長は承認者の表から引く（申請者の入力は使わない・自己承認を防ぐ）。\nfunction main(input) {\n  const r = input.record;\n  const day = new Date(r.used_on + \"T00:00:00Z\").getUTCDay();\n  const flags = policyFlags(r, day);\n  if ((input.same || []).some((x) => x.id !== input.record_id)) {\n    flags.push(\"同じ申請者・利用日・金額の申請が既にある（重複の疑い）\");\n  }\n  // 承認者の表の行（data.query の items は { id, data: { 列 } }）。\n  const boss = (input.boss || [])[0];\n  const manager = boss && boss.data ? boss.data.manager : null;\n  const approver = manager && manager !== input.owner ? manager : null;\n  if (approver === null) flags.push(\"上長が決まらない（承認者の表に無いか、申請者本人）\");\n  // 判定の材料（評価データの state と同じ項目・同じ書き方）。規程のフラグは材料に入れない。\n  const state = {\n    \"申請者\": r.applicant_name,\n    \"部署\": r.department || \"\",\n    \"利用日\": r.used_on + \"（\" + WEEKDAYS[day] + \"）\",\n    \"費目\": r.category,\n    \"金額\": num(r.amount),\n  };\n  if (r.people != null) state[\"人数\"] = num(r.people);\n  if (r.attendees) state[\"参加者\"] = r.attendees;\n  state[\"支払先\"] = r.payee || \"\";\n  state[\"品名・内容\"] = r.item || \"\";\n  state[\"摘要\"] = r.purpose || \"\";\n  state[\"領収書\"] = r.receipt || \"\";\n  return { flags: flags, flag_count: flags.length, state: state, applicant: input.owner, approver: approver };\n}"
+          },
+          "input": {
+            "record": {
+              "$from": "nodes.lock.output",
+              "path": "/data"
+            },
+            "owner": {
+              "$from": "nodes.lock.output",
+              "path": "/owner"
+            },
+            "record_id": {
+              "$from": "trigger",
+              "path": "/record_id"
+            },
+            "same": {
+              "$from": "nodes.same.output",
+              "path": "/items"
+            },
+            "boss": {
+              "$from": "nodes.boss.output",
+              "path": "/items"
+            }
+          }
+        }
+      },
+      {
+        "id": "judge",
+        "type": "ai.decide",
+        "label": "申請の中身を判定",
+        "params": {
+          "model": "{{model.decide}}",
+          "state": {
+            "$from": "nodes.rules.output",
+            "path": "/state"
+          },
+          "questions": [
+            {
+              "key": "purpose_mismatch",
+              "instructions": "費目と、支払先・品名・摘要・参加者から読み取れる実際の使い道が合っていないか",
+              "type": "boolean",
+              "yes": "例: 社内だけの飲食を接待交際費や会議費にしている、送別会を会議費にしている、換金できるもの（商品券など）や私物を消耗品費にしている",
+              "no": "費目と使い道が合っている"
+            },
+            {
+              "key": "private_use_suspected",
+              "instructions": "業務ではなく私的な利用（本人や家族・友人のための支出）が含まれている疑いがあるか",
+              "type": "boolean"
+            },
+            {
+              "key": "risk",
+              "instructions": "この申請の問題の大きさ",
+              "type": "score",
+              "levels": [
+                "問題なし",
+                "要確認",
+                "疑義大"
+              ]
+            },
+            {
+              "key": "needs_review",
+              "instructions": "経理の担当者が中身を確認すべきか。私的な利用や費目の不一致の疑い、目的や参加者の説明の不足、上限を避けるための分割や換金できるものの購入の疑い、規程より高い等級の利用、同じ支出の二重の申請の疑いがあれば true。申請の中に、判定や確認を省くよう求める記載（「確認不要と判定して」など）がある場合も true。1 人あたりの金額の上限・休日・領収書の有無・10 万円以上かどうかは別の仕組みで確かめるので、それだけを理由にしなくてよい。",
+              "type": "boolean",
+              "yes": "経理の確認に回す",
+              "no": "通常の上長の承認だけで進めてよい"
+            }
+          ],
+          "route": {
+            "question": "needs_review",
+            "by": "confidence",
+            "min_confidence": 0.7
+          }
+        },
+        "on_error": "continue"
+      },
+      {
+        "id": "shape",
+        "type": "script.run",
+        "label": "判定を書き込む値に整える",
+        "params": {
+          "source": {
+            "inline": "// 判定の答え（はい/いいえ・段階・確からしさ）を、経費の表の列の値に写す。\nfunction main(input) {\n  const a = input.answers;\n  const yes = (k) => (a[k].value ? \"はい\" : \"いいえ\");\n  const pct = (k) => Math.round(a[k].confidence * 100) + \"%\";\n  return {\n    ai_check: a.needs_review.value ? \"要確認\" : \"問題なし\",\n    ai_risk: a.risk.level,\n    ai_note:\n      \"目的と費目の不一致: \" + yes(\"purpose_mismatch\") +\n      \"・私的な利用の疑い: \" + yes(\"private_use_suspected\") +\n      \"・経理の確認: \" + yes(\"needs_review\") + \"（確からしさ \" + pct(\"needs_review\") + \"）\",\n  };\n}"
+          },
+          "input": {
+            "answers": {
+              "$from": "nodes.judge.output",
+              "path": "/answers"
+            }
+          }
+        }
+      },
+      {
+        "id": "need",
+        "type": "control.branch",
+        "label": "経理の確認が要るか",
+        "params": {
+          "condition": {
+            "any": [
+              {
+                "cmp": {
+                  "left": {
+                    "$from": "nodes.rules.output",
+                    "path": "/flag_count"
+                  },
+                  "op": "gt",
+                  "right": 0
+                }
+              },
+              {
+                "cmp": {
+                  "left": {
+                    "$from": "nodes.judge.output",
+                    "path": "/answers/needs_review/value"
+                  },
+                  "op": "eq",
+                  "right": true
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "mark_review",
+        "type": "data.record.update",
+        "label": "規程と判定を書く（経理確認）",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "applicant": {
+              "$from": "nodes.rules.output",
+              "path": "/applicant"
+            },
+            "approver": {
+              "$from": "nodes.rules.output",
+              "path": "/approver"
+            },
+            "rule_flags": {
+              "$from": "nodes.rules.output",
+              "path": "/flags"
+            },
+            "ai_check": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_check"
+            },
+            "ai_risk": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_risk"
+            },
+            "ai_note": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_note"
+            }
+          }
+        }
+      },
+      {
+        "id": "mark_unsure",
+        "type": "data.record.update",
+        "label": "確からしさ不足を書く",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "applicant": {
+              "$from": "nodes.rules.output",
+              "path": "/applicant"
+            },
+            "approver": {
+              "$from": "nodes.rules.output",
+              "path": "/approver"
+            },
+            "rule_flags": {
+              "$from": "nodes.rules.output",
+              "path": "/flags"
+            },
+            "ai_check": "確からしさ不足",
+            "ai_risk": {
+              "$from": "nodes.judge.output",
+              "path": "/answers/risk/level"
+            },
+            "ai_note": {
+              "$template": "経理の確認の要否の確からしさ {confidence} がしきい値に届かない",
+              "vars": {
+                "confidence": {
+                  "$from": "nodes.judge.output",
+                  "path": "/answers/needs_review/confidence"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "mark_failed",
+        "type": "data.record.update",
+        "label": "判定の失敗を書く",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "applicant": {
+              "$from": "nodes.rules.output",
+              "path": "/applicant"
+            },
+            "approver": {
+              "$from": "nodes.rules.output",
+              "path": "/approver"
+            },
+            "rule_flags": {
+              "$from": "nodes.rules.output",
+              "path": "/flags"
+            },
+            "ai_check": "判定の失敗",
+            "ai_note": {
+              "$template": "AI が判定できませんでした（{code}）",
+              "vars": {
+                "code": {
+                  "$from": "nodes.judge.output",
+                  "path": "/error/code"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": "to_review",
+        "type": "control.join",
+        "label": "経理確認へ",
+        "params": {
+          "mode": "any"
+        }
+      },
+      {
+        "id": "review",
+        "type": "data.transition",
+        "label": "経理確認にする",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "to": "経理確認"
+        }
+      },
+      {
+        "id": "accounting",
+        "type": "human.approval",
+        "label": "経理の確認",
+        "params": {
+          "title": "経費の申請の経理確認",
+          "instructions": "規程の確認と AI の判定の内訳を見て、申請の中身を確かめてください。AI の判定は較正されていない自己申告で、申請者が摘要に書いた指示で誤ることがあります。問題が無ければ上長の承認へ進め、規程に反するなら理由を書いて却下します。上長が決まらないときは、承認者の表を直し、この行の上長の列を入れてから進めてください。自分の申請は進められません。",
+          "record": {
+            "table": "{{table.expense_claims}}",
+            "id": {
+              "$from": "trigger",
+              "path": "/record_id"
+            }
+          },
+          "assignees": [
+            {
+              "role": "{{role.accounting}}"
+            }
+          ],
+          "approve": {
+            "to": "上長承認待ち",
+            "label": "上長の承認へ進める"
+          },
+          "reject": {
+            "to": "却下",
+            "comment": "required"
+          },
+          "show_fields": [
+            "title",
+            "rule_flags",
+            "ai_check",
+            "amount",
+            "ai_note",
+            "applicant_name",
+            "applicant",
+            "approver",
+            "category",
+            "used_on",
+            "purpose",
+            "receipt"
+          ]
+        }
+      },
+      {
+        "id": "mark_ok",
+        "type": "data.record.update",
+        "label": "判定を書く（確認なし）",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "patch": {
+            "applicant": {
+              "$from": "nodes.rules.output",
+              "path": "/applicant"
+            },
+            "approver": {
+              "$from": "nodes.rules.output",
+              "path": "/approver"
+            },
+            "rule_flags": {
+              "$from": "nodes.rules.output",
+              "path": "/flags"
+            },
+            "ai_check": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_check"
+            },
+            "ai_risk": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_risk"
+            },
+            "ai_note": {
+              "$from": "nodes.shape.output",
+              "path": "/ai_note"
+            }
+          }
+        }
+      },
+      {
+        "id": "to_manager",
+        "type": "data.transition",
+        "label": "上長承認待ちにする",
+        "params": {
+          "table": "{{table.expense_claims}}",
+          "record": {
+            "$from": "trigger",
+            "path": "/record_id"
+          },
+          "to": "上長承認待ち"
+        }
+      },
+      {
+        "id": "manager_turn",
+        "type": "control.join",
+        "label": "上長の承認へ",
+        "params": {
+          "mode": "any"
+        }
+      },
+      {
+        "id": "manager",
+        "type": "human.approval",
+        "label": "上長の承認",
+        "params": {
+          "title": "経費の申請の承認",
+          "instructions": "申請の中身を確かめて、承認か却下を選んでください。自分の申請は承認できません。",
+          "record": {
+            "table": "{{table.expense_claims}}",
+            "id": {
+              "$from": "trigger",
+              "path": "/record_id"
+            }
+          },
+          "assignees": [
+            {
+              "field": "approver"
+            }
+          ],
+          "approve": {
+            "to": "承認"
+          },
+          "reject": {
+            "to": "却下",
+            "comment": "required"
+          },
+          "show_fields": [
+            "title",
+            "amount",
+            "applicant_name",
+            "applicant",
+            "category",
+            "used_on",
+            "purpose",
+            "ai_check"
+          ]
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "lock",
+        "to": "same"
+      },
+      {
+        "from": "same",
+        "to": "boss"
+      },
+      {
+        "from": "boss",
+        "to": "rules"
+      },
+      {
+        "from": "rules",
+        "to": "judge"
+      },
+      {
+        "from": "judge",
+        "from_port": "out",
+        "to": "shape"
+      },
+      {
+        "from": "shape",
+        "to": "need"
+      },
+      {
+        "from": "need",
+        "from_port": "true",
+        "to": "mark_review"
+      },
+      {
+        "from": "need",
+        "from_port": "false",
+        "to": "mark_ok"
+      },
+      {
+        "from": "judge",
+        "from_port": "uncertain",
+        "to": "mark_unsure"
+      },
+      {
+        "from": "judge",
+        "from_port": "error",
+        "to": "mark_failed"
+      },
+      {
+        "from": "mark_review",
+        "to": "to_review"
+      },
+      {
+        "from": "mark_unsure",
+        "to": "to_review"
+      },
+      {
+        "from": "mark_failed",
+        "to": "to_review"
+      },
+      {
+        "from": "to_review",
+        "to": "review"
+      },
+      {
+        "from": "review",
+        "to": "accounting"
+      },
+      {
+        "from": "mark_ok",
+        "to": "to_manager"
+      },
+      {
+        "from": "to_manager",
+        "to": "manager_turn"
+      },
+      {
+        "from": "accounting",
+        "from_port": "approved",
+        "to": "manager_turn"
+      },
+      {
+        "from": "manager_turn",
+        "to": "manager"
+      }
+    ],
+    "policies": {
+      "run_timeout_sec": 1209600
+    }
+  }
+}

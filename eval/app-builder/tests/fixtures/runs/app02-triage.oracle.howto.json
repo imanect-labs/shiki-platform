@@ -1,0 +1,400 @@
+{
+ "task": "app02-triage",
+ "variant": "oracle",
+ "case": "howto",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-cba333-main",
+   "display_name": "問い合わせを分類して担当を決める",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "subject",
+     "body"
+    ],
+    "x-order": [
+     "subject",
+     "body"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "register",
+     "type": "data.record.create",
+     "label": "問い合わせを登録",
+     "params": {
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+      "data": {
+       "subject": {
+        "$from": "input",
+        "path": "/subject"
+       },
+       "body": {
+        "$from": "input",
+        "path": "/body"
+       },
+       "status": "未対応"
+      }
+     }
+    },
+    {
+     "id": "classify",
+     "type": "llm.invoke",
+     "label": "分類を決める",
+     "params": {
+      "prompt": {
+       "$template": "次の問い合わせを読み、分類を「請求」「不具合」「使い方」のどれか 1 つに決めてください。答えには分類の語だけを書いてください。\n件名: {subject}\n本文: {body}",
+       "vars": {
+        "subject": {
+         "$from": "input",
+         "path": "/subject"
+        },
+        "body": {
+         "$from": "input",
+         "path": "/body"
+        }
+       }
+      },
+      "model": "default"
+     }
+    },
+    {
+     "id": "pick",
+     "type": "script.run",
+     "label": "分類の語を取り出す",
+     "params": {
+      "source": {
+       "inline": "function main(input) {\n  var text = String(input.text || \"\");\n  var found = null;\n  var at = -1;\n  [\"請求\", \"不具合\", \"使い方\"].forEach(function (c) {\n    var i = text.indexOf(c);\n    if (i >= 0 && (at < 0 || i < at)) {\n      found = c;\n      at = i;\n    }\n  });\n  if (found === null) {\n    throw new Error(\"分類を読み取れません: \" + text.slice(0, 100));\n  }\n  return { category: found };\n}"
+      },
+      "input": {
+       "$from": "nodes.classify.output"
+      }
+     }
+    },
+    {
+     "id": "find_assignee",
+     "type": "data.query",
+     "label": "担当者を引く",
+     "params": {
+      "table": "9f6960a7-fdf1-4265-b5bf-5527afd9bf0e",
+      "query": {
+       "filter": {
+        "cmp": {
+         "field": "category",
+         "op": "eq",
+         "value": {
+          "$from": "nodes.pick.output",
+          "path": "/category"
+         }
+        }
+       },
+       "limit": 1
+      }
+     }
+    },
+    {
+     "id": "assign",
+     "type": "data.record.update",
+     "label": "分類と担当者を書く",
+     "params": {
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+      "record": {
+       "$from": "nodes.register.output",
+       "path": "/id"
+      },
+      "patch": {
+       "category": {
+        "$from": "nodes.pick.output",
+        "path": "/category"
+       },
+       "assignee": {
+        "$from": "nodes.find_assignee.output",
+        "path": "/items/0/data/assignee"
+       }
+      }
+     }
+    },
+    {
+     "id": "mark_triaged",
+     "type": "data.transition",
+     "label": "振り分け済にする",
+     "params": {
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+      "record": {
+       "$from": "nodes.register.output",
+       "path": "/id"
+      },
+      "to": "振り分け済"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "register",
+     "to": "classify"
+    },
+    {
+     "from": "classify",
+     "to": "pick"
+    },
+    {
+     "from": "pick",
+     "to": "find_assignee"
+    },
+    {
+     "from": "find_assignee",
+     "to": "assign"
+    },
+    {
+     "from": "assign",
+     "to": "mark_triaged"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "assign": [
+    "out"
+   ],
+   "classify": [
+    "out"
+   ],
+   "find_assignee": [
+    "out"
+   ],
+   "mark_triaged": [
+    "out"
+   ],
+   "pick": [
+    "out"
+   ],
+   "register": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "a18bba84-f05a-4e64-b38a-dee493f66bcc",
+    "status": "succeeded",
+    "input": {
+     "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+     "subject": "一覧を書き出したい"
+    },
+    "steps": [
+     {
+      "step_path": "register",
+      "node_id": "register",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-09T08:00:37.830827Z",
+       "data": {
+        "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+        "status": "未対応",
+        "subject": "一覧を書き出したい"
+       },
+       "id": "7663572f-3e41-4535-a3bc-df06311fd574",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+       "updated_at": "2026-11-09T08:00:37.830827Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "classify",
+      "node_id": "classify",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "model": "default",
+       "text": "回答: 次の問い合わせを読み、分類を「請求」「不具合」「使い方」のどれか 1 つに決めてください。答えには分類の語だけを書いてください。\n件名: 一覧を書き出したい\n本文: 登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。"
+      },
+      "error": null
+     },
+     {
+      "step_path": "pick",
+      "node_id": "pick",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "category": "請求"
+      },
+      "error": null
+     },
+     {
+      "step_path": "find_assignee",
+      "node_id": "find_assignee",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "items": [
+        {
+         "created_at": "2026-11-09T08:00:37.681298Z",
+         "data": {
+          "assignee": "森",
+          "category": "請求"
+         },
+         "id": "49105038-2a6b-4cbf-93e0-fb513e89720a",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "9f6960a7-fdf1-4265-b5bf-5527afd9bf0e",
+         "updated_at": "2026-11-09T08:00:37.681298Z"
+        }
+       ],
+       "shares_truncated": false,
+       "snapshot_seq": 15,
+       "sort_degraded": false,
+       "sort_precision": "exact",
+       "suppressed": false
+      },
+      "error": null
+     },
+     {
+      "step_path": "assign",
+      "node_id": "assign",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-09T08:00:37.830827Z",
+       "data": {
+        "assignee": "森",
+        "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+        "category": "請求",
+        "status": "未対応",
+        "subject": "一覧を書き出したい"
+       },
+       "id": "7663572f-3e41-4535-a3bc-df06311fd574",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 2,
+       "table_id": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+       "updated_at": "2026-11-09T08:00:37.928218Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "mark_triaged",
+      "node_id": "mark_triaged",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-09T08:00:37.830827Z",
+       "data": {
+        "assignee": "森",
+        "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+        "category": "請求",
+        "status": "振り分け済",
+        "subject": "一覧を書き出したい"
+       },
+       "id": "7663572f-3e41-4535-a3bc-df06311fd574",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 3,
+       "table_id": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
+       "updated_at": "2026-11-09T08:00:37.968264Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-09T08:00:37.774634+00:00"
+   }
+  ],
+  "rows": {
+   "inquiries": [
+    {
+     "id": "7663572f-3e41-4535-a3bc-df06311fd574",
+     "data": {
+      "assignee": "森",
+      "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+      "category": "請求",
+      "status": "振り分け済",
+      "subject": "一覧を書き出したい"
+     }
+    }
+   ],
+   "assign": [
+    {
+     "id": "937a871a-24b5-49bc-9e17-6800b3d8a1a7",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "632162ff-f5fe-4e7e-9938-ba6caab81c0c",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "49105038-2a6b-4cbf-93e0-fb513e89720a",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "937a871a-24b5-49bc-9e17-6800b3d8a1a7",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "632162ff-f5fe-4e7e-9938-ba6caab81c0c",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "49105038-2a6b-4cbf-93e0-fb513e89720a",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-09T08:00:34.565620+00:00"
+ }
+}

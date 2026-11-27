@@ -23,7 +23,8 @@ import { toast } from "@/components/ui/use-toast";
 import { ChartInsertError, figureToChartInsert, insertChart, officeTargetKind } from "@/lib/office/chart-insert";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
-import { useYuiActions, YuiRunList } from "./yui-actions";
+import { useYuiActions } from "./yui-actions";
+import { YuiRunList } from "./yui-run-result";
 
 /// SVG ではなく HTML の部品で描く種類（@imanect/yui/react の YuiFigure と同じ分け方）。
 const HTML_KINDS: ReadonlySet<Kind> = new Set(["app", "ask", "plan", "calc"]);
@@ -33,6 +34,39 @@ const HTML_KINDS: ReadonlySet<Kind> = new Set(["app", "ask", "plan", "calc"]);
 /// （広げるとスマホで画面の端からはみ出す）。ノートの図も同じ揃え方にする。
 export function figureBleed(kind: Kind): string | undefined {
   return HTML_KINDS.has(kind) ? undefined : "-mx-3 sm:-mx-4";
+}
+
+/// app の図の、選択肢の多い choice（select で描かれる）を欄の見出しと結び付ける（BUG-297）。
+///
+/// `@imanect/yui` 0.10.1 は choice の見出しを `{id}-l` の span に置き、select に aria-labelledby を付けない
+/// （読み上げの名前が無い。2 択のボタンや数の欄の group は付けている）。誤りの文（`{id}-e`）とも結び付けない。
+/// y-ui で直るまで、図の中の select に見出しと誤りの文の id を足す。React は yui が書かない属性を消さないので、
+/// 描き直しで select が作り直されたときだけ付け直す。
+function useYuiSelectLabels(root: React.RefObject<HTMLElement | null>, active: boolean) {
+  React.useEffect(() => {
+    const el = root.current;
+    if (!active || !el) return;
+    const link = () => {
+      for (const select of el.querySelectorAll<HTMLSelectElement>('[data-yui="app"] [data-field="choice"] select[id]')) {
+        const label = `${select.id}-l`;
+        if (!select.hasAttribute("aria-labelledby") && document.getElementById(label)) {
+          select.setAttribute("aria-labelledby", label);
+        }
+        const error = `${select.id}-e`;
+        if (document.getElementById(error)) {
+          if (select.getAttribute("aria-describedby") !== error) select.setAttribute("aria-describedby", error);
+        } else if (select.hasAttribute("aria-describedby")) {
+          select.removeAttribute("aria-describedby");
+        }
+      }
+    };
+    link();
+    if (typeof MutationObserver === "undefined") return;
+    // 部品の出し入れ（その他の欄・誤りの文・描き直し）だけを見る（属性の変更は見ないので、ここでの書き換えで回らない）。
+    const observer = new MutationObserver(link);
+    observer.observe(el, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [root, active]);
 }
 
 /// 生成中の本文はトークンごとに再描画されるので、props が変わらない限り描き直さない
@@ -89,6 +123,8 @@ export const UiFigure = React.memo(function UiFigure({
   );
   const [inserting, setInserting] = React.useState(false);
   const [picking, setPicking] = React.useState(false);
+  const frame = React.useRef<HTMLElement>(null);
+  useYuiSelectLabels(frame, !failed && figure != null && !isEmpty(figure) && figure.kind === "app" && !asTable);
 
   if (failed) {
     return (
@@ -185,11 +221,26 @@ export const UiFigure = React.memo(function UiFigure({
   };
 
   return (
-    <figure className="my-3 min-w-0" data-testid="ui-figure" data-ui-kind={figure.kind}>
+    <figure
+      ref={frame}
+      className="my-3 min-w-0"
+      data-testid="ui-figure"
+      data-ui-kind={figure.kind}
+      // 図のボタンが押されたら、前に起動したときの図の下の文を消す（図の中の文と同じく、次に押すまで出す）。
+      onClickCapture={
+        actions_?.onFigureButton
+          ? (e) => {
+              if ((e.target as Element).closest?.('[data-yui="app"] button')) actions_.onFigureButton?.();
+            }
+          : undefined
+      }
+    >
       {asTable ? (
         <div className="text-[14px]">{renderTable(text)}</div>
       ) : (
         <YuiFigure
+          // 起動できたら描き直して入力を空にする（GAP-151）。
+          key={actions_?.formKey ?? 0}
           figure={figure}
           className={figureBleed(figure.kind)}
           {...(actions_?.onAction ? { onAction: actions_.onAction } : {})}
@@ -197,7 +248,23 @@ export const UiFigure = React.memo(function UiFigure({
           {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}
         />
       )}
-      {actions_ ? <YuiRunList runs={actions_.runs} /> : null}
+      {actions_?.blockedNotes?.length ? (
+        <ul className="mt-1 space-y-0.5 text-xs text-amber-700 dark:text-amber-400" data-testid="ui-figure-blocked">
+          {actions_.blockedNotes.map((n, i) => (
+            <li key={i} className="[overflow-wrap:anywhere]">
+              「{n.label}」はいまは使えません。{n.reason}
+            </li>
+          ))}
+          {actions_.blockedHint ? <li className="text-muted-foreground">{actions_.blockedHint}</li> : null}
+        </ul>
+      ) : null}
+      {actions_?.sentNote ? (
+        // 文があるときだけ置く（図の中の状態の欄と並ぶので、空の欄を増やさない）。結果の読み上げは記録の一覧が受け持つ。
+        <p role="status" className="mt-2 text-[13px] text-foreground/80 [overflow-wrap:anywhere]" data-testid="yui-sent-note">
+          ✓ {actions_.sentNote}
+        </p>
+      ) : null}
+      {actions_ ? <YuiRunList runs={actions_.runs} follow={actions_.follow} /> : null}
       <figcaption
         // 狭い幅（スマホ）に収まらないときはボタンごとに次の行へ送る（ボタンの文字の途中では折り返さない）。
         className="mt-1 flex flex-wrap items-center justify-end gap-1 text-[11px] text-muted-foreground"

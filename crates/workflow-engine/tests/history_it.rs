@@ -1,9 +1,11 @@
 //! 実行履歴 read クエリとレイアウト永続化の結合テスト（Task 10.14 backend・実 Postgres）。
 //!
 //! - list_runs: keyset・status/トリガ種フィルタ・作成日降順
-//! - run_detail: workflow_id 束縛（別 workflow の run_id は None = 存在秘匿）・has_output
+//! - run_detail: workflow_id 束縛（別 workflow の run_id は None = 存在秘匿）・has_output・
+//!   同じ前進の Tx で書いた step の並び（線の前のブロックが先・BUG-117）
 //! - step_detail: output 本体の遅延取得・workflow_id 束縛
 //! - list_events: after_seq・seq 昇順
+//! - 予定の日時と由来（スケジュール・手動で指定・親から引き継ぎ・GAP-89）
 //! - EditorLayoutStore: 既定 `{}`・upsert・256KB 上限
 
 #![allow(
@@ -23,11 +25,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::{
-    EditorLayoutStore, LayoutError, NodeContext, NodeExecutor, NodeResult, RunListFilter, RunStore,
-    WorkerConfig, WorkflowWorker,
+    EditorLayoutStore, LayoutError, NodeContext, NodeExecutor, NodeResult, RunListFilter,
+    RunOrigin, RunStore, ScheduledAtSource, WorkerConfig, WorkflowWorker,
 };
 
-/// pass-through executor（`fail` param のあるノードだけ permanent 失敗）。
+/// pass-through executor（`fail` param のあるノードだけ permanent 失敗・`port` param のあるノードはその出口へ進む）。
 struct PassExecutor;
 
 #[async_trait]
@@ -35,6 +37,8 @@ impl NodeExecutor for PassExecutor {
     async fn execute(&self, _t: &str, params: &Value, ctx: &NodeContext) -> NodeResult {
         if params.get("fail").is_some() {
             NodeResult::fail("boom", "意図的失敗", false)
+        } else if let Some(port) = params.get("port").and_then(Value::as_str) {
+            NodeResult::ok_port(json!({ "out_of": ctx.step_path }), port)
         } else {
             NodeResult::ok(json!({ "out_of": ctx.step_path }))
         }
@@ -233,6 +237,175 @@ async fn history_queries_project_only_needed_fields_with_binding() {
         .await
         .unwrap()
         .is_empty());
+}
+
+/// 判定のブロックと同じ前進の Tx で skip になった後続は、判定の後に並ぶ（同じ時刻の中を名前の辞書順に
+/// しない・BUG-117）。名前は辞書順と実行の順が逆になるように付ける。
+#[tokio::test]
+async fn run_detail_orders_steps_of_the_same_tx_by_the_graph() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let ir = json!({
+        "ir_version": 1, "name": "hist-order",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "a_no", "type": "storage.read", "params": {} },
+            { "id": "z_decide", "type": "control.branch", "params": { "port": "true" } },
+            { "id": "y_yes", "type": "storage.read", "params": {} }
+        ],
+        "edges": [
+            { "from": "z_decide", "from_port": "true", "to": "y_yes" },
+            { "from": "z_decide", "from_port": "false", "to": "a_no" }
+        ]
+    });
+    let run = run_to_completion(&pool, &tenant, wf, "interactive", &ir).await;
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let d = store.run_detail(&tenant, wf, run).await.unwrap();
+    // 片付けを先に済ませてから確かめる（落ちても行を残さない）。step と run_event は run に従って消える。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let d = d.expect("detail");
+    let skipped = d.steps.iter().find(|s| s.step_path == "a_no").unwrap();
+    let decided = d.steps.iter().find(|s| s.step_path == "z_decide").unwrap();
+    assert_eq!(
+        skipped.updated_at, decided.updated_at,
+        "前提: skip は判定の完了と同じ Tx で書かれる"
+    );
+    let order: Vec<(&str, &str)> = d
+        .steps
+        .iter()
+        .map(|s| (s.step_path.as_str(), s.status.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("z_decide", "succeeded"),
+            ("a_no", "skipped"),
+            ("y_yes", "succeeded")
+        ]
+    );
+}
+
+/// 予定の日時・親の run・やり直しの元の run だけを決めた run の由来。
+fn origin(
+    scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    parent_run_id: Option<Uuid>,
+    rerun_of: Option<Uuid>,
+) -> RunOrigin<'static> {
+    RunOrigin {
+        scheduled_at,
+        parent_run_id,
+        rerun_of,
+        ..RunOrigin::default()
+    }
+}
+
+/// GAP-89: 実行履歴の一覧と詳細は、予定の日時とその由来を返す。スケジュールの run はその回の予定の時刻
+/// （`schedule`）、手動の実行で指定した日時は `specified`、親の run を持つ子の日時は `parent`、やり直しの元の run を
+/// 持つ run（「同じ入力でもう一度実行」）が引き継いだ日時は `rerun`。予定の日時の無い run（ふつうの手動の実行・その
+/// やり直し・イベント）は、どちらも返さない。
+#[tokio::test]
+async fn history_reports_the_scheduled_time_and_where_it_came_from() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let ir = two_step_ir(false);
+    let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&ir).unwrap());
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    let planned = at("2026-11-09T00:00:00Z");
+    let trial = at("2026-11-16T00:00:00Z");
+    let create = |kind: &'static str, origin: RunOrigin<'static>| {
+        let (store, tenant, ir, graph) = (&store, &tenant, &ir, &graph);
+        async move {
+            store
+                .create_run_from(
+                    tenant,
+                    "acme",
+                    wf,
+                    1,
+                    kind,
+                    None,
+                    "alice",
+                    "user",
+                    &Value::Null,
+                    ir,
+                    graph,
+                    origin,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let scheduled = create("schedule", origin(Some(planned), None, None)).await;
+    let specified = create("interactive", origin(Some(trial), None, None)).await;
+    let child = create("interactive", origin(Some(planned), Some(scheduled), None)).await;
+    // 「同じ入力でもう一度実行」で作った run（元の run の予定の日時を引き継ぐ・GAP-89）。
+    let rerun = create("interactive", origin(Some(planned), None, Some(scheduled))).await;
+    let plain = create("interactive", origin(None, None, None)).await;
+    // 予定の日時の無い run のやり直しは、由来も無い。
+    let plain_rerun = create("interactive", origin(None, None, Some(plain))).await;
+    let event = create("event", origin(None, Some(plain), None)).await;
+    let items = store
+        .list_runs(&tenant, wf, &RunListFilter::default(), None, 10)
+        .await
+        .unwrap();
+    let mut details = Vec::new();
+    for run in [
+        scheduled,
+        specified,
+        child,
+        rerun,
+        plain,
+        plain_rerun,
+        event,
+    ] {
+        details.push(store.run_detail(&tenant, wf, run).await.unwrap().unwrap());
+    }
+    // 片付けを先に済ませてから確かめる（落ちても行を残さない）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let expected = [
+        (scheduled, Some(planned), Some("schedule")),
+        (specified, Some(trial), Some("specified")),
+        (child, Some(planned), Some("parent")),
+        (rerun, Some(planned), Some("rerun")),
+        (plain, None, None),
+        (plain_rerun, None, None),
+        (event, None, None),
+    ];
+    for ((run, at, from), detail) in expected.iter().zip(&details) {
+        let item = items.iter().find(|i| i.run_id == *run).expect("一覧に出る");
+        assert_eq!(
+            (item.scheduled_at, item.scheduled_from.as_deref()),
+            (*at, *from),
+            "{run}"
+        );
+        assert_eq!(
+            (detail.scheduled_at, detail.scheduled_from.as_deref()),
+            (*at, *from),
+            "{run}"
+        );
+        assert_eq!(
+            from.and_then(ScheduledAtSource::parse)
+                .map(ScheduledAtSource::as_str),
+            *from,
+            "由来は API の型に読める"
+        );
+    }
 }
 
 #[tokio::test]

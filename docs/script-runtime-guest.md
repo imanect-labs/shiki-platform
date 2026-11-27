@@ -34,6 +34,8 @@ bash scripts/build-qjs-guest.sh
 
 いずれも `deny.toml` の `allow` に含まれる permissive ライセンス。ホスト側依存
 （wasmtime = Apache-2.0 WITH LLVM-exception 等）は通常の依存グラフとして `cargo deny` が検査する。
+ゲストはワークスペースの外で自分の `Cargo.lock` を持つので、CI の cargo-deny のジョブが
+`--manifest-path crates/script-runtime/guest/Cargo.toml` でルートの `deny.toml` を使って別に検査する（GAP-85）。
 
 ## ABI 契約（ホスト ⇄ ゲスト）
 

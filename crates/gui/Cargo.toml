@@ -44,10 +44,11 @@ sha2 = { workspace = true }
 ts-rs = { workspace = true }
 # GuiValidationError を API エラー body スキーマとして公開する。
 utoipa.workspace = true
+# 図のボタンの起動の間だけ、起動口の入力の誤り（キーと理由）を置く（task_local・GAP-41）。
+tokio.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
-tokio.workspace = true
 sqlx.workspace = true
 reqwest.workspace = true
 

@@ -1,0 +1,98 @@
+{
+ "task": "app01-claim-submit",
+ "page": {
+  "context_usage": {
+   "categories": [
+    {
+     "category": "system",
+     "tokens": 7
+    },
+    {
+     "category": "tools",
+     "tokens": 12
+    },
+    {
+     "category": "messages",
+     "tokens": 0
+    },
+    {
+     "category": "documents",
+     "tokens": 0
+    },
+    {
+     "category": "tool_results",
+     "tokens": 0
+    }
+   ],
+   "measured": true,
+   "model": "default",
+   "reserved_output_tokens": 8192,
+   "used_tokens": 19
+  },
+  "messages": [
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "calltool:data_record_write {\"table\": \"経費申請\", \"op\": \"create\", \"data\": {\"title\": \"確かめ\", \"amount\": 1000, \"applicant\": \"確かめ\", \"approver\": \"確かめ\", \"status\": \"申請中\"}}",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:42.903713Z",
+    "id": "1a9207a9-b668-4da1-8156-337350c03e8d",
+    "parent_id": null,
+    "role": "user"
+   },
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "id": "stubtool_1",
+      "input": {
+       "data": {
+        "amount": 1000,
+        "applicant": "確かめ",
+        "approver": "確かめ",
+        "status": "申請中",
+        "title": "確かめ"
+       },
+       "op": "create",
+       "table": "経費申請"
+      },
+      "name": "data_record_write",
+      "step": 0,
+      "type": "tool_call"
+     },
+     {
+      "content": "操作 'data_record_write' はユーザーに却下されました（実行していません）。",
+      "ok": false,
+      "tool_call_id": "stubtool_1",
+      "type": "tool_result"
+     },
+     {
+      "text": "回答: calltool:data_record_write {\"table\": \"経費申請\", \"op\": \"create\", \"data\": {\"title\": \"確かめ\", \"amount\": 1000, \"applicant\": \"確かめ\", \"approver\": \"確かめ\", \"status\": \"申請中\"}}",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:42.903713Z",
+    "id": "f08c92ea-c46a-4923-8ac8-938e78d78a4e",
+    "parent_id": "1a9207a9-b668-4da1-8156-337350c03e8d",
+    "role": "assistant"
+   }
+  ]
+ },
+ "approvals": [
+  {
+   "approved": false,
+   "at": "2026-11-06T20:42:43+00:00",
+   "input_keys": [
+    "data",
+    "op",
+    "table"
+   ],
+   "run_id": "971b4a73-ed91-49b8-8cc4-652e15b79f1d",
+   "tool_call_id": "stubtool_1",
+   "tool_name": "data_record_write"
+  }
+ ]
+}

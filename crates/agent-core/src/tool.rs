@@ -193,6 +193,11 @@ pub struct ToolOutcome {
     /// を入れる（chat 側で document_ref ブロックへ写り、成果物への導線カードになる）。
     /// 作成系（save_document / save_sheet）と編集系（office.* / document.edit / csv.patch）が共有する。
     pub document_refs: Vec<serde_json::Value>,
+    /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照（D-204・T02）。
+    /// `{kind, id, name, version}` の JSON（kind は chat の `BuilderKind`・chat の `builder_obs` が組む）。
+    /// **保存に成功し、発話ユーザーが読めるものだけ**を入れる（chat 側で builder_ref ブロックへ写り、
+    /// 参照カードになる）。ドライブのノードはここへ入れない（[`Self::document_refs`] の契約）。
+    pub builder_refs: Vec<serde_json::Value>,
     /// skill ツールの発動記録（skill のみ・他ツールは空・#344 Task 10.11）。
     /// `{skill_id, skill_version, name}` の JSON。**発話ユーザー権限で解決に成功した**発動のみ
     /// を入れる（run イベントへ append され「何をいつ適用したか」の完全な列が残る＝監査・再現性）。
@@ -239,6 +244,7 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             skill_drafts: Vec::new(),
             document_refs: Vec::new(),
+            builder_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
             translations: Vec::new(),
@@ -263,6 +269,7 @@ impl ToolOutcome {
             csv_drafts: Vec::new(),
             skill_drafts: Vec::new(),
             document_refs: Vec::new(),
+            builder_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
             translations: Vec::new(),

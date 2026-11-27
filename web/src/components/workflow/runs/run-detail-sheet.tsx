@@ -7,7 +7,8 @@
 /// 過約束せず明記する。node_id の表示名は run にピンされた version の IR から引く。
 
 import * as React from "react";
-import { Ban, Loader2, Play, RotateCcw } from "lucide-react";
+import Link from "next/link";
+import { Ban, ChevronDown, Loader2, PencilLine, Play, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,17 +20,19 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/use-toast";
+import { cn } from "@/lib/utils";
 import { getWorkflowVersion } from "@/lib/workflow-api";
 import { cancelRun, retryRun } from "@/lib/workflow-run-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import { StepTimeline, type NodeInfo } from "./step-timeline";
 import {
-  FAIL_REASON_LABELS,
   formatDateTime,
   formatDuration,
   isTerminalRunStatus,
   RunStatusBadge,
+  SCHEDULED_AT_LABELS,
+  SCHEDULED_AT_NOTES,
   TRIGGER_KIND_LABELS,
 } from "./status";
 import { useRunStream } from "./use-run-stream";
@@ -59,7 +62,7 @@ function useNodeInfo(workflowId: string, version: number | null) {
           new Map(
             nodes.map((n) => [
               n.id,
-              { label: n.label || CATALOG_LABELS.get(n.type) || n.id, type: n.type },
+              { label: n.label || CATALOG_LABELS.get(n.type) || n.id, type: n.type, params: n.params },
             ]),
           ),
         );
@@ -76,6 +79,68 @@ function useNodeInfo(workflowId: string, version: number | null) {
   return React.useCallback(
     (nodeId: string): NodeInfo | null => map?.get(nodeId) ?? null,
     [map],
+  );
+}
+
+/// 畳んで見せる値の大きさ（どちらかを超えたら畳む・GAP-96）。
+const FOLD_CHARS = 2_000;
+const FOLD_LINES = 20;
+
+/// 値の大きさを、画面の単位（KB・MB）で言う（付録 C の P11）。1 KB に満たなければ「1 KB 未満」と言う（P7）。
+function sizeLabel(text: string): string {
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return "1 KB 未満";
+  return `${Math.round(bytes / 1024).toLocaleString("ja-JP")} KB`;
+}
+
+/// 畳んだ理由。文字数で畳んだら大きさを、行数だけで畳んだら行数を言う（小さな値を「大きな値」と言わない・P7）。
+function foldedNote(text: string, lines: number): string {
+  return text.length > FOLD_CHARS
+    ? `大きな値（${sizeLabel(text)}）なので畳んでいます。`
+    : `長い値（${lines.toLocaleString("ja-JP")} 行）なので畳んでいます。`;
+}
+
+/// 実行の入力ときっかけの内容を JSON で見せる。大きな値は畳んでおき、押したときだけ広げる（GAP-96）。
+function JsonValue({ title, value, testId }: { title: string; value: unknown; testId: string }) {
+  const text = React.useMemo(() => JSON.stringify(value, null, 2) ?? String(value), [value]);
+  const lines = React.useMemo(() => text.split("\n").length, [text]);
+  const large = text.length > FOLD_CHARS || lines > FOLD_LINES;
+  const [shown, setShown] = React.useState(false);
+  const id = React.useId();
+  const open = !large || shown;
+  return (
+    <div data-testid={testId}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-medium text-muted-foreground">{title}</h3>
+        {large ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
+            aria-expanded={open}
+            aria-controls={id}
+            onClick={() => setShown((v) => !v)}
+          >
+            <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden />
+            {open ? "畳む" : "表示する"}
+          </Button>
+        ) : null}
+      </div>
+      {open ? (
+        <pre
+          id={id}
+          className="max-h-60 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-subtle"
+        >
+          {text}
+        </pre>
+      ) : (
+        <p className="text-[11px] text-muted-foreground" data-testid={`${testId}-folded`}>
+          {foldedNote(text, lines)}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -173,6 +238,9 @@ export function RunDetailSheet({
         title: "再実行できませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
+      // 再開を断られた（再開しても同じ結果になる失敗・実行の期限切れ）ら、詳細を読み直して理由とボタンを今の状態に
+      // そろえる（サーバーも画面と同じ定義で断る・D-116）。
+      if (mode === "resume") refresh();
     } finally {
       setBusy(null);
     }
@@ -182,6 +250,14 @@ export function RunDetailSheet({
     detail !== null &&
     !isTerminalRunStatus(detail.status) &&
     !detail.cancelRequested;
+  // 再開しても同じ結果になる失敗（設定・値で決まる失敗・実行の期限切れ）には、再開のボタンを出さず理由を言う。
+  // 勧めるか・理由の文はサーバーが失敗の分類の単一定義から返す（BUG-132）。
+  const failed = detail?.status === "failed";
+  const offerResume = failed && detail?.resume?.offer !== false;
+  // 再開しても同じ結果になる失敗は、エディターで直してから「実行」で実行し直すよう案内する。「同じ入力でもう一度
+  // 実行」もこの実行のバージョンで動くので、そのバージョンの設定だけで決まる失敗では出さない（BUG-132）。
+  const sameResult = failed && detail?.resume?.advice === "same_result";
+  const offerRerun = !failed || detail?.resume?.offer_rerun !== false;
 
   return (
     <Sheet open={runId !== null} onOpenChange={(o) => !o && onClose()}>
@@ -189,7 +265,7 @@ export function RunDetailSheet({
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             実行の詳細
-            {detail ? <RunStatusBadge status={detail.status} /> : null}
+            {detail ? <RunStatusBadge status={detail.status} waitingFor={detail.waitingFor} /> : null}
             {detail?.cancelRequested && !isTerminalRunStatus(detail.status) ? (
               <span className="text-xs font-normal text-muted-foreground">
                 中止しています…
@@ -210,9 +286,13 @@ export function RunDetailSheet({
             </div>
           ) : (
             <div className="space-y-5">
-              {detail.status === "failed" && detail.failReason ? (
-                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
-                  {FAIL_REASON_LABELS[detail.failReason] ?? detail.failReason}
+              {/* 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。 */}
+              {failed && detail.failure ? (
+                <p
+                  className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive"
+                  data-testid="run-failure"
+                >
+                  {detail.failure.message}
                 </p>
               ) : null}
 
@@ -226,59 +306,89 @@ export function RunDetailSheet({
                   label="所要時間"
                   value={formatDuration(detail.startedAt, detail.finishedAt)}
                 />
+                {/* どの予定の分の実行か（止まっていた後や、順番待ちで遅れて始めた実行でも予定の時刻のまま・GAP-89）。 */}
+                {detail.scheduled ? (
+                  <MetaItem
+                    label={SCHEDULED_AT_LABELS[detail.scheduled.source]}
+                    value={<span data-testid="run-detail-scheduled-at">{formatDateTime(detail.scheduled.at)}</span>}
+                  />
+                ) : null}
                 <MetaItem label="受付" value={formatDateTime(detail.createdAt)} />
                 <MetaItem label="開始" value={formatDateTime(detail.startedAt)} />
                 <MetaItem label="終了" value={formatDateTime(detail.finishedAt)} />
               </dl>
+              {detail.scheduled && SCHEDULED_AT_NOTES[detail.scheduled.source] ? (
+                <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="run-detail-scheduled-note">
+                  {SCHEDULED_AT_NOTES[detail.scheduled.source]}
+                </p>
+              ) : null}
 
-              <div className="flex flex-wrap items-center gap-2">
-                {cancellable ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={cancel}
-                    disabled={busy !== null}
-                  >
-                    {busy === "cancel" ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <Ban className="size-3.5" aria-hidden />
-                    )}
-                    実行を中止
-                  </Button>
-                ) : null}
-                {detail.status === "failed" ? (
-                  <Button size="sm" onClick={() => retry("resume")} disabled={busy !== null}>
-                    {busy === "retry" ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <RotateCcw className="size-3.5" aria-hidden />
-                    )}
-                    失敗したところから再開
-                  </Button>
-                ) : null}
-                {isTerminalRunStatus(detail.status) ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => retry("new")}
-                    disabled={busy !== null}
-                  >
-                    <Play className="size-3.5" aria-hidden />
-                    同じ入力でもう一度実行
-                  </Button>
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  {cancellable ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={cancel}
+                      disabled={busy !== null}
+                    >
+                      {busy === "cancel" ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <Ban className="size-3.5" aria-hidden />
+                      )}
+                      実行を中止
+                    </Button>
+                  ) : null}
+                  {offerResume ? (
+                    <Button size="sm" onClick={() => retry("resume")} disabled={busy !== null}>
+                      {busy === "retry" ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <RotateCcw className="size-3.5" aria-hidden />
+                      )}
+                      失敗したところから再開
+                    </Button>
+                  ) : null}
+                  {sameResult ? (
+                    <Button asChild size="sm">
+                      <Link href={`/workflows/${workflowId}`}>
+                        <PencilLine className="size-3.5" aria-hidden />
+                        エディターを開く
+                      </Link>
+                    </Button>
+                  ) : null}
+                  {isTerminalRunStatus(detail.status) && offerRerun ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => retry("new")}
+                      disabled={busy !== null}
+                    >
+                      <Play className="size-3.5" aria-hidden />
+                      同じ入力でもう一度実行
+                    </Button>
+                  ) : null}
+                </div>
+                {failed && detail.resume ? (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="run-resume-note">
+                    {detail.resume.note}
+                  </p>
                 ) : null}
               </div>
 
               {detail.input !== null && detail.input !== undefined ? (
-                <div>
-                  <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">
-                    実行時の入力
-                  </h3>
-                  <pre className="max-h-40 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-subtle">
-                    {JSON.stringify(detail.input, null, 2)}
-                  </pre>
-                </div>
+                <JsonValue key={`${detail.runId}-input`} title="実行時の入力" value={detail.input} testId="run-detail-input" />
+              ) : null}
+              {/* 手動の実行で試したきっかけの内容（やり直しで引き継いだものも・D-93・GAP-96）。試していなければ出さない
+                  （きっかけの内容は入力と同じ）。 */}
+              {detail.triggerPayload !== null && detail.triggerPayload !== undefined ? (
+                <JsonValue
+                  key={`${detail.runId}-trigger`}
+                  title="試したきっかけの内容"
+                  value={detail.triggerPayload}
+                  testId="run-detail-trigger"
+                />
               ) : null}
 
               <div>

@@ -434,13 +434,20 @@ impl ChatStore {
             .collect::<Result<_, _>>()
             .map_err(|e| ChatError::Internal(format!("content: {e}")))?;
         let agent_modes: Vec<bool> = kept.iter().map(|m| m.agent_mode).collect();
+        // 途中で止まった理由（GAP-106）も写す（分岐した会話でも回答の下の注記が消えない）。
+        let stop_reasons: Vec<Option<&str>> = kept
+            .iter()
+            .map(|m| m.stop_reason.map(crate::model::StopReason::as_str))
+            .collect();
         let created: Vec<DateTime<Utc>> = kept.iter().map(|m| m.created_at).collect();
         let mut tx = self.db.begin().await.map_err(map_db)?;
         sqlx::query(
-            "INSERT INTO message (id, thread_id, org, tenant_id, role, content, agent_mode, parent_id, created_at) \
-             SELECT u.id, $1, $2, $3, u.role, u.content, u.agent_mode, u.parent_id, u.created_at \
-             FROM UNNEST($4::uuid[], $5::text[], $6::jsonb[], $7::bool[], $8::uuid[], $9::timestamptz[]) \
-                  AS u(id, role, content, agent_mode, parent_id, created_at)",
+            "INSERT INTO message \
+                 (id, thread_id, org, tenant_id, role, content, agent_mode, parent_id, created_at, stop_reason) \
+             SELECT u.id, $1, $2, $3, u.role, u.content, u.agent_mode, u.parent_id, u.created_at, u.stop_reason \
+             FROM UNNEST($4::uuid[], $5::text[], $6::jsonb[], $7::bool[], $8::uuid[], $9::timestamptz[], \
+                         $10::text[]) \
+                  AS u(id, role, content, agent_mode, parent_id, created_at, stop_reason)",
         )
         .bind(thread_id)
         .bind(ctx.org())
@@ -451,6 +458,7 @@ impl ChatStore {
         .bind(&agent_modes)
         .bind(&parents)
         .bind(&created)
+        .bind(&stop_reasons)
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;

@@ -1,0 +1,351 @@
+import { test, expect, type Browser, type Page } from "@playwright/test";
+
+import {
+  cleanupAll,
+  cleanupQueue,
+  deleteArtifactApi,
+  deleteTableApi,
+  loginAs,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  trackCreatedResources,
+  uniqueName,
+} from "./helpers";
+
+/// アプリのエディターでビューを束ね、束ねた部品の版を上げる（GAP-11）の E2E。
+/// - 束ねたワークフローとビューが改訂されていると、新しいバージョンと、上げると変わるところ（入力項目の増減・必須、
+///   使ってよい操作と使う人に要る権限の増減、ビューの絞り込み）が出る。「v2 にする」で上げ、保存の前なら元に戻せる。
+/// - ビューを追加すると、組み立てるに表の段が足され、表に出すビューを選べる。保存した下書きでは表が描かれ、公開の確認は
+///   エディターと同じ呼び名で差を言う。
+/// - ビューを読めない共同編集者も、そのビューに触れなければ保存できる（BUG-80 と同じ扱い）。
+/// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・ビュー・テーブル）は最後に消す。
+/// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
+
+const SHOTS = process.env.E2E_SHOTS_DIR;
+
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
+
+async function csrf(page: Page): Promise<string> {
+  return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+}
+
+async function api<T = Record<string, unknown>>(
+  page: Page,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await page.request.fetch(`/api${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": await csrf(page) },
+    ...(body === undefined ? {} : { data: body }),
+  });
+  expect(res.ok(), `${method} ${path} → ${res.status()} ${await res.text()}`).toBeTruthy();
+  return (res.status() === 204 ? {} : await res.json()) as T;
+}
+
+/// 入力項目を持つワークフローの IR（`title` を足すと件名が必須の入力になる）。`table` を渡すと、そのテーブルにレコードを
+/// 追加するブロックを足す（使ってよい操作にテーブルへの書き込みが増え、使う人に追加の権限が要るようになる・GAP-11）。
+function flowIr(name: string, withTitle: boolean, table?: string) {
+  return {
+    ir_version: 1,
+    name,
+    display_name: name,
+    triggers: [{ kind: "interactive" }],
+    input_schema: withTitle
+      ? {
+          type: "object",
+          required: ["title"],
+          "x-order": ["title", "amount"],
+          properties: {
+            title: { type: "string", title: "件名" },
+            amount: { type: "integer", title: "金額" },
+          },
+        }
+      : { type: "object", required: ["amount"], properties: { amount: { type: "integer", title: "金額" } } },
+    ...(table ? { declared_scopes: ["data.write"] } : {}),
+    nodes: [
+      {
+        id: "compute",
+        type: "script.run",
+        label: "計算する",
+        params: { source: { inline: "function main(i){ return { ok: true }; }" } },
+      },
+      ...(table ? [{ id: "add", type: "data.record.create", label: "申請を記録", params: { table, data: {} } }] : []),
+    ],
+    edges: table ? [{ from: "compute", to: "add" }] : [],
+  };
+}
+
+type Fixture = { appId: string; flow: string; flowId: string; viewA: string; viewB: string; tableName: string };
+
+/// テーブル・ビュー 2 つ・ワークフローと、ワークフローとビュー A（どちらも v1）を束ねたアプリを作って v1 を公開する。
+/// その後でワークフローとビュー A を v2 に改訂する（最後に消す）。
+async function setup(page: Page): Promise<Fixture> {
+  const tableName = uniqueName("e2e-申請台帳");
+  const table = await api<{ id: string; schema?: { fields: { key: string; display_name: string }[] } }>(
+    page,
+    "POST",
+    "/data/tables",
+    { name: tableName, schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] } },
+  );
+  cleanup.add(() => deleteTableApi(page, table.id));
+  const titleKey = table.schema?.fields.find((f) => f.display_name === "件名")?.key ?? "title";
+  await api(page, "POST", `/data/tables/${table.id}/records`, { data: { [titleKey]: "出張の交通費" } });
+  const viewA = uniqueName("e2e-申請の一覧");
+  const a = await api<{ id: string }>(page, "POST", "/data/views", { name: viewA, table_id: table.id, query: {} });
+  cleanup.add(() => deleteArtifactApi(page, a.id));
+  const viewB = uniqueName("e2e-最近の申請");
+  const b = await api<{ id: string }>(page, "POST", "/data/views", { name: viewB, table_id: table.id, query: {} });
+  cleanup.add(() => deleteArtifactApi(page, b.id));
+  const flow = uniqueName("views-flow");
+  const wf = await api<{ id: string }>(page, "POST", "/workflows", { ir: flowIr(flow, false) });
+  cleanup.add(() => removeWorkflowApi(page, wf.id));
+  const app = await api<{ id: string }>(page, "POST", "/mini-apps", {
+    name: uniqueName("views-app"),
+    body: {
+      description: "経費の申請",
+      screen: `申請の一覧です。\n\n\`\`\`data_grid\n${viewA}\n\`\`\`\n\n\`\`\`ui\napp 経費の申請\n金額 = number 円 as amount\nbutton 申請する -> workflow ${flow}\n\`\`\`\n`,
+      workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+      data_views: [{ alias: viewA, artifact_id: a.id, version: 1 }],
+    },
+  });
+  cleanup.add(() => deleteArtifactApi(page, app.id));
+  // v1 を公開しておく（公開の確認が、公開した版との差を言う）。
+  await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+  // 束ねた後に、ワークフローとビュー A を改訂する（アプリは v1 を固定したまま）。
+  await api(page, "PUT", `/workflows/${wf.id}`, { ir: flowIr(flow, true, table.id), expected_version: 1 });
+  await api(page, "PUT", `/data/views/${a.id}`, { table_id: table.id, query: { limit: 20 }, expected_version: 1 });
+  return { appId: app.id, flow, flowId: wf.id, viewA, viewB, tableName };
+}
+
+/// 別の人の画面（PC かスマホ）。ログインに失敗したら、作った画面を閉じてから落とす。
+async function personOn(browser: Browser, user: string): Promise<Page> {
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: true });
+  try {
+    const page = await ctx.newPage();
+    await loginAs(page, user);
+    return page;
+  } catch (e) {
+    await ctx.close();
+    throw e;
+  }
+}
+
+async function openEditor(page: Page, appId: string) {
+  await page.goto(`/apps/${appId}`);
+  await page.getByRole("button", { name: "編集" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "アプリを編集" })).toBeVisible();
+  return dialog;
+}
+
+test.describe("アプリのエディターのビューと版を上げる操作（GAP-11）", () => {
+  test("新しいバージョンの差を見て上げ、ビューを追加して表を置き、下書きで表が描かれる", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const f = await setup(page);
+    const dialog = await openEditor(page, f.appId);
+
+    // ワークフロー: v2 があり、入力項目の変化を言う。
+    const wfPins = dialog.getByTestId("miniapp-workflow-pins");
+    const wfUpdate = wfPins.getByTestId("miniapp-pin-update");
+    await expect(wfUpdate).toContainText("新しいバージョン v2 があります", { timeout: 15_000 });
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("入力項目「件名」（title）が増えます（必須）");
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("入力項目「金額」（amount）が必須でなくなります");
+    // 使ってよい操作と、使う人に要る権限の増減（対象の名前は、あなたに見えるテーブルだけ・GAP-11）。
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("使ってよい操作に「業務データを書く」が増えます");
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText(
+      `使う人に、テーブル「${f.tableName}」にレコードを追加する権限が要るようになります`,
+    );
+    await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toBeVisible();
+    // v2 のスクリプトはテーブルに書けるので、前もって確かめられないブロックがあると言う（GAP-82 と同じ言い方）。
+    await expect(wfUpdate.getByTestId("miniapp-pin-unchecked")).toHaveText(
+      "v2 には、前もって確かめられないブロックがあります。使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。",
+    );
+    // ビュー A: v2 があり、絞り込みが変わると言う（列の名前や値は出さない）。
+    const viewPins = dialog.getByTestId("miniapp-data_view-pins");
+    const viewUpdate = viewPins.getByTestId("miniapp-pin-update");
+    await expect(viewUpdate).toContainText("新しいバージョン v2 があります");
+    await expect(viewUpdate.getByTestId("miniapp-pin-changes")).toHaveText("絞り込み・並べ替え・表示する列が変わります");
+    if (SHOTS) await dialog.screenshot({ path: `${SHOTS}/miniapp-views-updates-pc.png` });
+
+    // ワークフローを v2 に上げると、元に戻せる。戻してから、もう一度上げる。
+    await wfUpdate.getByRole("button", { name: "v2 にする" }).click();
+    const changed = wfPins.getByTestId("miniapp-pin-changed");
+    await expect(changed).toContainText("v1 から v2 にしました");
+    await expect(wfPins.getByTestId("miniapp-pin-update")).toHaveCount(0);
+    await changed.getByRole("button", { name: "v1 に戻す" }).click();
+    await expect(wfPins.getByTestId("miniapp-pin-changed")).toHaveCount(0);
+    await wfPins.getByTestId("miniapp-pin-update").getByRole("button", { name: "v2 にする" }).click();
+    await viewUpdate.getByRole("button", { name: "v2 にする" }).click();
+    await expect(viewPins.getByTestId("miniapp-pin-changed")).toContainText("v1 から v2 にしました");
+
+    // ビュー B を追加すると、組み立てるの最後に表の段が足され、表に出すビューを選べる。
+    await dialog.getByLabel("追加するビュー").selectOption({ label: `${f.viewB}（v1）` });
+    await dialog.getByRole("button", { name: "ビューを追加" }).click();
+    const grids = dialog.getByTestId("screen-builder-grid");
+    await expect(grids).toHaveCount(2);
+    await expect(grids.last().getByRole("combobox")).toHaveValue(f.viewB);
+    await expect(grids.first().getByRole("combobox")).toHaveValue(f.viewA);
+    await dialog.getByTestId("screen-builder-grid").last().scrollIntoViewIfNeeded();
+    if (SHOTS) await dialog.screenshot({ path: `${SHOTS}/miniapp-views-builder-pc.png` });
+    // 「表」で表の段を足すと、追加したビューから選べる。消すと元に戻る。
+    await dialog.getByRole("button", { name: "表", exact: true }).click();
+    await expect(grids).toHaveCount(3);
+    await expect(grids.last().getByRole("combobox").locator("option")).toHaveText([f.viewA, f.viewB]);
+    await dialog.getByRole("button", { name: `表「${f.viewA}」を消す` }).last().click();
+    await expect(grids).toHaveCount(2);
+    // 書くタブの記述にも、ビュー B の表が入っている。
+    await dialog.getByRole("tab", { name: "書く" }).click();
+    await expect(dialog.getByRole("textbox", { name: /^画面\*?$/ })).toHaveValue(
+      new RegExp(`\`\`\`data_grid\\n${f.viewB}\\n\`\`\`\\n?$`),
+    );
+
+    await dialog.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+    // 下書きを開くと、2 つの表が描かれる（作る人は下書きを試せる）。
+    await expect(page.getByTestId(`miniapp-data-grid-${f.viewA}`)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId(`miniapp-data-grid-${f.viewB}`)).toBeVisible({ timeout: 30_000 });
+    const saved = await api<{ body: { workflows: { version: number }[]; data_views: { alias: string; version: number }[] } }>(
+      page,
+      "GET",
+      `/mini-apps/${f.appId}/resolved?version=2`,
+    );
+    expect(saved.body.workflows[0]!.version).toBe(2);
+    expect(saved.body.data_views).toEqual([
+      expect.objectContaining({ alias: f.viewA, version: 2 }),
+      expect.objectContaining({ alias: f.viewB, version: 1 }),
+    ]);
+
+    // 公開の確認は、エディターと同じ呼び名で差を言う。
+    await page.getByTestId("miniapp-publish-bar").getByRole("button", { name: "公開", exact: true }).click();
+    const confirm = page.getByTestId("miniapp-publish-dialog");
+    const changes = confirm.getByTestId("miniapp-publish-changes");
+    await expect(changes).toContainText(`ワークフロー「${f.flow}」: v1 から v2 へ`, { timeout: 15_000 });
+    await expect(changes).toContainText(`ビュー「${f.viewA}」: v1 から v2 へ`);
+    await expect(changes).toContainText(`ビュー「${f.viewB}」を追加する（v1）`);
+    await confirm.getByRole("button", { name: "キャンセル" }).click();
+
+    // スマホ幅のエディター（部品の一覧と表の段・横にはみ出さない）。確かめはいつも走らせ、撮るのは SHOTS のときだけ。
+    {
+      const ctx = await browser.newContext({
+        storageState: await page.context().storageState(),
+        viewport: { width: 390, height: 844 },
+        hasTouch: true,
+        isMobile: true,
+        deviceScaleFactor: 2,
+        ignoreHTTPSErrors: true,
+      });
+      try {
+        const phone = await ctx.newPage();
+        await phone.goto(`/apps/${f.appId}`);
+        await phone.getByRole("button", { name: "編集" }).click();
+        const d = phone.getByRole("dialog");
+        await expect(d.getByTestId("miniapp-views")).toBeVisible({ timeout: 15_000 });
+        await d.getByTestId("miniapp-views").scrollIntoViewIfNeeded();
+        if (SHOTS) await phone.screenshot({ path: `${SHOTS}/miniapp-views-editor-phone.png` });
+        await d.getByTestId("screen-builder-grid").first().scrollIntoViewIfNeeded();
+        if (SHOTS) await phone.screenshot({ path: `${SHOTS}/miniapp-views-grid-phone.png` });
+        const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+        expect(overflow).toBeLessThanOrEqual(0);
+      } finally {
+        await ctx.close();
+      }
+    }
+  });
+
+  test("ビューを読めない共同編集者も、そのビューに触れなければ保存できる", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const f = await setup(page);
+    // bob をアプリの編集者にする（ワークフローは閲覧で共有し、ビューは共有しない）。
+    const bob = await personOn(browser, "bob");
+    try {
+      const bobId = (await api<{ id: string }>(bob, "GET", "/me")).id;
+      await api(page, "PUT", `/artifacts/${f.appId}/shares`, { target: { type: "user", id: bobId }, role: "editor" });
+      await api(page, "PUT", `/artifacts/${f.flowId}/shares`, { target: { type: "user", id: bobId }, role: "viewer" });
+      const dialog = await openEditor(bob, f.appId);
+      const viewPins = dialog.getByTestId("miniapp-data_view-pins");
+      await expect(viewPins.getByTestId("miniapp-pin-unreadable")).toContainText(
+        `ビュー「${f.viewA}」が見つかりません。削除されたか、見る権限がありません。変えなければ、このまま保存できます。`,
+        { timeout: 15_000 },
+      );
+      // 読めない部品には、新しいバージョンも差も出さない。
+      await expect(viewPins.getByTestId("miniapp-pin-update")).toHaveCount(0);
+      // 読めるワークフローには差を出すが、相手ごとの権限を確かめられるのは持ち主だけなので、公開の確認で確かめられる
+      // とは言わない（D-146）。
+      const wfUpdate = dialog.getByTestId("miniapp-workflow-pins").getByTestId("miniapp-pin-update");
+      // テーブルは bob に見えないので、名前を出さない。
+      await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText(
+        "使う人に、あなたが見られないか、削除されたテーブルにレコードを追加する権限が要るようになります",
+        { timeout: 15_000 },
+      );
+      await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toHaveCount(0);
+      await viewPins.scrollIntoViewIfNeeded();
+      if (SHOTS) await bob.screenshot({ path: `${SHOTS}/miniapp-views-unreadable-pc.png` });
+      await dialog.getByLabel(/画面の見出し/).fill("経費の申請（直した）");
+      await dialog.getByRole("button", { name: "保存", exact: true }).click();
+      await expect(bob.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      const saved = await api<{ body: { data_views: { alias: string; version: number }[] } }>(
+        page,
+        "GET",
+        `/mini-apps/${f.appId}/resolved?version=2`,
+      );
+      expect(saved.body.data_views).toEqual([expect.objectContaining({ alias: f.viewA, version: 1 })]);
+    } finally {
+      await cleanupAll(() => bob.context().close());
+    }
+  });
+
+  test("入力項目・使ってよい操作・要る権限の差が無い版でも、確かめられないブロックがあれば言い切らない", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("unchecked-flow");
+    const ir = (label: string) => ({
+      ir_version: 1,
+      name: flow,
+      display_name: flow,
+      triggers: [{ kind: "interactive" }],
+      input_schema: { type: "object", properties: { amount: { type: "integer", title: "金額" } } },
+      declared_scopes: ["data.write"],
+      nodes: [{ id: "compute", type: "script.run", label, params: { source: { inline: "function main(i){ return i; }" } } }],
+      edges: [],
+    });
+    const wf = await api<{ id: string }>(page, "POST", "/workflows", { ir: ir("計算する") });
+    cleanup.add(() => removeWorkflowApi(page, wf.id));
+    const app = await api<{ id: string }>(page, "POST", "/mini-apps", {
+      name: uniqueName("unchecked-app"),
+      body: {
+        description: "計算",
+        screen: `\`\`\`ui\napp 計算\n金額 = number 円 as amount\nbutton 計算する -> workflow ${flow}\n\`\`\`\n`,
+        workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+      },
+    });
+    cleanup.add(() => deleteArtifactApi(page, app.id));
+    // ブロックの名前だけを変えた v2（入力項目・使ってよい操作・要る権限は同じ）。
+    await api(page, "PUT", `/workflows/${wf.id}`, { ir: ir("金額を計算する"), expected_version: 1 });
+
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width > 400 ? 900 : 844 });
+      const dialog = await openEditor(page, app.id);
+      const update = dialog.getByTestId("miniapp-workflow-pins").getByTestId("miniapp-pin-update");
+      await expect(update.getByTestId("miniapp-pin-changes").getByRole("listitem")).toHaveText(
+        ["入力項目と使ってよい操作は変わりません", "確かめられた範囲では、使う人に要る権限も変わりません"],
+        { timeout: 15_000 },
+      );
+      await expect(update.getByTestId("miniapp-pin-unchecked")).toHaveText(
+        "v2 には、前もって確かめられないブロックがあります。使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。",
+      );
+      // 要る権限が増えないので、公開の確認を勧めない。
+      await expect(update.getByTestId("miniapp-pin-access-note")).toHaveCount(0);
+      await update.scrollIntoViewIfNeeded();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-pin-unchecked-${width > 400 ? "pc" : "phone"}.png` });
+      await dialog.getByRole("button", { name: "キャンセル" }).click();
+      await expect(dialog.getByRole("heading", { name: "アプリを編集" })).toHaveCount(0);
+    }
+  });
+});

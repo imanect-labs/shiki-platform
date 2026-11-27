@@ -108,6 +108,29 @@ async fn anthropic_client_error_maps_to_bad_request() {
     assert!(matches!(res, Err(LlmError::BadRequest(_))));
 }
 
+/// 4xx の本文（要求の ID・組織の ID）を誤りの文言に入れない（BUG-87）。誤りの種類の語だけを残す。
+#[tokio::test]
+async fn anthropic_client_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::BAD_REQUEST,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: too long for org-secret"},"request_id":"req_secret_7"}"#,
+    )
+    .await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("4xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_7", "too long"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::BadRequest(m) if m.contains("invalid_request_error")),
+        "{shown}"
+    );
+}
+
 #[tokio::test]
 async fn anthropic_server_error_maps_to_unavailable() {
     let base = spawn_mock(StatusCode::SERVICE_UNAVAILABLE, "down").await;
@@ -116,6 +139,76 @@ async fn anthropic_server_error_maps_to_unavailable() {
 
     let res = provider.stream(&req).await;
     assert!(matches!(res, Err(LlmError::Unavailable(_))));
+}
+
+/// 5xx（529 の overloaded を含む）の本文（要求の ID・組織の ID）も誤りの文言に入れない（BUG-210）。
+#[tokio::test]
+async fn anthropic_server_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::from_u16(529).unwrap(),
+        r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_9"}"#,
+    )
+    .await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("5xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_9", "Overloaded for"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::Unavailable(m) if m.starts_with("anthropic 529") && m.contains("overloaded_error")),
+        "{shown}"
+    );
+}
+
+/// 流し始めた後の error イベント・message_stop の無いまま閉じたストリーム・書きかけの tool_use で閉じたストリームは、
+/// 正常な終わり（Done）にせず一時障害にする（BUG-214）。error イベントの本文（message・要求の ID）は文言に入れない。
+#[tokio::test]
+async fn anthropic_stream_cut_midway_is_unavailable_not_a_clean_end() {
+    let bodies: [&'static str; 3] = [
+        concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded for org-secret\"},\"request_id\":\"req_secret_4\"}\n\n",
+        ),
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n",
+        concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"doc_search\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+        ),
+    ];
+    for body in bodies {
+        let base = spawn_mock(StatusCode::OK, body).await;
+        let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let mut stream = provider.stream(&req).await.expect("stream should start");
+        let mut items = Vec::new();
+        while let Some(item) = stream.next().await {
+            items.push(item);
+        }
+        assert!(
+            !items.iter().any(|i| matches!(
+                i,
+                Ok(StreamDelta::Done { .. } | StreamDelta::ToolUseStop { .. })
+            )),
+            "{body}: {items:?}"
+        );
+        match items.last() {
+            Some(Err(LlmError::Unavailable(msg))) => {
+                assert!(msg.starts_with("cut by provider: anthropic: "), "{msg}");
+                if body.contains("event: error") {
+                    assert!(msg.contains("overloaded_error"), "{msg}");
+                    for leaked in ["org-secret", "req_secret_4", "Overloaded for"] {
+                        assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+                    }
+                }
+            }
+            other => panic!("{body}: {other:?}"),
+        }
+    }
 }
 
 type Seen = Arc<Mutex<Option<HeaderMap>>>;

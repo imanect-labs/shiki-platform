@@ -4,7 +4,8 @@
 //! - 全階層 all-or-nothing（1 階層でも超過なら部分予約を残さない）
 //! - Redis トークンバケットはバースト上限で頭打ち・補充で回復
 //! - **結線後の e2e**: node 種上限で直列化・max_parallel_runs の queue/promote・
-//!   overflow=skip・run timeout → failed(run_timeout)
+//!   overflow=skip・run timeout → failed(run_timeout)・ピンした IR を読めない queued run → failed(internal)・
+//!   ピンした IR が新しい版の queued run → 失敗させずにそのワークフローを見送る（D-65）
 
 #![allow(
     clippy::unwrap_used,
@@ -25,8 +26,8 @@ use workflow_engine::concurrency::{ConcurrencyStore, Slot};
 use workflow_engine::ratelimit::{BucketConfig, TokenBucket};
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::{
-    ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunListFilter, RunStore,
-    WorkerConfig, WorkflowWorker,
+    ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, PromoteReport, RunListFilter,
+    RunStore, WorkerConfig, WorkflowWorker,
 };
 
 async fn pg() -> Option<PgPool> {
@@ -309,7 +310,14 @@ async fn max_parallel_runs_queues_and_promotes() {
     );
 
     // r1 が running のうちは promote されない。
-    assert_eq!(store.promote_queued_runs(Some(&tenant)).await.unwrap(), 0);
+    assert_eq!(
+        store
+            .promote_queued_runs(Some(&tenant))
+            .await
+            .unwrap()
+            .promoted,
+        0
+    );
 
     // r1 を完走させる。
     let worker = gauge_worker(pool.clone(), &tenant);
@@ -320,7 +328,14 @@ async fn max_parallel_runs_queues_and_promotes() {
     );
 
     // promote → r2 が running になり完走できる。
-    assert_eq!(store.promote_queued_runs(Some(&tenant)).await.unwrap(), 1);
+    assert_eq!(
+        store
+            .promote_queued_runs(Some(&tenant))
+            .await
+            .unwrap()
+            .promoted,
+        1
+    );
     while worker.claim_and_run_once("w1").await.unwrap() {}
     assert_eq!(
         store.run_status(&tenant, r2).await.unwrap(),
@@ -329,6 +344,225 @@ async fn max_parallel_runs_queues_and_promotes() {
     // run.started は promote 時に 1 回だけ乗る。
     let events = store.list_events(&tenant, wf, r2, 0, 200).await.unwrap();
     assert_eq!(events.iter().filter(|e| e.kind == "run.started").count(), 1);
+}
+
+/// ピンした IR（ir_snapshot）を読めない queued run は、promote で failed（fail_reason=internal）にして先頭から
+/// 外す。同じワークフローの後ろの run と、ほかのワークフローの昇格は止まらない（以前は 1 件の誤りで promote 全体が
+/// 止まり、その run が永久に先頭に居座った）。
+#[tokio::test]
+async fn unreadable_queued_run_is_failed_and_does_not_block_promotion() {
+    let Some(pool) = pg().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let ir = fanout_ir(
+        "conc-unreadable",
+        &json!({ "max_parallel_runs": 1, "on_trigger_overflow": "queue" }),
+    );
+    let (bad_wf, ok_wf) = (Uuid::new_v4(), Uuid::new_v4());
+    // どちらのワークフローも、1 本目が枠を占めて後ろが queued で並ぶ。
+    let first_bad = create_run(&store, &tenant, bad_wf, &ir).await.unwrap();
+    let broken = create_run(&store, &tenant, bad_wf, &ir).await.unwrap();
+    let behind = create_run(&store, &tenant, bad_wf, &ir).await.unwrap();
+    let first_ok = create_run(&store, &tenant, ok_wf, &ir).await.unwrap();
+    let other = create_run(&store, &tenant, ok_wf, &ir).await.unwrap();
+    // 先頭の queued の ir_snapshot を読めない形（列の既定の {}）にする。
+    sqlx::query("UPDATE workflow_run SET ir_snapshot = '{}' WHERE tenant_id = $1 AND run_id = $2")
+        .bind(&tenant)
+        .bind(broken)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 1 本目を完走させて枠を空ける。
+    let worker = gauge_worker(pool.clone(), &tenant);
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for run in [first_bad, first_ok] {
+        assert_eq!(
+            store.run_status(&tenant, run).await.unwrap(),
+            Some(workflow_engine::RunStatus::Succeeded)
+        );
+    }
+
+    let report = store.promote_queued_runs(Some(&tenant)).await.unwrap();
+    assert_eq!(
+        report,
+        PromoteReport {
+            promoted: 2,
+            failed: 1,
+            skipped_workflows: 0,
+            deferred_newer_ir: 0,
+        }
+    );
+    // 読めない run は失敗の経路と同じく終わる（step は cancelled・run.failed を積み、run.started は積まない）。
+    let d = store
+        .run_detail(&tenant, bad_wf, broken)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.status, "failed");
+    assert_eq!(d.fail_reason.as_deref(), Some("internal"));
+    assert!(
+        d.steps.iter().all(|s| s.status == "cancelled"),
+        "{:?}",
+        d.steps
+    );
+    let events = store
+        .list_events(&tenant, bad_wf, broken, 0, 200)
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e.kind.as_str()).collect();
+    assert!(kinds.contains(&"run.failed"), "{kinds:?}");
+    assert!(!kinds.contains(&"run.started"), "{kinds:?}");
+    // 後ろの run とほかのワークフローの run は昇格して完走する。
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for run in [behind, other] {
+        assert_eq!(
+            store.run_status(&tenant, run).await.unwrap(),
+            Some(workflow_engine::RunStatus::Succeeded)
+        );
+    }
+    // 読めない run は先頭に残らない（もう一度呼んでも何もしない）。
+    assert_eq!(
+        store.promote_queued_runs(Some(&tenant)).await.unwrap(),
+        PromoteReport::default()
+    );
+    // 作った run を消す（同じ DB を使うほかのテストや手元のサーバに残さない・step と run_event は FK で消える）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// ピンした IR が自分の知らない新しい版（`ir_version` が大きい）の queued run は、失敗させずにそのワークフロー
+/// だけを見送る（ローリングデプロイの途中で古い版のリーダーが新しい版の run を永久に失敗させない・D-65）。
+/// 古い順を守るので後ろの run も残り、新しい版のリーダー（ここでは IR を読める形に戻して再現）が拾う。
+/// 知っている版のまま読めない IR（未知の項目を持つ ir_version 1）は従来どおり failed（internal）にする。
+#[tokio::test]
+async fn queued_run_pinned_to_a_newer_ir_version_is_deferred_not_failed() {
+    let Some(pool) = pg().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let ir = fanout_ir(
+        "conc-newer-ir",
+        &json!({ "max_parallel_runs": 1, "on_trigger_overflow": "queue" }),
+    );
+    let (newer_wf, broken_wf, ok_wf) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let mut firsts = Vec::new();
+    let mut queued = Vec::new();
+    for wf in [newer_wf, broken_wf, ok_wf] {
+        firsts.push(create_run(&store, &tenant, wf, &ir).await.unwrap());
+        queued.push(create_run(&store, &tenant, wf, &ir).await.unwrap());
+    }
+    let behind_newer = create_run(&store, &tenant, newer_wf, &ir).await.unwrap();
+    let (newer, broken, other) = (queued[0], queued[1], queued[2]);
+    // 新しい版の IR（このエンジンは deny_unknown_fields で読めない）と、知っている版で読めない IR。
+    let mut newer_ir = ir.clone();
+    newer_ir["ir_version"] = json!(workflow_engine::ir::MAX_IR_VERSION + 1);
+    newer_ir["future_envelope_field"] = json!(true);
+    let mut broken_ir = ir.clone();
+    broken_ir["future_envelope_field"] = json!(true);
+    for (run, snapshot) in [(newer, &newer_ir), (broken, &broken_ir)] {
+        sqlx::query(
+            "UPDATE workflow_run SET ir_snapshot = $3 WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&tenant)
+        .bind(run)
+        .bind(sqlx::types::Json(snapshot))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let worker = gauge_worker(pool.clone(), &tenant);
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for run in &firsts {
+        assert_eq!(
+            store.run_status(&tenant, *run).await.unwrap(),
+            Some(workflow_engine::RunStatus::Succeeded)
+        );
+    }
+
+    let report = store.promote_queued_runs(Some(&tenant)).await.unwrap();
+    assert_eq!(
+        report,
+        PromoteReport {
+            promoted: 1,
+            failed: 1,
+            skipped_workflows: 0,
+            deferred_newer_ir: 1,
+        }
+    );
+    // 新しい版の run は失敗させず、後ろの run とともに queued のまま残る（run.failed も積まない）。
+    for run in [newer, behind_newer] {
+        assert_eq!(
+            store.run_status(&tenant, run).await.unwrap(),
+            Some(workflow_engine::RunStatus::Queued)
+        );
+    }
+    let kinds: Vec<String> = store
+        .list_events(&tenant, newer_wf, newer, 0, 200)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert!(!kinds.iter().any(|k| k == "run.failed"), "{kinds:?}");
+    // 知っている版で読めない run は failed（internal）・ほかのワークフローは昇格する。
+    let d = store
+        .run_detail(&tenant, broken_wf, broken)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (d.status.as_str(), d.fail_reason.as_deref()),
+        ("failed", Some("internal"))
+    );
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    assert_eq!(
+        store.run_status(&tenant, other).await.unwrap(),
+        Some(workflow_engine::RunStatus::Succeeded)
+    );
+    // 次の tick も同じく見送る（何度呼んでも失敗に変えない）。
+    let again = store.promote_queued_runs(Some(&tenant)).await.unwrap();
+    assert_eq!((again.deferred_newer_ir, again.failed), (1, 0));
+
+    // 新しい版のリーダーが読める（ここでは IR を読める形に戻す）と、先頭から順に昇格して完走する。
+    sqlx::query("UPDATE workflow_run SET ir_snapshot = $3 WHERE tenant_id = $1 AND run_id = $2")
+        .bind(&tenant)
+        .bind(newer)
+        .bind(sqlx::types::Json(&ir))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .promote_queued_runs(Some(&tenant))
+            .await
+            .unwrap()
+            .promoted,
+        1
+    );
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    assert_eq!(
+        store
+            .promote_queued_runs(Some(&tenant))
+            .await
+            .unwrap()
+            .promoted,
+        1
+    );
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for run in [newer, behind_newer] {
+        assert_eq!(
+            store.run_status(&tenant, run).await.unwrap(),
+            Some(workflow_engine::RunStatus::Succeeded)
+        );
+    }
+    // 作った run を消す（step と run_event は FK で消える）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

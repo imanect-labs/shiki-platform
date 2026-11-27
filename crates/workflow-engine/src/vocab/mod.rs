@@ -9,13 +9,47 @@
 //! 現ステージで有効化する部分集合は `available_stage_a()` が返す。
 //! 未実装 variant の IR は V3 が「Stage A では未対応」として保存を拒否する。
 
+mod agent_tool;
 mod catalog;
+mod event_catalog;
 mod node_type;
+mod run_info;
 mod scope;
 
-pub use catalog::{node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory};
+pub use agent_tool::{
+    agent_tool_catalog, AgentTool, AgentToolCatalogEntry, AGENT_DURATION_RANGE_SEC,
+    DEFAULT_AGENT_DURATION_SEC, DEFAULT_AGENT_STEPS, DEFAULT_READ_WINDOW_CHARS, MAX_AGENT_STEPS,
+    MAX_CODE_BYTES, MAX_CODE_STDOUT_BYTES, MAX_CONTEXT_BYTES, MAX_EGRESS_HOSTS,
+    MAX_INSTRUCTION_BYTES, MAX_QUERY_CHARS, MAX_READ_WINDOW_CHARS, MAX_SEARCH_SNIPPET_CHARS,
+    MAX_SEARCH_TOP_K, MAX_TOOL_RESULT_CHARS, MAX_URL_CHARS, MAX_WEB_RESULTS,
+};
+pub use catalog::{
+    approval_ports, node_catalog, step_cache, step_timeout_limits, IdempotencyClass,
+    NodeCatalogEntry, NodeCategory, OutputField, PortRule,
+};
+pub(crate) use catalog::{label_ja, output_port_rule};
+pub use event_catalog::{
+    event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,
+    StorageWritePayload, MAX_DATA_PAYLOAD_BYTES,
+};
 pub use node_type::NodeType;
+pub use run_info::{run_info, started_by, RunInfoField, RUN_INFO_FIELDS, RUN_INFO_TIMEZONE};
 pub use scope::Scope;
+
+/// 「ファイルを読む」が PDF・Office の本文を読む字数の上限（D-111）。超えた分は結果に入れず、`truncated` を true に
+/// する。文章のファイルの中身は切らない。画面の注記もこの値から出す（`workflow-catalog.ts` に書き出す）。
+///
+/// 10 万字は、日本語の A4 でおよそ 100 ページ分。後ろの「AI に聞く」に渡しても、一度に読める量に収まる大きさにした。
+pub const STORAGE_READ_MAX_DOCUMENT_CHARS: u32 = 100_000;
+
+/// 「フォルダ一覧」（storage.list・script の `Shiki.storage.list`・AI エージェントの道具）が一度に返す件数の上限
+/// （BUG-180）。多いときは名前の順で先頭のこの件数だけを返し、結果の `truncated` を true にする（黙って切らない・
+/// BUG-149 の `data.list_tables` と同じ）。画面の注記もこの値から出す（`workflow-catalog.ts` に書き出す）。
+pub const STORAGE_LIST_MAX_ITEMS: usize = 100;
+
+/// 「フォルダ一覧」の続きの位置（`cursor`・前の結果の `next_cursor`）の字数の上限（D-131）。続きの位置は API が作る
+/// 不透明な暗号文で、これより長い値は読めない位置として断る（AI エージェントの道具の入力の上限にも使う）。
+pub const STORAGE_LIST_MAX_CURSOR_CHARS: usize = 4_096;
 
 /// variant と serde/IR 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 macro_rules! vocab_enum {
@@ -54,7 +88,7 @@ macro_rules! vocab_enum {
 pub(crate) use vocab_enum;
 
 vocab_enum! {
-    /// イベントトリガの source 閉集合（Stage A は storage.write のみ有効）。
+    /// イベントトリガの source 閉集合（Stage A は storage.write とデータ変更の 3 種が有効）。
     pub enum EventSource {
         StorageWrite => "storage.write",
         DataRecordCreated => "data.record.created",
@@ -69,9 +103,25 @@ vocab_enum! {
 }
 
 impl EventSource {
-    /// Stage A で有効な source（storage.write のみ・data 系は 9.10 後）。
+    /// Stage A で有効な source（storage.write とデータ変更の 3 種・GAP-07 を前倒し・D-1）。
     pub fn available_stage_a(self) -> bool {
-        matches!(self, EventSource::StorageWrite)
+        matches!(
+            self,
+            EventSource::StorageWrite
+                | EventSource::DataRecordCreated
+                | EventSource::DataRecordUpdated
+                | EventSource::DataTransition
+        )
+    }
+
+    /// データ変更の source か（scope は `{ "table": "<uuid>" }`・見え方は data の `change_event_view`）。
+    pub fn is_data(self) -> bool {
+        matches!(
+            self,
+            EventSource::DataRecordCreated
+                | EventSource::DataRecordUpdated
+                | EventSource::DataTransition
+        )
     }
 }
 
@@ -129,15 +179,24 @@ mod tests {
         assert!(Scope::StorageRead.available_stage_a());
         assert!(Scope::DataRead.available_stage_a());
         assert!(Scope::DataWrite.available_stage_a());
-        assert!(!Scope::NotifySend.available_stage_a());
+        // 人へのお知らせ（承認の依頼を含む）は human.approval のために解禁した（D-25）。
+        assert!(Scope::NotifySend.available_stage_a());
         assert!(!Scope::SheetRead.available_stage_a());
-        assert!(!Scope::SandboxExec.available_stage_a());
+        // エージェントの道具（doc.read・code.run）のために解禁した（D-29・BUG-6）。ノードは予約のまま。
+        assert!(Scope::DocRead.available_stage_a());
+        assert!(Scope::SandboxExec.available_stage_a());
+        assert!(!NodeType::SandboxExec.available_stage_a());
+        assert!(!NodeType::DocRead.available_stage_a());
     }
 
     #[test]
     fn event_source_stage_a() {
         assert!(EventSource::StorageWrite.available_stage_a());
-        assert!(!EventSource::DataTransition.available_stage_a());
+        assert!(EventSource::DataRecordCreated.available_stage_a());
+        assert!(EventSource::DataRecordUpdated.available_stage_a());
+        assert!(EventSource::DataTransition.available_stage_a());
+        assert!(EventSource::DataTransition.is_data());
+        assert!(!EventSource::StorageWrite.is_data());
         assert!(!EventSource::EventCustom.available_stage_a());
         assert!(!EventSource::WebhookReceived.available_stage_a());
     }
@@ -153,6 +212,7 @@ mod tests {
         for nt in [
             NodeType::DataRecordCreate,
             NodeType::DataRecordUpdate,
+            NodeType::DataRecordUpsert,
             NodeType::DataRecordDelete,
             NodeType::DataTransition,
             NodeType::DataBulkUpsert,

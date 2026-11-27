@@ -3,21 +3,27 @@
 //! - [`save`] — IR の保存（V1〜V7 検証）・取得・検証のみ（Task 10.1a/10.12）
 //! - [`runs`] — run 起動・状態取得（Task 10.2/10.14）
 //! - [`registration`] — 有効化・同意・トリガ実体化（Task 10.4a・engine.md §10）
+//! - [`schedule`] — スケジュールの次の実行の見通し（発火と同じ読み方・BUG-95）
+//! - [`try_preview`] — 試運転の下見（会話の AI の試運転の承認カード・D-10・D-197）
 
+pub mod agent_settings;
 pub mod list;
 pub mod registration;
 pub mod run_ops;
 pub mod runs;
 pub mod save;
+pub mod schedule;
+pub mod try_preview;
 
+pub use agent_settings::{get_agent_settings, AgentSettingsResponse};
 pub use list::{
     get_workflow_layout, list_workflows, put_workflow_layout, LayoutBody, WorkflowListResponse,
     WorkflowSummaryDto,
 };
 pub use registration::{
     consent_plan, disable_workflow, enable_workflow, get_registration, ConsentPlanResponse,
-    DelegationItem, EnableRequest, EnableResponse, GrantItem, RegistrationResponse,
-    SuggestedGrantItem,
+    DelegationItem, DisableRequest, DisableResponse, EnableRequest, EnableResponse, GrantItem,
+    LaunchSkipItem, RegistrationResponse, SuggestedGrantItem,
 };
 pub use run_ops::{
     cancel_workflow_run, retry_workflow_run, stream_workflow_run_events, CancelResponse,
@@ -33,3 +39,5 @@ pub use save::{
     SaveWorkflowRequest, SaveWorkflowResponse, ValidateWorkflowRequest, ValidateWorkflowResponse,
     ValidationErrorResponse, WorkflowVersionResponse,
 };
+pub use schedule::{preview_schedule, SchedulePreviewRequest, SchedulePreviewResponse};
+pub use try_preview::{try_preview, TryPreviewResponse, TryPreviewStart};

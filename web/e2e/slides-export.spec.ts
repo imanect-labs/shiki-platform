@@ -1,7 +1,13 @@
 import { expect, test } from "@playwright/test";
 import JSZip from "jszip";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// pptx エクスポート（Task 11.4）: 生成された .pptx が本物の OOXML で、
 /// スライドのテキストが**編集可能なネイティブ要素**として含まれることを検証する（PIT-42）。
@@ -21,7 +27,8 @@ test("エクスポートした pptx にネイティブテキストが入る", as
   await page.goto("/drive");
   await page.getByRole("button", { name: "新規作成" }).click();
   await page.getByTestId("new-slide").click();
-  await page.waitForURL(/\/slides\//, { timeout: 20_000 });
+  // 移った先は重い編集画面で、手元の next dev は初めての組み立てに 20 秒近くかかる（CI の本番ビルドでは組み立て済み）。
+  await page.waitForURL(/\/slides\//, { timeout: 60_000 });
   await expect(page.getByTestId("slide-editor-frame")).toBeVisible({ timeout: 20_000 });
 
   // エクスポート実行 → レポート表示 → ダウンロード。

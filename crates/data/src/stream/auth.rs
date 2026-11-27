@@ -1,6 +1,6 @@
 //! 購読者の認可材料（SSE 購読中に限る TTL 付きの再解決・data-platform §9.4・PIT-70）。
 //!
-//! - 購読の開始時（[`crate::DataStore::subscribe_records`]）に、テーブル viewer・行述語の材料
+//! - 購読の開始時（[`crate::DataStore::subscribe_records`]）に、テーブル viewer（追加だけは自分の行に絞る・D-113）・行述語の材料
 //!   （ロール・名指しロール・個別共有集合）・フィールドマスクを OpenFGA から引く。
 //! - 以後は **TTL（既定 5 秒）の間だけ**その答えを持ち越す（[`crate::policy::memo::MemoCarry`]）。
 //!   TTL を過ぎた購読は配信の**前に**引き直す＝剥奪の配信への反映は最大 TTL 遅れる（製品の約束）。
@@ -11,6 +11,7 @@
 //!   （`stream.reset` を送って閉じる・クライアントは取り直す・PIT-73 ③）。
 //! - REST の読取経路はこれを使わない（毎回解決）。
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,6 +24,7 @@ use crate::model::DataTable;
 use crate::policy::material::{self, PolicyMaterial};
 use crate::policy::memo::{AuthzMemo, MemoCarry};
 use crate::store::DataStore;
+use crate::table_access::{narrow_to_own, unnarrowed_schema, ReadScope};
 use crate::DataError;
 
 /// 購読者 1 人の材料（TTL の間だけ持ち越す）。
@@ -33,6 +35,9 @@ pub(crate) struct SubAuth {
     pub material: Arc<PolicyMaterial>,
     pub masked: HashSet<String>,
     pub shared: HashSet<Uuid>,
+    /// 追加だけの購読者（D-113）: 自分が作ったレコードだけを配る（絞ったテーブルの行述語で判定する・
+    /// [`crate::table_access`]）。
+    pub own_records: bool,
     /// 材料の指紋（変化の検知用・中身は外へ出さない）。
     pub fingerprint: String,
 }
@@ -40,7 +45,7 @@ pub(crate) struct SubAuth {
 /// 解決の結果。
 pub(crate) enum Resolved {
     Ok(Box<SubAuth>),
-    /// テーブル viewer を失った。
+    /// テーブル viewer（追加だけを含む）を失った。
     Revoked,
 }
 
@@ -52,18 +57,29 @@ impl DataStore {
         az: &AuthzMemo<'_>,
         table: &DataTable,
     ) -> Result<Resolved, DataError> {
-        let viewer = az
-            .check(
-                ctx,
-                Relation::Viewer,
-                &ctx.ns().data_table(&table.id.to_string()),
-            )
-            .await?;
-        if !viewer {
+        let Some(scope) = self.read_scope(ctx, az, table.id).await? else {
             return Ok(Resolved::Revoked);
-        }
-        // 見える範囲が同じでも viewer ⇄ editor の変化は画面の操作（編集・追加・取込）を変えるので、
-        // 指紋に含めて `authz_changed` で知らせる（テーブル共有の役割変更・#864）。
+        };
+        // 追加だけの購読者は、自分が作ったレコードだけに絞ったテーブルで材料を引く（REST と同じ式・D-113）。
+        // 配信のテーブル（全購読者で共有）は絞っていないので、ここで写しを絞る。
+        let own_records = scope == ReadScope::OwnRecords;
+        let view: Cow<'_, DataTable> = match (own_records, table.narrowed.is_some()) {
+            (true, false) => {
+                let mut t = table.clone();
+                narrow_to_own(&mut t);
+                Cow::Owned(t)
+            }
+            (false, true) => {
+                let mut t = table.clone();
+                t.schema = unnarrowed_schema(table);
+                t.narrowed = None;
+                Cow::Owned(t)
+            }
+            _ => Cow::Borrowed(table),
+        };
+        let table = view.as_ref();
+        // 見える範囲が同じでも viewer ⇄ editor ⇄ 追加だけの変化は画面の操作（編集・追加・取込）と見える行を
+        // 変えるので、指紋に含めて `authz_changed` で知らせる（テーブル共有の役割変更・#864・D-113）。
         let editor = az
             .check(
                 ctx,
@@ -79,7 +95,7 @@ impl DataStore {
         // 個別共有集合は主体の全テーブル分なので、このテーブルの行だけに絞る（他テーブルの共有の
         // 変化でこの購読を落とさない・判定の集合も小さくなる）。
         let shared = self.shared_in_table(ctx, table, &material).await?;
-        let fingerprint = fingerprint(editor, &material, &shared, &masked);
+        let fingerprint = fingerprint((editor, own_records), &material, &shared, &masked);
         Ok(Resolved::Ok(Box::new(SubAuth {
             carry: None,
             resolved_at: Instant::now(),
@@ -87,6 +103,7 @@ impl DataStore {
             material,
             masked,
             shared,
+            own_records,
             fingerprint,
         })))
     }
@@ -120,7 +137,7 @@ impl DataStore {
 
 /// 材料の指紋（順序に依らない正規形の SHA-256）。
 fn fingerprint(
-    editor: bool,
+    (editor, own_records): (bool, bool),
     m: &PolicyMaterial,
     shared: &HashSet<Uuid>,
     masked: &HashSet<String>,
@@ -135,7 +152,7 @@ fn fingerprint(
     let mut masked: Vec<&String> = masked.iter().collect();
     masked.sort();
     let canon = format!(
-        "{editor}|{roles_direct:?}|{roles_eff:?}|{members:?}|{shared:?}|{}|{masked:?}",
+        "{editor}|{own_records}|{roles_direct:?}|{roles_eff:?}|{members:?}|{shared:?}|{}|{masked:?}",
         m.shares_truncated
     );
     let d = Sha256::digest(canon.as_bytes());
@@ -169,18 +186,18 @@ mod tests {
         let s12: HashSet<Uuid> = [Uuid::from_u128(1), Uuid::from_u128(2)].into();
         let s1: HashSet<Uuid> = [Uuid::from_u128(1)].into();
         assert_eq!(
-            fingerprint(false, &a, &s12, &none),
-            fingerprint(false, &b, &s12, &none)
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((false, false), &b, &s12, &none)
         );
         assert_ne!(
-            fingerprint(false, &a, &s12, &none),
-            fingerprint(false, &a, &s1, &none),
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((false, false), &a, &s1, &none),
             "共有解除で変わる"
         );
         let masked: HashSet<String> = ["salary".to_string()].into();
         assert_ne!(
-            fingerprint(false, &a, &s12, &none),
-            fingerprint(false, &a, &s12, &masked),
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((false, false), &a, &s12, &masked),
             "マスクの変化で変わる"
         );
         let c = PolicyMaterial {
@@ -188,14 +205,19 @@ mod tests {
             ..PolicyMaterial::default()
         };
         assert_ne!(
-            fingerprint(false, &a, &s12, &none),
-            fingerprint(false, &c, &s12, &none),
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((false, false), &c, &s12, &none),
             "ロールで変わる"
         );
         assert_ne!(
-            fingerprint(false, &a, &s12, &none),
-            fingerprint(true, &a, &s12, &none),
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((true, false), &a, &s12, &none),
             "viewer ⇄ editor で変わる"
+        );
+        assert_ne!(
+            fingerprint((false, false), &a, &s12, &none),
+            fingerprint((false, true), &a, &s12, &none),
+            "viewer ⇄ 追加だけで変わる"
         );
     }
 }

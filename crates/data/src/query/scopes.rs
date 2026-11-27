@@ -162,8 +162,9 @@ impl DataStore {
             return Ok(());
         }
         // 参照先のテーブル viewer（ReBAC）を閲覧者本人で確かめる。開けない参照先を辿るクエリは 403。
+        // 参照先が追加だけの共有なら、自分が作ったレコードだけを辿る（D-113・[`crate::table_access`]）。
         let table = self
-            .open_for_read(ctx, az, id, AuditAction::DataQueryLink, trace_id)
+            .open_for_reader(ctx, az, id, AuditAction::DataQueryLink, trace_id)
             .await
             .map_err(|e| match e {
                 DataError::NotFound | DataError::Forbidden => DataError::Forbidden,

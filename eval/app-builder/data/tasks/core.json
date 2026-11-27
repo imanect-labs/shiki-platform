@@ -1,0 +1,6585 @@
+{
+ "version": 1,
+ "tasks": [
+  {
+   "id": "basic-summary-file",
+   "app": null,
+   "kind": "workflow",
+   "requires": [
+    "node:llm.invoke",
+    "node:storage.write"
+   ],
+   "phrasings": {
+    "flow": "件名と本文を入力すると、AI が本文を 3 行に要約し、「要約」フォルダに Markdown のファイルとして保存するフローを作ってください。ファイル名は「要約-実行した日付.md」にし、同じ日に何度動かしても保存に失敗しないようにしてください。ファイルの先頭には件名を見出しとして書き、その下に要約を書きます。",
+    "app": "問い合わせの件名と本文を渡したら、中身を短くまとめてファイルに残してくれるアプリがほしいです。置き場所は「要約」フォルダで、名前は 要約-日付.md。中身は件名の見出しと、3 行くらいの要約にしてください。",
+    "auto": "文章を読んで要約し、記録として保管する作業を自動化したい。毎回渡すのは件名と本文の 2 つ。要約は AI に任せ、件名を見出しにした Markdown を『要約』フォルダへ「要約-（今日の日付）.md」で置く。1 日に何回か使うので、同じ名前があっても止まらないようにしたい。"
+   },
+   "clarifications": "保存先は「要約」フォルダです。ファイル名は「要約-YYYY-MM-DD.md」（実行した日付）で、同じ名前のファイルがあれば番号を付けて保存してください。要約は 3 行程度で、件名はファイルの先頭に見出しとして書いてください。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "out",
+      "name": "要約"
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "llm.invoke",
+      "storage.write"
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "title",
+      "terms": [
+       "件名"
+      ]
+     },
+     {
+      "key": "body",
+      "terms": [
+       "本文"
+      ]
+     }
+    ],
+    "flow_through": [
+     "title",
+     "body"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "normal",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "会議室の予約方法",
+      "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。"
+     },
+     "expect": {
+      "status": "succeeded",
+      "files": [
+       {
+        "folder": "out",
+        "name_regex": "^要約-@run_date( \\(\\d+\\))?\\.md$",
+        "count": 1,
+        "contains": [
+         "会議室の予約方法"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "basic-summary-file",
+     "display_name": "本文を要約して保存",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "x-order": [
+       "title",
+       "body"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "summarize",
+       "type": "llm.invoke",
+       "label": "要約する",
+       "params": {
+        "prompt": {
+         "$template": "次の本文を 3 行で要約してください。\n件名: {title}\n本文: {body}",
+         "vars": {
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          },
+          "body": {
+           "$from": "input",
+           "path": "/body"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "save",
+       "type": "storage.write",
+       "label": "要約を保存",
+       "params": {
+        "folder": "@folder:out",
+        "name": {
+         "$template": "要約-{date}.md",
+         "vars": {
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        },
+        "content": {
+         "$template": "# {title}\n\n{summary}",
+         "vars": {
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          },
+          "summary": {
+           "$from": "nodes.summarize.output",
+           "path": "/text"
+          }
+         }
+        },
+        "content_type": "text/markdown",
+        "on_name_taken": "add_number"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "summarize",
+       "to": "save"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "basic-branch-amount",
+   "app": null,
+   "kind": "workflow",
+   "requires": [
+    "node:control.branch",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "品目と金額を受け取り、金額が 5 万円以上なら「高額の申請」テーブルに、それ未満なら「通常の申請」テーブルに 1 行追加するフローを作ってください。どちらのテーブルにも品目と金額を書き込みます。",
+    "app": "購入の申し込みを振り分けるアプリを作って。入力は品目と金額。50,000 円ちょうどを含めてそれより高いものは『高額の申請』、安いものは『通常の申請』に記録したい。",
+    "auto": "申し込みの記録先を金額で分ける作業を自動化してください。受け取るのは品目と金額です。境目は 5 万円で、5 万円以上は「高額の申請」表、5 万円未満は「通常の申請」表へ、品目と金額の 1 行を足します。"
+   },
+   "clarifications": "境目は 50,000 円で、50,000 円ちょうどは「高額の申請」です。行には品目と金額だけを入れてください。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "big",
+      "name": "高額の申請",
+      "schema": {
+       "fields": [
+        {
+         "key": "item",
+         "display_name": "品目",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "small",
+      "name": "通常の申請",
+      "schema": {
+       "fields": [
+        {
+         "key": "item",
+         "display_name": "品目",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.record.create"
+     ],
+     "any_of": [
+      [
+       "control.branch",
+       "control.switch"
+      ]
+     ]
+    },
+    "inputs": [
+     {
+      "key": "item",
+      "terms": [
+       "品目"
+      ]
+     },
+     {
+      "key": "amount",
+      "terms": [
+       "金額"
+      ]
+     }
+    ],
+    "flow_through": [
+     "item",
+     "amount"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "high",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "item": "ノートパソコン",
+      "amount": 80000
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "big",
+        "count": 1,
+        "match": [
+         {
+          "item": "ノートパソコン",
+          "amount": 80000
+         }
+        ]
+       },
+       {
+        "table": "small",
+        "count": 0
+       }
+      ]
+     }
+    },
+    {
+     "id": "low",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "item": "文房具",
+      "amount": 12000
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "small",
+        "count": 1,
+        "match": [
+         {
+          "item": "文房具",
+          "amount": 12000
+         }
+        ]
+       },
+       {
+        "table": "big",
+        "count": 0
+       }
+      ]
+     }
+    },
+    {
+     "id": "boundary",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "item": "プロジェクター",
+      "amount": 50000
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "big",
+        "count": 1,
+        "match": [
+         {
+          "item": "プロジェクター",
+          "amount": 50000
+         }
+        ]
+       },
+       {
+        "table": "small",
+        "count": 0
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "basic-branch-amount",
+     "display_name": "金額で申請の記録先を分ける",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "item": {
+        "type": "string"
+       },
+       "amount": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "item",
+       "amount"
+      ],
+      "x-order": [
+       "item",
+       "amount"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "is_large",
+       "type": "control.branch",
+       "label": "5 万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 50000
+         }
+        }
+       }
+      },
+      {
+       "id": "add_large",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table": "@table:big",
+        "data": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_small",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table": "@table:small",
+        "data": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "is_large",
+       "to": "add_large",
+       "from_port": "true"
+      },
+      {
+       "from": "is_large",
+       "to": "add_small",
+       "from_port": "false"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "basic-switch-category",
+   "app": null,
+   "kind": "workflow",
+   "requires": [
+    "node:control.switch",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "問い合わせの件名と区分を受け取り、「問い合わせ台帳」テーブルに件名・区分・担当チームの 1 行を追加するフローを作ってください。担当チームは区分で決めます。区分が「経理」なら「経理チーム」、「人事」なら「人事チーム」、それ以外はすべて「総務チーム」です。",
+    "app": "社内の問い合わせを受け付けて、担当を自動で決めるアプリが欲しい。入力は件名と区分。経理の話は経理チーム、人事の話は人事チーム、残りは総務チームに回し、その結果を『問い合わせ台帳』に残して。",
+    "auto": "問い合わせの担当チームを割り振る作業を自動化します。件名と区分を入れたら、区分『経理』→経理チーム、『人事』→人事チーム、ほかの区分→総務チームと決め、件名・区分・担当チームを問い合わせ台帳に 1 行登録してください。"
+   },
+   "clarifications": "区分は「経理」「人事」のほかにも色々来ます。その 2 つ以外は全部「総務チーム」です。台帳の列は件名・区分・担当チームの 3 つです。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "log",
+      "name": "問い合わせ台帳",
+      "schema": {
+       "fields": [
+        {
+         "key": "title",
+         "display_name": "件名",
+         "type": "text"
+        },
+        {
+         "key": "category",
+         "display_name": "区分",
+         "type": "text"
+        },
+        {
+         "key": "team",
+         "display_name": "担当チーム",
+         "type": "text"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.record.create"
+     ],
+     "any_of": [
+      [
+       "control.switch",
+       "control.branch",
+       "script.run"
+      ]
+     ]
+    },
+    "inputs": [
+     {
+      "key": "title",
+      "terms": [
+       "件名"
+      ]
+     },
+     {
+      "key": "category",
+      "terms": [
+       "区分"
+      ]
+     }
+    ],
+    "flow_through": [
+     "title",
+     "category"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "keiri",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "請求書の再発行",
+      "category": "経理"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "log",
+        "count": 1,
+        "match": [
+         {
+          "title": "請求書の再発行",
+          "category": "経理",
+          "team": "経理チーム"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "jinji",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "有給休暇の残り日数",
+      "category": "人事"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "log",
+        "count": 1,
+        "match": [
+         {
+          "title": "有給休暇の残り日数",
+          "team": "人事チーム"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "other",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "椅子が壊れた",
+      "category": "設備"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "log",
+        "count": 1,
+        "match": [
+         {
+          "title": "椅子が壊れた",
+          "category": "設備",
+          "team": "総務チーム"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "basic-switch-category",
+     "display_name": "区分で担当チームを決める",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "category": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "category"
+      ],
+      "x-order": [
+       "title",
+       "category"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "route",
+       "type": "control.switch",
+       "label": "区分で分ける",
+       "params": {
+        "value": {
+         "$from": "input",
+         "path": "/category"
+        },
+        "cases": [
+         {
+          "equals": "経理",
+          "port": "keiri"
+         },
+         {
+          "equals": "人事",
+          "port": "jinji"
+         }
+        ]
+       }
+      },
+      {
+       "id": "to_keiri",
+       "type": "data.record.create",
+       "label": "経理チームで登録",
+       "params": {
+        "table": "@table:log",
+        "data": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "経理チーム"
+        }
+       }
+      },
+      {
+       "id": "to_jinji",
+       "type": "data.record.create",
+       "label": "人事チームで登録",
+       "params": {
+        "table": "@table:log",
+        "data": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "人事チーム"
+        }
+       }
+      },
+      {
+       "id": "to_soumu",
+       "type": "data.record.create",
+       "label": "総務チームで登録",
+       "params": {
+        "table": "@table:log",
+        "data": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "総務チーム"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "route",
+       "to": "to_keiri",
+       "from_port": "keiri"
+      },
+      {
+       "from": "route",
+       "to": "to_jinji",
+       "from_port": "jinji"
+      },
+      {
+       "from": "route",
+       "to": "to_soumu",
+       "from_port": "default"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "basic-map-rows",
+   "app": null,
+   "kind": "workflow",
+   "requires": [
+    "node:control.map",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "イベント名と参加者の氏名のリストを受け取り、参加者 1 人ごとに「参加者名簿」テーブルへイベント名と氏名の 1 行を追加するフローを作ってください。",
+    "app": "研修や説明会の出席者をまとめて登録できるアプリを作ってほしいです。イベント名と、来た人の氏名を何人分か入れたら、名簿に 1 人 1 行で載せてください。",
+    "auto": "参加者名簿への転記を自動化したい。入力はイベント名と、氏名の一覧（人数は毎回違う）。一覧の人それぞれについて、『参加者名簿』にイベント名と氏名を書いた行を足してほしい。"
+   },
+   "clarifications": "氏名の一覧は文字の配列で渡します。1 人につき 1 行で、列はイベント名と氏名です。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "roster",
+      "name": "参加者名簿",
+      "schema": {
+       "fields": [
+        {
+         "key": "event",
+         "display_name": "イベント名",
+         "type": "text"
+        },
+        {
+         "key": "name",
+         "display_name": "氏名",
+         "type": "text"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.record.create"
+     ],
+     "any_of": [
+      [
+       "control.map"
+      ]
+     ]
+    },
+    "inputs": [
+     {
+      "key": "event",
+      "terms": [
+       "イベント名"
+      ]
+     },
+     {
+      "key": "names",
+      "terms": [
+       "氏名"
+      ]
+     }
+    ],
+    "flow_through": [
+     "event",
+     "names"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "three",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "event": "新人研修",
+      "names": [
+       "田中",
+       "山本",
+       "中村"
+      ]
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "roster",
+        "count": 3,
+        "match": [
+         {
+          "event": "新人研修",
+          "name": "田中"
+         },
+         {
+          "event": "新人研修",
+          "name": "山本"
+         },
+         {
+          "event": "新人研修",
+          "name": "中村"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "basic-map-rows",
+     "display_name": "参加者を名簿に登録",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "event": {
+        "type": "string"
+       },
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "event",
+       "names"
+      ],
+      "x-order": [
+       "event",
+       "names"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "per_person",
+       "type": "control.map",
+       "label": "1 人ずつ",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add",
+       "type": "data.record.create",
+       "label": "名簿に追加",
+       "params": {
+        "table": "@table:roster",
+        "data": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each",
+          "path": "/item"
+         }
+        }
+       },
+       "parent": "per_person"
+      }
+     ],
+     "edges": []
+    }
+   }
+  },
+  {
+   "id": "app01-claim-submit",
+   "app": "APP-01",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "経費の申請を受け付けるフローを作ってください。入力は件名・金額・申請者です。「経費申請」テーブルに 1 行追加し、状態は「申請中」にします。承認者は「承認者」テーブルから選び、金額が 10 万円以上なら役職が部長の人、10 万円未満なら役職が課長の人の氏名を承認者の列に入れてください。",
+    "app": "経費精算の申請アプリを作りたい。申請者が件名と金額、自分の名前を入れると、経費申請の表に「申請中」で載る。承認する人は承認者の表を見て決めて、10 万円を超える（ちょうど 10 万円も）なら部長、それより安ければ課長にしたい。",
+    "auto": "経費申請の受付と承認者の割り当てを自動化してほしい。受け取る値は件名、金額、申請者。承認者テーブルの役職で選び分け（金額 100,000 円以上は部長・未満は課長）、選んだ人の氏名を承認者として、状態「申請中」の行を経費申請テーブルに作る。"
+   },
+   "clarifications": "承認者は「承認者」テーブルの「役職」列で探し、その行の「氏名」を書いてください。部長と課長は 1 人ずつです。10 万円ちょうどは部長です。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "approvers",
+      "name": "承認者",
+      "schema": {
+       "fields": [
+        {
+         "key": "level",
+         "display_name": "役職",
+         "type": "select",
+         "options": [
+          "課長",
+          "部長"
+         ],
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "氏名",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "level": "課長",
+        "name": "高橋"
+       },
+       {
+        "level": "部長",
+        "name": "伊藤"
+       }
+      ]
+     },
+     {
+      "ref": "claims",
+      "name": "経費申請",
+      "schema": {
+       "fields": [
+        {
+         "key": "title",
+         "display_name": "件名",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number"
+        },
+        {
+         "key": "applicant",
+         "display_name": "申請者",
+         "type": "text"
+        },
+        {
+         "key": "approver",
+         "display_name": "承認者",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "申請中",
+          "承認済",
+          "差戻し",
+          "計上済"
+         ],
+         "indexed": true
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "data.record.create"
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "title",
+      "terms": [
+       "件名"
+      ]
+     },
+     {
+      "key": "amount",
+      "terms": [
+       "金額"
+      ]
+     },
+     {
+      "key": "applicant",
+      "terms": [
+       "申請者",
+       "名前"
+      ]
+     }
+    ],
+    "flow_through": [
+     "title",
+     "amount",
+     "applicant"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "small",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "出張の交通費",
+      "amount": 24000,
+      "applicant": "小林"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "claims",
+        "count": 1,
+        "match": [
+         {
+          "title": "出張の交通費",
+          "amount": 24000,
+          "applicant": "小林",
+          "approver": "高橋",
+          "status": "申請中"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "large",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "展示会の出展料",
+      "amount": 150000,
+      "applicant": "加藤"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "claims",
+        "count": 1,
+        "match": [
+         {
+          "title": "展示会の出展料",
+          "amount": 150000,
+          "applicant": "加藤",
+          "approver": "伊藤",
+          "status": "申請中"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "boundary",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "title": "研修の受講料",
+      "amount": 100000,
+      "applicant": "吉田"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "claims",
+        "count": 1,
+        "match": [
+         {
+          "approver": "伊藤",
+          "status": "申請中"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app01-claim-submit",
+     "display_name": "経費の申請を受け付ける",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "title": {
+        "type": "string"
+       },
+       "amount": {
+        "type": "number"
+       },
+       "applicant": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "amount",
+       "applicant"
+      ],
+      "x-order": [
+       "title",
+       "amount",
+       "applicant"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "is_large",
+       "type": "control.branch",
+       "label": "10 万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       }
+      },
+      {
+       "id": "find_head",
+       "type": "data.query",
+       "label": "部長を探す",
+       "params": {
+        "table": "@table:approvers",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "find_manager",
+       "type": "data.query",
+       "label": "課長を探す",
+       "params": {
+        "table": "@table:approvers",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "submit_head",
+       "type": "data.record.create",
+       "label": "部長あてに申請",
+       "params": {
+        "table": "@table:claims",
+        "data": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_head.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "submit_manager",
+       "type": "data.record.create",
+       "label": "課長あてに申請",
+       "params": {
+        "table": "@table:claims",
+        "data": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_manager.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "is_large",
+       "to": "find_head",
+       "from_port": "true"
+      },
+      {
+       "from": "is_large",
+       "to": "find_manager",
+       "from_port": "false"
+      },
+      {
+       "from": "find_head",
+       "to": "submit_head"
+      },
+      {
+       "from": "find_manager",
+       "to": "submit_manager"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app01-posting-batch",
+   "app": "APP-01",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:control.map",
+    "node:data.record.upsert",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "15 分ごとに動くフローを作ってください。「経費申請」テーブルで状態が「承認済」の行を探し、1 件ずつ「仕訳台帳」テーブルに申請の ID・摘要（件名）・金額の行を追加してから、その申請の状態を「計上済」に変えます。何度動いても同じ申請の仕訳が 2 行にならないようにしてください。",
+    "app": "承認が終わった経費を会計の台帳へ流し込むアプリがほしい。15 分おきに、承認済になった申請を拾って仕訳台帳に 1 件ずつ写し（申請の ID・件名・金額）、写した申請は計上済にする。同じ申請を二重に計上しないこと。",
+    "auto": "経費の計上作業を自動化して。間隔は 15 分。経費申請の表から状態が承認済のものだけを取り、それぞれについて仕訳台帳へ「申請の ID、件名を摘要として、金額」を登録し、元の申請の状態を計上済へ更新。やり直しても仕訳が重複しないように。"
+   },
+   "clarifications": "「仕訳台帳」の「申請の ID」列は重複を許さない列です。申請の行の ID（レコードの ID）を入れてください。承認済以外の申請には触りません。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "claims",
+      "name": "経費申請",
+      "schema": {
+       "fields": [
+        {
+         "key": "title",
+         "display_name": "件名",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number"
+        },
+        {
+         "key": "applicant",
+         "display_name": "申請者",
+         "type": "text"
+        },
+        {
+         "key": "approver",
+         "display_name": "承認者",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "申請中",
+          "承認済",
+          "差戻し",
+          "計上済"
+         ],
+         "indexed": true
+        }
+       ]
+      },
+      "records": [
+       {
+        "title": "会議の弁当代",
+        "amount": 8000,
+        "applicant": "小林",
+        "approver": "高橋",
+        "status": "承認済"
+       },
+       {
+        "title": "出張の宿泊費",
+        "amount": 45000,
+        "applicant": "加藤",
+        "approver": "高橋",
+        "status": "承認済"
+       },
+       {
+        "title": "書籍の購入",
+        "amount": 3200,
+        "applicant": "吉田",
+        "approver": "高橋",
+        "status": "申請中"
+       }
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "申請中",
+         "to": "承認済"
+        },
+        {
+         "from": "申請中",
+         "to": "差戻し"
+        },
+        {
+         "from": "差戻し",
+         "to": "申請中"
+        },
+        {
+         "from": "承認済",
+         "to": "計上済"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "journal",
+      "name": "仕訳台帳",
+      "schema": {
+       "fields": [
+        {
+         "key": "claim_id",
+         "display_name": "申請の ID",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "summary",
+         "display_name": "摘要",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "schedule",
+     "cron_any": [
+      "*/15 * * * *",
+      "0,15,30,45 * * * *",
+      "0-59/15 * * * *"
+     ],
+     "tz": "Asia/Tokyo"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "data.transition"
+     ],
+     "any_of": [
+      [
+       "data.record.upsert",
+       "data.bulk_upsert"
+      ]
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "post",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "scheduled_at": "2026-11-09T09:15:00+09:00",
+     "expect": {
+      "rows": [
+       {
+        "table": "journal",
+        "count": 2,
+        "match": [
+         {
+          "summary": "会議の弁当代",
+          "amount": 8000
+         },
+         {
+          "summary": "出張の宿泊費",
+          "amount": 45000
+         }
+        ]
+       },
+       {
+        "table": "claims",
+        "count": 3,
+        "match": [
+         {
+          "title": "会議の弁当代",
+          "status": "計上済"
+         },
+         {
+          "title": "出張の宿泊費",
+          "status": "計上済"
+         },
+         {
+          "title": "書籍の購入",
+          "status": "申請中"
+         }
+        ]
+       }
+      ],
+      "no_new_rows": true
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app01-posting-batch",
+     "display_name": "承認済の経費を計上する",
+     "triggers": [
+      {
+       "kind": "schedule",
+       "cron": "*/15 * * * *",
+       "tz": "Asia/Tokyo"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "find_approved",
+       "type": "data.query",
+       "label": "承認済の申請",
+       "params": {
+        "table": "@table:claims",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "status",
+           "op": "eq",
+           "value": "承認済"
+          }
+         },
+         "limit": 200
+        }
+       }
+      },
+      {
+       "id": "per_claim",
+       "type": "control.map",
+       "label": "1 件ずつ",
+       "params": {
+        "items": {
+         "$from": "nodes.find_approved.output",
+         "path": "/items"
+        }
+       }
+      },
+      {
+       "id": "post",
+       "type": "data.record.upsert",
+       "label": "仕訳を登録",
+       "params": {
+        "table": "@table:journal",
+        "match_on": "claim_id",
+        "data": {
+         "claim_id": {
+          "$from": "each",
+          "path": "/item/id"
+         },
+         "summary": {
+          "$from": "each",
+          "path": "/item/data/title"
+         },
+         "amount": {
+          "$from": "each",
+          "path": "/item/data/amount"
+         }
+        }
+       },
+       "parent": "per_claim"
+      },
+      {
+       "id": "mark_posted",
+       "type": "data.transition",
+       "label": "計上済にする",
+       "params": {
+        "table": "@table:claims",
+        "record": {
+         "$from": "each",
+         "path": "/item/id"
+        },
+        "to": "計上済"
+       },
+       "parent": "per_claim"
+      }
+     ],
+     "edges": [
+      {
+       "from": "find_approved",
+       "to": "per_claim"
+      },
+      {
+       "from": "post",
+       "to": "mark_posted"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app02-triage",
+   "app": "APP-02",
+   "kind": "workflow",
+   "requires": [
+    "node:llm.invoke",
+    "node:data.query",
+    "node:data.record.create",
+    "node:data.record.update",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "問い合わせの件名と本文を受け取るフローを作ってください。まず「問い合わせ」テーブルに件名と本文を状態「未対応」で登録します。次に AI で本文を読んで分類を「請求」「不具合」「使い方」のどれかに決め、「担当割り当て」テーブルでその分類の担当者を引きます。最後に登録した行の分類と担当者を書き、状態を「振り分け済」にしてください。",
+    "app": "お客さまからの問い合わせを仕分けるアプリを作って。件名と本文が来たら問い合わせ表に未対応で記録して、AI に中身を読ませて請求・不具合・使い方のどれかに決めてもらう。担当割り当ての表で担当者を決めて、記録した行に分類と担当者を入れて振り分け済にしたい。",
+    "auto": "問い合わせの一次対応を自動化したい。入力は件名と本文。記録（『問い合わせ』に未対応で）→ AI による分類（請求／不具合／使い方の 3 つから 1 つ）→『担当割り当て』表で分類に合う担当者を探す → 記録した問い合わせに分類・担当者を書き込み、状態を振り分け済へ、という流れでお願いします。"
+   },
+   "clarifications": "分類は「請求」「不具合」「使い方」の 3 つだけで、ほかの値にはしません。担当割り当てテーブルには分類ごとに担当者が 1 人ずついます。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "inquiries",
+      "name": "問い合わせ",
+      "schema": {
+       "fields": [
+        {
+         "key": "subject",
+         "display_name": "件名",
+         "type": "text"
+        },
+        {
+         "key": "body",
+         "display_name": "本文",
+         "type": "text"
+        },
+        {
+         "key": "category",
+         "display_name": "分類",
+         "type": "select",
+         "options": [
+          "請求",
+          "不具合",
+          "使い方"
+         ]
+        },
+        {
+         "key": "assignee",
+         "display_name": "担当者",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "未対応",
+          "振り分け済"
+         ],
+         "indexed": true
+        }
+       ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "未対応",
+         "to": "振り分け済"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "assign",
+      "name": "担当割り当て",
+      "schema": {
+       "fields": [
+        {
+         "key": "category",
+         "display_name": "分類",
+         "type": "select",
+         "options": [
+          "請求",
+          "不具合",
+          "使い方"
+         ],
+         "indexed": true
+        },
+        {
+         "key": "assignee",
+         "display_name": "担当者",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "category": "請求",
+        "assignee": "森"
+       },
+       {
+        "category": "不具合",
+        "assignee": "池田"
+       },
+       {
+        "category": "使い方",
+        "assignee": "石井"
+       }
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "llm.invoke",
+      "data.record.create",
+      "data.query",
+      "data.transition"
+     ],
+     "any_of": [
+      [
+       "data.record.update",
+       "data.record.upsert"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "subject",
+      "terms": [
+       "件名"
+      ]
+     },
+     {
+      "key": "body",
+      "terms": [
+       "本文"
+      ]
+     }
+    ],
+    "flow_through": [
+     "subject",
+     "body"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "billing",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "subject": "請求書の金額が違う",
+      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "inquiries",
+        "count": 1,
+        "match": [
+         {
+          "subject": "請求書の金額が違う",
+          "category": "請求",
+          "assignee": "森",
+          "status": "振り分け済"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "bug",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "subject": "画面が真っ白になる",
+      "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "inquiries",
+        "count": 1,
+        "match": [
+         {
+          "subject": "画面が真っ白になる",
+          "category": "不具合",
+          "assignee": "池田",
+          "status": "振り分け済"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "howto",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "subject": "一覧を書き出したい",
+      "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "inquiries",
+        "count": 1,
+        "match": [
+         {
+          "subject": "一覧を書き出したい",
+          "category": "使い方",
+          "assignee": "石井",
+          "status": "振り分け済"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app02-triage",
+     "display_name": "問い合わせを分類して担当を決める",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "subject": {
+        "type": "string"
+       },
+       "body": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "subject",
+       "body"
+      ],
+      "x-order": [
+       "subject",
+       "body"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "register",
+       "type": "data.record.create",
+       "label": "問い合わせを登録",
+       "params": {
+        "table": "@table:inquiries",
+        "data": {
+         "subject": {
+          "$from": "input",
+          "path": "/subject"
+         },
+         "body": {
+          "$from": "input",
+          "path": "/body"
+         },
+         "status": "未対応"
+        }
+       }
+      },
+      {
+       "id": "classify",
+       "type": "llm.invoke",
+       "label": "分類を決める",
+       "params": {
+        "prompt": {
+         "$template": "次の問い合わせを読み、分類を「請求」「不具合」「使い方」のどれか 1 つに決めてください。答えには分類の語だけを書いてください。\n件名: {subject}\n本文: {body}",
+         "vars": {
+          "subject": {
+           "$from": "input",
+           "path": "/subject"
+          },
+          "body": {
+           "$from": "input",
+           "path": "/body"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "pick",
+       "type": "script.run",
+       "label": "分類の語を取り出す",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var text = String(input.text || \"\");\n  var found = null;\n  var at = -1;\n  [\"請求\", \"不具合\", \"使い方\"].forEach(function (c) {\n    var i = text.indexOf(c);\n    if (i >= 0 && (at < 0 || i < at)) {\n      found = c;\n      at = i;\n    }\n  });\n  if (found === null) {\n    throw new Error(\"分類を読み取れません: \" + text.slice(0, 100));\n  }\n  return { category: found };\n}"
+        },
+        "input": {
+         "$from": "nodes.classify.output"
+        }
+       }
+      },
+      {
+       "id": "find_assignee",
+       "type": "data.query",
+       "label": "担当者を引く",
+       "params": {
+        "table": "@table:assign",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "category",
+           "op": "eq",
+           "value": {
+            "$from": "nodes.pick.output",
+            "path": "/category"
+           }
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "assign",
+       "type": "data.record.update",
+       "label": "分類と担当者を書く",
+       "params": {
+        "table": "@table:inquiries",
+        "record": {
+         "$from": "nodes.register.output",
+         "path": "/id"
+        },
+        "patch": {
+         "category": {
+          "$from": "nodes.pick.output",
+          "path": "/category"
+         },
+         "assignee": {
+          "$from": "nodes.find_assignee.output",
+          "path": "/items/0/data/assignee"
+         }
+        }
+       }
+      },
+      {
+       "id": "mark_triaged",
+       "type": "data.transition",
+       "label": "振り分け済にする",
+       "params": {
+        "table": "@table:inquiries",
+        "record": {
+         "$from": "nodes.register.output",
+         "path": "/id"
+        },
+        "to": "振り分け済"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "register",
+       "to": "classify"
+      },
+      {
+       "from": "classify",
+       "to": "pick"
+      },
+      {
+       "from": "pick",
+       "to": "find_assignee"
+      },
+      {
+       "from": "find_assignee",
+       "to": "assign"
+      },
+      {
+       "from": "assign",
+       "to": "mark_triaged"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app03-daily-submit",
+   "app": "APP-03",
+   "kind": "workflow",
+   "requires": [
+    "node:data.record.upsert"
+   ],
+   "phrasings": {
+    "flow": "営業の日報を登録するフローを作ってください。入力は担当者・日付・訪問件数・見込み額・所感です。「日報」テーブルに 1 行で登録します。同じ担当者が同じ日付の日報を 2 回出したときは、新しい内容で上書きして 1 行のままにしてください。「日報」テーブルの「登録キー」列は重複を許さない列なので、「担当者-日付」（例: 佐藤-2026-11-04）を入れて使ってください。",
+    "app": "営業担当が毎日の日報を出すアプリを作りたいです。書くのは担当者、日付、訪問件数、見込み額、所感。出し直したら前の分を置き換えて、同じ人・同じ日の日報が日報テーブルに 2 つできないようにしてね。登録キーの列（重複禁止）に 担当者-日付 の形で入れれば見分けられます。",
+    "auto": "日報の取りまとめを自動化したい。担当者と日付と訪問件数と見込み額と所感を受け取って『日報』表に記録する。出し直しは上書き扱いで、担当者と日付が同じなら行は増やさない。重複しない列「登録キー」があるので、そこへ『担当者名-日付』を書いて照合に使って。"
+   },
+   "clarifications": "日付は 2026-11-04 のような形で渡します。登録キーは「佐藤-2026-11-04」のように担当者と日付をハイフンでつなげたものです。所感は文章のままで構いません。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "daily",
+      "name": "日報",
+      "schema": {
+       "aggregate_min_rows": 1,
+       "fields": [
+        {
+         "key": "entry_key",
+         "display_name": "登録キー",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "rep",
+         "display_name": "担当者",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "report_date",
+         "display_name": "日付",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "visits",
+         "display_name": "訪問件数",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "prospect",
+         "display_name": "見込み額",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "note",
+         "display_name": "所感",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "entry_key": "鈴木-2026-11-04",
+        "rep": "鈴木",
+        "report_date": "2026-11-04",
+        "visits": 2,
+        "prospect": 80000,
+        "note": "定例の訪問"
+       }
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "any_of": [
+      [
+       "data.record.upsert",
+       "data.bulk_upsert"
+      ]
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "rep",
+      "terms": [
+       "担当者"
+      ]
+     },
+     {
+      "key": "report_date",
+      "terms": [
+       "日付"
+      ]
+     },
+     {
+      "key": "visits",
+      "terms": [
+       "訪問件数"
+      ]
+     },
+     {
+      "key": "prospect",
+      "terms": [
+       "見込み額"
+      ]
+     },
+     {
+      "key": "note",
+      "terms": [
+       "所感"
+      ]
+     }
+    ],
+    "flow_through": [
+     "rep",
+     "report_date",
+     "visits",
+     "prospect",
+     "note"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "resubmit",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "sequence": [
+      {
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-04",
+        "visits": 3,
+        "prospect": 200000,
+        "note": "既存のお客さまを訪問"
+       }
+      },
+      {
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-04",
+        "visits": 5,
+        "prospect": 350000,
+        "note": "新しい提案を追加した"
+       }
+      }
+     ],
+     "expect": {
+      "rows": [
+       {
+        "table": "daily",
+        "where": {
+         "rep": "佐藤",
+         "report_date": "2026-11-04"
+        },
+        "count": 1,
+        "match": [
+         {
+          "visits": 5,
+          "prospect": 350000,
+          "note": "新しい提案を追加した"
+         }
+        ]
+       },
+       {
+        "table": "daily",
+        "where": {
+         "rep": "鈴木"
+        },
+        "count": 1,
+        "match": [
+         {
+          "visits": 2
+         }
+        ]
+       }
+      ],
+      "no_new_rows": true
+     }
+    },
+    {
+     "id": "two_days",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "sequence": [
+      {
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-05",
+        "visits": 1,
+        "prospect": 0,
+        "note": "社内の会議"
+       }
+      },
+      {
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-06",
+        "visits": 4,
+        "prospect": 120000,
+        "note": "展示会の後追い"
+       }
+      }
+     ],
+     "expect": {
+      "rows": [
+       {
+        "table": "daily",
+        "where": {
+         "rep": "佐藤"
+        },
+        "count": 2,
+        "match": [
+         {
+          "report_date": "2026-11-05",
+          "visits": 1
+         },
+         {
+          "report_date": "2026-11-06",
+          "visits": 4
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app03-daily-submit",
+     "display_name": "日報を登録する",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "rep": {
+        "type": "string"
+       },
+       "report_date": {
+        "type": "string"
+       },
+       "visits": {
+        "type": "number"
+       },
+       "prospect": {
+        "type": "number"
+       },
+       "note": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "rep",
+       "report_date",
+       "visits",
+       "prospect",
+       "note"
+      ],
+      "x-order": [
+       "rep",
+       "report_date",
+       "visits",
+       "prospect",
+       "note"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "save_report",
+       "type": "data.record.upsert",
+       "label": "日報を登録・上書き",
+       "params": {
+        "table": "@table:daily",
+        "match_on": "entry_key",
+        "data": {
+         "entry_key": {
+          "$template": "{rep}-{date}",
+          "vars": {
+           "rep": {
+            "$from": "input",
+            "path": "/rep"
+           },
+           "date": {
+            "$from": "input",
+            "path": "/report_date"
+           }
+          }
+         },
+         "rep": {
+          "$from": "input",
+          "path": "/rep"
+         },
+         "report_date": {
+          "$from": "input",
+          "path": "/report_date"
+         },
+         "visits": {
+          "$from": "input",
+          "path": "/visits"
+         },
+         "prospect": {
+          "$from": "input",
+          "path": "/prospect"
+         },
+         "note": {
+          "$from": "input",
+          "path": "/note"
+         }
+        }
+       }
+      }
+     ],
+     "edges": []
+    }
+   }
+  },
+  {
+   "id": "app03-weekly-summary",
+   "app": "APP-03",
+   "kind": "workflow",
+   "requires": [
+    "node:transform.date",
+    "node:data.query",
+    "node:llm.invoke",
+    "node:storage.write",
+    "cap:scheduled_at"
+   ],
+   "phrasings": {
+    "flow": "毎週月曜の 9 時に動くフローを作ってください。「日報」テーブルから先週（月曜から日曜）の日報を担当者ごとに集計し、訪問件数と見込み額の合計を、週の開始日・担当者と一緒に「週次集計」テーブルへ担当者ごとに 1 行ずつ追加します。さらに集計の結果を AI で短い週報の文章にし、「週報」フォルダに「週報-週の開始日.md」という名前で保存してください。",
+    "app": "日報から週報を作るアプリを用意したい。月曜朝 9 時に、前の週の月〜日の日報を人ごとにまとめ、訪問件数と見込み額をそれぞれ足し合わせて週次集計の表へ（週の始まりの日付、担当者、2 つの合計）。まとめた数字を AI に文章にしてもらって、週報フォルダに 週報-（その週の月曜の日付）.md で置いてほしい。",
+    "auto": "週次の営業集計を自動化します。実行は毎週月曜 9:00（日本時間）。対象は先週 1 週間分（月曜〜日曜）の『日報』。担当者別に訪問件数・見込み額を合計して、『週次集計』へ 1 人 1 行（週の開始日／担当者／訪問件数の合計／見込み額の合計）を登録。あわせて合計を AI に週報の文章としてまとめさせ、『週報』フォルダへ『週報-<週の開始日>.md』として保存。"
+   },
+   "clarifications": "週は月曜はじまりで、月曜 9 時に動いたら、その前の月曜から日曜までが対象です。週の開始日はその月曜の日付です。週報の文章は短くて構いません。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "weekly_folder",
+      "name": "週報"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "daily",
+      "name": "日報",
+      "schema": {
+       "aggregate_min_rows": 1,
+       "fields": [
+        {
+         "key": "entry_key",
+         "display_name": "登録キー",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "rep",
+         "display_name": "担当者",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "report_date",
+         "display_name": "日付",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "visits",
+         "display_name": "訪問件数",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "prospect",
+         "display_name": "見込み額",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "note",
+         "display_name": "所感",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "entry_key": "佐藤-2026-11-02",
+        "rep": "佐藤",
+        "report_date": "2026-11-02",
+        "visits": 3,
+        "prospect": 100000,
+        "note": "新しい見込みが 1 件"
+       },
+       {
+        "entry_key": "佐藤-2026-11-04",
+        "rep": "佐藤",
+        "report_date": "2026-11-04",
+        "visits": 2,
+        "prospect": 50000,
+        "note": "既存の取引先を訪問"
+       },
+       {
+        "entry_key": "佐藤-2026-11-06",
+        "rep": "佐藤",
+        "report_date": "2026-11-06",
+        "visits": 4,
+        "prospect": 0,
+        "note": "展示会の準備"
+       },
+       {
+        "entry_key": "鈴木-2026-11-03",
+        "rep": "鈴木",
+        "report_date": "2026-11-03",
+        "visits": 1,
+        "prospect": 300000,
+        "note": "大口の相談"
+       },
+       {
+        "entry_key": "鈴木-2026-11-05",
+        "rep": "鈴木",
+        "report_date": "2026-11-05",
+        "visits": 5,
+        "prospect": 120000,
+        "note": "地域を回った"
+       },
+       {
+        "entry_key": "佐藤-2026-10-30",
+        "rep": "佐藤",
+        "report_date": "2026-10-30",
+        "visits": 6,
+        "prospect": 999999,
+        "note": "前の週の分"
+       },
+       {
+        "entry_key": "鈴木-2026-11-09",
+        "rep": "鈴木",
+        "report_date": "2026-11-09",
+        "visits": 2,
+        "prospect": 10000,
+        "note": "今週の分"
+       }
+      ]
+     },
+     {
+      "ref": "weekly",
+      "name": "週次集計",
+      "schema": {
+       "fields": [
+        {
+         "key": "week_start",
+         "display_name": "週の開始日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "rep",
+         "display_name": "担当者",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "visits",
+         "display_name": "訪問件数の合計",
+         "type": "number"
+        },
+        {
+         "key": "prospect",
+         "display_name": "見込み額の合計",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "schedule",
+     "cron_any": [
+      "0 9 * * 1",
+      "0 9 * * MON",
+      "00 09 * * 1"
+     ],
+     "tz": "Asia/Tokyo"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "llm.invoke",
+      "storage.write"
+     ],
+     "any_of": [
+      [
+       "data.record.create",
+       "data.record.upsert",
+       "data.bulk_upsert"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "last_week",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "scheduled_at": "2026-11-09T09:00:00+09:00",
+     "expect": {
+      "rows": [
+       {
+        "table": "weekly",
+        "count": 2,
+        "match": [
+         {
+          "rep": "佐藤",
+          "week_start": "2026-11-02",
+          "visits": {
+           "$fixture": {
+            "table": "daily",
+            "op": "sum",
+            "field": "visits",
+            "where": {
+             "rep": "佐藤"
+            },
+            "range": {
+             "field": "report_date",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          },
+          "prospect": {
+           "$fixture": {
+            "table": "daily",
+            "op": "sum",
+            "field": "prospect",
+            "where": {
+             "rep": "佐藤"
+            },
+            "range": {
+             "field": "report_date",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          }
+         },
+         {
+          "rep": "鈴木",
+          "week_start": "2026-11-02",
+          "visits": {
+           "$fixture": {
+            "table": "daily",
+            "op": "sum",
+            "field": "visits",
+            "where": {
+             "rep": "鈴木"
+            },
+            "range": {
+             "field": "report_date",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          },
+          "prospect": {
+           "$fixture": {
+            "table": "daily",
+            "op": "sum",
+            "field": "prospect",
+            "where": {
+             "rep": "鈴木"
+            },
+            "range": {
+             "field": "report_date",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          }
+         }
+        ]
+       }
+      ],
+      "files": [
+       {
+        "folder": "weekly_folder",
+        "name_regex": "^週報-2026-11-02( \\(\\d+\\))?\\.md$",
+        "count": 1
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app03-weekly-summary",
+     "display_name": "日報を週ごとに集計する",
+     "triggers": [
+      {
+       "kind": "schedule",
+       "cron": "0 9 * * 1",
+       "tz": "Asia/Tokyo"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "last_week",
+       "type": "transform.date",
+       "label": "先週",
+       "params": {
+        "shift": {
+         "amount": -1,
+         "unit": "week"
+        },
+        "period": "week"
+       }
+      },
+      {
+       "id": "totals",
+       "type": "data.query",
+       "label": "担当者ごとの合計",
+       "params": {
+        "table": "@table:daily",
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "gte",
+             "value": {
+              "$from": "nodes.last_week.output",
+              "path": "/start"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "lte",
+             "value": {
+              "$from": "nodes.last_week.output",
+              "path": "/end"
+             }
+            }
+           }
+          ]
+         },
+         "group_by": [
+          "rep"
+         ],
+         "aggregate": [
+          {
+           "metric": "sum",
+           "field": "visits"
+          },
+          {
+           "metric": "sum",
+           "field": "prospect"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "id": "per_rep",
+       "type": "control.map",
+       "label": "担当者ごと",
+       "params": {
+        "items": {
+         "$from": "nodes.totals.output",
+         "path": "/groups"
+        }
+       }
+      },
+      {
+       "id": "save_total",
+       "type": "data.record.create",
+       "label": "週次集計に追加",
+       "params": {
+        "table": "@table:weekly",
+        "data": {
+         "week_start": {
+          "$from": "nodes.last_week.output",
+          "path": "/start"
+         },
+         "rep": {
+          "$from": "each",
+          "path": "/item/key/rep"
+         },
+         "visits": {
+          "$from": "each",
+          "path": "/item/values/0"
+         },
+         "prospect": {
+          "$from": "each",
+          "path": "/item/values/1"
+         }
+        }
+       },
+       "parent": "per_rep"
+      },
+      {
+       "id": "summarize",
+       "type": "llm.invoke",
+       "label": "週報の文章",
+       "params": {
+        "prompt": {
+         "$template": "{start} から {end} までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n{groups}",
+         "vars": {
+          "start": {
+           "$from": "nodes.last_week.output",
+           "path": "/start"
+          },
+          "end": {
+           "$from": "nodes.last_week.output",
+           "path": "/end"
+          },
+          "groups": {
+           "$from": "nodes.totals.output",
+           "path": "/groups"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "save_file",
+       "type": "storage.write",
+       "label": "週報を保存",
+       "params": {
+        "folder": "@folder:weekly_folder",
+        "name": {
+         "$template": "週報-{start}.md",
+         "vars": {
+          "start": {
+           "$from": "nodes.last_week.output",
+           "path": "/start"
+          }
+         }
+        },
+        "content": {
+         "$from": "nodes.summarize.output",
+         "path": "/text"
+        },
+        "content_type": "text/markdown",
+        "on_name_taken": "add_number"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "last_week",
+       "to": "totals"
+      },
+      {
+       "from": "totals",
+       "to": "per_rep"
+      },
+      {
+       "from": "per_rep",
+       "to": "summarize"
+      },
+      {
+       "from": "summarize",
+       "to": "save_file"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app03-pair",
+   "app": "APP-03",
+   "kind": "workflow_set",
+   "requires": [
+    "node:data.record.upsert",
+    "node:transform.date",
+    "node:data.query",
+    "node:llm.invoke",
+    "node:storage.write",
+    "cap:scheduled_at"
+   ],
+   "phrasings": {
+    "flow": "日報の仕組みを 2 つのフローで作ってください。1 つ目は、担当者・日付・訪問件数・見込み額・所感を受け取って「日報」テーブルに登録するフローです（同じ担当者・同じ日付は上書きして 1 行にします。重複を許さない「登録キー」列に「担当者-日付」を入れてください）。2 つ目は毎週月曜 9 時に動き、先週（月曜〜日曜）の日報を担当者ごとに集計して、訪問件数と見込み額の合計を週の開始日・担当者と一緒に「週次集計」テーブルに 1 行ずつ追加し、AI でまとめた週報を「週報」フォルダに「週報-週の開始日.md」で保存するフローです。",
+    "app": "日報を受け取って、週ごとに集計して保存するアプリを作って。毎日の入力は担当者、日付、訪問件数、見込み額、所感で、日報の表に貯める（同じ人の同じ日は置き換え。重複禁止の登録キー列に 担当者-日付 を入れる）。毎週月曜 9 時には先週分を人ごとに合計して週次集計の表へ入れ、AI に書かせた週報を週報フォルダに 週報-（週の月曜の日付）.md で置く。",
+    "auto": "営業日報の提出と週次集計を自動化したいです。(1) 提出: 担当者／日付／訪問件数／見込み額／所感を『日報』に記録。登録キー（重複不可）＝担当者-日付で、出し直しは上書き。(2) 集計: 毎週月曜 9:00、前週月曜〜日曜の日報を担当者別に合計し、『週次集計』へ週の開始日・担当者・訪問件数の合計・見込み額の合計を登録。AI の週報を『週報』フォルダに『週報-<週の開始日>.md』で保存。"
+   },
+   "clarifications": "日付は 2026-11-04 のような形で渡します。登録キーは「佐藤-2026-11-04」のように担当者と日付をハイフンでつなげたものです。所感は文章のままで構いません。週は月曜はじまりで、月曜 9 時に動いたら、その前の月曜から日曜までが対象です。週の開始日はその月曜の日付です。週報の文章は短くて構いません。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "weekly_folder",
+      "name": "週報"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "daily",
+      "name": "日報",
+      "schema": {
+       "aggregate_min_rows": 1,
+       "fields": [
+        {
+         "key": "entry_key",
+         "display_name": "登録キー",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "rep",
+         "display_name": "担当者",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "report_date",
+         "display_name": "日付",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "visits",
+         "display_name": "訪問件数",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "prospect",
+         "display_name": "見込み額",
+         "type": "number",
+         "indexed": true
+        },
+        {
+         "key": "note",
+         "display_name": "所感",
+         "type": "text"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "weekly",
+      "name": "週次集計",
+      "schema": {
+       "fields": [
+        {
+         "key": "week_start",
+         "display_name": "週の開始日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "rep",
+         "display_name": "担当者",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "visits",
+         "display_name": "訪問件数の合計",
+         "type": "number"
+        },
+        {
+         "key": "prospect",
+         "display_name": "見込み額の合計",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "roles": [
+    {
+     "role": "submit",
+     "trigger_kind": "interactive",
+     "expect": {
+      "trigger": {
+       "kind": "interactive"
+      },
+      "node_types": {
+       "any_of": [
+        [
+         "data.record.upsert",
+         "data.bulk_upsert"
+        ]
+       ]
+      },
+      "inputs": [
+       {
+        "key": "rep",
+        "terms": [
+         "担当者"
+        ]
+       },
+       {
+        "key": "report_date",
+        "terms": [
+         "日付"
+        ]
+       },
+       {
+        "key": "visits",
+        "terms": [
+         "訪問件数"
+        ]
+       },
+       {
+        "key": "prospect",
+        "terms": [
+         "見込み額"
+        ]
+       },
+       {
+        "key": "note",
+        "terms": [
+         "所感"
+        ]
+       }
+      ],
+      "flow_through": [
+       "rep",
+       "report_date",
+       "visits",
+       "prospect",
+       "note"
+      ]
+     }
+    },
+    {
+     "role": "weekly",
+     "trigger_kind": "schedule",
+     "expect": {
+      "trigger": {
+       "kind": "schedule",
+       "cron_any": [
+        "0 9 * * 1",
+        "0 9 * * MON",
+        "00 09 * * 1"
+       ],
+       "tz": "Asia/Tokyo"
+      },
+      "node_types": {
+       "all_of": [
+        "data.query",
+        "llm.invoke",
+        "storage.write"
+       ],
+       "any_of": [
+        [
+         "data.record.create",
+         "data.record.upsert",
+         "data.bulk_upsert"
+        ]
+       ],
+       "none_of": [
+        "agent.invoke"
+       ]
+      },
+      "inputs": [],
+      "flow_through": []
+     }
+    }
+   ],
+   "run_cases": [
+    {
+     "id": "submit_then_weekly",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "sequence": [
+      {
+       "workflow": "submit",
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-02",
+        "visits": 3,
+        "prospect": 100000,
+        "note": "見込みが 1 件"
+       }
+      },
+      {
+       "workflow": "submit",
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-05",
+        "visits": 4,
+        "prospect": 60000,
+        "note": "既存の取引先"
+       }
+      },
+      {
+       "workflow": "submit",
+       "input": {
+        "rep": "鈴木",
+        "report_date": "2026-11-04",
+        "visits": 2,
+        "prospect": 250000,
+        "note": "大口の相談"
+       }
+      },
+      {
+       "workflow": "submit",
+       "input": {
+        "rep": "佐藤",
+        "report_date": "2026-11-05",
+        "visits": 6,
+        "prospect": 90000,
+        "note": "出し直し"
+       }
+      },
+      {
+       "workflow": "weekly",
+       "input": {},
+       "scheduled_at": "2026-11-09T09:00:00+09:00"
+      }
+     ],
+     "expect": {
+      "rows": [
+       {
+        "table": "daily",
+        "count": 3
+       },
+       {
+        "table": "weekly",
+        "count": 2,
+        "match": [
+         {
+          "rep": "佐藤",
+          "week_start": "2026-11-02",
+          "visits": 9,
+          "prospect": 190000
+         },
+         {
+          "rep": "鈴木",
+          "week_start": "2026-11-02",
+          "visits": 2,
+          "prospect": 250000
+         }
+        ]
+       }
+      ],
+      "files": [
+       {
+        "folder": "weekly_folder",
+        "name_regex": "^週報-2026-11-02( \\(\\d+\\))?\\.md$",
+        "count": 1
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "irs": {
+     "submit": {
+      "ir_version": 1,
+      "name": "app03-pair-submit",
+      "display_name": "日報を登録する",
+      "triggers": [
+       {
+        "kind": "interactive"
+       }
+      ],
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "rep": {
+         "type": "string"
+        },
+        "report_date": {
+         "type": "string"
+        },
+        "visits": {
+         "type": "number"
+        },
+        "prospect": {
+         "type": "number"
+        },
+        "note": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "rep",
+        "report_date",
+        "visits",
+        "prospect",
+        "note"
+       ],
+       "x-order": [
+        "rep",
+        "report_date",
+        "visits",
+        "prospect",
+        "note"
+       ]
+      },
+      "nodes": [
+       {
+        "id": "save_report",
+        "type": "data.record.upsert",
+        "label": "日報を登録・上書き",
+        "params": {
+         "table": "@table:daily",
+         "match_on": "entry_key",
+         "data": {
+          "entry_key": {
+           "$template": "{rep}-{date}",
+           "vars": {
+            "rep": {
+             "$from": "input",
+             "path": "/rep"
+            },
+            "date": {
+             "$from": "input",
+             "path": "/report_date"
+            }
+           }
+          },
+          "rep": {
+           "$from": "input",
+           "path": "/rep"
+          },
+          "report_date": {
+           "$from": "input",
+           "path": "/report_date"
+          },
+          "visits": {
+           "$from": "input",
+           "path": "/visits"
+          },
+          "prospect": {
+           "$from": "input",
+           "path": "/prospect"
+          },
+          "note": {
+           "$from": "input",
+           "path": "/note"
+          }
+         }
+        }
+       }
+      ],
+      "edges": []
+     },
+     "weekly": {
+      "ir_version": 1,
+      "name": "app03-pair-weekly",
+      "display_name": "日報を週ごとに集計する",
+      "triggers": [
+       {
+        "kind": "schedule",
+        "cron": "0 9 * * 1",
+        "tz": "Asia/Tokyo"
+       }
+      ],
+      "nodes": [
+       {
+        "id": "last_week",
+        "type": "transform.date",
+        "label": "先週",
+        "params": {
+         "shift": {
+          "amount": -1,
+          "unit": "week"
+         },
+         "period": "week"
+        }
+       },
+       {
+        "id": "totals",
+        "type": "data.query",
+        "label": "担当者ごとの合計",
+        "params": {
+         "table": "@table:daily",
+         "query": {
+          "filter": {
+           "all": [
+            {
+             "cmp": {
+              "field": "report_date",
+              "op": "gte",
+              "value": {
+               "$from": "nodes.last_week.output",
+               "path": "/start"
+              }
+             }
+            },
+            {
+             "cmp": {
+              "field": "report_date",
+              "op": "lte",
+              "value": {
+               "$from": "nodes.last_week.output",
+               "path": "/end"
+              }
+             }
+            }
+           ]
+          },
+          "group_by": [
+           "rep"
+          ],
+          "aggregate": [
+           {
+            "metric": "sum",
+            "field": "visits"
+           },
+           {
+            "metric": "sum",
+            "field": "prospect"
+           }
+          ]
+         }
+        }
+       },
+       {
+        "id": "per_rep",
+        "type": "control.map",
+        "label": "担当者ごと",
+        "params": {
+         "items": {
+          "$from": "nodes.totals.output",
+          "path": "/groups"
+         }
+        }
+       },
+       {
+        "id": "save_total",
+        "type": "data.record.create",
+        "label": "週次集計に追加",
+        "params": {
+         "table": "@table:weekly",
+         "data": {
+          "week_start": {
+           "$from": "nodes.last_week.output",
+           "path": "/start"
+          },
+          "rep": {
+           "$from": "each",
+           "path": "/item/key/rep"
+          },
+          "visits": {
+           "$from": "each",
+           "path": "/item/values/0"
+          },
+          "prospect": {
+           "$from": "each",
+           "path": "/item/values/1"
+          }
+         }
+        },
+        "parent": "per_rep"
+       },
+       {
+        "id": "summarize",
+        "type": "llm.invoke",
+        "label": "週報の文章",
+        "params": {
+         "prompt": {
+          "$template": "{start} から {end} までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n{groups}",
+          "vars": {
+           "start": {
+            "$from": "nodes.last_week.output",
+            "path": "/start"
+           },
+           "end": {
+            "$from": "nodes.last_week.output",
+            "path": "/end"
+           },
+           "groups": {
+            "$from": "nodes.totals.output",
+            "path": "/groups"
+           }
+          }
+         }
+        }
+       },
+       {
+        "id": "save_file",
+        "type": "storage.write",
+        "label": "週報を保存",
+        "params": {
+         "folder": "@folder:weekly_folder",
+         "name": {
+          "$template": "週報-{start}.md",
+          "vars": {
+           "start": {
+            "$from": "nodes.last_week.output",
+            "path": "/start"
+           }
+          }
+         },
+         "content": {
+          "$from": "nodes.summarize.output",
+          "path": "/text"
+         },
+         "content_type": "text/markdown",
+         "on_name_taken": "add_number"
+        }
+       }
+      ],
+      "edges": [
+       {
+        "from": "last_week",
+        "to": "totals"
+       },
+       {
+        "from": "totals",
+        "to": "per_rep"
+       },
+       {
+        "from": "per_rep",
+        "to": "summarize"
+       },
+       {
+        "from": "summarize",
+        "to": "save_file"
+       }
+      ]
+     }
+    }
+   }
+  },
+  {
+   "id": "app05-screening-text",
+   "app": "APP-05",
+   "kind": "workflow",
+   "requires": [
+    "node:llm.invoke",
+    "node:data.record.create",
+    "node:data.record.update",
+    "node:control.branch",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "応募者の書類選考を手伝うフローを作ってください。入力は氏名・応募職種・志望動機です。まず「応募者」テーブルに状態「応募」で登録し、AI に志望動機を読ませて 1〜5 の評価点と理由を出させ、その行に書き込みます。評価点が 4 以上なら状態を「書類通過」に変え、3 以下なら「応募」のままにしてください。自動で見送りにはしません。",
+    "app": "採用の一次選考用のアプリがほしいです。応募者の名前、どの職種か、志望動機を入れると応募者の表に登録して、AI が動機を 5 段階で採点し理由も残す。4 点以上の人は書類通過にして、それ以外は応募の状態で人が見るまで置いておきます（勝手に見送りにしない）。",
+    "auto": "書類選考の下読みを自動化したい。受け取るのは氏名、応募職種、志望動機。『応募者』へ状態=応募で記録 → AI で志望動機を評価（評価点 1〜5 と評価の理由）→ 記録した行へ評価点と理由を書く → 評価点 4 以上だけ状態を書類通過へ。低い人も見送りにはせず応募のまま残す。"
+   },
+   "clarifications": "評価点は 1 から 5 の整数です。4 点と 5 点が書類通過で、それ以外は状態を変えません。見送りの判断は人が行うので、フローでは見送りにしないでください。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "applicants",
+      "name": "応募者",
+      "schema": {
+       "fields": [
+        {
+         "key": "name",
+         "display_name": "氏名",
+         "type": "text"
+        },
+        {
+         "key": "position",
+         "display_name": "応募職種",
+         "type": "text"
+        },
+        {
+         "key": "motivation",
+         "display_name": "志望動機",
+         "type": "text"
+        },
+        {
+         "key": "score",
+         "display_name": "評価点",
+         "type": "number"
+        },
+        {
+         "key": "reason",
+         "display_name": "評価の理由",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "応募",
+          "書類通過",
+          "見送り"
+         ],
+         "indexed": true
+        }
+       ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "応募",
+         "to": "書類通過"
+        },
+        {
+         "from": "応募",
+         "to": "見送り"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "llm.invoke",
+      "data.record.create",
+      "data.transition"
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "name",
+      "terms": [
+       "氏名",
+       "名前"
+      ]
+     },
+     {
+      "key": "position",
+      "terms": [
+       "応募職種",
+       "職種"
+      ]
+     },
+     {
+      "key": "motivation",
+      "terms": [
+       "志望動機",
+       "動機"
+      ]
+     }
+    ],
+    "flow_through": [
+     "name",
+     "motivation"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "strong",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "name": "青木",
+      "position": "経理",
+      "motivation": "前職で 5 年間、月次決算と請求書の管理を担当しました。決算を早めるために表計算の集計を自動にし、締めの作業を 3 日短くしました。御社でも経理の仕組みを整え、数字で事業を支えたいと考えています。"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "applicants",
+        "count": 1,
+        "match": [
+         {
+          "name": "青木",
+          "status": "書類通過"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "weak",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "name": "村上",
+      "position": "経理",
+      "motivation": "特にありません。"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "applicants",
+        "count": 1,
+        "match": [
+         {
+          "name": "村上",
+          "status": "応募"
+         }
+        ],
+        "absent": [
+         {
+          "status": "見送り"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app05-screening-text",
+     "display_name": "志望動機を評価する",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "position": {
+        "type": "string"
+       },
+       "motivation": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "name",
+       "position",
+       "motivation"
+      ],
+      "x-order": [
+       "name",
+       "position",
+       "motivation"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "register",
+       "type": "data.record.create",
+       "label": "応募者を登録",
+       "params": {
+        "table": "@table:applicants",
+        "data": {
+         "name": {
+          "$from": "input",
+          "path": "/name"
+         },
+         "position": {
+          "$from": "input",
+          "path": "/position"
+         },
+         "motivation": {
+          "$from": "input",
+          "path": "/motivation"
+         },
+         "status": "応募"
+        }
+       }
+      },
+      {
+       "id": "judge",
+       "type": "llm.invoke",
+       "label": "志望動機を評価",
+       "params": {
+        "prompt": {
+         "$template": "次の応募者の志望動機を、応募職種に合っているか・具体的かの観点で読んでください。\n氏名: {name}\n応募職種: {position}\n志望動機: {motivation}\n\n評価の理由を 1〜2 文で書き、最後の行には 1〜5 の評価点（整数）の数字だけを書いてください。",
+         "vars": {
+          "name": {
+           "$from": "input",
+           "path": "/name"
+          },
+          "position": {
+           "$from": "input",
+           "path": "/position"
+          },
+          "motivation": {
+           "$from": "input",
+           "path": "/motivation"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "parse",
+       "type": "script.run",
+       "label": "評価点と理由を取り出す",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var lines = String(input.text || \"\")\n    .split(\"\\n\")\n    .map(function (l) { return l.trim(); })\n    .filter(function (l) { return l !== \"\"; });\n  var last = lines.length ? lines[lines.length - 1] : \"\";\n  var m = last.match(/[1-5]/);\n  if (!m) {\n    throw new Error(\"評価点を読み取れません: \" + last.slice(0, 100));\n  }\n  var reason = lines.slice(0, -1).join(\"\\n\");\n  return { score: Number(m[0]), reason: reason || last };\n}"
+        },
+        "input": {
+         "$from": "nodes.judge.output"
+        }
+       }
+      },
+      {
+       "id": "write_score",
+       "type": "data.record.update",
+       "label": "評価を書く",
+       "params": {
+        "table": "@table:applicants",
+        "record": {
+         "$from": "nodes.register.output",
+         "path": "/id"
+        },
+        "patch": {
+         "score": {
+          "$from": "nodes.parse.output",
+          "path": "/score"
+         },
+         "reason": {
+          "$from": "nodes.parse.output",
+          "path": "/reason"
+         }
+        }
+       }
+      },
+      {
+       "id": "is_strong",
+       "type": "control.branch",
+       "label": "4 点以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.parse.output",
+           "path": "/score"
+          },
+          "op": "gte",
+          "right": 4
+         }
+        }
+       }
+      },
+      {
+       "id": "promote",
+       "type": "data.transition",
+       "label": "書類通過にする",
+       "params": {
+        "table": "@table:applicants",
+        "record": {
+         "$from": "nodes.register.output",
+         "path": "/id"
+        },
+        "to": "書類通過"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "register",
+       "to": "judge"
+      },
+      {
+       "from": "judge",
+       "to": "parse"
+      },
+      {
+       "from": "parse",
+       "to": "write_score"
+      },
+      {
+       "from": "write_score",
+       "to": "is_strong"
+      },
+      {
+       "from": "is_strong",
+       "to": "promote",
+       "from_port": "true"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app06-stock-move",
+   "app": "APP-06",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:control.branch",
+    "node:data.record.update",
+    "node:script.run"
+   ],
+   "phrasings": {
+    "flow": "倉庫から品物を出したときに在庫を減らすフローを作ってください。入力は品番と数量です。「在庫」テーブルでその品番の行を探し、在庫数が数量以上あるときだけ在庫数から数量を引いて、「入出庫の記録」テーブルに品番と数量の 1 行を残します。在庫数が足りないときは何も変えないでください（在庫数がマイナスにならないように）。",
+    "app": "出庫の登録アプリを作って。品番と何個出したかを入れたら、在庫の表のその品物の数を減らし、入出庫の記録に残す。ただし手元にある数より多く出そうとしたら、減らさずに止めて（記録も残さない）。在庫がマイナスになるのはだめ。",
+    "auto": "出庫に合わせた在庫の引き当てを自動化したいです。入力: 品番、数量。手順: 『在庫』表で品番の行を見つける → 在庫数 ≥ 数量のときだけ、在庫数を数量の分だけ減らし『入出庫の記録』に品番・数量を記録 → 足りなければ在庫も記録も触らない。"
+   },
+   "clarifications": "数量は出した個数（正の整数）です。在庫数がちょうど数量と同じなら出庫できて 0 になります。足りないときにエラーで止まっても構いませんが、在庫数と記録は変えないでください。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "stock",
+      "name": "在庫",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "品番",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "品名",
+         "type": "text"
+        },
+        {
+         "key": "qty",
+         "display_name": "在庫数",
+         "type": "number",
+         "indexed": true,
+         "numeric_spec": {
+          "scale": 0,
+          "min": 0
+         }
+        },
+        {
+         "key": "reorder_point",
+         "display_name": "発注点",
+         "type": "number"
+        },
+        {
+         "key": "reorder_qty",
+         "display_name": "発注数",
+         "type": "number"
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "P-100",
+        "name": "コピー用紙 A4",
+        "qty": 40,
+        "reorder_point": 20,
+        "reorder_qty": 100
+       },
+       {
+        "code": "P-200",
+        "name": "ボールペン（黒）",
+        "qty": 5,
+        "reorder_point": 10,
+        "reorder_qty": 50
+       }
+      ]
+     },
+     {
+      "ref": "moves",
+      "name": "入出庫の記録",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "品番",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "qty",
+         "display_name": "数量",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query"
+     ],
+     "any_of": [
+      [
+       "data.record.update",
+       "data.record.upsert"
+      ]
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "code",
+      "terms": [
+       "品番"
+      ]
+     },
+     {
+      "key": "qty",
+      "terms": [
+       "数量",
+       "何個"
+      ]
+     }
+    ],
+    "flow_through": [
+     "code",
+     "qty"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "enough",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "P-100",
+      "qty": 15
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "stock",
+        "where": {
+         "code": "P-100"
+        },
+        "count": 1,
+        "match": [
+         {
+          "qty": 25
+         }
+        ]
+       },
+       {
+        "table": "stock",
+        "where": {
+         "code": "P-200"
+        },
+        "match": [
+         {
+          "qty": 5
+         }
+        ]
+       },
+       {
+        "table": "moves",
+        "count": 1,
+        "match": [
+         {
+          "code": "P-100",
+          "qty": 15
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "exact",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "P-200",
+      "qty": 5
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "stock",
+        "where": {
+         "code": "P-200"
+        },
+        "match": [
+         {
+          "qty": 0
+         }
+        ]
+       },
+       {
+        "table": "moves",
+        "count": 1,
+        "match": [
+         {
+          "code": "P-200",
+          "qty": 5
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "short",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "P-200",
+      "qty": 8
+     },
+     "expect": {
+      "status": "any",
+      "flow_through": false,
+      "rows": [
+       {
+        "table": "stock",
+        "unchanged": true
+       },
+       {
+        "table": "moves",
+        "count": 0
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app06-stock-move",
+     "display_name": "出庫で在庫を減らす",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "code": {
+        "type": "string"
+       },
+       "qty": {
+        "type": "number"
+       }
+      },
+      "required": [
+       "code",
+       "qty"
+      ],
+      "x-order": [
+       "code",
+       "qty"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "find",
+       "type": "data.query",
+       "label": "品番で探す",
+       "params": {
+        "table": "@table:stock",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "enough",
+       "type": "control.branch",
+       "label": "在庫が足りるか",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/data/qty"
+          },
+          "op": "gte",
+          "right": {
+           "$from": "input",
+           "path": "/qty"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "rest",
+       "type": "script.run",
+       "label": "残りの数",
+       "params": {
+        "source": {
+         "inline": "function main(input) { return { rest: Number(input.stock) - Number(input.qty) }; }"
+        },
+        "input": {
+         "stock": {
+          "$from": "nodes.find.output",
+          "path": "/items/0/data/qty"
+         },
+         "qty": {
+          "$from": "input",
+          "path": "/qty"
+         }
+        }
+       }
+      },
+      {
+       "id": "take",
+       "type": "data.record.update",
+       "label": "在庫数を減らす",
+       "params": {
+        "table": "@table:stock",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "patch": {
+         "qty": {
+          "$from": "nodes.rest.output",
+          "path": "/rest"
+         }
+        }
+       }
+      },
+      {
+       "id": "log",
+       "type": "data.record.create",
+       "label": "記録を残す",
+       "params": {
+        "table": "@table:moves",
+        "data": {
+         "code": {
+          "$from": "input",
+          "path": "/code"
+         },
+         "qty": {
+          "$from": "input",
+          "path": "/qty"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "find",
+       "to": "enough"
+      },
+      {
+       "from": "enough",
+       "to": "rest",
+       "from_port": "true"
+      },
+      {
+       "from": "rest",
+       "to": "take"
+      },
+      {
+       "from": "take",
+       "to": "log"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app06-reorder-check",
+   "app": "APP-06",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:script.run",
+    "node:data.bulk_upsert",
+    "node:csv.write"
+   ],
+   "phrasings": {
+    "flow": "毎朝 8 時に動くフローを作ってください。「在庫」テーブルで在庫数が発注点より少ない品物だけを選び、「発注の下書き」テーブルに品番・品名・発注数（在庫テーブルの発注数の値）・状態「下書き」で登録します。同じ品番の下書きは 2 行にしないでください。選んだ品物の品番・品名・発注数を CSV にして「発注」フォルダに「発注候補-日付.csv」で保存します。",
+    "app": "発注漏れを防ぐアプリを作りたい。毎日朝 8 時に在庫を見て、在庫数が発注点を下回った品物を発注の下書きの表へ（品番、品名、発注数、状態は下書き）。同じ品物を重ねて登録しないで、上書きにして。あわせて、その一覧を CSV で発注フォルダに置いてほしい。ファイル名は 発注候補-日付.csv で。",
+    "auto": "在庫の発注点チェックを自動化します。毎日 8:00 に『在庫』を確認し、在庫数 < 発注点 の品物について『発注の下書き』へ品番・品名・発注数・状態=下書きを登録（品番が同じなら更新して重複させない）。対象品の品番・品名・発注数の CSV を『発注』フォルダへ『発注候補-<日付>.csv』として出力してください。"
+   },
+   "clarifications": "発注点と同じ在庫数のものは対象外で、少ないものだけが対象です。「発注の下書き」の品番の列は重複を許さない列です。CSV は Excel で開けるよう BOM 付きの UTF-8 にしてください。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "orders",
+      "name": "発注"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "stock",
+      "name": "在庫",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "品番",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "品名",
+         "type": "text"
+        },
+        {
+         "key": "qty",
+         "display_name": "在庫数",
+         "type": "number",
+         "indexed": true,
+         "numeric_spec": {
+          "scale": 0,
+          "min": 0
+         }
+        },
+        {
+         "key": "reorder_point",
+         "display_name": "発注点",
+         "type": "number"
+        },
+        {
+         "key": "reorder_qty",
+         "display_name": "発注数",
+         "type": "number"
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "P-100",
+        "name": "コピー用紙 A4",
+        "qty": 40,
+        "reorder_point": 20,
+        "reorder_qty": 100
+       },
+       {
+        "code": "P-200",
+        "name": "ボールペン（黒）",
+        "qty": 5,
+        "reorder_point": 10,
+        "reorder_qty": 50
+       },
+       {
+        "code": "P-300",
+        "name": "付箋（黄）",
+        "qty": 0,
+        "reorder_point": 3,
+        "reorder_qty": 30
+       },
+       {
+        "code": "P-400",
+        "name": "クリップ",
+        "qty": 10,
+        "reorder_point": 10,
+        "reorder_qty": 20
+       }
+      ]
+     },
+     {
+      "ref": "drafts",
+      "name": "発注の下書き",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "品番",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "品名",
+         "type": "text"
+        },
+        {
+         "key": "order_qty",
+         "display_name": "発注数",
+         "type": "number"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "下書き",
+          "発注済"
+         ],
+         "indexed": true
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "schedule",
+     "cron_any": [
+      "0 8 * * *",
+      "00 08 * * *"
+     ],
+     "tz": "Asia/Tokyo"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query"
+     ],
+     "any_of": [
+      [
+       "data.bulk_upsert",
+       "data.record.upsert"
+      ],
+      [
+       "csv.write",
+       "storage.write"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "morning",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "scheduled_at": "2026-11-09T08:00:00+09:00",
+     "expect": {
+      "rows": [
+       {
+        "table": "drafts",
+        "count": 2,
+        "match": [
+         {
+          "code": "P-200",
+          "name": "ボールペン（黒）",
+          "order_qty": 50,
+          "status": "下書き"
+         },
+         {
+          "code": "P-300",
+          "order_qty": 30,
+          "status": "下書き"
+         }
+        ],
+        "absent": [
+         {
+          "code": "P-100"
+         },
+         {
+          "code": "P-400"
+         }
+        ]
+       }
+      ],
+      "files": [
+       {
+        "folder": "orders",
+        "name_regex": "^発注候補-.*\\.csv$",
+        "count": 1,
+        "contains": [
+         "P-200",
+         "P-300"
+        ],
+        "not_contains": [
+         "P-100",
+         "P-400"
+        ]
+       }
+      ],
+      "no_new_rows": true
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app06-reorder-check",
+     "display_name": "発注点を下回った品物を下書きにする",
+     "triggers": [
+      {
+       "kind": "schedule",
+       "cron": "0 8 * * *",
+       "tz": "Asia/Tokyo"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "all_stock",
+       "type": "data.query",
+       "label": "在庫を読む",
+       "params": {
+        "table": "@table:stock",
+        "query": {
+         "limit": 200
+        }
+       }
+      },
+      {
+       "id": "pick",
+       "type": "script.run",
+       "label": "発注点割れを選ぶ",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var low = (input.items || []).filter(function (r) {\n    return Number(r.data.qty) < Number(r.data.reorder_point);\n  });\n  return {\n    rows: low.map(function (r) {\n      return { data: { code: r.data.code, name: r.data.name, order_qty: r.data.reorder_qty, status: \"下書き\" } };\n    }),\n    csv: low.map(function (r) {\n      return { \"品番\": String(r.data.code), \"品名\": String(r.data.name), \"発注数\": String(r.data.reorder_qty) };\n    })\n  };\n}"
+        },
+        "input": {
+         "items": {
+          "$from": "nodes.all_stock.output",
+          "path": "/items"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_drafts",
+       "type": "data.bulk_upsert",
+       "label": "下書きを登録",
+       "params": {
+        "table": "@table:drafts",
+        "match_on": "code",
+        "rows": {
+         "$from": "nodes.pick.output",
+         "path": "/rows"
+        }
+       }
+      },
+      {
+       "id": "write_csv",
+       "type": "csv.write",
+       "label": "発注候補の CSV",
+       "params": {
+        "folder": "@folder:orders",
+        "name": {
+         "$template": "発注候補-{date}",
+         "vars": {
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        },
+        "content": {
+         "$from": "nodes.pick.output",
+         "path": "/csv"
+        },
+        "encoding": "utf8_bom",
+        "on_name_taken": "add_number"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "all_stock",
+       "to": "pick"
+      },
+      {
+       "from": "pick",
+       "to": "save_drafts"
+      },
+      {
+       "from": "save_drafts",
+       "to": "write_csv"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app08-weekly-kpi",
+   "app": "APP-08",
+   "kind": "workflow",
+   "requires": [
+    "node:transform.date",
+    "node:data.query",
+    "node:llm.invoke",
+    "node:storage.write",
+    "cap:scheduled_at"
+   ],
+   "phrasings": {
+    "flow": "毎週月曜の 9 時に動く KPI 集計のフローを作ってください。「売上」テーブルの先週（月曜〜日曜）の分を地域ごとに集計し、金額の合計と件数を、週の開始日・地域と一緒に「週次 KPI」テーブルへ地域ごとに 1 行追加します。件数が少なくて集計の仕組みが数値を伏せた地域は、数値を書かずにそのまま伏せてください（自分で数え直さない）。集計を AI で短い報告文にし、「週次報告」フォルダに「KPI-週の開始日.md」で保存します。",
+    "app": "地域別の売上を毎週まとめるアプリを作って。月曜 9 時に前の週の月〜日の売上を地域ごとに合計し、件数も数えて週次 KPI の表に（週の初日、地域、合計、件数）。件数が少ない地域はシステムが数字を隠すので、隠れたままにしておいて（無理に出さない）。AI に一言の報告を書いてもらい、週次報告フォルダに KPI-（週の月曜の日付）.md で残す。",
+    "auto": "週次 KPI の作成を自動化したい。毎週月曜 9:00 に、『売上』の前週分（月曜〜日曜）を地域別に集計（金額の合計・件数）し、『週次 KPI』に週の開始日・地域・合計・件数を 1 地域 1 行で登録する。少人数の地域で集計値が伏せられた場合は伏せたまま登録し、行を個別に読んで足し直したりはしない。AI の報告文は『週次報告』フォルダに『KPI-<週の開始日>.md』で保存。"
+   },
+   "clarifications": "週は月曜はじまりで、月曜 9 時に動いたら前の月曜から日曜までが対象です。伏せられた地域は、合計と件数の欄を空のままにしてください。報告文は短くて構いません。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "reports",
+      "name": "週次報告"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "sales",
+      "name": "売上",
+      "schema": {
+       "fields": [
+        {
+         "key": "sold_on",
+         "display_name": "売上日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "region",
+         "display_name": "地域",
+         "type": "select",
+         "options": [
+          "東",
+          "西",
+          "北"
+         ],
+         "indexed": true
+        },
+        {
+         "key": "amount",
+         "display_name": "金額",
+         "type": "number",
+         "indexed": true
+        }
+       ]
+      },
+      "records": [
+       {
+        "sold_on": "2026-11-02",
+        "region": "東",
+        "amount": 120000
+       },
+       {
+        "sold_on": "2026-11-03",
+        "region": "東",
+        "amount": 80000
+       },
+       {
+        "sold_on": "2026-11-04",
+        "region": "東",
+        "amount": 50000
+       },
+       {
+        "sold_on": "2026-11-05",
+        "region": "東",
+        "amount": 30000
+       },
+       {
+        "sold_on": "2026-11-06",
+        "region": "東",
+        "amount": 70000
+       },
+       {
+        "sold_on": "2026-11-02",
+        "region": "西",
+        "amount": 40000
+       },
+       {
+        "sold_on": "2026-11-03",
+        "region": "西",
+        "amount": 60000
+       },
+       {
+        "sold_on": "2026-11-04",
+        "region": "西",
+        "amount": 20000
+       },
+       {
+        "sold_on": "2026-11-05",
+        "region": "西",
+        "amount": 90000
+       },
+       {
+        "sold_on": "2026-11-06",
+        "region": "西",
+        "amount": 10000
+       },
+       {
+        "sold_on": "2026-11-07",
+        "region": "西",
+        "amount": 30000
+       },
+       {
+        "sold_on": "2026-11-03",
+        "region": "北",
+        "amount": 500000
+       },
+       {
+        "sold_on": "2026-11-05",
+        "region": "北",
+        "amount": 250000
+       },
+       {
+        "sold_on": "2026-10-30",
+        "region": "東",
+        "amount": 999999
+       },
+       {
+        "sold_on": "2026-11-09",
+        "region": "西",
+        "amount": 888888
+       }
+      ]
+     },
+     {
+      "ref": "kpi",
+      "name": "週次 KPI",
+      "schema": {
+       "fields": [
+        {
+         "key": "week_start",
+         "display_name": "週の開始日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "region",
+         "display_name": "地域",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "total",
+         "display_name": "合計",
+         "type": "number"
+        },
+        {
+         "key": "deals",
+         "display_name": "件数",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "schedule",
+     "cron_any": [
+      "0 9 * * 1",
+      "0 9 * * MON",
+      "00 09 * * 1"
+     ],
+     "tz": "Asia/Tokyo"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "llm.invoke",
+      "storage.write"
+     ],
+     "any_of": [
+      [
+       "data.record.create",
+       "data.record.upsert",
+       "data.bulk_upsert"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke",
+      "script.run"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "last_week",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "scheduled_at": "2026-11-09T09:00:00+09:00",
+     "expect": {
+      "rows": [
+       {
+        "table": "kpi",
+        "match": [
+         {
+          "region": "東",
+          "week_start": "2026-11-02",
+          "total": {
+           "$fixture": {
+            "table": "sales",
+            "op": "sum",
+            "field": "amount",
+            "where": {
+             "region": "東"
+            },
+            "range": {
+             "field": "sold_on",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          },
+          "deals": {
+           "$fixture": {
+            "table": "sales",
+            "op": "count",
+            "where": {
+             "region": "東"
+            },
+            "range": {
+             "field": "sold_on",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          }
+         },
+         {
+          "region": "西",
+          "week_start": "2026-11-02",
+          "total": {
+           "$fixture": {
+            "table": "sales",
+            "op": "sum",
+            "field": "amount",
+            "where": {
+             "region": "西"
+            },
+            "range": {
+             "field": "sold_on",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          },
+          "deals": {
+           "$fixture": {
+            "table": "sales",
+            "op": "count",
+            "where": {
+             "region": "西"
+            },
+            "range": {
+             "field": "sold_on",
+             "from": "2026-11-02",
+             "to": "2026-11-08"
+            }
+           }
+          }
+         }
+        ],
+        "absent": [
+         {
+          "region": "北",
+          "total": {
+           "$absent": false
+          }
+         },
+         {
+          "region": "北",
+          "deals": {
+           "$absent": false
+          }
+         }
+        ]
+       }
+      ],
+      "files": [
+       {
+        "folder": "reports",
+        "name_regex": "^KPI-2026-11-02( \\(\\d+\\))?\\.md$",
+        "count": 1
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app08-weekly-kpi",
+     "display_name": "地域別の週次 KPI",
+     "triggers": [
+      {
+       "kind": "schedule",
+       "cron": "0 9 * * 1",
+       "tz": "Asia/Tokyo"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "last_week",
+       "type": "transform.date",
+       "label": "先週",
+       "params": {
+        "shift": {
+         "amount": -1,
+         "unit": "week"
+        },
+        "period": "week"
+       }
+      },
+      {
+       "id": "by_region",
+       "type": "data.query",
+       "label": "地域ごとの合計と件数",
+       "params": {
+        "table": "@table:sales",
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "sold_on",
+             "op": "gte",
+             "value": {
+              "$from": "nodes.last_week.output",
+              "path": "/start"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "sold_on",
+             "op": "lte",
+             "value": {
+              "$from": "nodes.last_week.output",
+              "path": "/end"
+             }
+            }
+           }
+          ]
+         },
+         "group_by": [
+          "region"
+         ],
+         "aggregate": [
+          {
+           "metric": "sum",
+           "field": "amount"
+          },
+          {
+           "metric": "count"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "id": "per_region",
+       "type": "control.map",
+       "label": "地域ごと",
+       "params": {
+        "items": {
+         "$from": "nodes.by_region.output",
+         "path": "/groups"
+        }
+       }
+      },
+      {
+       "id": "save_kpi",
+       "type": "data.record.create",
+       "label": "週次 KPI に追加",
+       "params": {
+        "table": "@table:kpi",
+        "data": {
+         "week_start": {
+          "$from": "nodes.last_week.output",
+          "path": "/start"
+         },
+         "region": {
+          "$from": "each",
+          "path": "/item/key/region"
+         },
+         "total": {
+          "$from": "each",
+          "path": "/item/values/0"
+         },
+         "deals": {
+          "$from": "each",
+          "path": "/item/values/1"
+         }
+        }
+       },
+       "parent": "per_region"
+      },
+      {
+       "id": "summarize",
+       "type": "llm.invoke",
+       "label": "報告文",
+       "params": {
+        "prompt": {
+         "$template": "{start} の週の地域別の売上の集計です。数値が null の地域は件数が少ないため伏せてあります。伏せた数値は推測せず、短い報告文にしてください。\n{groups}",
+         "vars": {
+          "start": {
+           "$from": "nodes.last_week.output",
+           "path": "/start"
+          },
+          "groups": {
+           "$from": "nodes.by_region.output",
+           "path": "/groups"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "save_report",
+       "type": "storage.write",
+       "label": "報告を保存",
+       "params": {
+        "folder": "@folder:reports",
+        "name": {
+         "$template": "KPI-{start}.md",
+         "vars": {
+          "start": {
+           "$from": "nodes.last_week.output",
+           "path": "/start"
+          }
+         }
+        },
+        "content": {
+         "$from": "nodes.summarize.output",
+         "path": "/text"
+        },
+        "content_type": "text/markdown",
+        "on_name_taken": "add_number"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "last_week",
+       "to": "by_region"
+      },
+      {
+       "from": "by_region",
+       "to": "per_region"
+      },
+      {
+       "from": "per_region",
+       "to": "summarize"
+      },
+      {
+       "from": "summarize",
+       "to": "save_report"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app11-checkout",
+   "app": "APP-11",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:control.branch",
+    "node:data.record.update",
+    "node:data.record.create",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "備品を貸し出すフローを作ってください。入力は管理番号と借りる人です。「備品」テーブルでその管理番号の行を探し、状態が「在庫」のときだけ、状態を「貸出中」・借りている人を借りる人に変え、「貸出記録」テーブルに管理番号・借りた人・貸出日（実行した日）の 1 行を追加します。すでに「貸出中」なら何も変えないでください。",
+    "app": "社内の備品の貸し出しアプリを作って。管理番号と借りる人の名前を入れたら、備品の表で空いているか確かめて、空いていれば貸出中にして借りている人を記録、貸出記録の表にもその日の日付で残す。誰かが借りている最中なら、何もしないで終わって。",
+    "auto": "備品の貸出受付を自動化したいです。入力は管理番号と借りる人。『備品』表で管理番号の行を見て、状態=在庫なら (1) 状態を貸出中に、借りている人を入力の人に更新、(2)『貸出記録』へ管理番号・借りた人・貸出日（今日）を追加。状態が貸出中のときは表を一切変更しない。"
+   },
+   "clarifications": "返却予定日は今回は入れなくて構いません。貸出日は実行した日の日付（YYYY-MM-DD）です。貸出中の備品を頼まれたときは、エラーにせずに終わってかまいません。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "equipment",
+      "name": "備品",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "管理番号",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "品名",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "在庫",
+          "貸出中"
+         ],
+         "indexed": true
+        },
+        {
+         "key": "borrower",
+         "display_name": "借りている人",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "E-01",
+        "name": "プロジェクター",
+        "status": "在庫"
+       },
+       {
+        "code": "E-02",
+        "name": "ノートパソコン",
+        "status": "貸出中",
+        "borrower": "西村"
+       }
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "在庫",
+         "to": "貸出中"
+        },
+        {
+         "from": "貸出中",
+         "to": "在庫"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "loans",
+      "name": "貸出記録",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "管理番号",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "borrower",
+         "display_name": "借りた人",
+         "type": "text"
+        },
+        {
+         "key": "loaned_on",
+         "display_name": "貸出日",
+         "type": "date"
+        },
+        {
+         "key": "due_on",
+         "display_name": "返却予定日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "returned_on",
+         "display_name": "返却日",
+         "type": "date",
+         "indexed": true
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "data.record.create",
+      "data.transition"
+     ],
+     "any_of": [
+      [
+       "control.branch",
+       "control.switch"
+      ],
+      [
+       "data.record.update",
+       "data.record.upsert"
+      ]
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "code",
+      "terms": [
+       "管理番号"
+      ]
+     },
+     {
+      "key": "borrower",
+      "terms": [
+       "借りる人"
+      ]
+     }
+    ],
+    "flow_through": [
+     "code",
+     "borrower"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "available",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "E-01",
+      "borrower": "松本"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "equipment",
+        "where": {
+         "code": "E-01"
+        },
+        "match": [
+         {
+          "status": "貸出中",
+          "borrower": "松本"
+         }
+        ]
+       },
+       {
+        "table": "loans",
+        "count": 1,
+        "match": [
+         {
+          "code": "E-01",
+          "borrower": "松本",
+          "loaned_on": {
+           "$run_date": {}
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "busy",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "E-02",
+      "borrower": "松本"
+     },
+     "expect": {
+      "status": "any",
+      "flow_through": false,
+      "rows": [
+       {
+        "table": "equipment",
+        "unchanged": true
+       },
+       {
+        "table": "loans",
+        "count": 0
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app11-checkout",
+     "display_name": "備品を貸し出す",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "code": {
+        "type": "string"
+       },
+       "borrower": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "borrower"
+      ],
+      "x-order": [
+       "code",
+       "borrower"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "find",
+       "type": "data.query",
+       "label": "備品を探す",
+       "params": {
+        "table": "@table:equipment",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "is_free",
+       "type": "control.branch",
+       "label": "在庫か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/data/status"
+          },
+          "op": "eq",
+          "right": "在庫"
+         }
+        }
+       }
+      },
+      {
+       "id": "lend",
+       "type": "data.transition",
+       "label": "貸出中にする",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "to": "貸出中"
+       }
+      },
+      {
+       "id": "set_borrower",
+       "type": "data.record.update",
+       "label": "借りている人を書く",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "patch": {
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         }
+        }
+       }
+      },
+      {
+       "id": "log",
+       "type": "data.record.create",
+       "label": "貸出記録を残す",
+       "params": {
+        "table": "@table:loans",
+        "data": {
+         "code": {
+          "$from": "input",
+          "path": "/code"
+         },
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         },
+         "loaned_on": {
+          "$from": "run",
+          "path": "/date"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "find",
+       "to": "is_free"
+      },
+      {
+       "from": "is_free",
+       "to": "lend",
+       "from_port": "true"
+      },
+      {
+       "from": "lend",
+       "to": "set_borrower"
+      },
+      {
+       "from": "set_borrower",
+       "to": "log"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app11-return",
+   "app": "APP-11",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:data.record.update",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "備品の返却を受け付けるフローを作ってください。入力は管理番号です。「備品」テーブルのその行の状態を「在庫」に戻して借りている人を空にし、「貸出記録」テーブルでその管理番号のまだ返却日が入っていない記録を探して、返却日に実行した日の日付を入れてください。",
+    "app": "備品が返ってきたときに使うアプリがほしい。管理番号を入れると、備品の表の状態が在庫に戻って借りている人の欄が空になる。貸出記録の表のほうは、その備品で返却日が空いている（まだ返していない）記録に今日の日付を返却日として入れて。",
+    "auto": "返却処理を自動化します。管理番号を受け取ったら、(1)『備品』の該当行を状態=在庫、借りている人=空に更新、(2)『貸出記録』のうち同じ管理番号で返却日が未入力のものを見つけ、返却日へ本日の日付を記入。過去の返却済みの記録は変更しないこと。"
+   },
+   "clarifications": "返却日の入っていない貸出記録は、1 つの管理番号につき 1 件だけです。返却日は実行した日の日付（YYYY-MM-DD）です。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "equipment",
+      "name": "備品",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "管理番号",
+         "type": "text",
+         "unique": true,
+         "indexed": true
+        },
+        {
+         "key": "name",
+         "display_name": "品名",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "在庫",
+          "貸出中"
+         ],
+         "indexed": true
+        },
+        {
+         "key": "borrower",
+         "display_name": "借りている人",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "E-01",
+        "name": "プロジェクター",
+        "status": "貸出中",
+        "borrower": "松本"
+       },
+       {
+        "code": "E-03",
+        "name": "延長コード",
+        "status": "貸出中",
+        "borrower": "西村"
+       }
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "在庫",
+         "to": "貸出中"
+        },
+        {
+         "from": "貸出中",
+         "to": "在庫"
+        }
+       ]
+      }
+     },
+     {
+      "ref": "loans",
+      "name": "貸出記録",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "管理番号",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "borrower",
+         "display_name": "借りた人",
+         "type": "text"
+        },
+        {
+         "key": "loaned_on",
+         "display_name": "貸出日",
+         "type": "date"
+        },
+        {
+         "key": "due_on",
+         "display_name": "返却予定日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "returned_on",
+         "display_name": "返却日",
+         "type": "date",
+         "indexed": true
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "E-01",
+        "borrower": "木村",
+        "loaned_on": "2026-10-01",
+        "due_on": "2026-10-08",
+        "returned_on": "2026-10-05"
+       },
+       {
+        "code": "E-01",
+        "borrower": "松本",
+        "loaned_on": "2026-11-01",
+        "due_on": "2026-11-08"
+       },
+       {
+        "code": "E-03",
+        "borrower": "西村",
+        "loaned_on": "2026-11-02",
+        "due_on": "2026-11-09"
+       }
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "data.transition"
+     ],
+     "any_of": [
+      [
+       "data.record.update",
+       "data.record.upsert"
+      ]
+     ],
+     "none_of": [
+      "llm.invoke",
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "code",
+      "terms": [
+       "管理番号"
+      ]
+     }
+    ],
+    "flow_through": [
+     "code"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "back",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "code": "E-01"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "equipment",
+        "where": {
+         "code": "E-01"
+        },
+        "match": [
+         {
+          "status": "在庫",
+          "borrower": {
+           "$absent": true
+          }
+         }
+        ]
+       },
+       {
+        "table": "equipment",
+        "where": {
+         "code": "E-03"
+        },
+        "match": [
+         {
+          "status": "貸出中",
+          "borrower": "西村"
+         }
+        ]
+       },
+       {
+        "table": "loans",
+        "count": 3,
+        "match": [
+         {
+          "code": "E-01",
+          "borrower": "松本",
+          "returned_on": {
+           "$run_date": {}
+          }
+         },
+         {
+          "code": "E-01",
+          "borrower": "木村",
+          "returned_on": "2026-10-05"
+         },
+         {
+          "code": "E-03",
+          "borrower": "西村",
+          "returned_on": {
+           "$absent": true
+          }
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app11-return",
+     "display_name": "備品の返却を受け付ける",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "code": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "code"
+      ],
+      "x-order": [
+       "code"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "find",
+       "type": "data.query",
+       "label": "備品を探す",
+       "params": {
+        "table": "@table:equipment",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "back",
+       "type": "data.transition",
+       "label": "在庫に戻す",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "to": "在庫"
+       }
+      },
+      {
+       "id": "clear_borrower",
+       "type": "data.record.update",
+       "label": "借りている人を空にする",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "patch": {
+         "borrower": null
+        }
+       }
+      },
+      {
+       "id": "open_loan",
+       "type": "data.query",
+       "label": "返却前の貸出記録",
+       "params": {
+        "table": "@table:loans",
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "code",
+             "op": "eq",
+             "value": {
+              "$from": "input",
+              "path": "/code"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "returned_on",
+             "op": "is_null"
+            }
+           }
+          ]
+         },
+         "limit": 1
+        }
+       }
+      },
+      {
+       "id": "close",
+       "type": "data.record.update",
+       "label": "返却日を入れる",
+       "params": {
+        "table": "@table:loans",
+        "record": {
+         "$from": "nodes.open_loan.output",
+         "path": "/items/0/id"
+        },
+        "patch": {
+         "returned_on": {
+          "$from": "run",
+          "path": "/date"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "find",
+       "to": "back"
+      },
+      {
+       "from": "back",
+       "to": "clear_borrower"
+      },
+      {
+       "from": "clear_borrower",
+       "to": "open_loan"
+      },
+      {
+       "from": "open_loan",
+       "to": "close"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app11-overdue",
+   "app": "APP-11",
+   "kind": "workflow",
+   "requires": [
+    "node:transform.date",
+    "node:data.query",
+    "node:script.run",
+    "node:storage.write",
+    "cap:scheduled_at"
+   ],
+   "phrasings": {
+    "flow": "毎日 9 時に動くフローを作ってください。「貸出記録」テーブルから、返却予定日が今日より前で、まだ返却日が入っていない記録を探し、管理番号・借りた人・返却予定日を 1 行ずつ並べた一覧を「延滞」フォルダに「延滞一覧-日付.md」で保存します。",
+    "app": "返し忘れを見つけるアプリを作ってほしい。毎朝 9 時に貸出記録を見て、返却予定日を過ぎているのに返ってきていない備品を拾い、管理番号と借りた人と返却予定日の一覧を延滞フォルダにファイルで置いて。名前は 延滞一覧-日付.md。",
+    "auto": "延滞のチェックを自動化したいです。毎日 9:00 に『貸出記録』を調べ、返却予定日 < 今日 かつ 返却日が未入力 のものを抽出し、管理番号／借りた人／返却予定日を一覧にした Markdown を『延滞』フォルダへ『延滞一覧-<日付>.md』として保存してください。返却済みのものと期限前のものは載せません。"
+   },
+   "clarifications": "今日が返却予定日のものは延滞に入れません。日付は動いた日の日付です。一覧の書き方は箇条書きで構いません。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "overdue",
+      "name": "延滞"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "loans",
+      "name": "貸出記録",
+      "schema": {
+       "fields": [
+        {
+         "key": "code",
+         "display_name": "管理番号",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "borrower",
+         "display_name": "借りた人",
+         "type": "text"
+        },
+        {
+         "key": "loaned_on",
+         "display_name": "貸出日",
+         "type": "date"
+        },
+        {
+         "key": "due_on",
+         "display_name": "返却予定日",
+         "type": "date",
+         "indexed": true
+        },
+        {
+         "key": "returned_on",
+         "display_name": "返却日",
+         "type": "date",
+         "indexed": true
+        }
+       ]
+      },
+      "records": [
+       {
+        "code": "E-01",
+        "borrower": "松本",
+        "loaned_on": "2026-10-29",
+        "due_on": "2026-11-05"
+       },
+       {
+        "code": "E-02",
+        "borrower": "西村",
+        "loaned_on": "2026-11-05",
+        "due_on": "2026-11-12"
+       },
+       {
+        "code": "E-03",
+        "borrower": "木村",
+        "loaned_on": "2026-10-25",
+        "due_on": "2026-11-01",
+        "returned_on": "2026-11-02"
+       },
+       {
+        "code": "E-04",
+        "borrower": "佐々木",
+        "loaned_on": "2026-11-01",
+        "due_on": "2026-11-08"
+       },
+       {
+        "code": "E-05",
+        "borrower": "大野",
+        "loaned_on": "2026-11-02",
+        "due_on": "2026-11-09"
+       }
+      ]
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "schedule",
+     "cron_any": [
+      "0 9 * * *",
+      "00 09 * * *"
+     ],
+     "tz": "Asia/Tokyo"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "storage.write"
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "morning",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "scheduled_at": "2026-11-09T09:00:00+09:00",
+     "expect": {
+      "files": [
+       {
+        "folder": "overdue",
+        "name_regex": "^延滞一覧-.*\\.md$",
+        "count": 1,
+        "contains": [
+         "E-01",
+         "松本",
+         "E-04",
+         "佐々木"
+        ],
+        "not_contains": [
+         "E-02",
+         "E-03",
+         "E-05",
+         "西村",
+         "木村",
+         "大野"
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app11-overdue",
+     "display_name": "延滞の一覧を作る",
+     "triggers": [
+      {
+       "kind": "schedule",
+       "cron": "0 9 * * *",
+       "tz": "Asia/Tokyo"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "today",
+       "type": "transform.date",
+       "label": "今日",
+       "params": {}
+      },
+      {
+       "id": "late",
+       "type": "data.query",
+       "label": "延滞している記録",
+       "params": {
+        "table": "@table:loans",
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "due_on",
+             "op": "lt",
+             "value": {
+              "$from": "nodes.today.output",
+              "path": "/date"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "returned_on",
+             "op": "is_null"
+            }
+           }
+          ]
+         },
+         "sort": [
+          {
+           "field": "due_on"
+          }
+         ],
+         "limit": 200
+        }
+       }
+      },
+      {
+       "id": "format",
+       "type": "script.run",
+       "label": "一覧の文章",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var lines = (input.items || []).map(function (r) {\n    return \"- \" + r.data.code + \" \" + r.data.borrower + \"（返却予定日 \" + r.data.due_on + \"）\";\n  });\n  return { text: \"# 延滞の一覧（\" + input.date + \"）\\n\\n\" + (lines.length ? lines.join(\"\\n\") : \"延滞はありません。\") + \"\\n\" };\n}"
+        },
+        "input": {
+         "items": {
+          "$from": "nodes.late.output",
+          "path": "/items"
+         },
+         "date": {
+          "$from": "nodes.today.output",
+          "path": "/date"
+         }
+        }
+       }
+      },
+      {
+       "id": "save",
+       "type": "storage.write",
+       "label": "一覧を保存",
+       "params": {
+        "folder": "@folder:overdue",
+        "name": {
+         "$template": "延滞一覧-{date}.md",
+         "vars": {
+          "date": {
+           "$from": "nodes.today.output",
+           "path": "/date"
+          }
+         }
+        },
+        "content": {
+         "$from": "nodes.format.output",
+         "path": "/text"
+        },
+        "content_type": "text/markdown",
+        "on_name_taken": "add_number"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "today",
+       "to": "late"
+      },
+      {
+       "from": "late",
+       "to": "format"
+      },
+      {
+       "from": "format",
+       "to": "save"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app12-faq-table",
+   "app": "APP-12",
+   "kind": "workflow",
+   "requires": [
+    "node:data.query",
+    "node:control.branch",
+    "node:llm.invoke",
+    "node:data.record.create",
+    "node:data.transition",
+    "cap:fsm"
+   ],
+   "phrasings": {
+    "flow": "社内の質問に答えるフローを作ってください。入力は質問です。「よくある質問」テーブルを質問の言葉で検索し、見つかったときは AI がその回答をもとに答えの文章を作って、「問い合わせ記録」テーブルに質問・答え・出典（よくある質問の番号）・状態「自動回答」で記録します。見つからないときは AI に答えさせず、質問と状態「エスカレーション」だけを記録してください。",
+    "app": "社内ヘルプデスクの一次回答アプリを作って。質問を入れると、よくある質問の表から近いものを探して、あれば AI がその内容で答えを書き、問い合わせ記録に質問、答え、どの番号の FAQ を使ったか、状態は自動回答で残す。該当がなければ答えを作らず、エスカレーションの状態で質問だけ記録してね。",
+    "auto": "よくある質問への回答を自動化したい。質問を受けたら『よくある質問』を検索し、(a) 該当あり → その回答を材料に AI が答えを作成し、『問い合わせ記録』へ質問・答え・出典（番号）・状態=自動回答を登録、(b) 該当なし → AI は使わず、質問と状態=エスカレーションを登録。"
+   },
+   "clarifications": "「よくある質問」テーブルの質問の列で、受け取った質問の言葉を含むものを探してください。出典にはよくある質問の「番号」の列の値（FAQ-1 など）を入れてください。",
+   "fixtures": {
+    "tables": [
+     {
+      "ref": "faq",
+      "name": "よくある質問",
+      "schema": {
+       "fields": [
+        {
+         "key": "faq_no",
+         "display_name": "番号",
+         "type": "text",
+         "indexed": true
+        },
+        {
+         "key": "question",
+         "display_name": "質問",
+         "type": "text",
+         "indexed": true,
+         "searchable": true
+        },
+        {
+         "key": "answer",
+         "display_name": "回答",
+         "type": "text"
+        }
+       ]
+      },
+      "records": [
+       {
+        "faq_no": "FAQ-1",
+        "question": "会議室の予約方法",
+        "answer": "会議室は共有の予約表から予約します。前日の 17 時までに入れてください。"
+       },
+       {
+        "faq_no": "FAQ-2",
+        "question": "パスワードを忘れたとき",
+        "answer": "ログイン画面の「パスワードを忘れた」から再設定のメールを受け取れます。"
+       },
+       {
+        "faq_no": "FAQ-3",
+        "question": "経費の締め日",
+        "answer": "経費の申請は毎月 25 日が締め日です。"
+       }
+      ]
+     },
+     {
+      "ref": "log",
+      "name": "問い合わせ記録",
+      "schema": {
+       "fields": [
+        {
+         "key": "question",
+         "display_name": "質問",
+         "type": "text"
+        },
+        {
+         "key": "answer",
+         "display_name": "答え",
+         "type": "text"
+        },
+        {
+         "key": "source",
+         "display_name": "出典",
+         "type": "text"
+        },
+        {
+         "key": "status",
+         "display_name": "状態",
+         "type": "select",
+         "options": [
+          "自動回答",
+          "エスカレーション"
+         ],
+         "indexed": true
+        }
+       ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "自動回答",
+         "to": "エスカレーション"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.query",
+      "data.record.create",
+      "llm.invoke",
+      "data.transition"
+     ],
+     "none_of": [
+      "agent.invoke",
+      "rag.search"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "question",
+      "terms": [
+       "質問"
+      ]
+     }
+    ],
+    "flow_through": [
+     "question"
+    ]
+   },
+   "run_cases": [
+    {
+     "id": "known",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "question": "会議室の予約"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "log",
+        "count": 1,
+        "match": [
+         {
+          "question": "会議室の予約",
+          "source": "FAQ-1",
+          "status": "自動回答"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "id": "unknown",
+     "llm_dependent": true,
+     "stub_ok": true,
+     "input": {
+      "question": "駐車場の利用申請"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "log",
+        "count": 1,
+        "match": [
+         {
+          "question": "駐車場の利用申請",
+          "status": "エスカレーション"
+         }
+        ],
+        "absent": [
+         {
+          "status": "自動回答"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app12-faq-table",
+     "display_name": "よくある質問で答える",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "question": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "question"
+      ],
+      "x-order": [
+       "question"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "find",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table": "@table:faq",
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "question",
+           "op": "contains",
+           "value": {
+            "$from": "input",
+            "path": "/question"
+           }
+          }
+         },
+         "limit": 3
+        }
+       }
+      },
+      {
+       "id": "found",
+       "type": "control.branch",
+       "label": "見つかったか",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "path": "/items/0"
+          },
+          "op": "exists"
+         }
+        }
+       }
+      },
+      {
+       "id": "answer",
+       "type": "llm.invoke",
+       "label": "答えを作る",
+       "params": {
+        "prompt": {
+         "$template": "次のよくある質問の回答をもとに、質問に短く答えてください。\n質問: {question}\nよくある質問: {faq_q}\n回答: {faq_a}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq_q": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/data/question"
+          },
+          "faq_a": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/data/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "log_answered",
+       "type": "data.record.create",
+       "label": "自動回答を記録",
+       "params": {
+        "table": "@table:log",
+        "data": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "nodes.answer.output",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "nodes.find.output",
+          "path": "/items/0/data/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "log_escalated",
+       "type": "data.record.create",
+       "label": "質問を記録",
+       "params": {
+        "table": "@table:log",
+        "data": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         }
+        }
+       }
+      },
+      {
+       "id": "escalate",
+       "type": "data.transition",
+       "label": "エスカレーションにする",
+       "params": {
+        "table": "@table:log",
+        "record": {
+         "$from": "nodes.log_escalated.output",
+         "path": "/id"
+        },
+        "to": "エスカレーション"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "find",
+       "to": "found"
+      },
+      {
+       "from": "found",
+       "to": "answer",
+       "from_port": "true"
+      },
+      {
+       "from": "answer",
+       "to": "log_answered"
+      },
+      {
+       "from": "found",
+       "to": "log_escalated",
+       "from_port": "false"
+      },
+      {
+       "from": "log_escalated",
+       "to": "escalate"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app09-minutes-tasks",
+   "app": "APP-09",
+   "kind": "workflow",
+   "requires": [
+    "trigger:event",
+    "cap:trigger",
+    "node:csv.query",
+    "node:control.map",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "「議事録」フォルダに会議のメモの CSV（列は 担当・作業・期限）が保存されたら動くフローを作ってください。保存された CSV の行を 1 行ずつ読み、「作業」テーブルに担当・作業・期限の 1 行として追加します。",
+    "app": "会議のあとに出た宿題を管理するアプリを作りたい。議事録フォルダに、担当と作業と期限を並べた CSV を置いたら、その中身を作業の表に 1 件ずつ登録してくれるようにして。",
+    "auto": "議事録からの作業の登録を自動化します。きっかけは『議事録』フォルダへの CSV の保存。CSV の各行（担当／作業／期限）を、『作業』表に 1 行ずつ同じ内容で追加してください。"
+   },
+   "clarifications": "CSV の 1 行目は見出しで、列の名前は「担当」「作業」「期限」です。期限は 2026-11-12 のような日付です。新しく置いたファイルのときだけ動けば十分です。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "minutes",
+      "name": "議事録"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "todo",
+      "name": "作業",
+      "schema": {
+       "fields": [
+        {
+         "key": "assignee",
+         "display_name": "担当",
+         "type": "text"
+        },
+        {
+         "key": "task",
+         "display_name": "作業",
+         "type": "text"
+        },
+        {
+         "key": "due_on",
+         "display_name": "期限",
+         "type": "date"
+        }
+       ]
+      }
+     }
+    ],
+    "csv": [
+     {
+      "ref": "notes_csv",
+      "name": "定例会議のメモ.csv",
+      "folder": "minutes",
+      "text": "担当,作業,期限\n佐藤,見積書を作る,2026-11-12\n鈴木,会場を予約する,2026-11-10\n"
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "event"
+    },
+    "node_types": {
+     "any_of": [
+      [
+       "csv.query",
+       "storage.read"
+      ],
+      [
+       "control.map",
+       "data.bulk_upsert"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "new_notes",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "trigger": {
+      "file_id": "@id:notes_csv",
+      "version": 1,
+      "op": "create",
+      "kind": "file",
+      "parent_id": "@id:minutes"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "todo",
+        "count": 2,
+        "match": [
+         {
+          "assignee": "佐藤",
+          "task": "見積書を作る",
+          "due_on": "2026-11-12"
+         },
+         {
+          "assignee": "鈴木",
+          "task": "会場を予約する",
+          "due_on": "2026-11-10"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app09-minutes-tasks",
+     "display_name": "会議のメモから作業を登録",
+     "triggers": [
+      {
+       "kind": "event",
+       "source": "storage.write",
+       "scope": {
+        "folder": "@folder:minutes"
+       }
+      }
+     ],
+     "nodes": [
+      {
+       "id": "read",
+       "type": "csv.query",
+       "label": "メモを読む",
+       "params": {
+        "file": {
+         "$from": "trigger",
+         "path": "/file_id"
+        },
+        "sql": "SELECT \"担当\", \"作業\", CAST(\"期限\" AS VARCHAR) AS \"期限\" FROM data"
+       }
+      },
+      {
+       "id": "per_row",
+       "type": "control.map",
+       "label": "1 行ずつ",
+       "params": {
+        "items": {
+         "$from": "nodes.read.output",
+         "path": "/items"
+        }
+       }
+      },
+      {
+       "id": "add",
+       "type": "data.record.create",
+       "label": "作業に追加",
+       "params": {
+        "table": "@table:todo",
+        "data": {
+         "assignee": {
+          "$from": "each",
+          "path": "/item/担当"
+         },
+         "task": {
+          "$from": "each",
+          "path": "/item/作業"
+         },
+         "due_on": {
+          "$from": "each",
+          "path": "/item/期限"
+         }
+        }
+       },
+       "parent": "per_row"
+      }
+     ],
+     "edges": [
+      {
+       "from": "read",
+       "to": "per_row"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "app10-survey-csv",
+   "app": "APP-10",
+   "kind": "workflow",
+   "requires": [
+    "node:csv.query",
+    "node:data.record.create"
+   ],
+   "phrasings": {
+    "flow": "アンケートの CSV ファイルを指定すると集計するフローを作ってください。CSV には「推奨度」（0〜10）の列があります。回答数と、推奨度 9〜10 の人の数、0〜6 の人の数を数え、NPS（(9〜10 の人数 − 0〜6 の人数) ÷ 回答数 × 100 を四捨五入した整数）を出して、「アンケート集計」テーブルに回答数・推奨者数・批判者数・NPS の 1 行を追加します。",
+    "app": "満足度アンケートを集計するアプリを作ってほしい。アンケートのファイルを選んだら、推奨度の列（0 から 10）から回答数と NPS を計算して、アンケート集計の表に記録して。推奨者は 9 と 10、批判者は 0〜6 で、NPS は推奨者の割合から批判者の割合を引いて 100 倍し、整数に丸めたもの。",
+    "auto": "アンケートの NPS 集計を自動化したいです。入力はアンケートの CSV のファイル。推奨度 9・10 を推奨者、0〜6 を批判者として、回答数・推奨者数・批判者数を数え、NPS ＝ (推奨者数 − 批判者数) ÷ 回答数 × 100（四捨五入して整数）を計算し、『アンケート集計』に 1 行登録してください。"
+   },
+   "clarifications": "ファイルはファイルの ID で渡します。7 と 8 は推奨者にも批判者にも数えません。NPS は小数を四捨五入した整数にしてください。",
+   "fixtures": {
+    "folders": [
+     {
+      "ref": "surveys",
+      "name": "アンケート"
+     }
+    ],
+    "tables": [
+     {
+      "ref": "summary",
+      "name": "アンケート集計",
+      "schema": {
+       "fields": [
+        {
+         "key": "responses",
+         "display_name": "回答数",
+         "type": "number"
+        },
+        {
+         "key": "promoters",
+         "display_name": "推奨者数",
+         "type": "number"
+        },
+        {
+         "key": "detractors",
+         "display_name": "批判者数",
+         "type": "number"
+        },
+        {
+         "key": "nps",
+         "display_name": "NPS",
+         "type": "number"
+        }
+       ]
+      }
+     }
+    ],
+    "csv": [
+     {
+      "ref": "survey",
+      "name": "満足度アンケート.csv",
+      "folder": "surveys",
+      "text": "回答者,推奨度,コメント\nA01,10,とても使いやすい\nA02,9,満足\nA03,9,問題なし\nA04,8,ふつう\nA05,7,もう少し速いとよい\nA06,6,分かりにくい\nA07,5,不便\nA08,10,助かっている\nA09,3,使わない\nA10,9,よい\n"
+     }
+    ]
+   },
+   "expect": {
+    "trigger": {
+     "kind": "interactive"
+    },
+    "node_types": {
+     "all_of": [
+      "data.record.create"
+     ],
+     "any_of": [
+      [
+       "csv.query",
+       "storage.read"
+      ]
+     ],
+     "none_of": [
+      "agent.invoke"
+     ]
+    },
+    "inputs": [
+     {
+      "key": "file_id",
+      "terms": [
+       "ファイル"
+      ]
+     }
+    ],
+    "flow_through": []
+   },
+   "run_cases": [
+    {
+     "id": "survey",
+     "llm_dependent": false,
+     "stub_ok": true,
+     "input": {
+      "file_id": "@id:survey"
+     },
+     "expect": {
+      "rows": [
+       {
+        "table": "summary",
+        "count": 1,
+        "match": [
+         {
+          "responses": 10,
+          "promoters": 5,
+          "detractors": 3,
+          "nps": 20
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "reference": {
+    "ir": {
+     "ir_version": 1,
+     "name": "app10-survey-csv",
+     "display_name": "アンケートの NPS を集計する",
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "input_schema": {
+      "type": "object",
+      "properties": {
+       "file_id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "file_id"
+      ],
+      "x-order": [
+       "file_id"
+      ]
+     },
+     "nodes": [
+      {
+       "id": "count",
+       "type": "csv.query",
+       "label": "数を数える",
+       "params": {
+        "file": {
+         "$from": "input",
+         "path": "/file_id"
+        },
+        "sql": "SELECT COUNT(*) AS responses, SUM(CASE WHEN \"推奨度\" >= 9 THEN 1 ELSE 0 END) AS promoters, SUM(CASE WHEN \"推奨度\" <= 6 THEN 1 ELSE 0 END) AS detractors FROM data"
+       }
+      },
+      {
+       "id": "calc",
+       "type": "script.run",
+       "label": "NPS を計算",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var cols = input.columns || [];\n  var row = (input.rows || [])[0] || [];\n  var v = {};\n  cols.forEach(function (c, i) { v[c] = Number(row[i]); });\n  var n = v.responses, p = v.promoters, d = v.detractors;\n  return { responses: n, promoters: p, detractors: d, nps: n > 0 ? Math.round(((p - d) / n) * 100) : 0 };\n}"
+        },
+        "input": {
+         "$from": "nodes.count.output"
+        }
+       }
+      },
+      {
+       "id": "save",
+       "type": "data.record.create",
+       "label": "集計を記録",
+       "params": {
+        "table": "@table:summary",
+        "data": {
+         "responses": {
+          "$from": "nodes.calc.output",
+          "path": "/responses"
+         },
+         "promoters": {
+          "$from": "nodes.calc.output",
+          "path": "/promoters"
+         },
+         "detractors": {
+          "$from": "nodes.calc.output",
+          "path": "/detractors"
+         },
+         "nps": {
+          "$from": "nodes.calc.output",
+          "path": "/nps"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "count",
+       "to": "calc"
+      },
+      {
+       "from": "calc",
+       "to": "save"
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

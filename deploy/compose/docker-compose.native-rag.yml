@@ -1,0 +1,14 @@
+# dev-up.sh の native の起動で、ローカルの社内文書の検索（--rag）を使うときだけ重ねる（BUG-300）。
+#
+# native の shiki-server は、取り込む元のファイルの presigned URL を手元の RustFS（localhost:9000）で出す。compose の
+# ネットワークの中の worker からは localhost:9000 に届かず、許可する取得先（既定は rustfs:9000）にも当たらないので、
+# PDF・Word の取り込みがすべて source_url_not_allowed で止まっていた。worker をホストのネットワークで動かし、
+# localhost:9000 を許可する。ホストのネットワークでは compose の ports が効かないので、待ち受けはループバックだけにする。
+# compose の shiki-server（--compose）や CI はこのファイルを使わない（URL は rustfs:9000 のまま届く）。
+services:
+  ingestion-worker:
+    network_mode: host
+    ports: !reset []
+    environment:
+      SOURCE_URL_ALLOWED_HOSTS: localhost:9000
+    command: ["uv", "run", "--no-sync", "uvicorn", "ingestion_worker.main:app", "--host", "127.0.0.1", "--port", "8000"]

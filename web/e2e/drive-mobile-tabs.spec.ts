@@ -1,6 +1,12 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+/// 画面から作ったフォルダーを、テストの後にゴミ箱へ移す（ドライブのトップに残さない・失敗したテストでも走る・
+/// BUG-125・BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// スマホのドライブ: 上端のタブ（ホーム／最近使った／お気に入り／共有済み／ゴミ箱）で区画を
 /// 切り替えられ、フォルダの中では出ない。PC も同じタブで切り替え、サイドバーに子メニューは無い。
@@ -49,11 +55,18 @@ test("スマホのドライブは上端のタブで区画を切り替え、フ�
   await page.getByRole("button", { name: "新規フォルダ" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox").fill(folder);
+  const created = page.waitForResponse(
+    (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/folders",
+  );
   await dialog.getByRole("button", { name: "作成" }).click();
+  const folderId = ((await (await created).json()) as { id: string }).id;
   await expect(page.getByText(folder, { exact: true })).toBeVisible();
 
+  // スマホでフォルダを開く（ドライブのトップに残ったほかのフォルダの数に左右されないよう、作ったフォルダへ直に移る・
+  // BUG-125）。
   await phone.getByTestId("drive-tab-home").click();
-  await phone.getByText(folder, { exact: true }).click();
+  await phone.goto(`/drive?folder=${folderId}`);
+  await expect(phone.getByRole("heading", { name: folder })).toBeVisible({ timeout: 15_000 });
   await expect(phone).toHaveURL(/folder=/);
   await expect(tabs).toBeHidden();
 

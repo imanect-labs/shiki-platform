@@ -11,3 +11,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/Dockerfile.ci
+    environment:
+      # モデルのカタログ（BUG-86）。models が空だと既定のモデル 1 件だけを合成し、判定用のモデルが無いので、
+      # ai.decide の E2E（workflow-decide*・admin-decision-models）が CI で skip していた。
+      # - shiki-default: 既定のモデル。docker-compose.yml の SHIKI__LLM__DEFAULT_MODEL の既定と同じ ID にする
+      #   （カタログに無い ID を既定にすると、E2E の global-setup が「組織の既定が stub のモデルでない」で止める）。
+      # - decide-stub: stub の決定器（決まった規則で答える・実 LLM を呼ばない）。
+      # - decide-llm-stub: stub の chat モデルに判定を真似させる（AI の自信はいつも 0）。
+      # provider を書かないモデルは既定のプロバイダ（SHIKI__LLM__BACKEND=stub）へ振る。
+      # figment は env の [...] を配列、{...} を表として読む（crates/api/src/config/decision_tests.rs が
+      # この行をそのまま読んで確かめる。書き換えたら合わせて流す）。
+      SHIKI__LLM__MODELS: '[{id="shiki-default"},{id="decide-stub",modality="decision"},{id="decide-llm-stub",modality="decision",decision_via="shiki-default"}]'

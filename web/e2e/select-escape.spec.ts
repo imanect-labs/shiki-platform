@@ -1,6 +1,11 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったもの（テーブル）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// ダイアログ・ポップオーバーの中の選択肢（Radix Select）で Esc を押したとき（A-1）:
 /// 選択肢だけが閉じ、外側のダイアログは開いたまま・入力は残る。外側を閉じたあと画面が操作できる
@@ -44,7 +49,9 @@ async function seedTable(page: Page): Promise<string> {
     },
   });
   expect(res.status(), await res.text()).toBe(201);
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
+  return id;
 }
 
 test("/data: スキーマ編集・レコード追加・絞り込みの選択肢で Esc を押しても外側は閉じず、画面は操作できる", async ({ page }) => {
@@ -115,6 +122,7 @@ test("/data: 参照の候補一覧（レコードの追加・絞り込みのユ�
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   await page.goto(`/data/${tableId}`);
   await expect(page.getByTestId("data-grid")).toBeVisible();
 

@@ -170,7 +170,7 @@ fn same_site_is_enforced_on_cross_site_requests() {
     assert!(!link.contains("strict"), "{link}");
     assert!(link.contains("lax=1") && link.contains("none=1"), "{link}");
 
-    // 別サイトからの POST: Lax も付かない（D 経由だけの CSRF を作らない・PIT-80）。
+    // 別サイトからの POST: Lax も付かない（D 経由だけの CSRF を作らない・PIT-88）。
     let post = jar
         .header_for(&target, &from("https://attacker.example/", false), now())
         .unwrap();

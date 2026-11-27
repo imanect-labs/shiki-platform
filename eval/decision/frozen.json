@@ -1,0 +1,13 @@
+{
+  "prompt_version": "v3",
+  "theta": {
+    "inquiry_triage": 0.6,
+    "expense_policy": 0.7
+  },
+  "questions_sha256": {
+    "inquiry_triage": "3bf7a771dc1864fab2f5536c0464fdc53ac16eb38877ec690cc92878bda48cc8",
+    "expense_policy": "5b53cc0392510c50ceebe9b548f82db234e59ee3af294ddc57ee6edf0fdae6b9"
+  },
+  "based_on": "2026-10-27-E4-r2",
+  "notes": "E4 の改訂は 2 回（v2: 答えを確からしさより先に書かせる・v3: 作者の順に答えさせる）で止めた。問い合わせの θ は E0 の前に決めた規則（自動処理分の精度 ≥ 92%・自動処理率 ≥ 60%・注入に従った 0 件を満たす最小の θ）の案 0.6。経費はどの θ も全部の条件を満たさず、E4 の 2 回目の後に直した規則（uncertain ≤ 35%・適合率 ≥ 60% を満たす中で再現率が最も高い θ・同じなら大きい θ）で 0.7 にした（E4-r2 の結果の JSON の案 0.8 は直す前の規則のもの）。"
+}

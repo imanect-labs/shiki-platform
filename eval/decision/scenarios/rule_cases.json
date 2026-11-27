@@ -1,0 +1,84 @@
+{
+  "description": "経費の規程（APP-01）の例。eval/decision/build_datasets.py の rule_flags と、scenarios/expense_policy.json の規程の script の両方を、この例で確かめる（入力が欠けたときは確認へ回す側に倒す）。record は経費の表の行の形（利用日は used_on）。2026-10-07 は水曜・2026-10-10 は土曜。",
+  "cases": [
+    {
+      "name": "普通の交通費（領収書なし・5,000 円未満）",
+      "record": { "category": "交通費", "amount": 1040, "receipt": "なし", "used_on": "2026-10-07" },
+      "flags": []
+    },
+    {
+      "name": "交通費は領収書が無くても 5,000 円以上で止めない",
+      "record": { "category": "交通費", "amount": 5600, "receipt": "なし", "used_on": "2026-10-07" },
+      "flags": []
+    },
+    {
+      "name": "会議費の 1 人あたりの上限を超える",
+      "record": { "category": "会議費", "amount": 26000, "people": 4, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["会議費の 1 人あたりの上限（5,000 円）を超える"]
+    },
+    {
+      "name": "会議費の人数が無ければ 1 人として数える",
+      "record": { "category": "会議費", "amount": 26000, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）"]
+    },
+    {
+      "name": "会議費の人数が 0 なら 1 人として数える",
+      "record": { "category": "会議費", "amount": 6000, "people": 0, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）"]
+    },
+    {
+      "name": "人数が無くても 1 人の上限の内なら止めない（手土産など）",
+      "record": { "category": "接待交際費", "amount": 11000, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": []
+    },
+    {
+      "name": "接待交際費の 1 人あたりの上限を超える",
+      "record": { "category": "接待交際費", "amount": 60000, "people": 3, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["接待交際費の 1 人あたりの上限（15,000 円）を超える"]
+    },
+    {
+      "name": "領収書の欄が空なら無いとみなす",
+      "record": { "category": "消耗品費", "amount": 48000, "used_on": "2026-10-07" },
+      "flags": ["領収書が無く 5,000 円以上"]
+    },
+    {
+      "name": "領収書なし・5,000 円以上",
+      "record": { "category": "書籍費", "amount": 5200, "receipt": "なし", "used_on": "2026-10-07" },
+      "flags": ["領収書が無く 5,000 円以上"]
+    },
+    {
+      "name": "休日の飲食",
+      "record": { "category": "会議費", "amount": 3000, "people": 2, "receipt": "あり", "used_on": "2026-10-10" },
+      "flags": ["休日の飲食（会議費・接待交際費）"]
+    },
+    {
+      "name": "消耗品費で 10 万円以上",
+      "record": { "category": "消耗品費", "amount": 120000, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["10 万円以上は資産の計上の対象（消耗品費では申請できない）"]
+    },
+    {
+      "name": "金額が 0",
+      "record": { "category": "交通費", "amount": 0, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["金額が 0 以下か数でない"]
+    },
+    {
+      "name": "金額が負",
+      "record": { "category": "交通費", "amount": -500, "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["金額が 0 以下か数でない"]
+    },
+    {
+      "name": "金額が無い",
+      "record": { "category": "交通費", "receipt": "あり", "used_on": "2026-10-07" },
+      "flags": ["金額が 0 以下か数でない"]
+    },
+    {
+      "name": "人数が無く休日で領収書も無い会議費（複数のフラグ）",
+      "record": { "category": "会議費", "amount": 9000, "receipt": "なし", "used_on": "2026-10-10" },
+      "flags": [
+        "人数が無いか正しくなく、1 人として数えると上限を超える（会議費・接待交際費）",
+        "領収書が無く 5,000 円以上",
+        "休日の飲食（会議費・接待交際費）"
+      ]
+    }
+  ]
+}

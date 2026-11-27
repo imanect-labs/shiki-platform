@@ -5,12 +5,15 @@
 //! **押した本人の権限**で起動する（IR はバンドル権限で読む・[`WorkflowStarter::start_pinned_via_bundle`]）。
 //! 画面から送れるのは id と値と冪等キーだけで、実行先は送れない。
 //!
+//! 押すたびにミニアプリの解決（[`MiniAppStore::resolve`]）はやり直さない（BUG-77）。開いたときの解決が
+//! `miniapp.resolve` を 1 回残し、ボタンは skill を使わないので、毎回読むのは本体の viewer と保存済みの版の
+//! 画面・ピンだけ（[`MiniAppStore::load_saved`]・表の描画と同じ・BUG-24）。権限は押すたびに確かめ直すので、
+//! 共有を外した直後の押下から効く。1 回ごとの操作は `ui_action.invoke` が残す。
+//!
 //! 同じ冪等キーは 1 回だけ起動する（`miniapp_action_run`）。起動の記録は押した本人だけが読み、
 //! 終わった状態は run の終端でトリガが写す（表示のときも run を読んで書き戻す）。
 //!
 //! [`WorkflowStarter::start_pinned_via_bundle`]: crate::dispatch::WorkflowStarter::start_pinned_via_bundle
-
-use std::collections::HashMap;
 
 use authz::AuthContext;
 use chrono::{DateTime, Utc};
@@ -32,7 +35,8 @@ pub const MAX_RUNS: i64 = 20;
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct MiniAppActionRequest {
     /// 実行対象のミニアプリ版（**必須**・解決済み画面の版と一致させる。current 暗黙参照だと
-    /// 画面を開いたまま新版が保存されたとき、別の実行先へ同じ id で到達し得る）。
+    /// 画面を開いたまま新版が保存されたとき、別の実行先へ同じ id で到達し得る）。使う人（editor でない viewer）が
+    /// 押せるのは公開した版だけで、開いた後に公開した版が変わったら 409 `app_version_changed`（D-16）。
     pub version: i64,
     /// ボタンの id（`{ブロックの識別子}:{a1}`）か、画面の表の id（`data_grid:{別名}`・Task 15.7）。
     pub action_id: String,
@@ -58,8 +62,11 @@ pub struct MiniAppRunValue {
 pub enum MiniAppRunStatus {
     /// 起動の途中（run はまだ無い）。
     Starting,
+    /// 順番待ち（同時実行の上限で、空くのを待っている）。
     Queued,
     Running,
+    /// 待機中（時間・できごと・承認を待っている・[`MiniAppRun::waiting_for`]）。
+    Waiting,
     Succeeded,
     Failed,
     Cancelled,
@@ -68,7 +75,8 @@ pub enum MiniAppRunStatus {
 }
 
 impl MiniAppRunStatus {
-    fn parse(s: &str) -> Option<Self> {
+    /// 終わった状態（記録に写すもの）。
+    pub(crate) fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
@@ -95,18 +103,27 @@ pub struct MiniAppRun {
     #[serde(default)]
     pub values: Vec<MiniAppRunValue>,
     pub invoked_at: DateTime<Utc>,
+    /// 待機中に待っているもの（`status = waiting` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
+    /// 失敗の理由（利用者向けの分類・`status = failed` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<workflow_engine::RunFailure>,
+    /// ワークフローが画面に返した結果（一覧では未確定の run と最新の終わった 1 件だけに付ける。
+    /// 他は `has_reply` を見て `GET /mini-apps/{id}/runs/{run_id}` で読む）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<workflow_engine::RunReply>,
+    /// 結果があるか（`reply` を付けなかった行でも分かる）。
+    #[serde(default)]
+    pub has_reply: bool,
+    /// 結果の色合いのうち、いちばん強いもの（error → warning → success → neutral・結果が無ければ無い）。`reply` を
+    /// 付けなかった古い行でも、業務上の失敗（error）を返した run を「成功」と出さずに言い分けるのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_tone: Option<workflow_engine::ReplyTone>,
+    /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
+    #[serde(default)]
+    pub result_expired: bool,
 }
-
-type RunRow = (
-    String,
-    i64,
-    String,
-    String,
-    Option<Uuid>,
-    Option<String>,
-    Json<Vec<MiniAppRunValue>>,
-    DateTime<Utc>,
-);
 
 /// 本人の 1 送信を指す鍵（アプリ・ボタン・冪等キー）。
 struct RunKey<'a> {
@@ -119,6 +136,9 @@ pub(crate) fn map_gui_err(e: GuiError) -> ActionError {
     match e {
         GuiError::Artifact(artifact::ArtifactError::NotFound) => ActionError::NotFound,
         GuiError::Artifact(artifact::ArtifactError::Forbidden) => ActionError::Forbidden,
+        GuiError::Artifact(artifact::ArtifactError::NotPublished { published }) => {
+            ActionError::AppVersionChanged { published }
+        }
         GuiError::Validation(errors) => ActionError::Invalid(
             errors
                 .into_iter()
@@ -151,18 +171,19 @@ impl MiniAppStore {
                 .invoke_data_grid(ctx, dispatcher, app_id, &req, &alias, trace_id)
                 .await;
         }
-        // 1. 本体の viewer（解決が認可する）。部品は読まない（ワークフローは起動時にバンドル権限で読む）。
-        let resolved = self
-            .resolve(ctx, app_id, Some(req.version), trace_id)
+        // 1. 本体の viewer と保存済みの版（押すたびに確かめ直す）。部品は読まない（ワークフローは起動時にバンドル
+        //    権限で読む）。skill は読まず、解決の監査も重ねない（BUG-77・表の描画と同じ・BUG-24）。
+        let (_, version, body) = self
+            .load_saved(ctx, app_id, Some(req.version), trace_id)
             .await
             .map_err(map_gui_err)?;
         let source = ActionSource::MiniApp {
-            artifact_id: resolved.id,
-            version: resolved.version,
+            artifact_id: app_id,
+            version,
         };
         let key = req.action_id.as_str();
         // 2. 保存済みの版の画面からボタンを読み直す（画面の図は信用しない）。
-        let Some((block, action)) = yui::find_action([resolved.body.screen.as_str()], key) else {
+        let Some((block, action)) = yui::find_action([body.screen.as_str()], key) else {
             dispatcher
                 .deny(ctx, &source, key, "undeclared_action", trace_id)
                 .await;
@@ -175,7 +196,7 @@ impl MiniAppStore {
                 .await;
             return Err(ActionError::NotFound);
         };
-        let Some(pin) = resolved.body.workflows.iter().find(|w| &w.alias == name) else {
+        let Some(pin) = body.workflows.iter().find(|w| &w.alias == name) else {
             dispatcher
                 .deny(ctx, &source, key, "unbundled_workflow", trace_id)
                 .await;
@@ -217,14 +238,7 @@ impl MiniAppStore {
             .collect();
         // 3. 同じ冪等キーは 1 回だけ起動する。先に確保し、取れなければ前の結果を返す。
         if !self
-            .claim_run(
-                ctx,
-                &run_key,
-                resolved.version,
-                &action.label,
-                &pin.alias,
-                &summary,
-            )
+            .claim_run(ctx, &run_key, version, &action.label, &pin.alias, &summary)
             .await?
         {
             return match self.run_of(ctx, &run_key).await? {
@@ -250,15 +264,16 @@ impl MiniAppStore {
                 version: Some(pin.version),
             },
         });
-        let result = dispatcher
-            .dispatch_binding(
+        // 入力項目に合わない入力のキーと理由も受け取る（部品の名前で言い直す・GAP-41）。
+        let (result, problems) =
+            crate::input_problems::collect_input_problems(Box::pin(dispatcher.dispatch_binding(
                 ctx,
                 &source,
                 &binding,
                 key,
                 Value::Object(check.values),
                 trace_id,
-            )
+            )))
             .await;
         match &result {
             Ok(out) => {
@@ -278,128 +293,15 @@ impl MiniAppStore {
                 }
             }
         }
-        result
-    }
-
-    /// 本人が画面のボタンで起動した記録（新しい [`MAX_RUNS`] 件を古い順に）。
-    ///
-    /// 本体の viewer を要求する（共有を外された人は自分の記録も読めない）。未確定の状態は run を
-    /// 読み、終わっていたら書き戻す。
-    pub async fn my_runs(
-        &self,
-        ctx: &AuthContext,
-        app_id: Uuid,
-        trace_id: Option<&str>,
-    ) -> Result<Vec<MiniAppRun>, GuiError> {
-        let meta = self.artifacts.get(ctx, app_id, trace_id).await?;
-        if meta.kind != artifact::ArtifactKind::MiniApp {
-            return Err(GuiError::Artifact(artifact::ArtifactError::NotFound));
-        }
-        let mut rows: Vec<RunRow> = sqlx::query_as(
-            "SELECT action_id, app_version, label, workflow_name, run_id, status, summary, invoked_at \
-             FROM miniapp_action_run \
-             WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 \
-             ORDER BY invoked_at DESC, idempotency_key DESC LIMIT $4",
-        )
-        .bind(ctx.tenant_id())
-        .bind(app_id)
-        .bind(&ctx.principal().id)
-        .bind(MAX_RUNS)
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| GuiError::Internal(format!("db: {e}")))?;
-        rows.reverse();
-        let open: Vec<Uuid> = rows
-            .iter()
-            .filter(|r| r.5.is_none())
-            .filter_map(|r| r.4)
-            .collect();
-        let live = self.live_statuses(ctx, app_id, &open).await;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(action_id, app_version, label, workflow_name, run_id, status, summary, at)| {
-                    let status = match (status.as_deref().and_then(MiniAppRunStatus::parse), run_id)
-                    {
-                        (Some(s), _) => s,
-                        (None, Some(id)) => {
-                            live.get(&id).copied().unwrap_or(MiniAppRunStatus::Queued)
-                        }
-                        (None, None) => MiniAppRunStatus::Starting,
-                    };
-                    MiniAppRun {
-                        action_id,
-                        app_version,
-                        label,
-                        workflow_name,
-                        run_id,
-                        status,
-                        values: summary.0,
-                        invoked_at: at,
-                    }
-                },
+        // 入力項目に合わない入力は、キー（amount）でなく画面の部品の名前で言う（GAP-41）。
+        result.map_err(|e| {
+            crate::input_problems::with_field_labels(
+                e,
+                problems.as_deref(),
+                &block.figure,
+                crate::input_problems::ButtonSurface::MiniApp,
             )
-            .collect())
-    }
-
-    /// 未確定の run の今の状態（読めなければ空・表示は「待ち」のまま）。終わったものは書き戻す。
-    async fn live_statuses(
-        &self,
-        ctx: &AuthContext,
-        app_id: Uuid,
-        run_ids: &[Uuid],
-    ) -> HashMap<Uuid, MiniAppRunStatus> {
-        if run_ids.is_empty() {
-            return HashMap::new();
-        }
-        let reader = workflow_engine::RunStatusReader::new(self.db.clone());
-        let statuses = match reader.statuses(ctx, run_ids).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "画面のボタンで起動した run の状態を読めない");
-                return HashMap::new();
-            }
-        };
-        let mut out = HashMap::new();
-        let mut done: Vec<(Uuid, &'static str)> = Vec::new();
-        for (id, s) in statuses {
-            let (status, terminal) = match s {
-                workflow_engine::RunStatus::Queued => (MiniAppRunStatus::Queued, None),
-                workflow_engine::RunStatus::Running => (MiniAppRunStatus::Running, None),
-                workflow_engine::RunStatus::Succeeded => {
-                    (MiniAppRunStatus::Succeeded, Some("succeeded"))
-                }
-                workflow_engine::RunStatus::Failed => (MiniAppRunStatus::Failed, Some("failed")),
-                workflow_engine::RunStatus::Cancelled => {
-                    (MiniAppRunStatus::Cancelled, Some("cancelled"))
-                }
-            };
-            out.insert(id, status);
-            if let Some(t) = terminal {
-                done.push((id, t));
-            }
-        }
-        if !done.is_empty() {
-            let ids: Vec<Uuid> = done.iter().map(|d| d.0).collect();
-            let sts: Vec<&str> = done.iter().map(|d| d.1).collect();
-            // 書き戻しは best-effort（失敗しても次の表示でまた読む）。
-            if let Err(e) = sqlx::query(
-                "UPDATE miniapp_action_run r SET status = x.status, finished_at = now() \
-                 FROM unnest($3::uuid[], $4::text[]) AS x(run_id, status) \
-                 WHERE r.tenant_id = $1 AND r.app_id = $2 AND r.run_id = x.run_id \
-                   AND r.status IS NULL",
-            )
-            .bind(ctx.tenant_id())
-            .bind(app_id)
-            .bind(&ids)
-            .bind(&sts)
-            .execute(&self.db)
-            .await
-            {
-                tracing::warn!(error = %e, "画面のボタンで起動した run の状態の書き戻しに失敗");
-            }
-        }
-        out
+        })
     }
 
     async fn claim_run(

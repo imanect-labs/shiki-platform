@@ -25,6 +25,12 @@ pub struct GatewayRoute {
     /// axum の [`MatchedPath`](axum::extract::MatchedPath) と一致するテンプレート（`/gw/...`）。
     pub path: &'static str,
     pub scope: RouteScope,
+    /// B2 の自動実行（アプリの主体・サービスアカウントのトークン）でも通すか（BUG-183）。
+    ///
+    /// アプリの主体が触れてよいのは、インストールが `owner@miniapp` を付けたアプリのテーブル（data.*）と、
+    /// 通知の記録（notify.send）だけ（design §4.10「自動化のみ所有データ限定サービス identity」）。利用者の
+    /// ファイル・文書・身元・AI・できごとの購読・関数の起動は、利用者のトークンでだけ通す。
+    pub app_principal: bool,
 }
 
 /// ゲートウェイの全ルートとスコープ要件（宣言的マップ・単一定義）。
@@ -37,113 +43,134 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         method: "GET",
         path: "/gw/whoami",
         scope: RouteScope::Public,
+        app_principal: true,
     },
     // --- data.*（アプリ所有テーブル束縛・Task 9.8） ---
     GatewayRoute {
         method: "GET",
         path: "/gw/data/tables",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+        app_principal: true,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/data/tables/{table_id}/schema",
         scope: RouteScope::Scoped(CapabilityScope::DataSchema),
+        app_principal: true,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/data/tables/{table_id}/records",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+        app_principal: true,
     },
     GatewayRoute {
         method: "POST",
         path: "/gw/data/tables/{table_id}/records",
         scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+        app_principal: true,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/data/tables/{table_id}/records/{record_id}",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+        app_principal: true,
     },
     GatewayRoute {
         method: "PATCH",
         path: "/gw/data/tables/{table_id}/records/{record_id}",
         scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+        app_principal: true,
     },
     GatewayRoute {
         method: "DELETE",
         path: "/gw/data/tables/{table_id}/records/{record_id}",
         scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+        app_principal: true,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/data/tables/{table_id}/stream",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+        app_principal: false,
     },
     GatewayRoute {
         method: "POST",
         path: "/gw/data/tables/{table_id}/query",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),
+        app_principal: true,
     },
     GatewayRoute {
         method: "POST",
         path: "/gw/data/tables/{table_id}/records/{record_id}/transition",
         scope: RouteScope::Scoped(CapabilityScope::DataWrite),
+        app_principal: true,
     },
     // --- storage.*（個人 ReBAC・StorageService 委譲） ---
     GatewayRoute {
         method: "GET",
         path: "/gw/storage/nodes/{node_id}",
         scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+        app_principal: false,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/storage/nodes/{node_id}/children",
         scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+        app_principal: false,
     },
     GatewayRoute {
         method: "GET",
         path: "/gw/storage/nodes/{node_id}/download-url",
         scope: RouteScope::Scoped(CapabilityScope::StorageRead),
+        app_principal: false,
     },
     GatewayRoute {
         method: "POST",
         path: "/gw/storage/folders",
         scope: RouteScope::Scoped(CapabilityScope::StorageWrite),
+        app_principal: false,
     },
     // --- rag.query（permission-aware 検索） ---
     GatewayRoute {
         method: "POST",
         path: "/gw/rag/query",
         scope: RouteScope::Scoped(CapabilityScope::RagQuery),
+        app_principal: false,
     },
     // --- identity.read（本人の最小 identity） ---
     GatewayRoute {
         method: "GET",
         path: "/gw/identity/me",
         scope: RouteScope::Scoped(CapabilityScope::IdentityRead),
+        app_principal: false,
     },
     // --- events.subscribe（SSE ライブテール） ---
     GatewayRoute {
         method: "GET",
         path: "/gw/events/subscribe",
         scope: RouteScope::Scoped(CapabilityScope::EventsSubscribe),
+        app_principal: false,
     },
     // --- notify.send（通知台帳へ記録） ---
     GatewayRoute {
         method: "POST",
         path: "/gw/notify/send",
         scope: RouteScope::Scoped(CapabilityScope::NotifySend),
+        app_principal: true,
     },
     // --- llm.invoke / agent.invoke（ミニアプリ内 AI・Task 9.9） ---
     GatewayRoute {
         method: "POST",
         path: "/gw/ai/llm/invoke",
         scope: RouteScope::Scoped(CapabilityScope::LlmInvoke),
+        app_principal: false,
     },
     GatewayRoute {
         method: "POST",
         path: "/gw/ai/agent/invoke",
         scope: RouteScope::Scoped(CapabilityScope::AgentInvoke),
+        app_principal: false,
     },
     // --- B2 関数起動（Task 9.12・能力スコープ不要=関数自体がアプリのロジック。
     //     関数内の能力呼び出しは exchange 後のトークンで二重ゲートを通る） ---
@@ -151,15 +178,20 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         method: "POST",
         path: "/gw/apps/functions/{function}/invoke",
         scope: RouteScope::Public,
+        app_principal: false,
     },
 ];
 
-/// メソッド＋マッチ済みパステンプレートからスコープ要件を引く（未宣言は `None`＝fail-closed 拒否）。
-pub fn required_scope_for(method: &str, matched_path: &str) -> Option<RouteScope> {
+/// メソッド＋マッチ済みパステンプレートからルート表の行を引く（未宣言は `None`＝fail-closed 拒否）。
+pub fn route_for(method: &str, matched_path: &str) -> Option<&'static GatewayRoute> {
     GATEWAY_ROUTES
         .iter()
         .find(|r| r.method.eq_ignore_ascii_case(method) && r.path == matched_path)
-        .map(|r| r.scope)
+}
+
+/// メソッド＋マッチ済みパステンプレートからスコープ要件を引く（未宣言は `None`＝fail-closed 拒否）。
+pub fn required_scope_for(method: &str, matched_path: &str) -> Option<RouteScope> {
+    route_for(method, matched_path).map(|r| r.scope)
 }
 
 #[cfg(test)]
@@ -236,6 +268,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// アプリの主体（自動実行）が通れるのは、アプリのテーブル（data.*・購読の SSE を除く）と通知の記録と whoami
+    /// だけ（BUG-183）。利用者のファイル・文書・身元・AI・できごと・関数の起動は通さない。
+    #[test]
+    fn app_principal_reaches_only_app_tables_and_notify() {
+        for r in GATEWAY_ROUTES {
+            let expected = r.path == "/gw/whoami"
+                || r.path == "/gw/notify/send"
+                || (r.path.starts_with("/gw/data/") && !r.path.ends_with("/stream"));
+            assert_eq!(r.app_principal, expected, "{} {}", r.method, r.path);
+        }
+        assert!(route_for("POST", "/gw/apps/functions/{function}/invoke")
+            .is_some_and(|r| !r.app_principal));
     }
 
     #[test]

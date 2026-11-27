@@ -52,8 +52,9 @@ impl DataStore {
                 "スナップショット読取では結合・リンクの条件を使えません",
             ));
         }
+        // 追加だけの人（D-113）は自分が作ったレコードだけに絞ったテーブルで読む（件数・集計も同じ絞り込み）。
         let mut table = self
-            .open_for_read(ctx, az, table_id, action, trace_id)
+            .open_for_reader(ctx, az, table_id, action, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, az, &table).await?;
         self.analyze_on_read(tuning, ctx.tenant_id(), &table)
@@ -63,7 +64,7 @@ impl DataStore {
                 .auto_promote_for(ctx, &table, &masked, query, trace_id)
                 .await;
             if self.note_candidates(table_id, &table, &masked, query, promoted)? {
-                table = self.fetch_live(ctx, table_id).await?;
+                table = self.reopen_like(ctx, &table).await?;
             }
         }
         // 結合・半結合の参照先（閲覧者本人の権限で開く・PIT-20）。
@@ -95,7 +96,7 @@ impl DataStore {
         if bq.fields.values().any(|f| f.derived)
             && self.verify_materialized(ctx, az, &table).await?
         {
-            table = self.fetch_live(ctx, table_id).await?;
+            table = self.reopen_like(ctx, &table).await?;
             bq = bind_query_scoped(&table.schema, &masked, query, &scopes, opts)?;
         }
         self.check_derived_reach(ctx, az, &table, &scopes, &bq)

@@ -333,6 +333,12 @@ async fn fork_copies_path_until_message() {
     let (u2, a2) = turn(&pool, &store, &c, thread.id, "Q2", None).await;
     turn(&pool, &store, &c, thread.id, "Q3", None).await;
     turn(&pool, &store, &c, thread.id, "Q2'", Some(u2)).await;
+    // a2 は手数の上限で止まった回答（GAP-106）。分岐しても止まった理由の注記が残る。
+    sqlx::query("UPDATE message SET stop_reason = 'step_limit' WHERE id = $1")
+        .bind(a2)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let forked = store.fork_thread(&c, thread.id, a2, None).await.unwrap();
     assert_ne!(forked.id, thread.id);
@@ -345,6 +351,8 @@ async fn fork_copies_path_until_message() {
     assert_eq!(msgs[1].parent_id, Some(msgs[0].id));
     assert_eq!(msgs[2].parent_id, Some(msgs[1].id));
     assert!(msgs.iter().all(|m| m.sibling_ids.is_empty()));
+    let stops: Vec<_> = msgs.iter().map(|m| m.stop_reason).collect();
+    assert_eq!(stops, [None, None, None, Some(chat::StopReason::StepLimit)]);
     // 元の会話は変わらない（表示中は編集した枝のまま）。
     let src = store.get_messages(&c, thread.id, None).await.unwrap();
     assert_eq!(texts(&src)[2], "Q2'");

@@ -252,6 +252,14 @@ pub enum ContentBlock {
     DocumentRef {
         document: serde_json::Value,
     },
+    /// AI が作った・直したテーブル・保存ビュー・ミニアプリ・ワークフローへの参照カード（D-204・T02）。
+    /// `item = {kind, id, name, version}`（[`crate::builder_obs::BuilderRef`]・保存に成功し読めるものだけ）。
+    /// 値は JSON のまま持つ（形の違う行で会話が開けなくならないように）。組むのは `builder_obs` だけで、
+    /// OpenAPI には `BuilderRef` の形で出す（画面の型は生成物から取る）。
+    BuilderRef {
+        #[schema(value_type = crate::builder_obs::BuilderRef)]
+        item: serde_json::Value,
+    },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
     /// 新規に生成されることは無い。**過去履歴の読み込み互換のためだけ**に残す
     /// （variant を消すと `document_draft` を含む既存メッセージが復号できず会話が開けなくなる）。
@@ -418,6 +426,10 @@ pub struct Message {
     /// 本文の図のボタンで起動したワークフローの記録（押した順・#604）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ui_runs: Vec<UiActionRun>,
+    /// 回答が途中で止まった理由（GAP-106）。自然に終わった回答・利用者が止めた回答・利用者の発話には
+    /// 付かない。画面は回答の下に注記を出す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -427,8 +439,11 @@ pub struct Message {
 pub enum UiActionRunStatus {
     /// 起動の途中（run はまだ無い）。
     Starting,
+    /// 順番待ち（同時実行の上限で、空くのを待っている）。
     Queued,
     Running,
+    /// 待機中（時間・できごと・承認を待っている・[`UiActionRun::waiting_for`]）。
+    Waiting,
     Succeeded,
     Failed,
     Cancelled,
@@ -449,6 +464,7 @@ impl UiActionRunStatus {
             Self::Starting => "starting",
             Self::Queued => "queued",
             Self::Running => "running",
+            Self::Waiting => "waiting",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -461,6 +477,7 @@ impl UiActionRunStatus {
             "starting" => Self::Starting,
             "queued" => Self::Queued,
             "running" => Self::Running,
+            "waiting" => Self::Waiting,
             "succeeded" => Self::Succeeded,
             "failed" => Self::Failed,
             "cancelled" => Self::Cancelled,
@@ -494,6 +511,26 @@ pub struct UiActionRun {
     /// 押したユーザー（principal id）。
     pub invoked_by: String,
     pub invoked_at: DateTime<Utc>,
+    /// 待機中に待っているもの（`status = waiting` のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
+    /// 失敗の理由（利用者向けの分類・押した本人にだけ付ける）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<workflow_engine::RunFailure>,
+    /// ワークフローが画面に返した結果（押した本人にだけ・未確定の run とメッセージごとの最新の終わった 1 件
+    /// だけに付ける。他は `has_reply` を見て `GET /threads/{thread_id}/ui-runs/{run_id}` で読む・GAP-09）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<workflow_engine::RunReply>,
+    /// 結果があるか（押した本人にだけ）。
+    #[serde(default)]
+    pub has_reply: bool,
+    /// 結果の色合いのうち、いちばん強いもの（押した本人にだけ・error → warning → success → neutral）。`reply` を
+    /// 付けなかった古い行でも、業務上の失敗（error）を返した run を「成功」と出さずに言い分けるのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_tone: Option<workflow_engine::ReplyTone>,
+    /// 実行履歴の保持期間を過ぎて run が消えた（状態だけが残り、結果は表示できない）。
+    #[serde(default)]
+    pub result_expired: bool,
 }
 
 /// 生成 run の状態。
@@ -546,6 +583,9 @@ impl RunStatus {
 // 利用側の `chat::model::StreamEventKind` などのパスは変えない。
 pub use crate::stream_event::{PlanSubtask, StreamEvent, StreamEventKind};
 
+// 回答が途中で止まった理由（メッセージと SSE の done イベントに載る・GAP-106）。
+pub use crate::stop_reason::StopReason;
+
 /// 共有で付与できる役割（thread ReBAC・#37）。viewer/commenter/editor のみ許す
 /// （owner の横展開を防ぐ閉じた共有語彙）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -591,6 +631,26 @@ mod tests {
         assert_eq!(json, serde_json::json!({"type": "text", "text": "hello"}));
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
+    }
+
+    /// 参照カードは `{ type: "builder_ref", item: {kind, id, name, version} }`。保存した行は形が違っても読める
+    /// （値は JSON のまま持つ。形を確かめるのは描く側と履歴・D-204）。
+    #[test]
+    fn builder_ref_block_keeps_the_item_as_json() {
+        let item = crate::builder_obs::BuilderRef::new(
+            crate::builder_obs::BuilderKind::MiniApp,
+            Uuid::nil(),
+            "申請",
+            2,
+        )
+        .to_value();
+        let json = serde_json::to_value(ContentBlock::BuilderRef { item }).unwrap();
+        assert_eq!(json["type"], "builder_ref");
+        assert_eq!(json["item"]["kind"], "mini_app");
+        assert_eq!(json["item"]["version"], 2);
+        let odd = serde_json::json!({ "type": "builder_ref", "item": { "kind": "later_kind" } });
+        let back: ContentBlock = serde_json::from_value(odd).unwrap();
+        assert!(matches!(back, ContentBlock::BuilderRef { .. }));
     }
 
     #[test]

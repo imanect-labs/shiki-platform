@@ -28,7 +28,7 @@ pub(crate) const MAX_IN_VALUES: usize = 1_000;
 pub(crate) const MAX_SORT_KEYS: usize = 4;
 /// 1 ページの既定件数と上限。
 pub(crate) const DEFAULT_LIMIT: u32 = 50;
-pub(crate) const MAX_LIMIT: u32 = 200;
+pub const MAX_LIMIT: u32 = 200;
 /// 集計結果の件数の上限（`group_limit`）。
 pub(crate) const MAX_GROUP_LIMIT: u32 = 1_000;
 

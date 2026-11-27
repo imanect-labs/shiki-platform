@@ -11,17 +11,16 @@ use authz::AuthContext;
 use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
-use super::approval_policy::restore_checkpoint;
+use super::approval_policy::resume_state;
 use super::history::{
     fold_skill_snapshot, message_preview, message_text_with, skill_snapshot_name, SkillViews,
 };
 use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
-use crate::model::Role;
+use crate::model::{Role, StopReason};
 use crate::store::ClaimedRun;
 use crate::ChatError;
-use agent_core::EventSink as _;
 
 /// 履歴 1 回の読み出しから取れるもの（LLM メッセージ＋会話の添付）。
 ///
@@ -36,11 +35,6 @@ pub(super) struct ThreadHistory {
     /// ユーザーがこの会話で書いた URL（`browser` が事前許可で開ける出所の初期値・browser.md §6.2）。
     pub user_urls: Vec<url::Url>,
 }
-
-/// 出力上限で切れたまま run が終わったときに本文の末尾へ足す注記。本文の切れは agent-core が
-/// 同じ run の中で数回まで続きを書かせるので、ここに来るのはそれでも書き切れなかったときだけ。
-const TRUNCATED_NOTICE: &str = "\n\n（回答が長すぎて、出力の上限に達したところで止まりました。\
-     「続けて」と送ると、ここまでの内容から続けます。）";
 
 impl ChatWorker {
     /// 生成対象までの枝のメッセージを LLM 履歴へ写す（有界の画像添付を含む・短ホライズン）。
@@ -98,6 +92,20 @@ impl ChatWorker {
             .rev()
             .nth(super::history_work_log::WORK_LOG_TURNS - 1)
             .unwrap_or(0);
+        // 共有の相手がいる会話では、作業記録に結果の本文を載せない（PIT-84・D-214）。保存した結果は
+        // 共有の前の全部入りのことがあり、相手のいる会話の次の回答へ戻すと、モデルが本文に写して相手に
+        // 見える（試運転の観測を相手のいる会話で絞るのと同じ考え方）。呼び出しの名前と引数は相手の
+        // 画面にも見えるので残す。記録する呼び出しが無ければ問い合わせない。
+        let logs_calls = msgs.iter().enumerate().any(|(i, m)| {
+            i >= logged_from
+                && m.role == Role::Assistant
+                && m.id != assistant_message_id
+                && m.content
+                    .iter()
+                    .any(|b| matches!(b, crate::model::ContentBlock::ToolCall { .. }))
+        });
+        let log_results =
+            !logs_calls || !self.store.thread_audience(ctx, thread_id).await.is_shared();
         // 直前の assistant ターン（作業記録を細かく残す・history_work_log::Detail）。
         let latest_turn = msgs
             .iter()
@@ -132,7 +140,7 @@ impl ChatWorker {
                 } else {
                     super::history_work_log::Detail::OLDER
                 };
-                pending_log = super::history_work_log::work_log(&m.content, detail);
+                pending_log = super::history_work_log::work_log(&m.content, detail, log_results);
             }
             let mut text = message_text_with(
                 &m.content,
@@ -141,7 +149,7 @@ impl ChatWorker {
             );
             // 本文の図のボタンで起動したワークフローと、その結果（#604）。モデルが次の回答で
             // 「さっきの申請はどうなった」に答えられるように、回答の後ろに添える。
-            if let Some(runs) = super::history::ui_runs_text(&m.ui_runs) {
+            if let Some(runs) = super::ui_runs_history::ui_runs_text(&m.ui_runs) {
                 text.push_str(&runs);
             }
             if text.trim().is_empty() {
@@ -235,7 +243,30 @@ impl ChatWorker {
         });
     }
 
+    /// プロファイルを決めた後の、どのプロファイルにも共通の組み立て（開いている文書・添付の読み方・ツールの案内・
+    /// 会話の id・常時ロードのツール）。
+    async fn dress_turn_opts(
+        &self,
+        run: &ClaimedRun,
+        opts: &mut AgentOptions,
+        attachments: &[agent_core::AttachmentRef],
+        tools: &[Arc<dyn agent_core::Tool>],
+        tools_in_use: Vec<String>,
+    ) {
+        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
+        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
+        self.system_with_origin_document(run, opts).await;
+        super::opts::append_attachment_readers(opts, attachments, tools);
+        super::opts::append_tool_guidance(opts, tools);
+        opts.session_id = Some(run.thread_id.to_string());
+        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
+        opts.tool_search.always_load.extend(tools_in_use);
+    }
+
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
+    ///
+    /// 戻り値は回答が途中で止まった理由（出力の上限・手数や費用の上限・ループの検知・GAP-106）。
+    /// 自然な終了と利用者の停止は `None`（停止は呼び出し側が cancel フラグで確定する）。
     pub(super) async fn run_agent_mode(
         &self,
         ctx: &AuthContext,
@@ -244,7 +275,7 @@ impl ChatWorker {
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
         slot: &Arc<super::slot::RunSlot>,
-    ) -> Result<(), ChatError> {
+    ) -> Result<Option<StopReason>, ChatError> {
         let ThreadHistory {
             messages: history,
             attachments,
@@ -260,8 +291,10 @@ impl ChatWorker {
         )
         .await?;
 
+        // 提示ツール一式（共通＋ワークフロー・skill・ドキュメント/Office/CSV・データ）は
+        // worker/toolset.rs に集約する。自律専用のツールは下で足す。
         let mut tools = self
-            .agent_tools(ctx, run, &skills, &attachments, user_urls)
+            .base_tools(ctx, run, &skills, &attachments, user_urls)
             .await?;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
@@ -361,14 +394,8 @@ impl ChatWorker {
         let approver = Some(approver);
 
         let (mut opts, mut history) = (opts, history);
-        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
-        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
-        self.system_with_origin_document(run, &mut opts).await;
-        super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
-        super::opts::append_tool_guidance(&mut opts, &tools);
-        opts.session_id = Some(run.thread_id.to_string());
-        // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
-        opts.tool_search.always_load.extend(tools_in_use);
+        self.dress_turn_opts(run, &mut opts, &attachments, &tools, tools_in_use)
+            .await;
         // 本人のカスタム指示（#900）はプロファイルの基本指示の後、skill の指示文より**前**に置く
         // （手順書の記述・発話ごとのツール指定・門の注記が後ろから優先される）。誘導のみで、
         // ツール・承認・認可には触れない。
@@ -377,6 +404,8 @@ impl ChatWorker {
             .await?;
         // ページ翻訳は訳に使うモデルが決まった**後**に積む（会話で選んだモデルで訳す）。
         self.push_translate_tool(&mut tools, run, &cancel, opts.model.clone(), gate_stage);
+        // 試運転（try_workflow・T04）も実行の段階でだけ積む（待つ間は生成の枠を返す）。
+        self.push_try_tool(&mut tools, run, slot, &cancel, gate_stage);
         // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
         // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
         // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。門が承認まで
@@ -399,8 +428,14 @@ impl ChatWorker {
             &super::opts::today_note(run.created_at, self.config.timezone),
         );
 
-        // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する。
-        let resume = resume_with_images(run, sink, &history).await?;
+        // 作成系の道具の初回の呼び出しで予算を 1 回だけ広げる（通常の会話だけ・HD-4 (c)・D-204）。
+        super::builder_tools::extend_on_builder_tools(&mut opts, &self.config.app_builder, &tools);
+        // resume 配線（#351）: 保存済みチェックポイントがあればステップ境界から再開する（自律・作成系・R1）。
+        // 画像は現在の権限で読み直したものに差し替える（#1179）。
+        let mut resume = resume_state(run, sink).await?;
+        if let Some(checkpoint) = resume.as_mut() {
+            super::history_images::refresh_checkpoint_images(checkpoint, &history);
+        }
 
         let approver_ref = approver.as_ref().map(|a| a as &dyn agent_core::Approver);
         let outcome = run_agent(
@@ -422,15 +457,15 @@ impl ChatWorker {
             agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
-        // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理する。
-        // 出力上限で切れたまま終わった run だけは、黙って「完了」に見せない（途中で止まったのか
-        // 終わったのか利用者に分からず、次の依頼で何を頼めばよいかも分からない）。
-        if outcome.stop == agent_core::AgentStop::Truncated {
-            sink.emit(agent_core::AgentEvent::Text(TRUNCATED_NOTICE.to_string()))
-                .await
-                .map_err(|e| ChatError::Unavailable(format!("agent: {e}")))?;
+        // 本文は sink の projection、停止（Cancelled）は cancel フラグで確定する。ここでは途中で
+        // 止まった理由だけを返し、done イベントとメッセージに残す（利用者に打ち切りを伝える）。
+        // 出力上限で切れたまま終わった run（#1196）も `Truncated` として残し、画面が回答の下に
+        // 「途中で打ち切りました・続けて」の注記を出す（本文へ注記の文を足すと注記が二重になる・GAP-106）。
+        let stop = StopReason::from_agent(outcome.stop);
+        if let Some(stop) = stop {
+            tracing::info!(run_id = %run.run_id, stop_reason = stop.as_str(), "回答が途中で止まった");
         }
-        Ok(())
+        Ok(stop)
     }
 
     /// skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は
@@ -512,21 +547,5 @@ impl ChatWorker {
             system,
         ));
         Ok((workspace, system))
-    }
-}
-
-/// 再開時の投影と、現在の権限で読み直した画像を復元する。
-async fn resume_with_images(
-    run: &ClaimedRun,
-    sink: &mut WorkerSink,
-    history: &[LlmMessage],
-) -> Result<Option<agent_core::Checkpoint>, ChatError> {
-    match restore_checkpoint(run) {
-        Some(mut envelope) => {
-            sink.seed_from_log(envelope.event_seq).await?;
-            super::history_images::refresh_checkpoint_images(&mut envelope.checkpoint, history);
-            Ok(Some(envelope.checkpoint))
-        }
-        None => Ok(None),
     }
 }

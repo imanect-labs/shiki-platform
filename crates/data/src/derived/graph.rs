@@ -206,7 +206,8 @@ impl Catalog {
             | FieldType::Select
             | FieldType::UserRef
             | FieldType::RoleRef
-            | FieldType::FileRef => VType::Text,
+            | FieldType::FileRef
+            | FieldType::CreatedBy => VType::Text,
             FieldType::Computed => match f.computed.as_ref().map(|c| c.op) {
                 Some(crate::model::ComputedOp::Sum) => VType::Number,
                 _ => VType::Text,
@@ -382,6 +383,10 @@ impl Catalog {
         };
         // 自テーブルのマスク列（③）を材料にすると、マスクされた閲覧者に値が漏れる。
         let masked_local = |k: &str| t.schema.field_policy.iter().any(|p| p.field == k);
+        // 作成者の列は保存しない（読むときに作成者を入れる）ので、書込時の材料化に使えない（D-122）。
+        if f.is_created_by() {
+            return Materialization::PerViewer;
+        }
         if !f.field_type.is_derived() {
             return if masked_local(key) {
                 Materialization::PerViewer
@@ -464,16 +469,24 @@ impl Catalog {
         if src.app_id.is_none() || src.app_id != r.app_id || !contained.contains(&rt) {
             return pv;
         }
-        // ② 行述語 ④ 個別共有。
-        if r.schema.row_policy.is_some() || r.has_record_shares {
+        // ② 行述語（読む決まり。書き込みの決まりだけの表は見え方を絞らない・D-115） ④ 個別共有。
+        let reads_narrowed = r
+            .schema
+            .row_policy
+            .as_ref()
+            .is_some_and(|p| p.read != crate::policy::PolicyExpr::Public);
+        if reads_narrowed || r.has_record_shares {
             return pv;
         }
         if let Some(tk) = target {
             let Some(tf) = r.schema.field(tk) else {
                 return pv;
             };
-            // ③ マスク列。多段参照（参照先の派生列）は安全側へ倒す。
-            if tf.field_type.is_derived() || r.schema.field_policy.iter().any(|p| p.field == tk) {
+            // ③ マスク列。多段参照（参照先の派生列）は安全側へ倒す。参照先の作成者の列は保存しないので材料化しない。
+            if tf.field_type.is_derived()
+                || tf.is_created_by()
+                || r.schema.field_policy.iter().any(|p| p.field == tk)
+            {
                 return pv;
             }
         }

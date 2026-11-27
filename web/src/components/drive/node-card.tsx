@@ -39,6 +39,7 @@ export function NodeCard({
         dragging && "opacity-50",
         drop.over && cn("border-primary/50", DROP_OVER),
       )}
+      data-node-id={node.id}
       {...longPress}
       {...(dnd ? dragProps(node, setDragging) : {})}
       {...drop.props}
@@ -55,6 +56,7 @@ export function NodeCard({
       </div>
       <button
         type="button"
+        data-node-primary
         onClick={() => onAction("open", node)}
         className="flex w-full flex-col gap-2.5 p-3 text-left outline-none"
       >

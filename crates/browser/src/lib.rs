@@ -2,7 +2,7 @@
 //!
 //! - [`engine`] — エンジンのトレイト境界（[`BrowserEngine`] / [`EnginePage`]）。
 //! - [`session`] — run 単位のセッション（cookie jar・ページ・開いてよい URL の出所）。
-//! - [`cookie_jar`] — RFC 6265bis の属性を落とさない jar（SameSite は送信時に強制・PIT-80）。
+//! - [`cookie_jar`] — RFC 6265bis の属性を落とさない jar（SameSite は送信時に強制・PIT-88）。
 //! - [`snapshot`] — エンジンによらない共通のスナップショット形式（ref は `t3.12`）。
 //! - [`text`] — JS を実行しないテキストエンジン（案 D）。
 //!

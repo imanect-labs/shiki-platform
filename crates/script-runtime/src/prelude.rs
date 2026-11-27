@@ -41,6 +41,15 @@ const DATA: &str = r"
   };
 ";
 
+/// `Shiki.storage.list(parent, cursor)`（ワークフローの script のみ・D-131）。ゲストの組み込みの `list(parent)` は続きの
+/// 位置を渡さないので、ゲスト wasm を再ビルドせずに 2 つ目の引数を足す（結果の `next_cursor` を `cursor` に渡すと続きを
+/// 読む）。ミニアプリ関数は storage を使えない（ホストが断る）ので足さない。
+const STORAGE: &str = r"
+  Shiki.storage.list = function (parent, cursor) {
+    return call('storage.list', { parent: parent, cursor: cursor });
+  };
+";
+
 /// `Shiki.notify.*`（ミニアプリ関数のみ。ワークフローの script は通知ノードを使う）。
 const NOTIFY: &str = r"
   Shiki.notify = {
@@ -54,10 +63,10 @@ const TAIL: &str = r"
 })();
 ";
 
-/// ワークフロー／skill の script（`HostBridge`）向けの前置き（`Shiki.data.*`）。
+/// ワークフロー／skill の script（`HostBridge`）向けの前置き（`Shiki.data.*` ＋ 続きの位置を渡せる `Shiki.storage.list`）。
 #[must_use]
 pub fn workflow_prelude() -> String {
-    [HEAD, DATA, TAIL].concat()
+    [HEAD, DATA, STORAGE, TAIL].concat()
 }
 
 /// ミニアプリ関数（B2・ゲートウェイ委譲）向けの前置き（`Shiki.data.*` ＋ `Shiki.notify.*`）。
@@ -84,5 +93,8 @@ mod tests {
         assert!(workflow_prelude().contains("transition:"));
         assert!(!workflow_prelude().contains("Shiki.notify"));
         assert!(miniapp_prelude().contains("Shiki.notify"));
+        // 続きの位置を渡せる list はワークフローだけ（ミニアプリ関数は storage を使えない）。
+        assert!(workflow_prelude().contains("Shiki.storage.list = function (parent, cursor)"));
+        assert!(!miniapp_prelude().contains("Shiki.storage"));
     }
 }

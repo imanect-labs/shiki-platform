@@ -99,6 +99,9 @@ impl PinSet {
     };
 }
 
+/// 束ねた部品の別名（`alias`）の文字数の上限（画面は生成した定数で同じ値を使う・codegen が正）。
+pub const MAX_ALIAS_CHARS: usize = 64;
+
 /// 名前付きピン（別名・重複・版）の構造検証。
 fn check_named_pins(
     pins: &[NamedComponentPin],
@@ -118,13 +121,15 @@ fn check_named_pins(
         // ボタンの `-> workflow 名前` と同じく途中の空白は許す（前後の空白・制御文字は不可）。
         if pin.alias.trim().is_empty()
             || pin.alias.trim() != pin.alias
-            || pin.alias.chars().count() > 64
+            || pin.alias.chars().count() > MAX_ALIAS_CHARS
             || pin.alias.chars().any(char::is_control)
         {
             errors.push(
                 GuiValidationError::new(
                     "miniapp.invalid_alias",
-                    "alias は前後に空白の無い 1〜64 文字（改行などの制御文字は不可）",
+                    format!(
+                        "alias は前後に空白の無い 1〜{MAX_ALIAS_CHARS} 文字（改行などの制御文字は不可）"
+                    ),
                 )
                 .at(&path),
             );
@@ -282,10 +287,105 @@ fn check_screen(body: &MiniAppBody, errors: &mut Vec<GuiValidationError>) {
     }
 }
 
+/// 一度に返す画面の書き損じの上限（応答を小さく保つ。直せば次の保存で続きが出る）。
+pub const MAX_SCREEN_PROBLEMS: usize = 20;
+
+/// 画面の書き損じ（D-16 の (c)）: 書き損じた操作を持つ図（閉じていない図・診断のある図・[`yui::broken_action_blocks`]）。
+///
+/// 人が画面から保存する経路（下書き）では注意として返して保存でき、公開と AI の経路（[`SaveMode::Strict`]）では
+/// 誤りとして止める（置いたばかりの空の欄を保存で通し、実行の前に止める D-43・D-83 と同じ扱い）。文言は作成者
+/// 向けで、場所を画面の行で言う。
+///
+/// [`SaveMode::Strict`]: crate::miniapp_store::SaveMode::Strict
+pub fn screen_problems(body: &MiniAppBody) -> Vec<GuiValidationError> {
+    let mut out = Vec::new();
+    for block in yui::broken_action_blocks(&body.screen) {
+        let place = if block.title.is_empty() {
+            "図".to_string()
+        } else {
+            format!("図「{}」", block.title)
+        };
+        // 開きのフェンスの行（中身の 1 行目の 1 つ前）。
+        let fence_line = block.first_line.saturating_sub(1);
+        if !block.closed {
+            out.push(
+                GuiValidationError::new(
+                    "miniapp.broken_block",
+                    format!("画面の {fence_line} 行目の{place}に、閉じの ``` がありません。この図にはボタンが出ません"),
+                )
+                .at("screen"),
+            );
+        }
+        for d in &block.diagnostics {
+            let line = if d.line == 0 {
+                fence_line
+            } else {
+                block.first_line + d.line - 1
+            };
+            let tail = if d.severity == "error" {
+                "。この図にはボタンが出ません"
+            } else {
+                ""
+            };
+            out.push(
+                GuiValidationError::new(
+                    "miniapp.broken_block",
+                    format!("画面の {line} 行目（{place}）: {}{tail}", d.message),
+                )
+                .at("screen"),
+            );
+        }
+        if out.len() >= MAX_SCREEN_PROBLEMS {
+            out.truncate(MAX_SCREEN_PROBLEMS);
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 書き損じた図は、ボタンを出さない図も、行を黙って落とす図も、画面の行つきで挙がる（D-16 の (c)）。
+    #[test]
+    fn screen_problems_name_the_line_of_each_broken_figure() {
+        let screen = "説明\n\n```ui:app\napp 申請\n金額 = numbr\nbutton 申請する -> workflow expense\n```\n\n```ui\nplan 計画\n```\n";
+        let raw = body(screen, &["expense"]);
+        // 構造の検証は通る（書き損じは保存を止めない）。
+        let parsed = validate_miniapp_body(&raw).expect("保存はできる");
+        let problems = screen_problems(&parsed);
+        let messages: Vec<&str> = problems.iter().map(|p| p.message.as_str()).collect();
+        assert_eq!(problems.len(), 2, "{messages:?}");
+        assert!(problems
+            .iter()
+            .all(|p| p.code == "miniapp.broken_block" && p.path.as_deref() == Some("screen")));
+        assert!(
+            messages[0].starts_with("画面の 5 行目（図「申請」）: "),
+            "{messages:?}"
+        );
+        assert!(!messages[0].contains("ボタンが出ません"));
+        assert_eq!(
+            messages[1],
+            "画面の 9 行目（図「計画」）: 表示できるデータがありません。この図にはボタンが出ません"
+        );
+        // 閉じていない図。
+        let open = validate_miniapp_body(&body("```ui:app\napp 申請\n件名 = text\n", &[])).unwrap();
+        assert_eq!(
+            screen_problems(&open)
+                .iter()
+                .map(|p| p.message.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "画面の 1 行目の図「申請」に、閉じの ``` がありません。この図にはボタンが出ません"
+            ]
+        );
+        // 書き損じの無い画面は空。
+        assert!(
+            screen_problems(&validate_miniapp_body(&body(APP, &["expense"])).unwrap()).is_empty()
+        );
+    }
 
     fn body(screen: &str, aliases: &[&str]) -> serde_json::Value {
         json!({

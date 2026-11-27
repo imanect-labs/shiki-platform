@@ -2,8 +2,9 @@
 
 /// ミニアプリの画面の「組み立てる」（#604 の続き・y-ui docs/editor.md §6）。
 ///
-/// 画面（Yui の ```ui を含む Markdown）を段（文章・入力とボタン・そのままの図）の並びにして、
+/// 画面（Yui の ```ui を含む Markdown）を段（文章・入力とボタン・表・そのままの図）の並びにして、
 /// 段の並べ替え・追加・削除と、app の段の中身のドラッグ＆ドロップ編集（Yui の AppEditor）をする。
+/// 表の段（```data_grid）は、束ねたビューから出すものを選ぶ（GAP-11）。
 ///
 /// - 保存する形は今と同じ Markdown。直した app の段だけを正規形に書き直し、ほかの段は 1 文字も変えない。
 /// - 記述に読めない行がある app（診断のあるもの）は開かず、書くタブで直してもらう（黙って行を落とさない）。
@@ -11,14 +12,21 @@
 ///   （親が `onValidity` を見る）。最後の判定は保存時のサーバーの検証（crates/gui の miniapp.rs）。
 
 import * as React from "react";
-import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { ArrowDown, ArrowUp, GripVertical, Plus, Table2, Trash2, TriangleAlert } from "lucide-react";
 import type { AppFigure } from "@imanect/yui";
 import { checkApp, emptyApp, type WorkflowChoice } from "@imanect/yui/editor";
 import { AppEditor, useDnd } from "@imanect/yui/editor/react";
 
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Button } from "@/components/ui/button";
-import { joinScreen, newAppBlock, newTextBlock, splitScreen, type ScreenBlock } from "@/lib/miniapp/screen-blocks";
+import {
+  joinScreen,
+  newAppBlock,
+  newGridBlock,
+  newTextBlock,
+  splitScreen,
+  type ScreenBlock,
+} from "@/lib/miniapp/screen-blocks";
 import { cn } from "@/lib/utils";
 
 export interface ScreenValidity {
@@ -30,12 +38,18 @@ export function ScreenBuilder({
   screen,
   onScreenChange,
   workflows,
+  views,
+  appendGrid,
   onValidity,
   onOpenSource,
 }: {
   screen: string;
   onScreenChange: (screen: string) => void;
   workflows: readonly WorkflowChoice[];
+  /// 束ねたビューの名前（表の段が出せるもの・GAP-11）。
+  views: readonly string[];
+  /// 表の段を最後に足す頼み（ビューを追加したとき）。`n` が変わるたびに 1 回だけ足す（開いたときの頼みは済んだものとする）。
+  appendGrid?: { alias: string; n: number } | null;
   onValidity: (v: ScreenValidity) => void;
   /// 書くタブへ移る（直せない段を記述で直すため）。
   onOpenSource: () => void;
@@ -52,6 +66,16 @@ export function ScreenBuilder({
     },
     [onScreenChange],
   );
+
+  // ビューを追加したときの表の段（親の頼み）。段は手元の並びの最後に足す。
+  const blocksRef = React.useRef(blocks);
+  blocksRef.current = blocks;
+  const doneRequest = React.useRef(appendGrid?.n ?? 0);
+  React.useEffect(() => {
+    if (!appendGrid || appendGrid.n === doneRequest.current) return;
+    doneRequest.current = appendGrid.n;
+    commit([...blocksRef.current, newGridBlock(appendGrid.alias)]);
+  }, [appendGrid, commit]);
 
   // 保存を止めるのは、組み立てで直した app の段のエラーだけ（直していない段は元の記述のまま保存され、サーバーが確かめる）
   const errors = React.useMemo(
@@ -142,6 +166,12 @@ export function ScreenBuilder({
                   placeholder="説明の文（Markdown）"
                   className="block w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
+              ) : b.type === "grid" ? (
+                <GridBlock
+                  block={b}
+                  views={views}
+                  onChange={(alias) => update(b.id, (x) => (x.type === "grid" ? { ...x, alias, touched: true } : x))}
+                />
               ) : b.type === "app" ? (
                 <AppEditor
                   figure={b.figure}
@@ -168,7 +198,24 @@ export function ScreenBuilder({
           <Plus className="size-4" aria-hidden />
           文章
         </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={views.length === 0}
+          aria-describedby={views.length === 0 ? "screen-builder-grid-note" : undefined}
+          onClick={() => add(newGridBlock(views[0]!))}
+        >
+          <Plus className="size-4" aria-hidden />
+          表
+        </Button>
       </div>
+      {views.length === 0 ? (
+        // 押せない理由はボタンの近くに文字で出す（付録 C の P15）。
+        <p id="screen-builder-grid-note" className="text-xs text-muted-foreground">
+          表を置くには、先に下の「表に出すビュー」でビューを追加してください。
+        </p>
+      ) : null}
       {drag ? (
         // 位置は useDnd が style を直接動かす（指を動かすたびに描き直さない）
         <div ref={(el) => void (line.current = el)} aria-hidden className="pointer-events-none fixed left-0 top-0 z-50 rounded bg-primary" style={{ display: "none" }} />
@@ -179,8 +226,56 @@ export function ScreenBuilder({
 
 function blockLabel(b: ScreenBlock): string {
   if (b.type === "text") return "文章";
+  if (b.type === "grid") return b.alias ? `表「${b.alias}」` : "表";
   if (b.type === "app") return b.figure.title ? `入力とボタン「${b.figure.title}」` : "入力とボタン";
   return b.reason.kind === "figure" ? "図" : "入力とボタン（組み立てでは直せません）";
+}
+
+/// 表の段: 束ねたビューから、表に出すものを選ぶ。行は、アプリを使う人の権限で読み込む（ここでは描かない）。
+function GridBlock({
+  block,
+  views,
+  onChange,
+}: {
+  block: Extract<ScreenBlock, { type: "grid" }>;
+  views: readonly string[];
+  onChange: (alias: string) => void;
+}) {
+  const bundled = views.includes(block.alias);
+  const id = React.useId();
+  return (
+    <div className="space-y-2" data-testid="screen-builder-grid">
+      <label htmlFor={id} className="flex items-center gap-1.5 text-xs font-medium text-foreground/70">
+        <Table2 className="size-3.5" aria-hidden />
+        表に出すビュー
+      </label>
+      <select
+        id={id}
+        value={block.alias}
+        onChange={(e) => onChange(e.currentTarget.value)}
+        aria-describedby={bundled ? undefined : `${id}-missing`}
+        className="h-9 w-full rounded-lg border border-input bg-background px-3 text-base md:text-sm pointer-coarse:h-11"
+      >
+        {bundled ? null : <option value={block.alias}>{block.alias ? `「${block.alias}」（追加していないビュー）` : "選んでいません"}</option>}
+        {views.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      {bundled ? (
+        <p className="text-xs text-muted-foreground">
+          レコードは、アプリを使う人の権限で読み込みます。保存して開くと、実際の表を試せます。
+        </p>
+      ) : (
+        <p id={`${id}-missing`} role="note" className="text-xs text-amber-700 dark:text-amber-400">
+          {block.alias
+            ? `「${block.alias}」は、このアプリに追加したビューにありません。下の「表に出すビュー」で追加するか、ほかのビューを選んでください。`
+            : "表に出すビューを選んでください。"}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function RawBlock({ block, onOpenSource }: { block: Extract<ScreenBlock, { type: "raw" }>; onOpenSource: () => void }) {

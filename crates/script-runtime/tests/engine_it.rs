@@ -167,9 +167,97 @@ fn shiki_fail_produces_error() {
         echo_host(),
     );
     assert!(!out.ok);
-    let (msg, _code, retryable) = out.error.unwrap();
+    let (msg, code, retryable) = out.error.unwrap();
     assert!(msg.contains("boom"), "{msg}");
+    // 作成者が止めた失敗は設定の誤り（分類できない失敗にしない・BUG-137）。
+    assert_eq!(code, script_runtime::SCRIPT_ERROR);
     assert!(!retryable, "permanent は非リトライ");
+}
+
+/// 決まった誤りだけを返す host_fn（呼ばれた api を問わない）。
+fn failing_host(
+    message: &'static str,
+    code: &'static str,
+    retryable: bool,
+) -> script_runtime::engine::HostFn {
+    Box::new(move |_call: &HostCall| HostResponse::Err {
+        message: message.into(),
+        code: code.into(),
+        retryable,
+    })
+}
+
+/// 前置き（`Shiki.data.*`）つきで 1 回実行する（ワークフローの script と同じ形）。
+fn run_with_prelude(
+    src: &str,
+    host: script_runtime::engine::HostFn,
+) -> script_runtime::engine::ExecOutcome {
+    let engine = ScriptEngine::new().expect("engine");
+    let compiled = compile(src).expect("compile");
+    let js = format!(
+        "{}\n{}",
+        script_runtime::prelude::workflow_prelude(),
+        compiled.compiled_js
+    );
+    engine.run("e1", &js, "{}", Limits::default(), host)
+}
+
+/// 捕まえていないホスト呼び出しの誤りは、ホストが返した code・retryable・文のまま失敗になる（BUG-136・D-121）。
+/// ゲストの `Shiki.*`（storage）と前置きの `Shiki.data.*` のどちらから投げても同じ。捕まえて同じ誤りを投げ直しても
+/// ホストの誤りのまま。文にタブを含んでも（ゲストの封筒が JSON として崩れても）読める。
+#[test]
+fn uncaught_host_errors_keep_the_host_code() {
+    let msg = "scope_ceiling 外の Shiki 呼び出し: storage.read";
+    for src in [
+        "function main() { return Shiki.storage.read('x'); }",
+        "function main() { return Shiki.data.get('t', 'r'); }",
+        "function main() { try { Shiki.storage.read('x'); } catch (e) { throw e; } }",
+    ] {
+        let out = run_with_prelude(src, failing_host(msg, "out_of_scope", false));
+        assert!(!out.ok, "{src}");
+        assert_eq!(
+            out.error,
+            Some((msg.to_string(), "out_of_scope".to_string(), false)),
+            "{src}"
+        );
+    }
+    let out = run_with_prelude(
+        "function main() { return Shiki.storage.read('x'); }",
+        failing_host("混んでいます\tしばらく待ってください", "unavailable", true),
+    );
+    assert_eq!(
+        out.error,
+        Some((
+            "混んでいます\tしばらく待ってください".to_string(),
+            "unavailable".to_string(),
+            true
+        ))
+    );
+}
+
+/// 作成者が投げた誤り（throw・書き誤り・ホストの誤りの文を変えて投げ直したもの・code を名乗るもの）は
+/// script_error（やり直さない）になる（BUG-137・D-121）。捕まえて続けた script は成功する。
+#[test]
+fn author_errors_are_script_errors() {
+    for src in [
+        "function main() { throw new Error('金額が負です'); }",
+        "function main() { var a = null; return a.b; }",
+        "function main() { throw 'str'; }",
+        "function main() { try { Shiki.storage.read('x'); } catch (e) { throw new Error('読めません: ' + e.message); } }",
+        "function main() { try { Shiki.storage.read('x'); } catch (e) { } throw { code: 'rate_limited', retryable: true }; }",
+    ] {
+        let out = run_with_prelude(src, failing_host("見つかりません", "not_found", false));
+        assert!(!out.ok, "{src}");
+        let (_msg, code, retryable) = out.error.clone().unwrap();
+        assert_eq!(code, script_runtime::SCRIPT_ERROR, "{src}: {:?}", out.error);
+        assert!(!retryable, "{src}");
+    }
+    let out = run_with_prelude(
+        "function main() { try { Shiki.storage.read('x'); } catch (e) { return e.code; } }",
+        failing_host("見つかりません", "not_found", false),
+    );
+    assert!(out.ok, "{:?}", out.error);
+    assert_eq!(out.value, Some(serde_json::json!("not_found")));
 }
 
 #[test]

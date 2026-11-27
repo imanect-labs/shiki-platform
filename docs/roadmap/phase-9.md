@@ -135,8 +135,14 @@
   - **自動化のみ**: 所有データ(`data.app:*`)限定の狭スコープ・サービスidentityを発行（ReBACで所有データに束縛）。
 - **受け入れ条件**:
   - [ ] B1 が PKCE でトークンを取得しゲートウェイを叩ける（client secret 不要）
-  - [ ] B2 が token-exchange で「ユーザーの代理」として認可される（アプリ単独権限に昇格しない）
-  - [ ] 自動化サービスidentityが所有データのみに限定され、越境が拒否される
+  - [x] B2 が token-exchange で「ユーザーの代理」として認可される（アプリ単独権限に昇格しない）
+    - 交換は元のトークンの能力スコープだけを求め、結果が広がらないことを確かめる。B1 は同じアプリの B2 だけを
+      `aud` に入れる（別のアプリの B2 は交換できない）。実 Keycloak 26.2 の結合テスト
+      （`app-gateway/tests/keycloak_b2_it.rs`・`api/src/miniapp_b2_tests.rs`）で確かめる（BUG-182）。
+  - [x] 自動化サービスidentityが所有データのみに限定され、越境が拒否される
+    - B2 のサービスアカウントのトークン（`azp` が有効なインストールの B2・`sub` がそのサービスアカウント）だけを
+      アプリの主体にし、テナントと組織はインストールから決める。通れるのはアプリのテーブル（data.*）と通知の記録
+      だけで、`owner@miniapp` の無いテーブルには届かない（BUG-183）。
 
 ### Task 9.8: 能力アダプタ（storage/data/rag/identity/events を能力面に薄く公開）
 - **area**: api / **path**: `crates/app-gateway`, `crates/api`

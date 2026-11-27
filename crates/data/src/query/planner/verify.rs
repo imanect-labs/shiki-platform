@@ -61,8 +61,14 @@ fn eval(e: &PolicyExpr, env: &PolicyEnv<'_>, row: &RowView<'_>) -> bool {
             let Some(f) = env.schema.field(field) else {
                 return false;
             };
-            // v1 の `data ->> 'f{id}'`: 値なし（欠落・null）は NULL → どの比較も不成立。
-            let Some(text) = scalar_text(row.data.get(json_key(f.id))) else {
+            // v1 の `data ->> 'f{id}'`: 値なし（欠落・null）は NULL → どの比較も不成立。作成者の列は
+            // レコードの作成者（owner・空にならない・D-122）。
+            let text = if f.is_created_by() {
+                Some(row.owner.to_string())
+            } else {
+                scalar_text(row.data.get(json_key(f.id)))
+            };
+            let Some(text) = text else {
                 return false;
             };
             let numeric = f.field_type == FieldType::Number;
@@ -201,6 +207,41 @@ mod tests {
                 data: &d,
             };
             assert_eq!(eval_read(&env, &v), want, "{data}");
+        }
+    }
+
+    /// 作成者の列（D-122）は保存した値ではなく行の owner と比べる（owner は空にならない）。
+    #[test]
+    fn created_by_compares_the_row_owner() {
+        let mut s = schema(PolicyExpr::FieldCmp {
+            field: "made_by".into(),
+            op: CmpOp::Ne,
+            value: PolicyOperand::UserId,
+        });
+        s.fields
+            .push(FieldDef::new("made_by", FieldType::CreatedBy));
+        crate::field_key::assign_field_ids(None, &mut s).unwrap();
+        let jk = s.field("made_by").unwrap().json_key();
+        let m = mat();
+        let shared = HashSet::new();
+        let env = PolicyEnv {
+            schema: &s,
+            material: &m,
+            user: "alice",
+            shared: &shared,
+        };
+        for (owner, data, want) in [
+            ("alice", json!({}), false),
+            ("alice", json!({ jk.clone(): "bob" }), false),
+            ("bob", json!({}), true),
+            ("bob", json!({ jk.clone(): "alice" }), true),
+        ] {
+            let v = RowView {
+                id: Uuid::nil(),
+                owner,
+                data: &data,
+            };
+            assert_eq!(eval_read(&env, &v), want, "{owner} {data}");
         }
     }
 

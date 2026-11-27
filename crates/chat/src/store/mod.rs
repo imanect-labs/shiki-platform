@@ -24,7 +24,10 @@ mod stream;
 mod thread_manage;
 mod thread_pins;
 mod threads;
+/// 会話の AI の試運転の台帳（`workflow_trial_run`・T04）。
+mod trial_runs;
 mod ui_actions;
+mod ui_runs;
 mod yui_actions;
 
 pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
@@ -32,6 +35,7 @@ pub use post::{BranchTarget, PostResult};
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
 pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
 pub use threads::ThreadOrigin;
+pub(crate) use trial_runs::{TrialKey, TrialRow, STALE_RESERVATION_SECS};
 pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 
 use std::sync::Arc;
@@ -54,6 +58,8 @@ pub struct ChatStore {
     authz: Arc<dyn AuthzClient>,
     audit: AuditRecorder,
     redis: Option<RedisPubSub>,
+    /// 実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔（既定は 1 秒・[`Self::with_viewer_recheck`]）。
+    viewer_recheck: std::time::Duration,
 }
 
 impl ChatStore {
@@ -77,7 +83,18 @@ impl ChatStore {
             authz,
             audit,
             redis,
+            viewer_recheck: message_view::VIEWER_RECHECK,
         })
+    }
+
+    /// 実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔を差し替える（既定は 1 秒・PIT-84・D-214）。
+    ///
+    /// 試験が実時間に頼らずに「間隔の中では問い直さない」（長い間隔）と「過ぎたら問い直す」（`Duration::ZERO`）を
+    /// 組むための口。サーバーは既定のまま使う。
+    #[must_use]
+    pub fn with_viewer_recheck(mut self, every: std::time::Duration) -> Self {
+        self.viewer_recheck = every;
+        self
     }
 
     /// 生成イベントを Redis へ publish する（best-effort・失敗は警告のみ）。

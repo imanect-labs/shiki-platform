@@ -7,6 +7,7 @@
 //! `app_id`（ミニアプリ経由のみ）を記録する。
 
 use authz::AuthContext;
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -42,6 +43,17 @@ pub struct AppLlmUsage {
     pub model: String,
     pub calls: i64,
     pub tokens: i64,
+    pub cost_usd_micros: i64,
+}
+
+/// 1 つのトレースの LLM 利用量の合計（[`UsageRecorder::trace_usage`]）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, sqlx::FromRow)]
+pub struct TraceUsage {
+    /// 呼び出しの回数（会計の行の数）。
+    pub calls: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    /// 実コストの合計（マイクロ USD・整数）。
     pub cost_usd_micros: i64,
 }
 
@@ -86,7 +98,8 @@ impl UsageRecorder {
         Ok(())
     }
 
-    /// アプリの LLM 利用量集計（user_sub 別・コスト/トークン・GET /apps/{id}/usage 用）。
+    /// アプリの LLM 利用量集計（user_sub 別・コスト/トークン・GET /apps/{id}/usage 用）。テナントと呼ぶ人の組織で絞る
+    /// （組織はテナントの中の隔離の境界・PIT-45・BUG-197）。
     pub async fn app_llm_usage(
         &self,
         ctx: &AuthContext,
@@ -98,12 +111,46 @@ impl UsageRecorder {
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
              FROM llm_usage \
-             WHERE tenant_id = $1 AND app_id = $2 \
+             WHERE tenant_id = $1 AND org = $2 AND app_id = $3 \
              GROUP BY user_sub, model ORDER BY cost_usd_micros DESC",
         )
         .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(app_id)
         .fetch_all(&self.db)
+        .await
+    }
+
+    /// 1 つのトレースの、`since` から `until` までの LLM 利用量の合計（会話の AI の試運転の費用・設計 §4.3 R13）。
+    ///
+    /// 呼ぶ人のテナントと組織の行だけを数える（組織はテナントの中の隔離の境界・PIT-45）。ワークフローの run の
+    /// trace_id は run_id の 32 桁の 16 進（`run_id.simple()`・ワーカーと `workflow_run.trace_id` の規約）。trace_id の
+    /// 索引は無いので、`since` と `until` で索引（`llm_usage_tenant_idx`・tenant_id・org・created_at）の範囲を絞る。
+    /// `since` には run を作った時刻を、`until` には終わった run なら終わった時刻（と少しの余裕）を渡す（`None` は今まで・
+    /// まだ動いている run）。終わった run の前回の結果を何日も後に返すときに、その間の組織の利用量を読まない。
+    pub async fn trace_usage(
+        &self,
+        ctx: &AuthContext,
+        trace_id: &str,
+        since: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<TraceUsage, sqlx::Error> {
+        // `until` は COALESCE で包む（`$5 IS NULL OR …` だと汎用の計画で索引の上限に使えない）。
+        sqlx::query_as(
+            "SELECT COUNT(*)::bigint AS calls, \
+                    COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
+                    COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
+                    COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
+             FROM llm_usage \
+             WHERE tenant_id = $1 AND org = $2 AND created_at >= $3 \
+               AND created_at <= COALESCE($5::timestamptz, 'infinity'::timestamptz) AND trace_id = $4",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(since)
+        .bind(trace_id)
+        .bind(until)
+        .fetch_one(&self.db)
         .await
     }
 

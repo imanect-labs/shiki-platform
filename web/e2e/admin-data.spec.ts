@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 管理コンソールの「データ」（監査 B3-5・`/org-admin/data/*`）: テナントの構造化データの上限と、
 /// テーブル別のクエリ最適化の報告・固定計画の切替。
@@ -58,6 +62,7 @@ test.describe("管理コンソール: データ", () => {
     });
     expect(res.status()).toBe(201);
     const tableId = ((await res.json()) as { id: string }).id;
+    cleanup.add(() => deleteTableApi(page, tableId));
 
     await page.goto("/admin/data/optimizer");
     await expect(page.getByRole("heading", { name: "クエリ最適化" })).toBeVisible();

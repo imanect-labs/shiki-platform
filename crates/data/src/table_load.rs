@@ -5,6 +5,10 @@
 //! - [`DataStore::open_for_read`]: 読取の入口。テーブル viewer・1 段目の参照先テーブル viewer・名指しロール
 //!   （`has_role(subtree=true)`）の check を **BatchCheck 1 往復**へ束ねてリクエストのメモへ入れ、テーブル
 //!   viewer を要求する（data-platform §16.4）。
+//! - [`DataStore::open_for_filter`]: 候補の絞り込みの入口（同じ問いを束ねるが、見えないテーブルは Deny の
+//!   監査に残さず `None`・承認の受信箱・BUG-43）。追加だけの人には自分の行だけに絞ったテーブルを返す。
+//! - 追加だけ（`submitter`）も通す読取の入口は [`crate::table_access`]（`open_for_reader`）。
+//!   [`DataStore::open_for_read`] は従来どおり viewer だけを通す。
 
 use std::sync::Arc;
 
@@ -110,6 +114,8 @@ impl DataStore {
             created_by: row.created_by,
             created_at: row.created_at,
             updated_at: row.updated_at,
+            add_only: false,
+            narrowed: None,
             keys: TableKeys {
                 tenant_int: row.tenant_int,
                 table_int: row.table_int,
@@ -149,7 +155,11 @@ impl DataStore {
     }
 
     /// 移行を伴わずにそのまま使える生存行なら返す（読取の入口の先読み用・書込はしない）。
-    async fn peek_live(&self, ctx: &AuthContext, id: Uuid) -> Result<Option<DataTable>, DataError> {
+    pub(crate) async fn peek_live(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+    ) -> Result<Option<DataTable>, DataError> {
         Ok(match self.load_live(ctx, id).await? {
             Loaded::Ready(t) => Some(*t),
             Loaded::Missing | Loaded::Legacy | Loaded::NoLedger => None,
@@ -184,8 +194,46 @@ impl DataStore {
         }
     }
 
-    /// 読取で要る check を集める（1 段目の参照先テーブル viewer・自他のテーブルの名指しロール）。
-    async fn read_prefetch(
+    /// 候補の絞り込みの入口: テーブル viewer なら生存テーブル行を、追加だけなら自分の行だけに絞ったテーブル行を、
+    /// 見えない・無い・削除済みなら `None` を返す（[`Self::open_for_read`] と同じ問いを同じメモに束ねるが、
+    /// **見えないことを Deny の監査に残さない**。閲覧者が求めた読取ではなく、他人が書いた候補を見える分へ
+    /// 絞るだけ・BUG-43）。
+    pub(crate) async fn open_for_filter(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table_id: Uuid,
+    ) -> Result<Option<DataTable>, DataError> {
+        let peeked = self.peek_live(ctx, table_id).await?;
+        let object = ctx.ns().data_table(&table_id.to_string());
+        let mut items = vec![
+            (Relation::Viewer, object.clone()),
+            (Relation::Submitter, object),
+        ];
+        if let Some(t) = &peeked {
+            self.read_prefetch(ctx, t, &mut items).await?;
+        }
+        az.check_all(ctx, &items).await?;
+        // 追加だけの人は自分が作ったレコードだけに絞る（[`crate::table_access`]）。
+        let Some(scope) = self.read_scope(ctx, az, table_id).await? else {
+            return Ok(None);
+        };
+        let mut table = match peeked {
+            Some(t) => t,
+            None => match self.fetch_live(ctx, table_id).await {
+                Ok(t) => t,
+                Err(DataError::NotFound) => return Ok(None),
+                Err(e) => return Err(e),
+            },
+        };
+        if scope == crate::table_access::ReadScope::OwnRecords {
+            crate::table_access::narrow_to_own(&mut table);
+        }
+        Ok(Some(table))
+    }
+
+    /// 読取で要る check を集める（1 段目の参照先テーブルの viewer と追加だけ・自他のテーブルの名指しロール）。
+    pub(crate) async fn read_prefetch(
         &self,
         ctx: &AuthContext,
         table: &DataTable,
@@ -194,7 +242,10 @@ impl DataStore {
         let mut needs = Needs::default();
         policy_role_needs(&table.schema, &mut needs);
         for rt in crate::derived::first_hop_tables(table) {
-            items.push((Relation::Viewer, ctx.ns().data_table(&rt.to_string())));
+            let obj = ctx.ns().data_table(&rt.to_string());
+            // 参照先が追加だけの共有なら、自分の行だけを辿る（[`crate::table_access`]）。同じ往復で問う。
+            items.push((Relation::Viewer, obj.clone()));
+            items.push((Relation::Submitter, obj));
             if let Some(r) = self.peek_live(ctx, rt).await? {
                 policy_role_needs(&r.schema, &mut needs);
             }

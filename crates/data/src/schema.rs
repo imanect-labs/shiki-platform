@@ -94,11 +94,21 @@ pub(crate) fn validate_table_schema(schema: &TableSchema) -> Result<(), DataErro
         crate::policy::validate::validate_row_policy(schema, policy)?;
     }
     for fp in &schema.field_policy {
-        if schema.field(&fp.field).is_none() {
-            return Err(crate::schema_invalid(format!(
-                "field_policy の対象 '{}' が fields にありません",
-                fp.field
-            )));
+        match schema.field(&fp.field) {
+            None => {
+                return Err(crate::schema_invalid(format!(
+                    "field_policy の対象 '{}' が fields にありません",
+                    fp.field
+                )));
+            }
+            // 作成者はレコードを読める人にいつも見える（応答の owner・擬似列 _owner）ので、隠せない。
+            Some(f) if f.is_created_by() => {
+                return Err(crate::schema_invalid(format!(
+                    "'{}': 作成者の列は見られる人を絞れません（作成者は、レコードを見られる人にいつも見えます）",
+                    fp.field
+                )));
+            }
+            Some(_) => {}
         }
         crate::policy::validate::validate_role_level_expr(&fp.readable_by, "field_policy")?;
     }
@@ -138,6 +148,8 @@ fn validate_field(schema: &TableSchema, f: &FieldDef) -> Result<(), DataError> {
     crate::numeric::validate_spec(f)?;
     // リンク定義・ロールアップ・数式（Task 15.4）。
     crate::derived::schema::validate_derived_field(schema, f)?;
+    // 作成者の列（D-122）: 必須・重複なしは指定できない。
+    crate::created_by::validate_field(f)?;
     // 型ごとの付帯定義。
     match f.field_type {
         FieldType::Select | FieldType::MultiSelect => {

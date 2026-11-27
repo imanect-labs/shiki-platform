@@ -3,8 +3,9 @@
 //! ユーザー起点: 呼出ユーザーの gateway トークンを **RFC 8693 token-exchange
 //! （sub=ユーザー維持・confused-deputy 防御）** で B2 confidential client のトークンへ
 //! 交換し、[`app_platform::FunctionRunner`]（wasm サンドボックス）のホスト委譲 Bearer に
-//! 使う。B2 client secret は crates/secrets（宛先束縛=token endpoint）から解決し、
-//! **ゲスト/レスポンスへは一切出さない**。
+//! 使う。交換は元のトークンの能力スコープだけを求め、`audience` は送らない（Keycloak 26.2 の決まり・
+//! [`app_gateway::exchange_for_user`]・BUG-182）。B2 client secret は crates/secrets（宛先束縛=token endpoint）から
+//! 解決し、**ゲスト/レスポンスへは一切出さない**。
 
 use std::sync::Arc;
 
@@ -17,7 +18,6 @@ pub(crate) struct GatewayFunctionPort {
     pub http: reqwest::Client,
     pub token_endpoint: String,
     pub secrets: Option<Arc<secrets::SecretStore>>,
-    pub gateway_audience: String,
     pub installations: app_gateway::AppInstallationStore,
 }
 
@@ -39,6 +39,9 @@ impl GatewayFunctionPort {
     /// 能力スコープは client の optional client scope なので、`scopes`（＝インストールの
     /// granted_scopes）を `scope` パラメタで明示要求する。これが無いと service token に
     /// data.* / notify.send 等が乗らず、関数内の能力呼び出しが二重ゲートで 403 になる。
+    /// トークンの `aud`（`gateway.audience`）は B2 のクライアントのマッパーが足す（Keycloak 26.2 の
+    /// client_credentials は `audience` を読まないので送らない）。資格情報を断られた（400・401）ときは
+    /// [`GatewayError::Forbidden`]、届かない・ほかの失敗は [`GatewayError::Upstream`]。
     pub(crate) async fn client_credentials_token(
         &self,
         client_id: &str,
@@ -54,7 +57,6 @@ impl GatewayFunctionPort {
             ("grant_type", "client_credentials"),
             ("client_id", client_id),
             ("client_secret", client_secret),
-            ("audience", self.gateway_audience.as_str()),
         ];
         if !scope.is_empty() {
             form.push(("scope", scope.as_str()));
@@ -66,10 +68,16 @@ impl GatewayFunctionPort {
             .send()
             .await
             .map_err(|e| GatewayError::Upstream(format!("service token 取得: {e}")))?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        // 資格情報を断られた（クライアントが無効・無い・secret が違う）ものは、やり直しても通らない（GAP-60）。
+        if matches!(status.as_u16(), 400 | 401) {
+            return Err(GatewayError::Forbidden(format!(
+                "service token を断られました: {status}"
+            )));
+        }
+        if !status.is_success() {
             return Err(GatewayError::Upstream(format!(
-                "service token 応答: {}",
-                resp.status()
+                "service token 応答: {status}"
             )));
         }
         let tok: Tok = resp
@@ -128,14 +136,13 @@ impl FunctionPort for GatewayFunctionPort {
             &spec.app_id.to_string(),
         );
         let secret = self.resolve_b2_secret(&app_ctx, spec.app_id).await?;
-        // sub=ユーザーを維持したまま B2 クライアントのトークンへ交換（RFC 8693）。
+        // sub=ユーザーを維持したまま B2 クライアントのトークンへ交換（RFC 8693・元のトークンより広げない）。
         let exchanged = app_gateway::exchange_for_user(
             &self.http,
             &self.token_endpoint,
             client_id_b2,
             &secret,
             &spec.subject_token,
-            &self.gateway_audience,
         )
         .await?;
 
@@ -161,11 +168,11 @@ impl FunctionPort for GatewayFunctionPort {
             )
             .await
             .map_err(map_platform)?;
-        Ok(serde_json::json!({
-            "ok": outcome.ok,
-            "value": outcome.value,
-            "logs": outcome.logs,
-        }))
+        // 失敗のときは理由と文（error）も返す（GAP-60・スタックの行と内部の文は含まない）。
+        serde_json::to_value(&outcome).map_err(|e| {
+            tracing::error!(error = %e, "B2 関数の結果を JSON にできない");
+            GatewayError::Internal("内部エラーが発生しました".into())
+        })
     }
 }
 

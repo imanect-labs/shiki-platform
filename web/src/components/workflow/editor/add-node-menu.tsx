@@ -3,7 +3,7 @@
 /// ノード追加メニュー（プラスボタン/エッジ挿入から開く・カテゴリ別・検索可）。
 ///
 /// カタログは codegen（NODE_CATALOG・日本語ラベル/説明/カテゴリの単一定義）。
-/// `available=false`（予約語彙）は「近日対応」でグレーアウトし、存在は見せて期待値を作る。
+/// `available=false`（予約語彙）は「準備中」に畳んでグレーアウトし、存在は見せて期待値を作る。
 
 import * as React from "react";
 import { Search } from "lucide-react";
@@ -14,6 +14,7 @@ import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
 import { categoryVar } from "../category-accent";
+import { UpcomingDetails, useUpcomingOpen } from "./upcoming-details";
 
 type Props = {
   onPick: (nodeType: string) => void;
@@ -21,6 +22,8 @@ type Props = {
   contextLabel?: string;
   /// 外枠の幅・高さの上書き（スマホの下からのシートでは全幅）。
   className?: string;
+  /// ここには置けないブロックの種類と理由（繰り返しの中の「結果を画面に返す」など・regions.ts）。灰色にして理由を添える。
+  refused?: Readonly<Record<string, string>>;
 };
 
 function groupByCategory(entries: readonly NodeCatalogEntry[]) {
@@ -33,8 +36,9 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
   return [...groups.values()];
 }
 
-export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
+export function AddNodeMenu({ onPick, contextLabel, className, refused }: Props) {
   const [query, setQuery] = React.useState("");
+  const [upcomingOpen, setUpcomingOpen] = useUpcomingOpen();
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // タッチ端末では開いた瞬間にキーボードを出さない（一覧から選ぶのが主）。
@@ -50,12 +54,21 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
       e.description_ja.toLowerCase().includes(q) ||
       e.type.toLowerCase().includes(q),
   );
-  // 利用可能なものを先に・予約語彙（近日対応）は末尾のカテゴリ群として見せる。
+  // 利用可能なものを先に・予約語彙（準備中）は末尾のカテゴリ群として見せる。
   const availableGroups = groupByCategory(filtered.filter((e) => e.available));
   const upcoming = filtered.filter((e) => !e.available);
 
   return (
-    <div className={cn("flex max-h-96 w-80 flex-col", className)} data-testid="add-node-menu">
+    <div
+      className={cn("flex max-h-96 w-80 flex-col", className)}
+      data-testid="add-node-menu"
+      // ブロック（キャンバスのノード）から開いたメニューの操作を、ブロックの選択・拡大・矢印キーでの移動へ伝えない
+      // （ポップオーバーは画面の外側へ描くが、React のイベントは開いたブロックへ伝わる）。Escape は閉じるのに使う。
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") e.stopPropagation();
+      }}
+    >
       {contextLabel ? (
         <p className="px-1 pb-2 text-xs text-muted-foreground">{contextLabel}</p>
       ) : null}
@@ -70,7 +83,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
           onChange={(e) => setQuery(e.target.value)}
           type="search"
           enterKeyHint="search"
-          placeholder="ブロックを検索…"
+          placeholder="ブロックを検索"
           className="h-9 pl-8 pointer-coarse:h-11"
           aria-label="ブロックを検索"
         />
@@ -84,6 +97,25 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
             <ul>
               {group.items.map((entry) => {
                 const Icon = nodeIcon(entry.type);
+                const reason = refused?.[entry.type];
+                if (reason) {
+                  // ここには置けない（理由を読める形で残す・押しても何もしない）。
+                  return (
+                    <li key={entry.type}>
+                      <div
+                        className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-md px-2 py-1.5 opacity-55 pointer-coarse:py-2.5"
+                        aria-disabled
+                        data-refused={entry.type}
+                      >
+                        <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium leading-5">{entry.label_ja}</span>
+                          <span className="block text-xs text-muted-foreground">{reason}</span>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                }
                 return (
                   <li key={entry.type}>
                     <button
@@ -115,10 +147,12 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
           </div>
         ))}
         {upcoming.length > 0 ? (
-          <div className="mb-1 border-t pt-2">
-            <p className="px-1 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              近日対応
-            </p>
+          // 準備中のブロックは既定で閉じる（使えるものを先に見せる・付録 D の N2.10）。
+          <UpcomingDetails
+            searching={q !== ""}
+            open={upcomingOpen}
+            onOpenChange={setUpcomingOpen}
+            className="mb-1 border-t pt-2" summaryClassName="px-1 py-1">
             <ul>
               {upcoming.map((entry) => {
                 const Icon = nodeIcon(entry.type);
@@ -127,7 +161,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
                     <div
                       className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-md px-2 py-1.5 opacity-45"
                       aria-disabled
-                      title="近日対応予定です"
+                      title="準備中のため、まだ使えません。"
                     >
                       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
                       <span className="min-w-0">
@@ -143,11 +177,11 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
                 );
               })}
             </ul>
-          </div>
+          </UpcomingDetails>
         ) : null}
         {filtered.length === 0 ? (
           <p className="px-1 py-6 text-center text-sm text-muted-foreground">
-            「{query}」に一致するブロックはありません
+            「{query}」に一致するブロックはありません。別の言葉で探してください。
           </p>
         ) : null}
       </div>

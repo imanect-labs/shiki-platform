@@ -85,7 +85,6 @@ fn deps(pool: PgPool) -> TriggerDeps {
         http: reqwest::Client::new(),
         token_endpoint: "http://127.0.0.1:1/token".into(),
         secrets: None,
-        gateway_audience: "shiki-gateway".into(),
         installations: app_gateway::AppInstallationStore::new(pool.clone()),
     });
     TriggerDeps {
@@ -189,21 +188,42 @@ async fn cron_tick_records_run_and_advances_next() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let app_id = Uuid::new_v4();
 
+    // 期限の来た、式に当たる時刻（5 分ごとの区切り）。
+    let due = app_platform::next_cron_run_after(
+        "*/5 * * * *",
+        chrono::Utc::now() - chrono::Duration::minutes(10),
+    )
+    .unwrap();
     let (sched_id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO app_function_schedule \
                  (tenant_id, org, app_id, function, expr, next_run_at) \
-             VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute') RETURNING id",
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(&tenant)
     .bind("acme")
     .bind(app_id)
     .bind("nightly")
     .bind("*/5 * * * *")
+    .bind(due)
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    cron_tick(&deps(pool.clone())).await.unwrap();
+    // 1 回の tick は期限の古い順に 20 件まで。共有の DB にほかの試験の期限の来た行があると、この行は後の tick に
+    // 回るので、この行を処理するまで回す（762f7bf2 と同じ・並べて走る試験の tick が先に処理しても同じ結果になる）。
+    let tick = deps(pool.clone());
+    for _ in 0..50 {
+        cron_tick(&tick).await.unwrap();
+        let (at,): (chrono::DateTime<chrono::Utc>,) =
+            sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+                .bind(sched_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if at != due {
+            break;
+        }
+    }
 
     let (runs,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
@@ -220,6 +240,174 @@ async fn cron_tick_records_run_and_advances_next() {
             .await
             .unwrap();
     assert!(next > chrono::Utc::now(), "next_run_at は将来へ前進する");
+}
+
+/// 曜日を揃える前の読み方（1 を日曜）で計算した、まだ来ていない実行の時刻は、起動時に今の読み方（1 が月曜）で
+/// 計算し直す。合っている時刻・期限の来た時刻は触らない（BUG-129）。
+#[tokio::test]
+async fn realign_moves_stale_weekday_schedules_to_the_standard_reading() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let now = chrono::Utc::now();
+    // 「毎週月曜 9:00（UTC）」を、cron クレートの読み方で計算した時刻（日曜 9:00）のまま保存した行。
+    let sunday = app_platform::next_cron_run_after("0 9 * * 0", now).unwrap();
+    let monday = app_platform::next_cron_run_after("0 9 * * 1", now).unwrap();
+    let insert = |expr: &'static str, at: chrono::DateTime<chrono::Utc>| {
+        let (pool, tenant) = (pool.clone(), tenant.clone());
+        async move {
+            let (id,): (Uuid,) = sqlx::query_as(
+                "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+                 VALUES ($1, 'acme', $2, 'weekly', $3, $4) RETURNING id",
+            )
+            .bind(&tenant)
+            .bind(Uuid::new_v4())
+            .bind(expr)
+            .bind(at)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+    let stale = insert("0 9 * * 1", sunday).await;
+    let right = insert("0 9 * * 1", monday).await;
+    let due = insert("0 9 * * 1", now - chrono::Duration::minutes(1)).await;
+
+    assert!(realign_schedules(&pool, now).await.unwrap() >= 1);
+    let at = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let (t,): (chrono::DateTime<chrono::Utc>,) =
+                sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            t
+        }
+    };
+    assert_eq!(
+        at(stale).await,
+        monday,
+        "日曜に送っていた月曜の予定は月曜になる"
+    );
+    assert_eq!(at(right).await, monday, "合っている時刻は変わらない");
+    assert!(at(due).await <= now, "期限の来た行は次の tick に任せる");
+    // 何度流しても同じ（起動のたびに流してよい）。
+    realign_schedules(&pool, now).await.unwrap();
+    assert_eq!(at(stale).await, monday);
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// 期限の来た時刻が今の読み方で式に当たらない（古い読み方で計算した日曜の「毎週月曜」・ローリング更新の間に古い版
+/// が書き戻した時刻）なら、実行せず、次の時刻を今の読み方で計算し直す（BUG-129）。
+#[tokio::test]
+async fn cron_tick_does_not_run_a_time_the_expression_does_not_hit() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let now = chrono::Utc::now();
+    // 過ぎた日曜 9:00（UTC）。「0 9 * * 1」を古い読み方（1 が日曜）で計算した時刻。
+    let sunday =
+        app_platform::next_cron_run_after("0 9 * * 0", now - chrono::Duration::days(8)).unwrap();
+    assert!(sunday < now);
+    let (sched_id,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+         VALUES ($1, 'acme', $2, 'weekly', '0 9 * * 1', $3) RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(Uuid::new_v4())
+    .bind(sunday)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // 1 回の tick は期限の古い順に 20 件まで。共有の DB にほかの試験の期限の来た行があると、この行は後の tick に
+    // 回るので、この行を処理するまで回す（並べて走る試験の tick が先に処理しても同じ結果になる）。
+    let tick = deps(pool.clone());
+    for _ in 0..50 {
+        cron_tick(&tick).await.unwrap();
+        let (at,): (chrono::DateTime<chrono::Utc>,) =
+            sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+                .bind(sched_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        if at != sunday {
+            break;
+        }
+    }
+
+    let (runs,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(runs, 0, "日曜には実行しない");
+    let (next,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        next,
+        app_platform::next_cron_run_after("0 9 * * 1", chrono::Utc::now()).unwrap(),
+        "次の月曜 9:00 に計算し直す"
+    );
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// 読めない式（標準の読み方で写せない曜日）は実行せず、毎時に実行しないよう 1 日後へ送る（BUG-129）。
+#[tokio::test]
+async fn cron_tick_skips_unreadable_expressions() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (sched_id,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+         VALUES ($1, 'acme', $2, 'nightly', '0 9 * * 5-1', now() - interval '1 minute') RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(Uuid::new_v4())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    cron_tick(&deps(pool.clone())).await.unwrap();
+
+    let (runs,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(runs, 0, "読めない式では実行しない");
+    let (next,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        next > chrono::Utc::now() + chrono::Duration::hours(23),
+        "確かめ直すのは 1 日後: {next}"
+    );
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
 }
 
 /// event_targets_app: table_id は所有アプリのみ・app_id は一致必須・無しは汎用配送（越境防止）。
@@ -294,4 +482,90 @@ async fn event_targets_app_scopes_to_owned_resources() {
     )
     .await
     .unwrap());
+}
+
+/// 自動実行の失敗は、作成者に見せてよい文で関数ごとに 1 行残し、続けて失敗した回数を足す。成功したら消す。
+/// インストールが無いアプリは記録しない（GAP-60 の残り）。
+#[tokio::test]
+async fn run_service_keeps_the_latest_failure_per_function() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let deps = deps(pool.clone());
+    let sub = Subscription {
+        tenant_id: tenant.clone(),
+        org: "acme".into(),
+        app_id,
+        function: "remind".into(),
+    };
+    let rows = || async {
+        sqlx::query_as::<_, (String, String, String, i32)>(
+            "SELECT trigger, code, message, failures FROM app_function_failure \
+             WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(&tenant)
+        .bind(app_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let body = async {
+        // インストールが無い: 記録しない。
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Event).await;
+        assert!(rows().await.is_empty());
+
+        // B2 の登録が無いインストール: 理由を残し、2 回目は回数を足す（内部の言葉を出さない）。
+        app_gateway::AppInstallationStore::new(pool.clone())
+            .upsert(
+                &ctx(&tenant),
+                app_gateway::NewAppInstallation {
+                    app_id,
+                    app_name: "経費",
+                    installed_version: "1.0.0",
+                    granted_scopes: &["data.read".to_string()],
+                    client_id_b1: None,
+                    client_id_b2: None,
+                    ai: app_gateway::AiPin::default(),
+                    frontend_bundle: None,
+                    server_bundle: None,
+                    server_spec: None,
+                },
+            )
+            .await
+            .expect("install");
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Event).await;
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Cron).await;
+        let got = rows().await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        let (trigger, code, message, failures) = &got[0];
+        assert_eq!(
+            (trigger.as_str(), code.as_str(), *failures),
+            ("cron", "not_configured", 2)
+        );
+        assert!(message.contains("入れ直して"), "{message}");
+        for word in ["B2", "secret", "server_bundle", "client"] {
+            assert!(!message.contains(word), "{message}");
+        }
+
+        // 成功したら消す。
+        app_platform::FunctionFailureStore::new(pool.clone())
+            .record_success(&tenant, app_id, "remind")
+            .await
+            .expect("success");
+        assert!(rows().await.is_empty());
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for sql in [
+        "DELETE FROM app_function_failure WHERE tenant_id = $1",
+        "DELETE FROM app_installation WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect(sql);
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }

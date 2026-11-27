@@ -13,6 +13,9 @@ use ts_rs::TS;
 
 use super::{required_scope, NodeType, Scope};
 
+mod output_shape;
+use output_shape::output_shape;
+
 /// パレットのカテゴリ（表示順に定義）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -110,12 +113,15 @@ pub struct NodeCatalogEntry {
     pub label_ja: &'static str,
     /// 1 行説明（IT に詳しくない利用者向け）。
     pub description_ja: &'static str,
-    /// 静的な出力ポート（switch は cases から動的導出のため空＋`dynamic_ports`）。
+    /// 静的な出力ポート（switch・ai.decide は params から導出するため空＋`dynamic_ports`）。
     /// `on_error=continue` の `error`・wait(event, on_timeout=continue) の `timeout` は
     /// 設定から導出する構造ポート（ir.md §5.2）でありここに含まない。
     pub output_ports: &'static [&'static str],
-    /// 出力ポートが params から動的に決まるか（control.switch のみ）。
+    /// 出力ポートが params から動的に決まるか（control.switch・ai.decide。互換のため残す。どう決まるかは
+    /// [`Self::port_rule`]）。
     pub dynamic_ports: bool,
+    /// 出力ポートの決まり方（[`PortRule`]・保存時検証 V2 と検証 API の `node_ports` が同じ規則で導く）。
+    pub port_rule: PortRule,
     /// 入エッジを複数受けられるか（control.join のみ・V2 の入エッジ 1 本制約の例外）。
     pub multi_input: bool,
     /// 要求スコープ（declared_scopes への宣言が必要・None は scope 天井対象外）。
@@ -129,6 +135,125 @@ pub struct NodeCatalogEntry {
     pub timeout_default_sec: Option<u32>,
     /// step timeout の上限秒。
     pub timeout_max_sec: Option<u32>,
+    /// step 属性 `cache` を付けられるか（付けられる種はその期限の決まり・いまは ai.decide の決定キャッシュだけ）。
+    pub step_cache: Option<crate::ir::StepCacheLimits>,
+    /// 出力の形（TS 風の表記・人と AI が読む）。[`Self::output_fields`] から作る（項目に分けられない形は文）。
+    /// 予約語彙は空文字。
+    pub output_shape: String,
+    /// 出力の最上位の項目（後続が `$from: nodes.<id>.output` の `/<name>` で読む・右パネルの参照の候補）。
+    /// 項目の組でない出力（入力をそのまま通す・script の戻り値など）と予約語彙は空（D-42）。
+    pub output_fields: &'static [OutputField],
+}
+
+/// 出力ポートの決まり方（ir.md §5.2・カタログの単一定義）。
+///
+/// 実際のポート集合は `ir::validate::node_ports` が params からこの規則で導く（V2 のポート存在検査と検証
+/// API の `node_ports` が同じ関数を使い、ai.decide の実行時の振り分けも同じ規則（`AiDecideParams::ports`）
+/// に従う。web に導出を書き写さない）。どの規則でも `on_error: continue` なら `error`、
+/// wait(event, on_timeout=continue) なら `timeout` が加わる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PortRule {
+    /// 静的なポート（[`NodeCatalogEntry::output_ports`]）だけ。
+    Static,
+    /// control.switch: `cases[].port` と `default`（`out` は発しない）。
+    SwitchCases,
+    /// human.approval: `approved`・`withdrawn` に、指定した判断（`rejected`・`returned`）と時間切れ（`timeout`）。
+    ApprovalChoices,
+    /// ai.decide: 振り分け（`route`）から決まる（無し＝`out`・確からしさで＝`out`/`uncertain`・
+    /// 値で＝選択肢のキーか `true`/`false` と `uncertain`）。
+    DecideRoute,
+}
+
+/// 出力の最上位の 1 項目（カタログの単一定義・D-42）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct OutputField {
+    /// 項目名（path は `/<name>`）。
+    pub name: &'static str,
+    /// 型（TS 風の表記・入れ子の形も含む）。
+    #[serde(rename = "type")]
+    #[ts(rename = "type")]
+    pub ty: &'static str,
+    /// 無いことがある（表記は `name?:`）。
+    pub optional: bool,
+    /// 補足（いつ入るか・何が入るか。空なら無し・表記は型の後ろの（…））。
+    pub note: &'static str,
+    /// この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、この条件は
+    /// 無い）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
+    /// これで出し分ける（選んでも値が無く実行で失敗する候補を出さない・BUG-108）。
+    pub present_if: &'static str,
+    /// この項目は、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときは入らない（空なら、この条件は
+    /// 無い）。「値がある」の約束は [`Self::present_if`] と同じで、画面は値の候補をこれでも出し分ける。両方あれば、
+    /// present_if の場所に値があり、absent_if の場所に値が無いときだけ入る（data.query の items と count は、集計
+    /// （aggregate）を書くと入らない）。
+    pub absent_if: &'static str,
+}
+
+impl OutputField {
+    /// この項目が、ブロックの設定（`params`）のもとで出力に入るか（[`Self::present_if`]・[`Self::absent_if`] の約束・
+    /// GAP-112）。
+    ///
+    /// `Some(true)` は入る（`present_if` が空なら、`absent_if` の場所に値が無い限り入る）、`Some(false)` は入らない
+    /// （`present_if` の場所に値が無いか、`absent_if` の場所に値がある）。「値が無い」は、場所が無い・`null`・`false`・
+    /// 空の文字・空のリスト・空のオブジェクト。`None` は設定からは決まらない（場所か、そこへ至る途中に `$from`・
+    /// `$template` の値式があり、実行の値で決まる）。画面の値の候補（web の `value-refs.ts` の `hasParamAt`）と同じ
+    /// 約束で、保存時の照合（`ir.unknown_output_path`）と評価の ir_lint が使う。
+    #[must_use]
+    pub fn present_in(&self, params: &serde_json::Value) -> Option<bool> {
+        let present = if self.present_if.is_empty() {
+            Some(true)
+        } else {
+            value_at(params, self.present_if)
+        };
+        let absent = if self.absent_if.is_empty() {
+            Some(false)
+        } else {
+            value_at(params, self.absent_if)
+        };
+        match (present, absent) {
+            (Some(false), _) | (_, Some(true)) => Some(false),
+            (Some(true), Some(false)) => Some(true),
+            _ => None,
+        }
+    }
+
+    /// [`Self::absent_if`] の場所に値があり、設定のためにこの項目が入らないと決まるか（保存時の照合が、入らない
+    /// わけを言い分けるのに使う）。
+    #[must_use]
+    pub fn absent_in(&self, params: &serde_json::Value) -> bool {
+        !self.absent_if.is_empty() && value_at(params, self.absent_if) == Some(true)
+    }
+}
+
+/// `params` の JSON Pointer `at` の場所に値があるか（[`OutputField::present_if`] の約束）。`None` は、場所か、そこへ
+/// 至る途中が値式（`$from`・`$template`）で、実行の値で決まる。
+fn value_at(params: &serde_json::Value, at: &str) -> Option<bool> {
+    use serde_json::Value;
+    let is_expr = |v: &Value| {
+        v.as_object()
+            .is_some_and(|m| m.contains_key("$from") || m.contains_key("$template"))
+    };
+    // 根から場所まで、JSON Pointer の接頭辞ごとの値（途中が値式なら、その先は実行の値で決まる）。
+    let prefixes = std::iter::once("")
+        .chain(at.match_indices('/').skip(1).map(|(i, _)| &at[..i]))
+        .chain(std::iter::once(at));
+    let mut last = params;
+    for p in prefixes {
+        match params.pointer(p) {
+            None => return Some(false),
+            Some(v) if is_expr(v) => return None,
+            Some(v) => last = v,
+        }
+    }
+    Some(match last {
+        Value::Null | Value::Bool(false) => false,
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(m) => !m.is_empty(),
+        Value::Bool(true) | Value::Number(_) => true,
+    })
 }
 
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
@@ -159,12 +284,15 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::StorageRead => (
             C::Storage,
             "ファイルを読む",
-            "ドライブのファイルの内容を取得する",
+            // 文章として読めないファイルを文字化けのまま読まない（BUG-101）。PDF・Office は社内文書の検索に取り込まれた
+            // 本文を読む（D-111・付録 D の N3.5.1）。
+            "ファイルの中身を文章として読みます。PDF や Word は、社内文書の検索に取り込まれた本文を読みます。",
         ),
         NodeType::StorageWrite => (
             C::Storage,
             "ファイルを保存",
-            "ドライブに新しいファイルを保存する",
+            // 上書きも新しいバージョンもしない（同じ名前の扱いは設定で決める・BUG-97・付録 D の N3.5.2）。
+            "ドライブに新しいファイルを作って保存します。すでにあるファイルは書き換えません。",
         ),
         NodeType::StorageList => (
             C::Storage,
@@ -177,6 +305,11 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             C::Ai,
             "AI エージェント",
             "AI がツールを使って複数手順の作業をこなす",
+        ),
+        NodeType::AiDecide => (
+            C::Ai,
+            "AI で判定",
+            "質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す",
         ),
         NodeType::HttpRequest => (
             C::External,
@@ -193,10 +326,15 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "別のフローを開始",
             "別のワークフローを起動する（結果は待たない）",
         ),
+        NodeType::WorkflowReply => (
+            C::Workflow,
+            "結果を画面に返す",
+            "ボタンや会話から起動した人の画面に、処理の結果を表示する",
+        ),
         NodeType::CsvQuery => (
             C::Storage,
             "CSV を集計",
-            "CSV ファイルに読み取り専用の SQL を実行して集計・抽出する（複数の CSV を JOIN できる）",
+            "CSV か Excel のファイルを SQL で集計したり、条件に合う行を取り出したりします。複数の CSV をつないで集計することもできます。ファイルは書き換えません。",
         ),
         NodeType::CsvPatch => (
             C::Storage,
@@ -206,12 +344,13 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::CsvWrite => (
             C::Storage,
             "CSV を保存",
-            "新しい CSV ファイルをドライブに保存する",
+            "ドライブに新しい CSV ファイルを作って保存します。すでにあるファイルは書き換えません。",
         ),
         NodeType::DataQuery => (
             C::Data,
             "データを調べる",
-            "業務データ（テーブル）を検索・集計する",
+            // 集計は画面では作れない（AI 向けには params の形の説明で補う・BUG-108・付録 D の N3.3.1）。
+            "テーブルから、条件に合うレコードを読みます。一度に読めるのは最大 200 件です。",
         ),
         NodeType::DataRecordCreate => (
             C::Data,
@@ -219,6 +358,12 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "業務データに新しいレコードを追加する",
         ),
         NodeType::DataRecordUpdate => (C::Data, "データを更新", "業務データのレコードを書き換える"),
+        // 名前と説明は付録 D の新しい呼び名（レコードを〜）にそろえる（ほかのブロックは FEAT-3 の書き直しで合わせる）。
+        NodeType::DataRecordUpsert => (
+            C::Data,
+            "レコードを追加か更新",
+            "選んだ列の値が同じレコードがあれば書き換え、なければ追加します。",
+        ),
         NodeType::DataTransition => (C::Data, "状態を進める", "申請・承認などの状態を次へ進める"),
         NodeType::DataRecordDelete => (C::Data, "データを削除", "業務データのレコードを削除する"),
         NodeType::DataBulkUpsert => (
@@ -239,6 +384,12 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "条件を満たさなければフローを失敗として止める",
         ),
         NodeType::DebugLog => (C::Developer, "ログ出力", "実行履歴にメモ（ログ）を残す"),
+        // 前日・先週・先月・月末を script なしで作る（GAP-15）。
+        NodeType::TransformDate => (
+            C::Transform,
+            "日付を計算",
+            "基準の日から、前日・先週・先月などの日付と、週や月の最初と最後の日を求めます。",
+        ),
         NodeType::TransformTemplate => (
             C::Transform,
             "文章の組み立て",
@@ -330,9 +481,50 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::HumanApproval => (
             C::Notify,
             "承認を待つ",
-            "担当者の承認・却下を待って分岐する",
+            "テーブルの行について担当者の承認・却下・差し戻しを待って分岐する",
         ),
     }
+}
+
+/// 静的な出力ポートと、ポートの決まり方（ir.md §5.2）。
+///
+/// branch は true/false・switch は cases から・approval は approved / withdrawn に指定した判断を足す
+/// （[`approval_ports`]）・ai.decide は振り分けから（`AiDecideParams::ports`）。カタログと保存時検証 V2
+/// （`from_port` の存在）が読む単一定義。
+pub(crate) fn output_port_rule(nt: NodeType) -> (&'static [&'static str], PortRule) {
+    match nt {
+        NodeType::ControlBranch => (&["true", "false"], PortRule::Static),
+        NodeType::ControlSwitch => (&[], PortRule::SwitchCases),
+        NodeType::HumanApproval => (&["approved", "withdrawn"], PortRule::ApprovalChoices),
+        NodeType::AiDecide => (&[], PortRule::DecideRoute),
+        _ => (&["out"], PortRule::Static),
+    }
+}
+
+/// human.approval の出口（承認・却下・差し戻し・取り下げ・時間切れ）を params から導く（GAP-08）。
+///
+/// `rejected` は reject を、`returned` は return を指定したとき、`timeout` は on_timeout=continue のときだけ。
+/// V2（ポートの存在）・executor（起床で取る出口）・エディタ（ハンドル）が同じ規則を使う。
+#[must_use]
+pub fn approval_ports(params: &serde_json::Value) -> Vec<&'static str> {
+    let has = |k: &str| params.get(k).is_some_and(|v| !v.is_null());
+    let mut ports = vec!["approved"];
+    if has("reject") {
+        ports.push("rejected");
+    }
+    if has("return") {
+        ports.push("returned");
+    }
+    ports.push("withdrawn");
+    if params.get("on_timeout").and_then(serde_json::Value::as_str) == Some("continue") {
+        ports.push("timeout");
+    }
+    ports
+}
+
+/// ノード種の日本語の名前（画面のブロックの名前・誤りの文言でブロックを名指しする）。
+pub(crate) fn label_ja(nt: NodeType) -> &'static str {
+    labels(nt).1
 }
 
 /// 1 ノード種のエントリを組む。
@@ -341,19 +533,16 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
 
     let (category, label_ja, description_ja) = labels(nt);
 
-    // 出力ポート（switch のみ動的・branch は true/false・approval は §7.8 予約の approved/rejected）。
-    let (output_ports, dynamic_ports): (&'static [&'static str], bool) = match nt {
-        NodeType::ControlBranch => (&["true", "false"], false),
-        NodeType::ControlSwitch => (&[], true),
-        NodeType::HumanApproval => (&["approved", "rejected"], false),
-        _ => (&["out"], false),
-    };
+    let (output_ports, port_rule) = output_port_rule(nt);
+    // 互換の印: params から決まるのは switch と ai.decide（承認は静的な出口に足すだけなので従来どおり false）。
+    let dynamic_ports = matches!(port_rule, PortRule::SwitchCases | PortRule::DecideRoute);
 
     // 冪等性区分（ir.md §7 の表・予約語彙は設計上の区分）。
     let idempotency = match nt {
         NodeType::StorageWrite
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
+        | NodeType::DataRecordUpsert
         | NodeType::DataTransition
         | NodeType::DataRecordDelete
         | NodeType::DataBulkUpsert
@@ -363,7 +552,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::EventPublish
         | NodeType::CsvPatch
         | NodeType::CsvWrite
-        | NodeType::WorkflowCall => EngineDedup,
+        | NodeType::WorkflowCall
+        | NodeType::HumanApproval => EngineDedup,
         NodeType::ScriptRun
         | NodeType::AgentInvoke
         | NodeType::HttpRequest
@@ -379,8 +569,37 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         _ => Pure,
     };
 
-    // timeout 既定/上限（ir.md §7 の表が規定する種のみ・制御と未規定の予約は None）。
-    let (timeout_default_sec, timeout_max_sec) = match nt {
+    let (timeout_default_sec, timeout_max_sec) = step_timeout_limits(nt);
+
+    let shape = output_shape(nt);
+    NodeCatalogEntry {
+        node_type: nt,
+        category,
+        category_label_ja: category.label_ja(),
+        label_ja,
+        description_ja,
+        output_ports,
+        dynamic_ports,
+        port_rule,
+        multi_input: nt == NodeType::ControlJoin,
+        required_scope: required_scope(nt),
+        available: nt.available_stage_a(),
+        idempotency,
+        timeout_default_sec,
+        timeout_max_sec,
+        step_cache: step_cache(nt),
+        output_shape: shape.render(),
+        output_fields: shape.fields(),
+    }
+}
+
+/// step の時間の上限の既定と最大（秒・ir.md §7 の表が規定する種のみ・制御と未規定の予約は None）。
+///
+/// カタログの `timeout_default_sec`・`timeout_max_sec` と、実行の打ち切り（`run::step_timeout`）・保存時の照合（V7）が
+/// この 1 つの表を読む（BUG-96）。
+#[must_use]
+pub fn step_timeout_limits(nt: NodeType) -> (Option<u32>, Option<u32>) {
+    match nt {
         NodeType::StorageRead
         | NodeType::StorageWrite
         | NodeType::StorageList
@@ -390,101 +609,37 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         | NodeType::DataQuery
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
+        | NodeType::DataRecordUpsert
         | NodeType::DataRecordDelete
         | NodeType::DataTransition
-        | NodeType::HttpRequest => (Some(30), Some(120)),
+        | NodeType::HttpRequest
+        // 承認の step は行を読んで止まるまで（判断を待つ時間は timeout_sec・run_timeout_sec が決める）。
+        | NodeType::HumanApproval => (Some(30), Some(120)),
         NodeType::RagSearch => (Some(60), Some(120)),
+        // 判定は 1 回の要求（多数決は並列）。生成より短いが、思考を伴う LLM の決定器もある（FEAT-1）。
+        NodeType::AiDecide => (Some(60), Some(300)),
         NodeType::NotifySend => (Some(30), Some(60)),
         NodeType::WorkflowStart => (Some(10), Some(30)),
+        // 値を整形するだけ・日付を計算するだけ（能力を呼ばない）。
+        NodeType::WorkflowReply | NodeType::TransformDate => (Some(5), Some(10)),
         NodeType::ScriptRun => (Some(30), Some(360)),
         NodeType::SkillInvoke => (Some(60), Some(360)),
-        // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。
-        NodeType::LlmInvoke | NodeType::DataBulkUpsert => (Some(120), Some(600)),
+        NodeType::LlmInvoke => (Some(120), Some(600)),
+        // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。切れると途中まで
+        // 登録したまま失敗する（やり直しは続きから）ので、既定でも最大の 600 秒まで待つ（D-106）。
+        NodeType::DataBulkUpsert => (Some(600), Some(600)),
         NodeType::AgentInvoke => (Some(600), Some(3600)),
         _ => (None, None),
-    };
-
-    NodeCatalogEntry {
-        node_type: nt,
-        category,
-        category_label_ja: category.label_ja(),
-        label_ja,
-        description_ja,
-        output_ports,
-        dynamic_ports,
-        multi_input: nt == NodeType::ControlJoin,
-        required_scope: required_scope(nt),
-        available: nt.available_stage_a(),
-        idempotency,
-        timeout_default_sec,
-        timeout_max_sec,
     }
+}
+
+/// step 属性 `cache` の決まり（付けられない種は None・保存時検証が `ir.cache_unsupported` にする）。
+#[must_use]
+pub fn step_cache(nt: NodeType) -> Option<crate::ir::StepCacheLimits> {
+    // 判定の決定キャッシュ（T10・D-52 の H6）。生成（llm.invoke）は答えの形が決まらず、同じ入力でも
+    // 別の文章を期待されることがあるので付けない。
+    (nt == NodeType::AiDecide).then_some(crate::ir::StepCacheLimits::DECISION)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalog_covers_all_vocab_in_order() {
-        let catalog = node_catalog();
-        assert_eq!(catalog.len(), NodeType::ALL.len());
-        for (entry, nt) in catalog.iter().zip(NodeType::ALL) {
-            assert_eq!(entry.node_type, *nt);
-        }
-    }
-
-    #[test]
-    fn stage_a_entries_have_timeout_or_are_control() {
-        for e in node_catalog().iter().filter(|e| e.available) {
-            assert!(
-                e.node_type.is_control() || e.timeout_default_sec.is_some(),
-                "{} は timeout 既定が必要",
-                e.node_type.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn structural_flags_match_vocab() {
-        let catalog = node_catalog();
-        let find = |nt: NodeType| catalog.iter().find(|e| e.node_type == nt).unwrap();
-        assert!(find(NodeType::ControlJoin).multi_input);
-        assert!(find(NodeType::ControlSwitch).dynamic_ports);
-        assert_eq!(
-            find(NodeType::ControlBranch).output_ports,
-            ["true", "false"]
-        );
-        assert_eq!(
-            find(NodeType::StorageWrite).required_scope,
-            Some(Scope::StorageWrite)
-        );
-        assert_eq!(
-            find(NodeType::StorageWrite).idempotency,
-            IdempotencyClass::EngineDedup
-        );
-    }
-
-    #[test]
-    fn labels_are_nonempty_and_unique_within_category() {
-        use std::collections::BTreeSet;
-        let mut seen: BTreeSet<(String, &str)> = BTreeSet::new();
-        for e in node_catalog() {
-            assert!(!e.label_ja.is_empty());
-            assert!(!e.description_ja.is_empty());
-            assert!(
-                seen.insert((format!("{:?}", e.category), e.label_ja)),
-                "カテゴリ内でラベル重複: {}",
-                e.label_ja
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_serializes_to_json() {
-        let json = serde_json::to_value(node_catalog()).unwrap();
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr[0]["type"], "control.branch");
-        assert_eq!(arr[0]["category_label_ja"], "流れの制御");
-    }
-}
+mod tests;

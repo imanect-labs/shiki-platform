@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 作ったスライド（ドライブのトップ）を片付ける（BUG-126）。コンテキストを閉じる前に片付ける（閉じた後は片付けの要求を
+// 送れない）。落ちたテストの分はテストの後に片付ける。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// スライドの「選択→AI 依頼」で slide.edit（要確認・破壊系）が human-in-the-loop の承認カードを
 /// 出し、承認すると本物のパイプライン（CollabHub::apply_ai_slide_edit・Yjs broadcast）で表示中
@@ -30,6 +35,7 @@ test("選択→AI: slide.edit が承認ゲートを経てキャンバスをラ�
   // ユーザー A がスライドを作成してエディタを開く。
   const ctxA = await browser.newContext();
   const pageA = await ctxA.newPage();
+  trackCreatedResources(pageA, cleanup);
   await loginViaKeycloak(pageA);
   await pageA.goto("/drive");
   await pageA.getByRole("button", { name: "新規作成" }).click();
@@ -76,6 +82,7 @@ test("選択→AI: slide.edit が承認ゲートを経てキャンバスをラ�
     pageB.frameLocator('[data-testid="slide-frame"] iframe').first().getByText("AI が改訂したスライド"),
   ).toBeVisible({ timeout: 20_000 });
 
+  await cleanup.run();
   await ctxA.close();
   await ctxB.close();
 });

@@ -12,6 +12,7 @@ use crate::{
     model,
     object::FgaObject,
     subject::Subject,
+    visible::BATCH_CHECKS_IN_FLIGHT,
     vocab::{ObjectType, Relation},
 };
 
@@ -69,7 +70,7 @@ pub trait AuthzClient: Send + Sync {
 
     /// 複数の check をまとめて判定する。結果は `items` と同じ順（Task 15.9・data-platform §16.4）。
     ///
-    /// OpenFGA 実装は BatchCheck API で **50 問ごとに 1 往復**にまとめる。1 問でも判定に失敗したら
+    /// OpenFGA 実装は BatchCheck API で **50 問ごとに 1 往復**にまとめ、数本ずつ並べて送る。1 問でも判定に失敗したら
     /// 全体をエラーにする（単発 [`check`](Self::check) と同じく fail-closed）。
     ///
     /// 既定実装は 1 問ずつ [`check`](Self::check) を呼ぶ（追加的な拡張点。BatchCheck を持たない
@@ -223,22 +224,40 @@ impl AuthzClient for OpenFgaClient {
             .await
     }
 
+    /// 50 問ずつの BatchCheck を [`BATCH_CHECKS_IN_FLIGHT`] 本ずつ並べて送り、入力順に並べ直す（BUG-163）。
+    ///
+    /// OpenFGA v1.8 の BatchCheck は 50 問に 100 ミリ秒ほどかかる（手元の計測）。順に送ると 600 問（テーブル 200 件 ×
+    /// 3 relation の先読み）で 1.6 秒かかっていたのが、4 本ずつ並べると 0.6 秒ほどになる。1 回の頼みが OpenFGA に
+    /// 同時に掛けるのは、BatchCheck 4 本（1 本は 50 問）まで。
     async fn batch_check(
         &self,
         items: &[CheckTuple],
         consistency: Consistency,
     ) -> Result<Vec<bool>, AuthzError> {
         let mut out = Vec::with_capacity(items.len());
-        for chunk in items.chunks(MAX_CHECKS_PER_BATCH) {
-            let keys: Vec<(&str, &str, &str)> = chunk
-                .iter()
-                .map(|i| (i.subject.as_str(), i.relation.as_str(), i.object.as_str()))
+        for group in items.chunks(MAX_CHECKS_PER_BATCH * BATCH_CHECKS_IN_FLIGHT) {
+            let calls: Vec<_> = group
+                .chunks(MAX_CHECKS_PER_BATCH)
+                .map(|chunk| {
+                    let keys: Vec<(&str, &str, &str)> = chunk
+                        .iter()
+                        .map(|i| (i.subject.as_str(), i.relation.as_str(), i.object.as_str()))
+                        .collect();
+                    async move {
+                        self.fga
+                            .batch_check(
+                                &self.store_id,
+                                &self.model_id,
+                                &keys,
+                                consistency.as_str(),
+                            )
+                            .await
+                    }
+                })
                 .collect();
-            out.extend(
-                self.fga
-                    .batch_check(&self.store_id, &self.model_id, &keys, consistency.as_str())
-                    .await?,
-            );
+            for part in futures::future::try_join_all(calls).await? {
+                out.extend(part);
+            }
         }
         Ok(out)
     }

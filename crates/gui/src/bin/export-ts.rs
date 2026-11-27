@@ -73,6 +73,12 @@ fn main() {
          export type UserSelectableTool = (typeof USER_SELECTABLE_TOOLS)[number];"
     ));
 
+    // 束ねた部品の別名の文字数の上限（エディタが別名を作るときに同じ値で切る・保存の検証と同じ定義）。
+    decls.push(format!(
+        "export const MAX_ALIAS_CHARS = {};",
+        gui::miniapp::MAX_ALIAS_CHARS
+    ));
+
     let header = "// 自動生成: cargo run -p shiki-gui --bin export-gui-ts（編集禁止）\n\
                   // 正本: crates/gui/src/{vocab,action,validate,skill,miniapp}.rs・\n\
                   //       crates/agent-core/src/vocab.rs（ToolName / USER_SELECTABLE_TOOLS）\n\n";

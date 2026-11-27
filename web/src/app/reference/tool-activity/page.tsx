@@ -193,6 +193,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "ui_reference", input: { kinds: ["pie", "calc"] } },
   { name: "emit_workflow", input: {} },
   { name: "read_workflow", input: {} },
+  { name: "list_workflows", input: { query: "経費" } },
   { name: "search_workflows", input: { query: "経費" } },
   { name: "search_workflows", input: {} },
   { name: "document.read", input: {} },

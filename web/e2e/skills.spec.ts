@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteArtifactApi, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+/// 画面から作ったスキルを、テストの後に片付ける（画面の応答から拾う・失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// skill 管理と適用（Phase 6 Task 6.7/6.9/6.11）の E2E。
 /// 前提: LLM=stub（skill を選んでも stub は「回答: <質問>」を返す＝適用経路の疎通を検証）。
@@ -72,9 +77,27 @@ test.describe("skill（作成・共有・チャット適用）", () => {
 
   test("ホームでスキルを選んでチャットを開始できる", async ({ page }) => {
     await loginViaKeycloak(page);
+    // 前のテストに頼らず、このテストのスキルを作る（前のテストのスキルは片付けで消える・BUG-126）。
+    const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+    const created = await page.request.post("/api/skills", {
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      data: {
+        name: uniqueName("e2e-skill-home"),
+        body: {
+          description: "ホームから選ぶスキル",
+          instructions: "あなたは E2E テストのアシスタントです。",
+          knowledge_scope: null,
+          allowed_tools: null,
+          model: null,
+        },
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    const skillId = ((await created.json()) as { id: string }).id;
+    cleanup.add(() => deleteArtifactApi(page, skillId));
     await page.goto("/");
 
-    // 前テストで作成したスキルがピッカーに出る（読み込みは非同期なので待つ）。
+    // 作ったスキルがピッカーに出る（読み込みは非同期なので待つ）。
     const picker = page.getByLabel("スキルを選択");
     await picker.waitFor({ timeout: 10_000 });
 
@@ -84,5 +107,39 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await page.getByRole("button", { name: "送信" }).click();
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
+  });
+
+  test("保存の誤りは 1 件 1 行で出し、位置（description など）を添えない（BUG-121）", async ({ page }) => {
+    await loginViaKeycloak(page);
+    // サーバーの検証の誤り（位置つき）を返させる。画面は文言だけを出す（ミニアプリのエディターと同じ扱い）。
+    await page.route("**/api/skills", (route) =>
+      route.request().method() === "POST"
+        ? route.fulfill({
+            status: 400,
+            json: {
+              errors: [
+                { code: "skill.too_long", message: "説明が長すぎます。", path: "description" },
+                { code: "skill.too_long", message: "答え方のお手本の 1 組目が長すぎます。", path: "few_shot[0]" },
+              ],
+            },
+          })
+        : route.continue(),
+    );
+    await page.goto("/skills");
+    // 作成は専用ページ（#919）。1 本目のテストと同じ手順で入力して保存する。
+    await page.getByRole("button", { name: "スキルを作成" }).first().click();
+    await page.waitForURL(/\/skills\/new/);
+    await page.getByTestId("skill-name-input").fill(uniqueName("e2e-skill-error"));
+    await page.getByTestId("skill-description-input").fill("E2E 検証用のスキル");
+    await page.getByTestId("skill-body-editor").click();
+    await page.keyboard.type("あなたは E2E テストのアシスタントです。");
+    await page.getByTestId("skill-save-button").click();
+    // 文言は 1 件 1 行（whitespace-pre-wrap の段落）で出る。
+    const alert = page.getByTestId("skill-save-error");
+    await expect(alert).toContainText("説明が長すぎます。", { timeout: 15_000 });
+    expect(await alert.locator("p").innerText()).toBe("説明が長すぎます。\n答え方のお手本の 1 組目が長すぎます。");
+    await expect(alert).not.toContainText("（description）");
+    await expect(alert).not.toContainText("few_shot[0]");
+    await page.unroute("**/api/skills");
   });
 });

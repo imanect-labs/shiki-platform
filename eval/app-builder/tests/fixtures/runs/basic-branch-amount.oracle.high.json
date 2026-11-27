@@ -1,0 +1,196 @@
+{
+ "task": "basic-branch-amount",
+ "variant": "oracle",
+ "case": "high",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-268ccb-main",
+   "display_name": "金額で申請の記録先を分ける",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "item": {
+      "type": "string"
+     },
+     "amount": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "item",
+     "amount"
+    ],
+    "x-order": [
+     "item",
+     "amount"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "is_large",
+     "type": "control.branch",
+     "label": "5 万円以上か",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 50000
+       }
+      }
+     }
+    },
+    {
+     "id": "add_large",
+     "type": "data.record.create",
+     "label": "高額の申請に追加",
+     "params": {
+      "table": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    },
+    {
+     "id": "add_small",
+     "type": "data.record.create",
+     "label": "通常の申請に追加",
+     "params": {
+      "table": "4ea54fc1-6c06-4940-bbeb-2de6ae730344",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "is_large",
+     "to": "add_large",
+     "from_port": "true"
+    },
+    {
+     "from": "is_large",
+     "to": "add_small",
+     "from_port": "false"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add_large": [
+    "out"
+   ],
+   "add_small": [
+    "out"
+   ],
+   "is_large": [
+    "true",
+    "false"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "2b33d48d-4b8d-4aaf-8dac-eb8e2ebf96b4",
+    "status": "succeeded",
+    "input": {
+     "amount": 80000,
+     "item": "ノートパソコン"
+    },
+    "steps": [
+     {
+      "step_path": "is_large",
+      "node_id": "is_large",
+      "status": "succeeded",
+      "taken_ports": [
+       "true"
+      ],
+      "output": {
+       "amount": 80000,
+       "item": "ノートパソコン"
+      },
+      "error": null
+     },
+     {
+      "step_path": "add_small",
+      "node_id": "add_small",
+      "status": "skipped",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "add_large",
+      "node_id": "add_large",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-07T00:42:57.901992Z",
+       "data": {
+        "amount": 80000,
+        "item": "ノートパソコン"
+       },
+       "id": "8976a93d-f951-4c2e-b3f9-a1432f013e70",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
+       "updated_at": "2026-11-07T00:42:57.901992Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:57.765274+00:00"
+   }
+  ],
+  "rows": {
+   "big": [
+    {
+     "id": "8976a93d-f951-4c2e-b3f9-a1432f013e70",
+     "data": {
+      "amount": 80000,
+      "item": "ノートパソコン"
+     }
+    }
+   ],
+   "small": []
+  },
+  "rows_before": {
+   "big": [],
+   "small": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T00:42:57.413326+00:00"
+ }
+}

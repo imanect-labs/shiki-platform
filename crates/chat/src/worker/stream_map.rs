@@ -96,6 +96,8 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::DocumentRef { document } => StreamEventKind::DocumentRef {
             document: document.clone(),
         },
+        // 参照カード（D-204）。中身は道具が builder_obs で組んだ値のまま。
+        AgentEvent::BuilderRef { item } => StreamEventKind::BuilderRef { item: item.clone() },
         // skill 発動記録（#344）。generation_event に残り replay 可能（UI はチップ表示）。
         AgentEvent::SkillInvoked { skill } => StreamEventKind::SkillInvoked {
             skill: skill.clone(),

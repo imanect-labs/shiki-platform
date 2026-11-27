@@ -1,0 +1,114 @@
+{
+ "task": "app11-checkout",
+ "variant": "null",
+ "case": "available",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-874d30-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "5785e8a8-91f5-44dc-8938-eb084d7aafd2",
+    "status": "succeeded",
+    "input": {
+     "borrower": "松本",
+     "code": "E-01"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T01:16:02.052599+00:00"
+   }
+  ],
+  "rows": {
+   "equipment": [
+    {
+     "id": "e7da7c2e-fa99-49ed-a27b-ac6b5f650302",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "b95aea67-70ae-4b2f-bbb1-508b77d7d2b4",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "rows_before": {
+   "equipment": [
+    {
+     "id": "e7da7c2e-fa99-49ed-a27b-ac6b5f650302",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "b95aea67-70ae-4b2f-bbb1-508b77d7d2b4",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T01:15:59.027879+00:00"
+ }
+}

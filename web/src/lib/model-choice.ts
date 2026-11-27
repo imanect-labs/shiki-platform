@@ -7,7 +7,13 @@
 
 import * as React from "react";
 
-import { fetchLlmModels, type EffortLevel, type LlmModelsResponse } from "@/lib/admin-ai-api";
+import {
+  fetchLlmModels,
+  type EffortLevel,
+  type LlmModelsResponse,
+  type ModelModality,
+  type ModelPurpose,
+} from "@/lib/admin-ai-api";
 import { getThread } from "@/lib/chat-api";
 
 /// `model` が `null` の選択は「組織の既定のモデルのまま、思考の深さだけ変える」（既定が
@@ -125,56 +131,117 @@ export function useModelChoice(scope: string): [ModelChoice, (c: ModelChoice) =>
   return [choice, set];
 }
 
-// 選べるモデルの共有キャッシュ（stale-while-revalidate）。管理者が公開設定を変えると古くなるので、
-// 手元の値をすぐ返しつつ、マウント時（一定時間たっていれば）・タブに戻ったとき・同じタブで設定を
-// 保存したとき（invalidateLlmModels）に取り直す。古い一覧のまま送ると 400 になり、新しく公開した
-// モデルもリロードまで出ないため。
+// 選べるモデルの共有キャッシュ（stale-while-revalidate・見え方（purpose と modality の組）ごと）。管理者が公開設定を
+// 変えると古くなるので、手元の値をすぐ返しつつ、マウント時（一定時間たっていれば）・タブに戻ったとき・
+// 同じタブで設定を保存したとき（invalidateLlmModels）に取り直す。古い一覧のまま送ると 400 になり、
+// 新しく公開したモデルもリロードまで出ないため。
 const STALE_MS = 30_000;
-let modelsCache: { data: LlmModelsResponse | null; at: number } | null = null;
-let inflight: Promise<void> | null = null;
-const modelListeners = new Set<() => void>();
+/// 一覧の見え方（用途とモデルの種類の組）。キャッシュのキーは [`viewKey`]。
+type ModelsView = { purpose: ModelPurpose; modality: ModelModality };
+const viewKey = (v: ModelsView) => `${v.purpose}|${v.modality}`;
+/// `failed` は手元に一覧が無いまま取得に失敗したか（読み込み中と見分ける・ワークフローのモデル欄）。
+type ModelsCache = { data: LlmModelsResponse | null; at: number; failed: boolean };
+const modelsCaches = new Map<string, ModelsCache>();
+const inflights = new Map<string, Promise<void>>();
+const modelListeners = new Map<string, { view: ModelsView; listeners: Set<() => void> }>();
 
-function refreshLlmModels(): Promise<void> {
-  inflight ??= fetchLlmModels()
+function refreshLlmModels(view: ModelsView): Promise<void> {
+  const key = viewKey(view);
+  const running = inflights.get(key);
+  if (running) return running;
+  const next = fetchLlmModels(view.purpose, view.modality)
     .then((data) => {
-      modelsCache = { data, at: Date.now() };
+      modelsCaches.set(key, { data, at: Date.now(), failed: false });
     })
     // 取れなければ手元の値のまま（次の契機で取り直す）。初回なら null＝選択 UI を出さない。
     .catch(() => {
-      modelsCache ??= { data: null, at: 0 };
+      if (!modelsCaches.get(key)?.data) modelsCaches.set(key, { data: null, at: 0, failed: true });
     })
     .finally(() => {
-      inflight = null;
-      modelListeners.forEach((l) => l());
+      inflights.delete(key);
+      modelListeners.get(key)?.listeners.forEach((l) => l());
     });
-  return inflight;
+  inflights.set(key, next);
+  return next;
 }
 
-/// 選べるモデルの一覧を古いものとして取り直す（管理画面で AI の設定を保存した後に呼ぶ）。
+/// 選べるモデルの一覧を古いものとして取り直す（管理画面で AI の設定を保存した後に呼ぶ・全部の見え方）。
 export function invalidateLlmModels(): void {
-  if (modelsCache) modelsCache.at = 0;
-  if (modelListeners.size > 0) void refreshLlmModels();
+  for (const cache of modelsCaches.values()) cache.at = 0;
+  for (const { view, listeners } of modelListeners.values()) {
+    if (listeners.size > 0) void refreshLlmModels(view);
+  }
 }
 
-/// 選べるモデル（ページ内で共有する）。取れなければ `null`（選択 UI を出さない）。
-export function useLlmModels(): LlmModelsResponse | null {
-  const [data, setData] = React.useState<LlmModelsResponse | null>(modelsCache?.data ?? null);
+/// 共有キャッシュを購読し、`read` で読んだ値を返す（`same` なら再描画しない）。
+function useModelsCache<T>(
+  purpose: ModelPurpose,
+  modality: ModelModality,
+  read: (key: string) => T,
+  same: (a: T, b: T) => boolean,
+): T {
+  const key = viewKey({ purpose, modality });
+  const [value, setValue] = React.useState<T>(() => read(key));
   React.useEffect(() => {
-    const sync = () => setData(modelsCache?.data ?? null);
-    modelListeners.add(sync);
-    sync();
+    const view: ModelsView = { purpose, modality };
+    const sync = () =>
+      setValue((prev) => {
+        const next = read(key);
+        return same(prev, next) ? prev : next;
+      });
+    let entry = modelListeners.get(key);
+    if (!entry) modelListeners.set(key, (entry = { view, listeners: new Set() }));
+    const listeners = entry.listeners;
+    listeners.add(sync);
     const refreshIfStale = () => {
-      if (!modelsCache || Date.now() - modelsCache.at > STALE_MS) void refreshLlmModels();
+      const cache = modelsCaches.get(key);
+      if (!cache || Date.now() - cache.at > STALE_MS) void refreshLlmModels(view);
     };
+    // 取り直しを始めてから読む（失敗の後の取り直しの間は読み込み中に見せる）。
     refreshIfStale();
+    sync();
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshIfStale();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      modelListeners.delete(sync);
+      listeners.delete(sync);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, []);
-  return data;
+  }, [key, purpose, modality, read, same]);
+  return value;
+}
+
+const readModels = (key: string) => modelsCaches.get(key)?.data ?? null;
+
+/// チャットで選べるモデル（ページ内で共有する）。取れなければ `null`（選択 UI を出さない）。
+export function useLlmModels(): LlmModelsResponse | null {
+  return useModelsCache("chat", "chat", readModels, Object.is);
+}
+
+/// 選べるモデルの一覧の読み込み状態（読み込み中と取得失敗を見分けたい欄向け）。
+export type LlmModelsState =
+  | { status: "loading"; data: null }
+  | { status: "ready"; data: LlmModelsResponse }
+  | { status: "error"; data: null };
+
+function readModelsState(key: string): LlmModelsState {
+  const cache = modelsCaches.get(key);
+  if (cache?.data) return { status: "ready", data: cache.data };
+  // 失敗の後に取り直している間は読み込み中として見せる。
+  if (cache?.failed && !inflights.has(key)) return { status: "error", data: null };
+  return { status: "loading", data: null };
+}
+
+const sameModelsState = (a: LlmModelsState, b: LlmModelsState) =>
+  a.status === b.status && a.data === b.data;
+
+/// `useLlmModels` と同じ共有キャッシュを、読み込み中・取得失敗・取得済みの別つきで返す
+/// （ワークフローの「AI に聞く」のモデル欄は `workflow` の見え方: 読み込み中は Skeleton、失敗なら
+/// 自由入力に戻す。「AI で判定」のモデル欄は `modality: "decision"`）。
+export function useLlmModelsState(
+  purpose: ModelPurpose = "chat",
+  modality: ModelModality = "chat",
+): LlmModelsState {
+  return useModelsCache(purpose, modality, readModelsState, sameModelsState);
 }

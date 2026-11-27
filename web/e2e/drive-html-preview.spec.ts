@@ -52,7 +52,8 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   await expect(rowMenu).toBeVisible({ timeout: 20_000 });
   await rowMenu.click();
   await page.getByRole("menuitem", { name: "開く" }).click();
-  await expect(page).toHaveURL(/\/file\//);
+  // 手元の next dev は初めて開く画面をその場でコンパイルする（5 秒を超える）ので、移った先の URL は長めに待つ。
+  await expect(page).toHaveURL(/\/file\//, { timeout: 20_000 });
   await expect(page.getByTestId("text-preview")).toHaveAttribute("data-mode", "rendered");
 
   // 能力を絞った sandbox（スクリプト・同一オリジンを許さない）。

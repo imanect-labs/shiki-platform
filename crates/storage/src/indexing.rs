@@ -20,6 +20,16 @@ use crate::error::StorageError;
 use crate::object_store::ObjectStore;
 use authz::TenantId;
 
+/// `node` 行（別名 `node`）の**いまの内容のバージョン**を返す SQL の式。
+///
+/// 内容のバージョンの履歴（`node_version`）のうち、提案でない最新（`node.version` 以下）。履歴が無いノードは
+/// `node.version`。名前の変更・移動・ごみ箱への移動と戻しも `node.version` を進めるが、本文は変わらないので、
+/// 取り込み（RAG）が「この取り込みは古いか」と「索引の本文はいまの内容か」を決めるときはこの値と比べる
+/// （`node.version` と比べると、取り込みより先に名前を変えたファイルが二度と取り込まれない）。
+// tenant-sql: allow(外側の node の行に相関する副問い合わせの式。外側の SQL が node を tenant で絞る)
+pub const CONTENT_VERSION_SQL: &str = "coalesce((select max(v.version) from node_version v \
+     where v.node_id = node.id and not v.is_proposal and v.version <= node.version), node.version)";
+
 /// インジェスト時点のノード状態のスナップショット。
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct NodeSnapshot {
@@ -28,6 +38,8 @@ pub struct NodeSnapshot {
     pub kind: String,
     pub name: String,
     pub version: i64,
+    /// いまの内容のバージョン（[`CONTENT_VERSION_SQL`]）。名前の変更や移動では進まない。
+    pub content_version: i64,
     pub blob_sha256: Option<String>,
     pub size_bytes: Option<i64>,
     pub content_type: Option<String>,
@@ -58,11 +70,11 @@ impl IndexerStorage {
         tenant_id: &str,
         node_id: Uuid,
     ) -> Result<Option<NodeSnapshot>, StorageError> {
-        let snapshot = sqlx::query_as::<_, NodeSnapshot>(
-            "select id, org, kind, name, version, blob_sha256, size_bytes, content_type, \
-                    (deleted_at is not null) as deleted \
-             from node where id = $1 and tenant_id = $2",
-        )
+        let snapshot = sqlx::query_as::<_, NodeSnapshot>(&format!(
+            "select id, org, kind, name, version, {CONTENT_VERSION_SQL} as content_version, \
+                    blob_sha256, size_bytes, content_type, (deleted_at is not null) as deleted \
+             from node where id = $1 and tenant_id = $2"
+        ))
         .bind(node_id)
         .bind(tenant_id)
         .fetch_optional(&self.pool)
@@ -124,6 +136,27 @@ impl IndexerStorage {
         .fetch_all(&self.pool)
         .await?;
         Ok(files)
+    }
+
+    /// 文章のファイルの blob を読む（取り込みが文字コードを決めて UTF-8 にしてから worker へ渡す・D-118）。
+    ///
+    /// 発行する presigned GET と同じ blob を、同じ tenant/org の鍵で読むだけ（読む範囲は変わらない）。大きさは
+    /// 呼び出し側が取り込みの上限（`max_parse_bytes`）で先に確かめる。
+    pub async fn read_blob(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        blob_sha256: &str,
+    ) -> Result<Vec<u8>, StorageError> {
+        // 本体（raw）は版の最適化で片付けられていることがある。物理表現から復元して読む（main の #1299）。
+        let tenant =
+            TenantId::parse(tenant_id).map_err(|e| StorageError::Invalid(e.to_string()))?;
+        let mut tx = crate::db_tenant::begin_tenant_tx(&self.pool, &tenant).await?;
+        let bytes = BlobStorage::new(self.pool.clone(), self.store.clone())
+            .read_on(&mut tx, &tenant, org, blob_sha256)
+            .await?;
+        tx.commit().await?;
+        Ok(bytes)
     }
 
     /// worker が blob を読むための**内部向け**短 TTL presigned GET URL を発行する。

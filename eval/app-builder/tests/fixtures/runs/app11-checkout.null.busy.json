@@ -1,0 +1,114 @@
+{
+ "task": "app11-checkout",
+ "variant": "null",
+ "case": "busy",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-874d30-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "6406bc8d-a49b-4956-8e1d-33addc4ec9c8",
+    "status": "succeeded",
+    "input": {
+     "borrower": "松本",
+     "code": "E-02"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-07T01:16:03.301140+00:00"
+   }
+  ],
+  "rows": {
+   "equipment": [
+    {
+     "id": "59285e01-f6cf-4fb2-b3ce-1ae953b8a73d",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "06de3f91-21fa-451a-ada5-508740ec7283",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "rows_before": {
+   "equipment": [
+    {
+     "id": "59285e01-f6cf-4fb2-b3ce-1ae953b8a73d",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "name": "ノートパソコン",
+      "status": "貸出中"
+     }
+    },
+    {
+     "id": "06de3f91-21fa-451a-ada5-508740ec7283",
+     "data": {
+      "code": "E-01",
+      "name": "プロジェクター",
+      "status": "在庫"
+     }
+    }
+   ],
+   "loans": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-07T01:15:59.027879+00:00"
+ }
+}

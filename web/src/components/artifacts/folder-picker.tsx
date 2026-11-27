@@ -8,12 +8,17 @@
 ///   選ぶか、現在地に「ここに新規作成」（new_under）できる。
 /// - `purpose="destination"`（下書きの保存先）: 選び方は scope と同じで、説明文だけ保存先向けにする。
 /// - `purpose="search"`（ホームの社内検索で探すフォルダ・#965）: 選び方は scope と同じで、説明文だけ検索向けにする。
+///
+/// 閉じたら、開いたときにフォーカスがあった要素（開いたボタンなど）へフォーカスを戻す（開くボタンは Radix の Trigger
+/// ではないので、Radix に任せるとページの先頭に落ちる・`useRestoreFocus`・BUG-263）。
 
 import * as React from "react";
 import { ChevronLeft, FolderPlus } from "lucide-react";
 
-import { listChildren, type NodeResponse } from "@/lib/storage";
+import { listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useRestoreFocus } from "@/hooks/use-restore-focus";
+import { MoreRows, sentinelEnabled } from "@/components/drive/more-rows";
 import { NodeIcon, LoadingRow } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +42,7 @@ export function FolderPicker({
   onSelect: (folder: FolderChoice) => void;
   purpose?: "scope" | "workspace" | "destination" | "search";
 }) {
+  const focus = useRestoreFocus();
   // (id, name) のスタック。先頭はルート（マイドライブ）。
   const [stack, setStack] = React.useState<{ id?: string; name: string }[]>([
     { name: "マイドライブ" },
@@ -47,7 +53,8 @@ export function FolderPicker({
   const fetchPage = React.useCallback(
     (cursor?: string) => {
       if (!open) return Promise.resolve({ items: [] as NodeResponse[], next_cursor: null });
-      return listChildren({ parentId: current.id, cursor, limit: 50 });
+      // 見えないものが多いドライブのトップでは、続きを数回たどっても見つからなければ「さらに読み込む」を出す（BUG-187）。
+      return listChildrenUpTo({ parentId: current.id, cursor, want: 50 });
     },
     [open, current.id],
   );
@@ -56,7 +63,7 @@ export function FolderPicker({
   // IntersectionObserver が再発火しない。取得完了ごとに件数を渡し、見えていれば続きを読む。
   const sentinelRef = useInfiniteSentinel(
     list.loadMore,
-    open && list.hasMore && !list.loading,
+    open && sentinelEnabled(list),
     list.loadingMore ? undefined : list.items.length,
   );
 
@@ -73,7 +80,7 @@ export function FolderPicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" {...focus}>
         <DialogHeader>
           <DialogTitle>フォルダを選択</DialogTitle>
           <DialogDescription>
@@ -150,7 +157,7 @@ export function FolderPicker({
               ))}
               {list.hasMore ? (
                 <li>
-                  <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div>
+                  <MoreRows list={list} sentinelRef={sentinelRef} testId="picker-more" />
                 </li>
               ) : null}
             </ul>

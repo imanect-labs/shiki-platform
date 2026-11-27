@@ -10,6 +10,7 @@
 //! | `in` | `= ANY(..)` | 値の行が存在し `= ANY(..)` |
 //! | number | `::numeric` で比較 | `data_index_num.val`（numeric）で比較 |
 //! | `is_owner` | `owner = $user` | 擬似列 owner（`field_id = 0`） |
+//! | 作成者の列の比べ | `owner` と比べる（空にならない） | 擬似列 owner（`field_id = 0`）の行で比べる |
 //! | 個別共有 | `id = ANY(uuid[])` | `record_int = ANY(int8[])`（材料解決時に引き直し済み） |
 //!
 //! 索引が `active` でない列（バックフィル中・旧テーブル）は、その葉だけ**本体の点検索**に落とす
@@ -119,12 +120,17 @@ fn field_cmp(
     } else {
         IndexTable::Text
     };
-    if !g.active.contains(&(f.id, table)) {
+    // 作成者の列は owner の擬似列（field_id = 0・長い値を持たない）で比べる（D-122）。
+    let (id, jk) = if f.is_created_by() {
+        (SYSTEM_FIELD_OWNER, None)
+    } else {
+        (f.id, Some(f.id))
+    };
+    if !g.active.contains(&(id, table)) {
         // 索引が未完成: v1 の本体式で同じ葉を評価する（意味論は同一）。
         let body = compile_field_cmp(g.schema, g.material, g.user, "b", sql, field, op, value)?;
         return Ok(exists_body(rec, &body, sql));
     }
-    let jk = Some(f.id);
     // 値の行の条件（`x` = 索引行）。ne は「行が存在し、かつ eq 条件を満たさない」。
     let cond = match value {
         PolicyOperand::UserId => match op {
@@ -185,7 +191,7 @@ fn field_cmp(
             }
         },
     };
-    Ok(exists_index(table, f.id, rec, &cond, sql))
+    Ok(exists_index(table, id, rec, &cond, sql))
 }
 
 /// 索引行の存在検査（点検索）。`OFFSET 0` で半結合への引き上げ・ハッシュ化 SubPlan を止める
@@ -426,6 +432,43 @@ mod tests {
         let out2 = compile_index_read(&g2, "d.record_int", &mut sql2).unwrap();
         assert_eq!(out, out2, "ロールの有無で SQL テキストは変わらない");
         assert_eq!(sql2.binds[4], Bind::Bool(false));
+    }
+
+    /// 作成者の列（D-122）の比べは owner の擬似列（field_id = 0）の索引行で引き、索引が無ければ本体の owner と
+    /// 比べる。列の JSONB キー（保存しない）は読まない。
+    #[test]
+    fn created_by_compares_the_owner_pseudo_column() {
+        let mut s = schema(PolicyExpr::FieldCmp {
+            field: "made_by".into(),
+            op: CmpOp::Ne,
+            value: PolicyOperand::UserId,
+        });
+        s.fields
+            .push(FieldDef::new("made_by", FieldType::CreatedBy));
+        crate::field_key::assign_field_ids(None, &mut s).unwrap();
+        let jk = s.field("made_by").unwrap().json_key();
+        let m = material();
+        let active: HashSet<(FieldId, IndexTable)> = [(0, IndexTable::Text)].into();
+        let g = IndexGuardCtx {
+            schema: &s,
+            material: &m,
+            user: "alice",
+            active: &active,
+            shared_ints: &[],
+        };
+        let mut sql = SqlBuf::scoped(1, 2);
+        let out = compile_index_read(&g, "d.record_int", &mut sql).unwrap();
+        assert!(out.contains("FROM data_index_text x"), "{out}");
+        assert!(out.contains("AND NOT (x.val = $"), "{out}");
+        assert!(sql.binds.contains(&Bind::I16(0)), "{:?}", sql.binds);
+        assert!(!out.contains(&jk) && !out.contains("data ->>"), "{out}");
+        // owner の索引が無い（旧テーブルのバックフィル中）なら本体の owner と比べる。
+        let none = HashSet::new();
+        let g = IndexGuardCtx { active: &none, ..g };
+        let mut sql = SqlBuf::scoped(1, 2);
+        let out = compile_index_read(&g, "d.record_int", &mut sql).unwrap();
+        assert!(out.contains("((b.owner) <> $"), "{out}");
+        assert!(!out.contains(&jk), "{out}");
     }
 
     #[test]

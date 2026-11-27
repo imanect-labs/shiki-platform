@@ -17,17 +17,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { NodeParamsByType } from "@/generated/workflow-catalog";
+import { EVENT_CATALOG, NODE_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   CmpOp,
   Comparison,
   Condition,
   ValueExpr,
 } from "@/generated/workflow-ir";
-import { Field, NumberInput } from "./common";
+import { Field, FieldInput, FieldSelectTrigger, NumberInput } from "./common";
 import { paramsOf, patchParams } from "./params";
-import { ValueExprInput } from "./value-expr-input";
+import { InputFieldsContext, numericLiteral, ValueExprInput, type NumericMode } from "./value-expr-input";
+import { isFromRef } from "./value-refs";
 import type { FormProps } from "./forms-basic";
+import { LIST_SHAPE } from "./value-shape";
+import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 
 const OP_LABELS: [CmpOp, string][] = [
   ["eq", "と等しい"],
@@ -46,6 +49,28 @@ const OP_LABELS: [CmpOp, string][] = [
 ];
 
 const NO_RIGHT: CmpOp[] = ["exists", "is_null"];
+
+/// 右辺の数字を数として保存する比較（等値と大小比較）。文字の判定（含む・始まる・終わる・パターン）は
+/// 文字のまま、`in` は候補のリストを JSON で書く。
+const NUMERIC_OPS: CmpOp[] = ["eq", "neq", "gt", "gte", "lt", "lte"];
+
+/// 比べる値（右辺）の数字を数として保存するか（BUG-31）。固定値の数字を文字の「50000」で保存すると、
+/// 数との大小比較は run の失敗（`expr_type_error`）に、等値は黙って偽になる。
+/// - 左辺が数値の入力項目なら、数として読めるものは数（`always`・桁区切りも外す）
+/// - 左辺が文字・選択肢・日付の入力項目なら、文字のまま（数字のコード「001」などを数にしない）
+/// - それ以外（前のブロックの結果・きっかけの内容など）は、数字だけを打ったときに数。頭に 0 を重ねた数字を
+///   文字のまま残すのは等値だけ（`auto`）で、大小比較では数にする（`order`）
+function numericModeFor(cmp: Comparison, inputFields: InputFieldInfo[]): NumericMode | undefined {
+  if (!NUMERIC_OPS.includes(cmp.op)) return undefined;
+  const left = cmp.left as unknown;
+  if (isFromRef(left) && left.$from === "input" && typeof left.path === "string" && /^\/[^/]+$/.test(left.path)) {
+    const key = left.path.slice(1).replace(/~1/g, "/").replace(/~0/g, "~");
+    const field = inputFields.find((f) => f.key === key);
+    if (field?.kind === "number" || field?.kind === "integer") return "always";
+    if (field && field.kind !== "other" && field.kind !== "boolean") return undefined;
+  }
+  return cmp.op === "eq" || cmp.op === "neq" ? "auto" : "order";
+}
 
 type FlatCondition = { mode: "all" | "any"; comparisons: Comparison[] } | null;
 
@@ -77,14 +102,17 @@ function build(flat: NonNullable<FlatCondition>): Condition {
 
 /// switch case のリテラルをテキストから型付きで解釈する（完全一致比較のため型が正）。
 /// 数値・true/false・JSON（[ / { / " 始まり）は解釈し、それ以外は文字列として扱う。
+///
+/// 数にするのは、打った文字が数の書き方そのもの（数に直して書き戻すと同じ文字）のときだけ。頭に 0 のある番号
+/// （001・郵便番号・社員番号）、1.0、桁が落ちる長い数字は文字のまま比べる（BUG-100。001 を 1 にすると
+/// テキストの「001」と一致しない）。前後に空白のある値も整えずに文字のまま（そのまま比べる）。
 function parseCaseLiteral(text: string): unknown {
-  const t = text.trim();
-  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
-  if (t === "true") return true;
-  if (t === "false") return false;
-  if (/^[\[{"]/.test(t)) {
+  if (/^-?\d+(\.\d+)?$/.test(text) && String(Number(text)) === text) return Number(text);
+  if (text === "true") return true;
+  if (text === "false") return false;
+  if (/^[\[{"]/.test(text)) {
     try {
-      return JSON.parse(t);
+      return JSON.parse(text);
     } catch {
       // 入力途中は文字列のまま。
     }
@@ -101,6 +129,7 @@ export function ConditionEditor({
   value: Condition | undefined;
   onChange: (next: Condition) => void;
 } & Pick<FormProps, "refCandidates" | "inMapRegion">) {
+  const inputFields = React.useContext(InputFieldsContext);
   const flat = flatten(value);
   if (flat === null) {
     return (
@@ -125,7 +154,7 @@ export function ConditionEditor({
           value={flat.mode}
           onValueChange={(v) => update({ ...flat, mode: v as "all" | "any" })}
         >
-          <SelectTrigger className="h-8">
+          <SelectTrigger className="h-8" aria-label="条件の組み合わせ方">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -138,6 +167,7 @@ export function ConditionEditor({
         <div key={i} className="space-y-1.5 rounded-md border p-2">
           <ValueExprInput
             label="調べる値"
+            preferFrom
             value={cmp.left as ValueExpr | undefined}
             onChange={(v) => {
               const comparisons = [...flat.comparisons];
@@ -152,15 +182,19 @@ export function ConditionEditor({
               value={cmp.op}
               onValueChange={(v) => {
                 const comparisons = [...flat.comparisons];
-                comparisons[i] = {
-                  ...cmp,
-                  op: v as CmpOp,
-                  right: NO_RIGHT.includes(v as CmpOp) ? undefined : cmp.right,
-                };
+                const next = { ...cmp, op: v as CmpOp };
+                // 文字の判定から大小比較へ変えたときも、打ってあった数字を数に直す。
+                const mode = numericModeFor(next, inputFields);
+                next.right = NO_RIGHT.includes(next.op)
+                  ? undefined
+                  : mode && typeof cmp.right === "string"
+                    ? (numericLiteral(cmp.right, mode) as unknown as ValueExpr)
+                    : cmp.right;
+                comparisons[i] = next;
                 update({ ...flat, comparisons });
               }}
             >
-              <SelectTrigger className="h-8 flex-1">
+              <SelectTrigger className="h-8 flex-1" aria-label="比べ方">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -187,6 +221,7 @@ export function ConditionEditor({
           {!NO_RIGHT.includes(cmp.op) ? (
             <ValueExprInput
               label="比べる値"
+              numeric={numericModeFor(cmp, inputFields)}
               value={cmp.right as ValueExpr | undefined}
               onChange={(v) => {
                 const comparisons = [...flat.comparisons];
@@ -209,7 +244,9 @@ export function ConditionEditor({
             comparisons: [
               ...flat.comparisons,
               {
-                left: { $from: "input", path: "/" } as unknown as ValueExpr,
+                // 調べる値は選ばせる（入力全体を黙って入れない・空のまま保存はできるが、実行と自動実行のオンの
+                // 前に止まる・D-83）。
+                left: "" as unknown as ValueExpr,
                 op: "eq",
                 right: "" as unknown as ValueExpr,
               } as Comparison,
@@ -245,15 +282,17 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
     <div className="space-y-3">
       <ValueExprInput
         label="振り分ける値"
+        preferFrom
         value={p.value as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { value: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         error={fieldErrors.get("value")}
+        hint="この値と同じ値の行き先へ進みます。値がないと、このブロックは失敗します。"
       />
       <Field
         label="行き先"
-        hint="値が一致した行き先へ。どれにも一致しないと「default」へ"
+        hint="上から順に比べて、最初に一致した行き先へ進みます。どれにも一致しないときは「その他」へ進みます。"
         error={fieldErrors.get("cases")}
       >
         <div className="space-y-1.5">
@@ -328,35 +367,71 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
   );
 }
 
-export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+/// きっかけ「テーブルの行の状態が変わったとき」の名前（イベントのカタログの単一定義）。
+const TRANSITION_TRIGGER = EVENT_CATALOG.find((e) => e.source === "data.transition")?.label_ja ?? "";
+
+/// 失敗した件があるときの扱い（付録 D の N3.1.4）。
+const MAP_ITEM_ERROR: Record<string, { label: string; note: string }> = {
+  fail_map: {
+    label: "繰り返しを失敗にする（おすすめ）",
+    note: "ほかの件は最後まで動きます。そのあと「失敗したとき」の設定に従います。",
+  },
+  collect: {
+    label: "失敗を記録して続ける",
+    note: "失敗した件の番号と内容を結果に残し、次へ進みます。実行は「完了」になります。",
+  },
+};
+
+/// AI を呼ぶブロックか（カタログの分類が AI のもの・利用量がかかる）。
+const isAiType = (type: string) => NODE_CATALOG.find((c) => c.type === type)?.category === "ai";
+
+export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors, insideTypes }: FormProps) {
   const p = paramsOf<NodeParamsByType["control.map"]>(node);
+  const onItemError = (p.on_item_error as string | undefined) ?? "fail_map";
+  // 中に AI のブロックがあると、件数の分だけ AI を呼ぶ（付録 D の N3.1.4・P8）。
+  const aiInside = (insideTypes ?? []).some(isAiType);
   return (
     <div className="space-y-3">
       <ValueExprInput
         label="繰り返すリスト"
+        preferFrom
+        shapes={LIST_SHAPE}
         value={p.items as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { items: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
+        hint={`このリストの 1 件ずつに、中のブロックを実行します。最大 1,000 件で、空なら何もせずに次へ進みます。${
+          aiInside ? "中に AI のブロックがあると、1 件ごとに AI を呼ぶので、件数の分だけ利用量がかかります。" : ""
+        }`}
         error={fieldErrors.get("items")}
       />
-      <Field label="失敗した要素の扱い">
-        <Select
-          value={(p.on_item_error as string | undefined) ?? "fail_map"}
-          onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}
-        >
-          <SelectTrigger className="h-8">
+      <Field
+        label="失敗した件があるとき"
+        hint="中で分岐して、最後のブロックまで進まなかった件も失敗と数えます。"
+        error={fieldErrors.get("on_item_error")}
+      >
+        <Select value={onItemError} onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}>
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
-            <SelectItem value="fail_map">1 つでも失敗したら全体を失敗に</SelectItem>
-            <SelectItem value="collect">失敗も結果に集めて続行</SelectItem>
+            {Object.entries(MAP_ITEM_ERROR).map(([value, o]) => (
+              <SelectItem key={value} value={value} note={o.note}>
+                {o.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </Field>
-      <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-        繰り返しの中に入れるブロックは、追加後にこのブロックを「親」に指定します（現在は AI 編集での作成が確実です）
-      </p>
+      {/* 中のブロックの案内（D-85: キャンバスは枠の中、スマホは字下げした一覧の「中にブロックを追加」から足す）。 */}
+      <div className="space-y-1 rounded-md border bg-muted/40 p-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="map-inside-note">
+        <p>
+          1 件ごとに動かすブロックは、「中にブロックを追加」から、このブロックの中に追加します。中のブロックでは「繰り返し中の 1 件」を値に使えます。
+        </p>
+        <p>
+          テーブルのレコードを 1 件ずつ処理するなら、きっかけ「{TRANSITION_TRIGGER}」などを使うと、繰り返しは要りません。
+        </p>
+      </div>
     </div>
   );
 }
@@ -402,9 +477,9 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
             }
           }}
         >
-          <SelectTrigger className="h-8">
+          <FieldSelectTrigger className="h-8">
             <SelectValue />
-          </SelectTrigger>
+          </FieldSelectTrigger>
           <SelectContent>
             <SelectItem value="duration">決めた時間だけ待つ</SelectItem>
             <SelectItem value="until">決めた日時まで待つ</SelectItem>
@@ -447,20 +522,20 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
               value={(p.source as string | undefined) ?? "storage.write"}
               onValueChange={(v) => patchParams(dispatch, node, { source: v })}
             >
-              <SelectTrigger className="h-8">
+              <FieldSelectTrigger className="h-8">
                 <SelectValue />
-              </SelectTrigger>
+              </FieldSelectTrigger>
               <SelectContent>
                 <SelectItem value="storage.write">ファイルが保存されたとき</SelectItem>
               </SelectContent>
             </Select>
           </Field>
           <Field
-            label="対象フォルダ ID（省略可）"
-            hint="指定するとそのフォルダ配下の保存だけ待ちます"
+            label="対象フォルダ ID"
+            hint="このフォルダ配下への保存を待ちます。必須です"
             error={fieldErrors.get("scope")}
           >
-            <Input
+            <FieldInput
               value={
                 ((p.scope as { folder?: string } | undefined)?.folder as string | undefined) ?? ""
               }
@@ -487,9 +562,9 @@ export function WaitForm({ node, dispatch, refCandidates, inMapRegion, fieldErro
               value={(p.on_timeout as string | undefined) ?? "fail"}
               onValueChange={(v) => patchParams(dispatch, node, { on_timeout: v })}
             >
-              <SelectTrigger className="h-8">
+              <FieldSelectTrigger className="h-8">
                 <SelectValue />
-              </SelectTrigger>
+              </FieldSelectTrigger>
               <SelectContent>
                 <SelectItem value="fail">失敗にする</SelectItem>
                 <SelectItem value="continue">「時間切れ」の出口に流す</SelectItem>
@@ -510,9 +585,9 @@ export function JoinForm({ node, dispatch }: FormProps) {
         value={(p.mode as string | undefined) ?? "all"}
         onValueChange={(v) => patchParams(dispatch, node, { mode: v })}
       >
-        <SelectTrigger className="h-8">
+        <FieldSelectTrigger className="h-8">
           <SelectValue />
-        </SelectTrigger>
+        </FieldSelectTrigger>
         <SelectContent>
           <SelectItem value="all">全部そろってから進む</SelectItem>
           <SelectItem value="any">最初の 1 つで進む</SelectItem>

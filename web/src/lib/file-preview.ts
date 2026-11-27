@@ -155,17 +155,11 @@ export function textLanguage(name: string): string {
 
 /// 中身を取りに行くテキストの上限。これを超えるものは開かずに「大きすぎる」と出す。
 /// 全行を DOM に置く（仮想化しない）ので、数十万行で描画が固まらない大きさに抑える。
+/// サーバーのテキストの API（`crates/api/src/routes/file_text.rs` の `TEXT_FILE_MAX_BYTES`）も同じ大きさで断る。
 export const TEXT_MAX_BYTES = 2 * 1024 * 1024;
 export const HIGHLIGHT_MAX_BYTES = 256 * 1024;
 /// 行数の上限。短い行（改行だけなど）が大量にあると、2MB 未満でも行の要素が数百万になって固まる。
 export const TEXT_MAX_LINES = 50_000;
-
-/// 先頭に NUL 文字があるものはバイナリとみなす（拡張子が .txt でも中身が違うことがある）。
-export function looksBinary(bytes: Uint8Array): boolean {
-  const n = Math.min(bytes.length, 8000);
-  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
-  return false;
-}
 
 /// 見出しに出す言語名。
 const LANGUAGE_LABELS: Record<string, string> = {

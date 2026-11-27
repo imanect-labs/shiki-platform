@@ -116,6 +116,7 @@ pub(crate) fn validate_identity(schema: &TableSchema) -> Result<(), DataError> {
 ///   - `id` 省略 → 既存の同じ `key` があればその `id` を引き継ぐ（v1 互換）。無ければ
 ///     `next_field_id` から新規採番。
 /// - `display_name` が空なら `key`（前後空白は除く）。`order` が全フィールド 0 なら宣言順。
+/// - 作成者の列は `indexed` を立てる（[`crate::created_by::normalize`]）。
 pub(crate) fn assign_field_ids(
     current: Option<(&TableSchema, i32)>,
     next: &mut TableSchema,
@@ -188,6 +189,8 @@ pub(crate) fn assign_field_ids(
         };
     }
     assign_orders(current.map(|(s, _)| s), next);
+    // 作成者の列はいつでも絞り込み・並べ替えに使える（owner の擬似列で引く・列の索引は作らない）。
+    crate::created_by::normalize(next);
     let max_assigned = next
         .fields
         .iter()
@@ -256,7 +259,8 @@ pub(crate) fn upgrade_legacy_schema(legacy: &TableSchema) -> Result<(TableSchema
 pub(crate) fn encode_record(schema: &TableSchema, data: &Map<String, Value>) -> Map<String, Value> {
     let mut out = Map::with_capacity(data.len());
     for (k, v) in data {
-        if let Some(f) = schema.field(k) {
+        // 作成者の列は保存しない（値はレコードの作成者・読むときに入れる・crate::created_by）。
+        if let Some(f) = schema.field(k).filter(|f| !f.is_created_by()) {
             out.insert(f.json_key(), v.clone());
         }
     }
@@ -272,7 +276,10 @@ pub(crate) fn decode_record(schema: &TableSchema, stored: &Value) -> Map<String,
     };
     let mut out = Map::with_capacity(obj.len());
     for f in &schema.fields {
-        if matches!(f.field_type, FieldType::Lookup | FieldType::Computed) {
+        if matches!(
+            f.field_type,
+            FieldType::Lookup | FieldType::Computed | FieldType::CreatedBy
+        ) {
             continue;
         }
         if let Some(v) = obj.get(&f.json_key()) {

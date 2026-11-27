@@ -7,9 +7,10 @@
 /// （条件・並べ替えはピンした版のビュー）。行・列は**閲覧者本人の権限**で評価される。列の型・表示名は
 /// テーブルのスキーマ（閲覧者本人の viewer）から、列の順・見出し・幅・非表示はビューの表示設定から決める。
 
-import { AlertTriangle, Inbox, Loader2, MoveHorizontal, Table2 } from "lucide-react";
+import { AlertTriangle, Inbox, Loader2, MoveHorizontal, RotateCcw, Sigma, Table2 } from "lucide-react";
 import * as React from "react";
 
+import { Button } from "@/components/ui/button";
 import { DataGrid, type DataGridStatus } from "@/components/data/data-grid";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
 import {
@@ -46,6 +47,11 @@ function waitingOf(e: unknown): Waiting | null {
 
 export function MiniAppDataGrid({ alias }: { alias: string }) {
   const host = React.useContext(DataGridHostContext);
+  // 使う人に足りない権限があれば、読みに行かずに理由を出す（GAP-37）。
+  const blocked = host?.blockedReason?.(alias) ?? null;
+  const ownOnly = host?.ownRecordsOnly?.(alias) ?? false;
+  // 読みに行くのは実行先（run）が変わったときだけ。権限の確かめの結果が届いて host が作り直されても、読み直さない。
+  const run = host?.run;
   const [first, setFirst] = React.useState<DataViewRun | null>(null);
   const [table, setTable] = React.useState<DataTable | null>(null);
   const [masked, setMasked] = React.useState<ReadonlySet<string>>(new Set());
@@ -54,6 +60,10 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   const [waiting, setWaiting] = React.useState<Waiting | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [status, setStatus] = React.useState<DataGridStatus | null>(null);
+  // 権限を確かめ直している（BUG-217）。確かめ直した後も描けない理由が同じなら、まだ共有されていないと言う。
+  const [rechecking, setRechecking] = React.useState(false);
+  const [recheckedFor, setRecheckedFor] = React.useState<string | null>(null);
+  const fixable = host?.fixableBySharing?.(alias) ?? true;
   // 枠の幅（列が収まるか・横に続くかの判定）。
   const frameRef = React.useRef<HTMLElement>(null);
   const [frameWidth, setFrameWidth] = React.useState(0);
@@ -73,12 +83,11 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   }, []);
 
   React.useEffect(() => {
-    if (!host) return;
+    if (!run || blocked) return;
     let active = true;
     setError(null);
     // 先頭ページで表示設定と対象テーブルを知り、スキーマ（列の型・表示名）を閲覧者本人の権限で読む。
-    host
-      .run(alias, { limit: 1 })
+    run(alias, { limit: 1 })
       .then(async (run) => {
         const [t, v] = await Promise.all([getTable(run.table_id), getViewerContext(run.table_id)]);
         if (!active) return;
@@ -91,7 +100,7 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
     return () => {
       active = false;
     };
-  }, [host, alias, attempt, onFailure]);
+  }, [run, alias, attempt, onFailure, blocked]);
 
   React.useEffect(() => {
     if (!waiting) return;
@@ -101,11 +110,11 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
 
   const fetchPage = React.useCallback(
     async (cursor: string | null, limit: number): Promise<QueryResult> => {
-      if (!host) throw new Error("この画面では表を描けません");
-      const run = await host.run(alias, { ...(cursor ? { cursor } : {}), limit });
-      return run.result;
+      if (!run) throw new Error("この画面では表を描けません");
+      const page = await run(alias, { ...(cursor ? { cursor } : {}), limit });
+      return page.result;
     },
-    [host, alias],
+    [run, alias],
   );
 
   if (!host) {
@@ -113,6 +122,44 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
       <p className="my-3 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
         表「{alias}」はミニアプリの画面でだけ表示できます
       </p>
+    );
+  }
+  if (blocked) {
+    return (
+      <div
+        className="my-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400"
+        role="note"
+        data-testid={`miniapp-data-grid-blocked-${alias}`}
+      >
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <div className="flex min-w-0 flex-col items-start gap-1.5">
+          <span className="[overflow-wrap:anywhere]">表「{alias}」を表示できません。{blocked}</span>
+          {fixable && recheckedFor === blocked && !rechecking ? (
+            <span data-testid={`miniapp-data-grid-still-blocked-${alias}`}>確かめ直しましたが、まだ共有されていません。</span>
+          ) : null}
+          {host.recheck && fixable ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={rechecking}
+              onClick={() => {
+                const recheck = host.recheck;
+                if (!recheck) return;
+                setRechecking(true);
+                void recheck().finally(() => {
+                  setRechecking(false);
+                  setRecheckedFor(blocked);
+                });
+              }}
+            >
+              {rechecking ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <RotateCcw className="size-3.5" aria-hidden />}
+              もう一度確かめる
+            </Button>
+          ) : null}
+        </div>
+      </div>
     );
   }
   if (error) {
@@ -125,27 +172,37 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   }
   const grid = first?.display.kind === "grid" ? first.display : null;
   const columns = table ? resolveColumns(table.schema.fields, grid, masked).filter((c) => !c.hidden) : [];
-  const empty = first !== null && (first.result.items ?? []).length === 0 && !first.result.next_cursor;
+  // 集計のビュー（件数や合計をまとめるビュー）は、レコードでなくまとめた結果（groups）を返す。この表は
+  // レコードしか描けないので、何も言わずに「0 件」と見せず、表示できないことを言う。
+  const aggregate = first !== null && first.result.groups != null;
+  const empty = !aggregate && first !== null && (first.result.items ?? []).length === 0 && !first.result.next_cursor;
   // 先頭ページの前に待ちになったときはスキーマが無いので、列名（参照名）は出さずに一般の文言にする。
   const label = waiting ? columns.find((c) => c.key === waiting.field)?.label : undefined;
   // 列の合計幅が枠より広い（スマホ幅で 2 列ほどしか見えない）ときは、横に続くことを示す（C P3）。
   const totalWidth = columns.reduce((n, c) => n + c.width, 0);
-  const overflows = frameWidth > 0 && totalWidth > frameWidth + 1;
+  // 行を描かないとき（準備中・集計のビュー・0 件）は横に続くものが無いので出さない。
+  const overflows = !waiting && !aggregate && !empty && frameWidth > 0 && totalWidth > frameWidth + 1;
   return (
     <figure ref={frameRef} className="my-4 overflow-hidden rounded-xl border bg-card" data-testid={`miniapp-data-grid-${alias}`}>
       <figcaption className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground">
-        <Table2 className="size-3.5" aria-hidden />
-        <span className="font-medium text-foreground">{table?.name ?? alias}</span>
+        <Table2 className="size-3.5 shrink-0" aria-hidden />
+        {/* 見出しはアプリで束ねたビューの呼び名（同じテーブルの 2 つの表を見分ける・BUG-295）。 */}
+        <span className="min-w-0 font-medium text-foreground [overflow-wrap:anywhere]">{alias}</span>
         {overflows ? (
-          <span className="ml-auto inline-flex items-center gap-1 text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
+          <span className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]" data-testid="miniapp-data-grid-scroll-hint">
             <MoveHorizontal className="size-3.5" aria-hidden />
             横にスクロールできます
           </span>
         ) : null}
-        <span className={cn("tabular-nums", !overflows && "ml-auto")}>
+        <span className={cn("shrink-0 whitespace-nowrap tabular-nums", !overflows && "ml-auto")}>
           {empty ? "0 件" : status ? `${status.loaded.toLocaleString("ja-JP")}${status.done ? "" : "+"} 件` : ""}
         </span>
       </figcaption>
+      {ownOnly && !aggregate ? (
+        <p className="border-b px-3 py-1.5 text-[11px] text-muted-foreground" data-testid="miniapp-data-grid-own-only">
+          あなたが追加したレコードだけを表示しています。
+        </p>
+      ) : null}
       {waiting ? (
         <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground" role="status" data-testid="miniapp-data-grid-waiting">
           <span className="inline-flex items-center gap-2 text-foreground">
@@ -154,6 +211,16 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
             {waiting.progress != null ? `（${Math.round(waiting.progress * 100)}%）` : ""}
           </span>
           <span className="text-xs">準備ができたら自動で表示します</span>
+        </div>
+      ) : aggregate ? (
+        <div
+          className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-center text-sm text-muted-foreground"
+          role="note"
+          data-testid="miniapp-data-grid-aggregate"
+        >
+          <Sigma className="size-5" aria-hidden />
+          <span className="text-balance text-foreground">集計のビューは、ここでは表示できません</span>
+          <span className="max-w-sm text-balance text-xs">アプリを作った人が集計しないビューに替えると、表示できます。</span>
         </div>
       ) : empty ? (
         <div className="flex flex-col items-center justify-center gap-1.5 px-4 py-8 text-sm text-muted-foreground" data-testid="miniapp-data-grid-empty">
@@ -169,7 +236,8 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
             />
           ) : null}
           <DataGrid
-            key={attempt}
+            // 索引の準備の読み直し・画面のボタンの起動の終わり（BUG-19）で、先頭から読み直す。
+            key={`${attempt}:${host.revision ?? 0}`}
             tableId={first.table_id}
             columns={columns}
             query={{}}

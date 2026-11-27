@@ -118,3 +118,43 @@ test("ログイン済みで /login に来たらアプリへリダイレクトす
   await page.goto("/login");
   await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 20_000 });
 });
+
+test("ID に使えない文字を含むアカウントで戻されたら、管理者への連絡を促し、別のアカウントでだけ入り直せる", async ({ page }) => {
+  // BFF の callback は、sub に ID の区切りの文字を含むアカウント（D-205）を /login?error=account_unusable へ戻す。
+  // 送り直しても同じ理由で断られるので、自動で Keycloak へ送らず、同じアカウントでの再試行のボタンも出さない。
+  // ここで確かめるのは、「別のアカウントでログイン」が出ること・キーボードで押せること・押すと Keycloak のログイン画面へ
+  // 送ること。試しは SSO の Cookie の無い新しいコンテキストで始まるので、callback が Keycloak の SSO セッションを
+  // 終えることまでは確かめない（callback が終えにいくことは crates/api/tests/auth_unusable_sub.rs、終えた SSO セッションが
+  // 使えなくなることは crates/api/tests/keycloak_end_session.rs が確かめる）。
+  await page.goto("/login?error=account_unusable");
+  // Next.js のルートの読み上げ（role=alert）と取り違えないよう、文言で絞る。
+  const alert = page.getByRole("alert").filter({ hasText: "このアカウントは使えません" });
+  await expect(alert).toHaveText("このアカウントは使えません。管理者に連絡してください。");
+  await expect(page.getByRole("heading", { name: "ログイン" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "もう一度ログイン" })).toHaveCount(0);
+  const other = page.getByRole("button", { name: "別のアカウントでログイン" });
+  await expect(other).toBeVisible();
+  // 表示が出た時点で（未ログインと分かった後）、Keycloak へ送られずに /login のまま。
+  expect(new URL(page.url()).pathname).toBe("/login");
+  const shots = process.env.E2E_SHOTS_DIR;
+  if (shots) {
+    await page.screenshot({ path: `${shots}/login-account-unusable.png` });
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.screenshot({ path: `${shots}/login-account-unusable-390.png` });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({ path: `${shots}/login-account-unusable-390-dark.png` });
+  }
+  // キーボードで押すと、Keycloak のログイン画面（名前とパスワード）に出る。
+  await other.focus();
+  await expect(other).toBeFocused();
+  if (shots) {
+    // フォーカスの輪（スマホの幅の暗い画面と、PC の明るい画面）。
+    await page.screenshot({ path: `${shots}/login-account-unusable-390-dark-focus.png` });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.screenshot({ path: `${shots}/login-account-unusable-focus.png` });
+  }
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/:8081\/realms\/shiki\/protocol\/openid-connect\/auth/);
+  await expect(page.getByRole("button", { name: "パスキーでログイン" })).toBeVisible();
+});

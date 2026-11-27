@@ -27,6 +27,10 @@ pub enum Relation {
     Commenter,
     /// 閲覧権限（読み取り）。editor と親からの継承を含意する。
     Viewer,
+    /// テーブルへのレコードの追加だけ（data_table・D-113）。editor が含意し、**viewer は含意しない**
+    /// （追加だけの人に他人のレコードを見せない）。読めるのは自分が作ったレコードだけで、行述語との積で
+    /// 絞る（crates/data の `table_access`）。書き換え・削除・状態を進める・一括取込には editor が要る。
+    Submitter,
     /// 共有リンク（パスワード redeem）由来の閲覧権限（per-user・#366）。`viewer` が含意する。
     /// 明示共有の `viewer` とタプルの出自を分け、リンク失効時の reconcile が明示共有を誤剥奪しない
     /// ようにするための専用 relation（editor_via_link と対）。付与は redeem 経路でのみ書かれる。
@@ -52,6 +56,7 @@ impl Relation {
             Relation::Editor => "editor",
             Relation::Commenter => "commenter",
             Relation::Viewer => "viewer",
+            Relation::Submitter => "submitter",
             Relation::ViewerViaLink => "viewer_via_link",
             Relation::EditorViaLink => "editor_via_link",
             Relation::CanUse => "can_use",
@@ -72,6 +77,7 @@ impl Relation {
             "editor" => Some(Relation::Editor),
             "commenter" => Some(Relation::Commenter),
             "viewer" => Some(Relation::Viewer),
+            "submitter" => Some(Relation::Submitter),
             "viewer_via_link" => Some(Relation::ViewerViaLink),
             "editor_via_link" => Some(Relation::EditorViaLink),
             "can_use" => Some(Relation::CanUse),
@@ -163,6 +169,12 @@ mod tests {
         assert_eq!(Relation::parse("admin"), Some(Relation::Admin));
         assert_eq!(Relation::AuditViewer.as_str(), "audit_viewer");
         assert_eq!(Relation::parse("audit_viewer"), Some(Relation::AuditViewer));
+        assert_eq!(Relation::Submitter.as_str(), "submitter");
+        assert_eq!(Relation::parse("submitter"), Some(Relation::Submitter));
+        assert_eq!(
+            serde_json::to_string(&Relation::Submitter).unwrap(),
+            "\"submitter\""
+        );
     }
 
     #[test]

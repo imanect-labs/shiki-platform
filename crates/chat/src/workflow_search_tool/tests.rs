@@ -71,6 +71,19 @@ fn hit(name: &str, triggers: &[&str], schema: Option<Value>) -> WorkflowSearchHi
     }
 }
 
+/// ワークフローを直す・中身を確かめるための id は list_workflows で引くと名指しする（既定は対話トリガのあるものだけを
+/// 返すので、スケジュール・イベントだけのワークフローを直すときに「見つからない」で止めない）。
+#[test]
+fn description_points_to_list_workflows_for_fixing() {
+    let tool = SearchWorkflowsTool::new(Arc::new(FakeDirectory::default()));
+    assert!(
+        tool.description()
+            .contains("ワークフローを直す・中身を確かめるための id は list_workflows で調べる"),
+        "{}",
+        tool.description()
+    );
+}
+
 #[tokio::test]
 async fn passes_defaults_and_the_callers_context() {
     let dir = Arc::new(FakeDirectory::default());

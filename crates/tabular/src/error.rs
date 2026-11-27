@@ -20,10 +20,18 @@ pub enum TabularError {
     /// 楽観ロック失敗（base rev が現在の版と不一致）。リロードが必要。
     #[error("競合: base_rev={base}, current={current}")]
     RevConflict { base: i64, current: i64 },
-    /// 複数 CSV クエリの追加テーブル指定が不正（名前の形・`data` との衝突・重複・上限超過）。
+    /// 中身を表として読めない（CSV の文字コードを決められない・文章でない〔GAP-45〕、壊れた・上限を超える・古い形式の
+    /// Excel〔D-17〕）。文言は利用者向け。
+    #[error("{0}")]
+    NotText(String),
+    /// CSV の編集・新しい CSV の保存で、CSV でないもの（Excel などのファイル・Excel の名前）を扱おうとした
+    /// （編集と保存は CSV だけ・D-17）。文言は利用者向け。
+    #[error("{0}")]
+    Unsupported(String),
+    /// 複数 CSV クエリの追加テーブル指定が不正（名前の形・`data` との衝突・重複・上限超過・CSV でない追加ファイル）。
     #[error("不正なテーブル指定: {0}")]
     InvalidTables(String),
-    /// パッチ入力が不正（範囲外の行/列・型不一致等）。
+    /// パッチ入力が不正（範囲外の行/列・型不一致・元の文字コードで書けない文字等）。
     #[error("不正なパッチ: {0}")]
     InvalidPatch(String),
     /// 隔離ランナーの実行失敗（デコード/プロセス異常）。

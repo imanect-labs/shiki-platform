@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 列の編集（A-5）と参照の値の入力（A-6）: 全型の列の追加・選択肢の編集・列の削除・未保存の確認、
 /// レコードの追加でユーザー・リンクを候補から選ぶ、グリッドのリンクのセルを候補から選び直す。
@@ -19,6 +23,7 @@ async function createTable(page: Page, name: string, fields: unknown[], rows: Re
   const res = await page.request.post("/api/data/tables", { headers, data: { name, schema: { fields } } });
   expect(res.status(), await res.text()).toBe(201);
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
   for (const data of rows) {
     const r = await page.request.post(`/api/data/tables/${id}/records`, { headers, data: { data } });
     expect(r.status(), await r.text()).toBe(201);
@@ -247,6 +252,7 @@ test("行ポリシーのあるテーブルの一意・マスク列の必須に�
   });
   expect(res.status(), await res.text()).toBe(201);
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
   await page.goto(`/data/${id}`);
   await page.getByTestId("schema-editor-open").click();
   const editor = page.getByTestId("schema-editor");

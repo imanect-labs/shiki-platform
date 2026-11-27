@@ -24,7 +24,7 @@ pub enum SchedulerStoreError {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_db(e: sqlx::Error) -> SchedulerStoreError {
+pub(super) fn map_db(e: sqlx::Error) -> SchedulerStoreError {
     SchedulerStoreError::Internal(format!("db: {e}"))
 }
 
@@ -40,21 +40,154 @@ struct ScheduleTriggerRow {
     created_at: DateTime<Utc>,
 }
 
-/// イベントトリガ 1 件（DB から読む）。
-#[derive(Debug, Clone, sqlx::FromRow)]
-#[allow(clippy::struct_field_names)]
-struct EventTriggerRow {
+/// ファイル保存トリガ（storage.write）の候補（フォルダの祖先束縛）。filter・閲覧の確認・発火は呼び出し側
+/// （relay）が行う。
+#[derive(Debug, Clone)]
+pub struct FileTriggerCandidate {
+    pub trigger: super::EventTriggerRef,
+    /// registration の org（ワークフロー主体の AuthContext を組む）。
+    pub org: String,
+    /// トリガの filter（条件木の JSON・無ければ `None`）。
+    pub filter: Option<serde_json::Value>,
+}
+
+impl FileTriggerCandidate {
+    /// filter がペイロードに一致するか（fail-closed: 不正 filter・評価エラーは一致しない）。
+    #[must_use]
+    pub fn admits(&self, payload: &serde_json::Value) -> bool {
+        trigger_filter_admits(
+            self.filter.as_ref(),
+            payload,
+            &self.trigger.tenant_id,
+            &self.trigger.trigger_id,
+        )
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct FileTriggerRow {
     tenant_id: String,
     trigger_id: String,
     workflow_id: Uuid,
-    /// トリガ spec（filter 条件木を含む）。
-    spec: sqlx::types::Json<serde_json::Value>,
+    org: String,
+    filter: Option<sqlx::types::Json<serde_json::Value>>,
+}
+
+/// データ変更トリガの候補（テーブル束縛・GAP-07）。見え方と filter の評価は呼び出し側（relay）が行う。
+#[derive(Debug, Clone)]
+pub struct DataTriggerCandidate {
+    pub trigger: super::EventTriggerRef,
+    /// registration の org（ワークフロー主体の AuthContext を組む）。
+    pub org: String,
+    pub source: crate::vocab::EventSource,
+    pub table_id: Uuid,
+    /// トリガの filter（条件木の JSON・無ければ `None`）。
+    pub filter: Option<serde_json::Value>,
+}
+
+impl DataTriggerCandidate {
+    /// filter がペイロードに一致するか（fail-closed: 不正 filter・評価エラーは一致しない）。
+    #[must_use]
+    pub fn admits(&self, payload: &serde_json::Value) -> bool {
+        trigger_filter_admits(
+            self.filter.as_ref(),
+            payload,
+            &self.trigger.tenant_id,
+            &self.trigger.trigger_id,
+        )
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct DataTriggerRow {
+    tenant_id: String,
+    trigger_id: String,
+    workflow_id: Uuid,
+    org: String,
+    source: String,
+    table_id: String,
+    filter: Option<sqlx::types::Json<serde_json::Value>>,
+}
+
+/// トリガの filter がペイロードに一致するか（fail-closed: 不正 filter・型不一致などの評価エラーは一致しない・
+/// engine.md §5.6）。
+pub(crate) fn trigger_filter_admits(
+    filter: Option<&serde_json::Value>,
+    payload: &serde_json::Value,
+    tenant_id: &str,
+    trigger_id: &str,
+) -> bool {
+    let Some(filter_json) = filter.filter(|v| !v.is_null()) else {
+        return true;
+    };
+    match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
+        Ok(cond) => match crate::control::event_filter_matches(&cond, payload) {
+            Ok(matched) => matched,
+            Err(e) => {
+                tracing::warn!(code = e.code, error = %e.message, tenant = tenant_id, trigger = %trigger_id, "トリガ filter の評価に失敗（fail-closed）");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, tenant = tenant_id, trigger = %trigger_id, "トリガ filter が不正（fail-closed）");
+            false
+        }
+    }
+}
+
+/// 読めないスケジュール（保存時の検証より前に保存された式など）は発火しない。黙って止まらないよう、どのトリガかを
+/// 警告に残す（曜日の読み方を標準に直したとき、写せない式を誤りにした・BUG-95）。
+fn unreadable_schedule(t: &ScheduleTriggerRow, cron5: &str, e: &cron::CronError) {
+    tracing::warn!(
+        tenant = %t.tenant_id, trigger = %t.trigger_id, workflow = %t.workflow_id, cron = %cron5, error = %e,
+        "スケジュールを読めないため発火しません（ワークフローを開いて式を直し、保存し直してください）"
+    );
+}
+
+/// 読めないスケジュールの警告を、同じトリガで出し直すまでの間。tick のたびに出すとログを埋める。
+const UNREADABLE_WARN_EVERY: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// テナント・トリガ → 読めないスケジュールの警告を最後に出した時刻。
+type WarnedAt = std::collections::HashMap<(String, String), std::time::Instant>;
+
+/// 読めないスケジュールの警告を最後に出した時刻（このプロセスの中だけ）。
+static UNREADABLE_WARNED: std::sync::LazyLock<std::sync::Mutex<WarnedAt>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// 読めないスケジュールの警告をいま出すか（このトリガではじめてか、前に出してから [`UNREADABLE_WARN_EVERY`] たった）。
+/// 出すなら時刻を覚える。
+fn warn_unreadable_now(
+    warned: &mut WarnedAt,
+    t: &ScheduleTriggerRow,
+    now: std::time::Instant,
+) -> bool {
+    let key = (t.tenant_id.clone(), t.trigger_id.clone());
+    match warned.get(&key) {
+        Some(at) if now.saturating_duration_since(*at) < UNREADABLE_WARN_EVERY => false,
+        _ => {
+            warned.insert(key, now);
+            true
+        }
+    }
+}
+
+/// 読めないスケジュールを飛ばす（警告はトリガごとに 1 時間に 1 回）。
+fn skip_unreadable(t: &ScheduleTriggerRow, cron5: &str, e: &cron::CronError) {
+    let now = std::time::Instant::now();
+    // 覚えておく表が使えない（ほかのスレッドが panic した）ときは、黙らずに毎回出す。
+    let warn = match UNREADABLE_WARNED.lock() {
+        Ok(mut warned) => warn_unreadable_now(&mut warned, t, now),
+        Err(_) => true,
+    };
+    if warn {
+        unreadable_schedule(t, cron5, e);
+    }
 }
 
 /// スケジューラ/マッチャの永続化。
 #[derive(Clone)]
 pub struct SchedulerStore {
-    db: PgPool,
+    pub(super) db: PgPool,
 }
 
 impl SchedulerStore {
@@ -119,7 +252,10 @@ impl SchedulerStore {
                         vec![last]
                     }
                     Ok(_) => Vec::new(),
-                    Err(_) => continue,
+                    Err(e) => {
+                        skip_unreadable(t, cron5, &e);
+                        continue;
+                    }
                 }
             } else if catchup == "skip" {
                 // **区間内の最新 occurrence のみ**。長時間ダウン（>1000 回分）でも最新を取りこぼさない
@@ -127,13 +263,19 @@ impl SchedulerStore {
                 match cron::latest_occurrence_between(cron5, tz, after, now) {
                     Ok(Some(last)) => vec![last],
                     Ok(None) => Vec::new(),
-                    Err(_) => continue,
+                    Err(e) => {
+                        skip_unreadable(t, cron5, &e);
+                        continue;
+                    }
                 }
             } else {
                 // 全 occurrence（catchup=all は Stage A 外だが防御的に全件）。
                 match cron::occurrences_between(cron5, tz, after, now, 10_000) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(e) => {
+                        skip_unreadable(t, cron5, &e);
+                        continue;
+                    }
                 }
             };
             if occ.is_empty() {
@@ -195,15 +337,22 @@ impl SchedulerStore {
             return Ok(false);
         }
         // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
-        let run_id = launcher
-            .launch(
+        // 見送り・一時失敗は run_id NULL のまま（occurrence は 1 回きり・再試行はしない）。
+        // 予定の時刻は payload に載せず（schedule の payload は null の約束のまま）、起動の間だけ持たせる。起動口は
+        // run の実行情報の予定の日時にする（GAP-15）。
+        let run_id = super::with_scheduled_at(
+            scheduled_at,
+            launcher.launch(
                 &t.tenant_id,
                 t.workflow_id,
                 "schedule",
                 &t.trigger_id,
                 &serde_json::Value::Null,
-            )
-            .await;
+                None,
+            ),
+        )
+        .await
+        .run_id();
         sqlx::query(
             "UPDATE schedule_occurrence SET run_id = $5 \
              WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $4",
@@ -239,105 +388,150 @@ impl SchedulerStore {
         Ok(())
     }
 
-    /// イベント（storage.write）を該当する enabled トリガへマッチさせ run を起動する（engine.md §5.4）。
+    /// データ変更トリガの候補を、テーブルの集合でまとめて引く（enabled かつ有効化バージョン一致のみ）。
     ///
-    /// `event_id`（outbox id）で `trigger_firing` を UNIQUE 記録し、outbox 1 件につき最大 1 run。
-    /// `event_folder` はイベント発生フォルダ id（**祖先束縛**の照合対象）・`payload` はイベントペイロード
-    /// （filter 評価と `$from trigger` 透過に使う）。戻り値 = 起動した run 数。
-    pub async fn match_event(
+    /// scope はテーブル束縛必須（`{ "table": "<uuid>" }`・V3 が正規形を強制）。table キーを持たない scope は
+    /// ワイルドカードに縮退させず一致しない（fail-closed）。
+    pub async fn data_trigger_candidates(
         &self,
         tenant_id: &str,
-        source: &str,
-        event_id: i64,
-        event_folder: Option<Uuid>,
-        payload: &serde_json::Value,
-        launcher: &dyn RunLauncher,
-    ) -> Result<usize, SchedulerStoreError> {
-        // (tenant, kind=event, source) index で候補トリガを引く（enabled かつ有効化バージョン一致のみ）。
-        // **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0
-        // を含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**:
-        // folder キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない
-        // （保存時 V3 が Stage A の形状 { "folder": "<uuid>" } を強制する）。
-        let triggers: Vec<EventTriggerRow> = sqlx::query_as(
-            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, t.spec FROM workflow_trigger t \
+        tables: &[Uuid],
+    ) -> Result<Vec<DataTriggerCandidate>, SchedulerStoreError> {
+        if tables.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sources: Vec<&str> = crate::vocab::EventSource::ALL
+            .iter()
+            .filter(|s| s.is_data())
+            .map(|s| s.as_str())
+            .collect();
+        let table_keys: Vec<String> = tables.iter().map(|t| t.hyphenated().to_string()).collect();
+        let rows: Vec<DataTriggerRow> = sqlx::query_as(
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, r.org, t.source, \
+                    t.spec->'scope'->>'table' AS table_id, t.spec->'filter' AS filter \
+             FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
-             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = $2 \
+             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = ANY($2) \
+               AND t.enabled AND r.status = 'enabled' AND t.version = r.enabled_version \
+               AND t.scope_table = ANY($3)",
+        )
+        .bind(tenant_id)
+        .bind(&sources)
+        .bind(&table_keys)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(DataTriggerCandidate {
+                    trigger: super::EventTriggerRef {
+                        tenant_id: r.tenant_id,
+                        trigger_id: r.trigger_id,
+                        workflow_id: r.workflow_id,
+                    },
+                    org: r.org,
+                    source: crate::vocab::EventSource::parse(&r.source)?,
+                    table_id: Uuid::parse_str(&r.table_id).ok()?,
+                    filter: r.filter.map(|j| j.0).filter(|v| !v.is_null()),
+                })
+            })
+            .collect())
+    }
+
+    /// ファイル保存トリガ（storage.write）の候補を、イベント発生フォルダで引く（enabled かつ有効化バージョン
+    /// 一致のみ・engine.md §5.4）。
+    ///
+    /// **祖先束縛**: トリガの folder scope が、イベント発生フォルダの祖先（node_closure・自分自身 depth 0 を
+    /// 含むので完全一致も包含）なら一致する。**scope はフォルダ束縛必須（全購読禁止・fail-closed）**: folder
+    /// キーを持たない scope（未対応形状・欠落）はワイルドカードに縮退させず一切マッチしない（保存時 V3 が
+    /// Stage A の形状 { "folder": "<uuid>" } を強制する）。filter の評価・workflow プリンシパルの閲覧の確認・
+    /// 発火（[`Self::fire_event_trigger`] / [`Self::defer_event_trigger`]）は呼び出し側（relay）が行う。
+    pub async fn file_trigger_candidates(
+        &self,
+        tenant_id: &str,
+        event_folder: Option<Uuid>,
+    ) -> Result<Vec<FileTriggerCandidate>, SchedulerStoreError> {
+        let Some(folder) = event_folder else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<FileTriggerRow> = sqlx::query_as(
+            "SELECT t.tenant_id, t.trigger_id, t.workflow_id, r.org, t.spec->'filter' AS filter \
+             FROM workflow_trigger t \
+             JOIN workflow_registration r \
+               ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
+             WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = 'storage.write' \
                AND t.enabled AND r.status = 'enabled' \
                AND t.version = r.enabled_version \
                AND (t.spec->'scope' ? 'folder') \
                AND EXISTS ( SELECT 1 FROM node_closure c \
                             WHERE c.tenant_id = $1 \
                               AND c.ancestor = (t.spec->'scope'->>'folder')::uuid \
-                              AND c.descendant = $3 )",
+                              AND c.descendant = $2 )",
         )
         .bind(tenant_id)
-        .bind(source)
-        .bind(event_folder)
+        .bind(folder)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| FileTriggerCandidate {
+                trigger: super::EventTriggerRef {
+                    tenant_id: r.tenant_id,
+                    trigger_id: r.trigger_id,
+                    workflow_id: r.workflow_id,
+                },
+                org: r.org,
+                filter: r.filter.map(|j| j.0).filter(|v| !v.is_null()),
+            })
+            .collect())
+    }
+}
 
-        let mut fired = 0usize;
-        for t in &triggers {
-            // filter 評価（イベントペイロードに対して・fail-closed: 不正 filter/不一致は発火しない・§5.6）。
-            if let Some(filter_json) = t.spec.0.get("filter").filter(|v| !v.is_null()) {
-                match serde_json::from_value::<crate::ir::expr::Condition>(filter_json.clone()) {
-                    Ok(cond) if crate::control::event_filter_matches(&cond, payload) => {}
-                    Ok(_) => continue,
-                    Err(e) => {
-                        tracing::warn!(error = %e, tenant = tenant_id, trigger = %t.trigger_id, "トリガ filter が不正（fail-closed）");
-                        continue;
-                    }
-                }
-            }
-            // (trigger_id, event_id) UNIQUE で 1 イベント 1 run。占有 INSERT ＋ FOR UPDATE 行ロックで
-            // 並行 tick/再配信を直列化しつつ、launch 前クラッシュで run_id が NULL のまま残った firing は
-            // 次配信で再起動できるようにする（occurrence と同じ回復方式）。
-            let mut tx = self.db.begin().await.map_err(map_db)?;
-            sqlx::query(
-                "INSERT INTO trigger_firing (tenant_id, trigger_id, event_id) \
-                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            let existing_run: Option<Uuid> = sqlx::query_scalar(
-                "SELECT run_id FROM trigger_firing \
-                 WHERE tenant_id = $1 AND trigger_id = $2 AND event_id = $3 FOR UPDATE",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            if existing_run.is_some() {
-                tx.commit().await.map_err(map_db)?; // 既に発火済み。
-                continue;
-            }
-            let run_id = launcher
-                .launch(&t.tenant_id, t.workflow_id, "event", &t.trigger_id, payload)
-                .await;
-            sqlx::query(
-                "UPDATE trigger_firing SET run_id = $4 \
-                 WHERE tenant_id = $1 AND trigger_id = $2 AND event_id = $3",
-            )
-            .bind(&t.tenant_id)
-            .bind(&t.trigger_id)
-            .bind(event_id)
-            .bind(run_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            tx.commit().await.map_err(map_db)?;
-            if run_id.is_some() {
-                fired += 1;
-            }
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    fn trigger(id: &str) -> ScheduleTriggerRow {
+        ScheduleTriggerRow {
+            tenant_id: "t1".into(),
+            trigger_id: id.into(),
+            workflow_id: Uuid::nil(),
+            spec: sqlx::types::Json(serde_json::json!({ "cron": "0 9 * * L" })),
+            last_planned_at: None,
+            created_at: Utc::now(),
         }
-        Ok(fired)
+    }
+
+    /// 読めないスケジュールの警告は、トリガごとにはじめてと、前に出してから 1 時間たったときだけ出す（tick ごとに出さない）。
+    #[test]
+    fn unreadable_schedules_are_warned_once_an_hour() {
+        let mut warned = WarnedAt::new();
+        let start = std::time::Instant::now();
+        let (a, b) = (trigger("a"), trigger("b"));
+        assert!(warn_unreadable_now(&mut warned, &a, start));
+        assert!(!warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + std::time::Duration::from_secs(5)
+        ));
+        assert!(!warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + std::time::Duration::from_secs(3_599)
+        ));
+        // ほかのトリガは別に数える。
+        assert!(warn_unreadable_now(
+            &mut warned,
+            &b,
+            start + std::time::Duration::from_secs(5)
+        ));
+        assert!(warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + UNREADABLE_WARN_EVERY
+        ));
     }
 }

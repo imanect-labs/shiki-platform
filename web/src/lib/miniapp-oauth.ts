@@ -43,6 +43,8 @@ export async function acquireGatewayToken(
   scopes: string[],
 ): Promise<GatewayToken> {
   const issuer = oidcIssuer();
+  // インストールが B1 のクライアントにこの戻り先を登録する（サーバーの MINIAPP_OAUTH_CALLBACK_PATH・
+  // crates/api/src/config/miniapp.rs。web のオリジンは gateway.web_origin か BFF のログインの戻り先から求める）。
   const redirectUri = `${window.location.origin}/apps/oauth/callback`;
   const verifier = randomUrlSafe(48);
   const state = randomUrlSafe(16);
@@ -100,7 +102,7 @@ export async function acquireGatewayToken(
       code_verifier: verifier,
     }),
   });
-  if (!res.ok) throw new Error(`トークン交換に失敗しました（HTTP ${res.status}）`);
+  if (!res.ok) throw new Error("アプリを使う許可を受け取れませんでした。もう一度試してください。");
   const body = (await res.json()) as { access_token: string; expires_in: number };
   return { accessToken: body.access_token, expiresIn: body.expires_in };
 }

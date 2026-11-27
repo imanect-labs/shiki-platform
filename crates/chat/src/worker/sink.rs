@@ -39,7 +39,10 @@ pub(crate) struct WorkerSink {
     content: Vec<ContentBlock>,
     /// リース喪失（fencing 不一致）を検知したか。
     lost_lease: bool,
-    /// ステップ境界のチェックポイントを durable run 行へ永続化するか（自律 run のみ・#351）。
+    /// ステップ境界のチェックポイントを durable run 行へ永続化するか（#351）。
+    ///
+    /// 自律 run と再開した run は最初から。通常の会話は、作成系の道具（[`super::builder_tools::CHECKPOINT_ON`]）の
+    /// 呼び出しを受けた時点で立てる（R1）。立てたら run の終わりまで下ろさない。
     persist_checkpoints: bool,
     help: Option<(Arc<shiki_bug_report::BugReportService>, authz::AuthContext)>,
     /// この sink が追記した最新の `generation_event` seq（チェックポイント封筒の境界）。
@@ -76,7 +79,7 @@ impl WorkerSink {
         self.help = help.map(|service| (service, ctx.clone()));
         self
     }
-    /// チェックポイント永続化を有効化する（自律 run・#351）。
+    /// チェックポイント永続化を最初から有効化する（自律 run・再開した run・#351）。
     #[must_use]
     pub(crate) fn with_checkpoints(mut self, enabled: bool) -> Self {
         self.persist_checkpoints = enabled;
@@ -228,6 +231,11 @@ impl WorkerSink {
                     document: document.clone(),
                 });
             }
+            // 作ったテーブル・ビュー・アプリ・ワークフローへの参照（D-204）。カードと次のターンの文脈に残す。
+            StreamEventKind::BuilderRef { item } => {
+                self.content
+                    .push(ContentBlock::BuilderRef { item: item.clone() });
+            }
             // レガシー（#381 で廃止）。新規発火は無いが replay 経路の網羅性のため残す。
             StreamEventKind::DocumentDraft { draft } => {
                 self.content.push(ContentBlock::DocumentDraft {
@@ -338,6 +346,15 @@ impl EventSink for WorkerSink {
             Err(e) => return Err(AgentError::Sink(e.to_string())),
         }
         self.accumulate(&kind);
+        // 作成系の道具の呼び出しを受けたら、このステップの終わりからチェックポイントを保存する（R1）。
+        // 429 などで run を頭からやり直すと、作成や試運転が二重に走るため。
+        if let AgentEvent::ToolCall { name, .. } = &event {
+            if !self.persist_checkpoints && super::builder_tools::starts_checkpoints(name) {
+                tracing::info!(run_id = %self.run_id, tool = %name,
+                    "作成系の道具を呼んだので、ステップ境界のチェックポイントの保存を始める");
+                self.persist_checkpoints = true;
+            }
+        }
         Ok(())
     }
 
@@ -345,7 +362,7 @@ impl EventSink for WorkerSink {
         self.cancel.load(Ordering::Relaxed)
     }
 
-    /// ステップ境界のチェックポイントを durable run 行へ保存する（自律 run のみ・#351）。
+    /// ステップ境界のチェックポイントを durable run 行へ保存する（保存を有効にした run だけ・#351）。
     ///
     /// fencing 不一致はリース喪失としてループを止める（ゾンビ書込防止）。一時的な DB エラーは
     /// warn のみで続行する（best-effort: 次の境界で再保存され、resume は一つ前の境界へ戻るだけ。
@@ -380,6 +397,90 @@ impl EventSink for WorkerSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 道具が組んだ参照カード（D-204）は SSE の builder_ref になり、そのまま content の builder_ref ブロックに残る。
+    #[tokio::test]
+    async fn builder_ref_event_maps_to_sse_and_projection() {
+        let item = crate::builder_obs::BuilderRef::new(
+            crate::builder_obs::BuilderKind::DataTable,
+            Uuid::new_v4(),
+            "顧客",
+            1,
+        )
+        .to_value();
+        let kind = to_stream_kind(&AgentEvent::BuilderRef { item: item.clone() });
+        assert_eq!(kind.tag(), "builder_ref");
+        // DB に触れない sink（projection だけを見る）。
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://shiki@127.0.0.1:1/none")
+            .unwrap();
+        let store = ChatStore::connect(pool, Arc::new(NoAuthz), None)
+            .await
+            .unwrap();
+        let mut sink = WorkerSink::new(store, "t", Uuid::new_v4(), 1, Arc::default());
+        sink.accumulate(&kind);
+        assert_eq!(sink.content(), [ContentBlock::BuilderRef { item }]);
+    }
+
+    /// 問われない認可（projection のテストは認可を呼ばない）。
+    struct NoAuthz;
+
+    #[async_trait::async_trait]
+    impl authz::AuthzClient for NoAuthz {
+        async fn check(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+            _: authz::Consistency,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn write_tuple(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn delete_tuple(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: &authz::FgaObject,
+        ) -> Result<bool, authz::AuthzError> {
+            Ok(false)
+        }
+        async fn read_tuples(
+            &self,
+            _: &authz::FgaObject,
+            _: Option<authz::Relation>,
+        ) -> Result<Vec<authz::ReadTupleKey>, authz::AuthzError> {
+            Ok(vec![])
+        }
+        async fn list_objects(
+            &self,
+            _: &authz::Subject,
+            _: authz::Relation,
+            _: authz::ObjectType,
+        ) -> Result<Vec<String>, authz::AuthzError> {
+            Ok(vec![])
+        }
+        async fn delete_object_tuples(
+            &self,
+            _: &authz::FgaObject,
+        ) -> Result<u32, authz::AuthzError> {
+            Ok(0)
+        }
+        async fn read_subject_objects(
+            &self,
+            _: &authz::Subject,
+            _: authz::ObjectType,
+        ) -> Result<Vec<String>, authz::AuthzError> {
+            Ok(vec![])
+        }
+    }
 
     #[test]
     fn artifact_event_maps_to_file_ref() {

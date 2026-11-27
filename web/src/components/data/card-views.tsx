@@ -19,10 +19,12 @@ import {
   type DataRecord,
   type ViewSpec,
 } from "@/lib/data-api";
-import { cellValue, displayCell, formatValue, roleRefIds, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cellValue, displayCell, fileRefIds, formatValue, roleRefIds, userRefIds, type ColumnModel } from "@/lib/data-view";
+import { cachedNodeName } from "@/lib/node-name-cache";
 import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
 import { cn } from "@/lib/utils";
+import { useFileNames } from "./use-file-names";
 
 type Loaded = { items: DataRecord[]; cursor: string | null; loading: boolean; error: string | null };
 
@@ -146,6 +148,11 @@ function MoreButton({ cursor, loading, onMore }: { cursor: string | null; loadin
   );
 }
 
+/// カードに出す列（`keys` の順・無い列は飛ばす）。
+function cardColumns(columns: readonly ColumnModel[], keys: readonly string[]): ColumnModel[] {
+  return keys.map((k) => columns.find((c) => c.key === k)).filter((c): c is ColumnModel => Boolean(c));
+}
+
 function Card({ r, title, fields }: { r: DataRecord; title: ColumnModel | undefined; fields: ColumnModel[] }) {
   const t = title ? formatValue(cellValue(r, title.key), title.field, title.key) : "";
   return (
@@ -154,7 +161,7 @@ function Card({ r, title, fields }: { r: DataRecord; title: ColumnModel | undefi
       {fields.length ? (
         <dl className="mt-2 space-y-1">
           {fields.map((c) => {
-            const { text: v, muted } = displayCell(r, c, cachedUserName, cachedRoleName);
+            const { text: v, muted } = displayCell(r, c, cachedUserName, cachedRoleName, cachedNodeName);
             return (
               <div key={c.key} className="flex gap-2 text-xs">
                 <dt className="w-20 shrink-0 truncate text-muted-foreground">{c.label}</dt>
@@ -189,6 +196,8 @@ export function KanbanBoard({
   const group = byKey.get(spec.group_field);
   const cards = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));
   const [title, ...rest] = cards;
+  // カードに出す列（見出しを除く）のファイルの名前だけを引く。
+  useFileNames(React.useMemo(() => fileRefIds(items, cardColumns(columns, spec.card_fields ?? []).slice(1)), [items, columns, spec.card_fields]));
   const lanes = [...(group?.field?.options ?? []), ""];
   // 件数は索引のある列だけ数える（未索引の列の絞り込みは 400 になる。数えられなければ読み込み済みの数＋「+」）。
   const laneCounts = useLaneCounts(tableId, query, spec.group_field, group?.field?.indexed ? lanes : []);
@@ -239,6 +248,8 @@ export function GalleryGrid({
 }) {
   const { items, cursor, loading, more } = useRecords(tableId, query, onError);
   useUserNames(items, columns);
+  // カードに出す列（見出しを除く）のファイルの名前だけを引く。
+  useFileNames(React.useMemo(() => fileRefIds(items, cardColumns(columns, spec.card_fields ?? [])), [items, columns, spec.card_fields]));
   const byKey = new Map(columns.map((c) => [c.key, c]));
   const title = spec.title_field ? byKey.get(spec.title_field) : columns.find((c) => !c.system);
   const fields = (spec.card_fields ?? []).map((k) => byKey.get(k)).filter((c): c is ColumnModel => Boolean(c));

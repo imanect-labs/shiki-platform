@@ -31,7 +31,7 @@ impl BadRequestBody {
     }
 }
 
-/// 409 の構造化コード（data）。
+/// 409 の構造化コード（data・CSV の新規保存）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictCode {
@@ -46,13 +46,19 @@ pub enum ConflictCode {
     IndexPreparing,
     /// 索引列数の上限を超える（`field`・`indexed_fields`・`max_indexed_fields`）。
     IndexApprovalRequired,
-    /// 同じ名前のテーブルが既にある。
+    /// 同じ名前のテーブルが既にある。CSV の新規保存（`POST /tabular/save`）では、保存先に同じ名前のファイルが
+    /// ある（番号を付けるときは ` (50)` まで埋まっている・BUG-150）。
     NameTaken,
+    /// アプリのインストール・アンインストールで、同じテナントのほかの組織にこのアプリの有効なインストールがある
+    /// （`message` に理由と直し方・BUG-212）。
+    InstalledInOtherOrg,
+    /// アプリ・スキルのインストールで、その版の公開が取り下げられている（`message` に理由・GAP-69b）。
+    Yanked,
     /// その他の競合（取込 ID の再利用・並行のスキーマ切替など）。
     Conflict,
 }
 
-/// 構造化 409（data の競合）。コードごとに使う項目だけが入る。
+/// 構造化 409（data の競合・CSV の新規保存の名前の衝突）。コードごとに使う項目だけが入る。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ConflictBody {
     /// 常に 409。
@@ -63,7 +69,8 @@ pub struct ConflictBody {
     pub current_rev: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
-    /// 利用者に見せてよい文言（`unique_violation` だけ・読める列なら表示名つき・値は含まない）。
+    /// 利用者に見せてよい文言（`unique_violation`〔読める列なら表示名つき・値は含まない〕と `installed_in_other_org`・
+    /// `yanked`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// 索引の準備の進捗（0〜1・不明なら null）。`index_preparing` のときだけ項目を持つ。
@@ -87,6 +94,101 @@ impl ConflictBody {
             progress: None,
             indexed_fields: None,
             max_indexed_fields: None,
+        }
+    }
+}
+
+/// アーティファクト（ワークフロー・アプリ・スキルなど）の 409 の構造化コード（GAP-41）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactConflictCode {
+    /// 比べた版（`expected_version`）の後に、ほかの人が保存した。`current_version` に今の最新の版。
+    VersionConflict,
+    /// 同じ種類・同じ名前のものがすでにある（名前はテナントで一意なので、呼んだ人に見えないものを含む）。
+    NameTaken,
+}
+
+/// アーティファクトの構造化 409（版の競合・名前の重複・GAP-41）。`message` は利用者に見せてよい日本語で、対象の id や
+/// 呼んだ人に見えないものの名前を含まない。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArtifactConflictBody {
+    /// 常に 409。
+    pub status: u16,
+    pub title: String,
+    pub code: ArtifactConflictCode,
+    pub message: String,
+    /// 今の最新の版（`version_conflict` のときだけ。呼んだ人は editor を確かめてある）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<i64>,
+}
+
+impl ArtifactConflictBody {
+    pub fn new(reason: artifact::ConflictReason) -> Self {
+        use artifact::ConflictReason as R;
+        let (code, message, current_version) = match reason {
+            R::VersionChanged { kind, current } => (
+                ArtifactConflictCode::VersionConflict,
+                format!(
+                    "ほかの人が先にこの{}を保存しました。あなたの変更は保存されていません。",
+                    kind.noun()
+                ),
+                Some(current),
+            ),
+            R::NameTaken { kind } => (
+                ArtifactConflictCode::NameTaken,
+                format!(
+                    "同じ名前の{}がすでにあります（あなたが見られないものを含みます）。別の名前にしてください。",
+                    kind.noun()
+                ),
+                None,
+            ),
+        };
+        ArtifactConflictBody {
+            status: 409,
+            title: "Conflict".into(),
+            code,
+            message,
+            current_version,
+        }
+    }
+}
+
+/// ゴミ箱の完全削除で何も消さなかった理由（`DELETE /trash/{id}` の 409 の `code`・GAP-108b）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PurgeRefusalCode {
+    /// ゴミ箱に無い（ほかの人が元に戻した・削除していない）。
+    NotInTrash,
+    /// 削除したフォルダの中にある（ゴミ箱に出ているのは親のフォルダ）。
+    InsideDeletedFolder,
+    /// フォルダの中に、削除した後に作られた（削除されていない）ノードがある。
+    LiveDescendants,
+}
+
+/// ゴミ箱の完全削除の構造化 409。`title` は利用者に見せてよい日本語。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct PurgeRefusalBody {
+    /// 常に 409。
+    pub status: u16,
+    pub title: String,
+    pub code: PurgeRefusalCode,
+}
+
+impl PurgeRefusalBody {
+    pub fn new(code: PurgeRefusalCode) -> Self {
+        let title = match code {
+            PurgeRefusalCode::NotInTrash => "ゴミ箱にありません",
+            PurgeRefusalCode::InsideDeletedFolder => {
+                "フォルダごとゴミ箱にあります。ゴミ箱に出ているフォルダを完全に削除してください"
+            }
+            PurgeRefusalCode::LiveDescendants => {
+                "このフォルダの中に、削除した後に作られたファイルがあります。フォルダを元に戻して中を確かめてください"
+            }
+        };
+        PurgeRefusalBody {
+            status: 409,
+            title: title.into(),
+            code,
         }
     }
 }
@@ -176,6 +278,49 @@ pub struct QueryRejectionBody {
     pub title: String,
     #[serde(flatten)]
     pub rejection: data::QueryRejection,
+}
+
+/// 実行の入力の誤り 1 件（項目のキーと理由・BUG-109）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InputIssueBody {
+    /// 入力の項目のキー（入れ子は `addr.zip`・リストの要素は `tags[2]`）。入力全体の誤りは空。
+    pub key: String,
+    /// 理由（利用者に見せてよい日本語・例: `1 以上にしてください`）。
+    pub message: String,
+}
+
+/// 実行の入力が入力項目の形に合わない（構造化 400・`invalid_input`・BUG-109）。
+///
+/// 実行のダイアログは `errors` の `key` を項目の見出しに直して欄の下に出す（本文を捨てて「API 400」とだけ
+/// 出さない）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InvalidRunInputBody {
+    /// 常に 400。
+    pub status: u16,
+    pub title: String,
+    /// `invalid_input`。
+    pub code: data::InvalidCode,
+    /// 全体の文言（例: `入力した値に誤りがあります。`）。
+    pub message: String,
+    pub errors: Vec<InputIssueBody>,
+}
+
+impl InvalidRunInputBody {
+    pub fn new(issues: &[workflow_engine::ir::input_schema::InputIssue]) -> Self {
+        InvalidRunInputBody {
+            status: 400,
+            title: "Bad Request".into(),
+            code: data::InvalidCode::InvalidInput,
+            message: "入力した値に誤りがあります。".into(),
+            errors: issues
+                .iter()
+                .map(|i| InputIssueBody {
+                    key: i.key.clone(),
+                    message: i.message.clone(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// 型を JSON 本文へ（直列化に失敗しない型だけを渡す）。

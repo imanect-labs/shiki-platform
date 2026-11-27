@@ -131,20 +131,42 @@ fn name_key(name: &str) -> String {
     name.trim().to_ascii_lowercase().replace(['.', '-'], "_")
 }
 
+/// 索引（BM25 と埋め込み）に入れる定義。語彙に検索用の短い文（[`ToolName::search_text`]）があるツールは、
+/// 説明文の代わりにそれを入れる（説明文の全文は索引に入れない・D-41）。並びは `deferred` と同じ。
+fn index_defs(deferred: &[ToolDef]) -> Vec<ToolDef> {
+    deferred
+        .iter()
+        .map(|d| {
+            let text = ToolName::parse(&d.name).map_or("", ToolName::search_text);
+            if text.is_empty() {
+                d.clone()
+            } else {
+                ToolDef {
+                    description: text.to_string(),
+                    ..d.clone()
+                }
+            }
+        })
+        .collect()
+}
+
 impl ToolSearch {
-    /// 遅延ツールの定義から索引を組む（検索語は語彙の単一定義から引く・語彙外は無し）。
+    /// 遅延ツールの定義から索引を組む（検索語・検索用の文は語彙の単一定義から引く・語彙外は無し）。
+    ///
+    /// 結果に載せる要約（`tools`）は説明文の先頭から作る（読み込んだツールの説明として出すため）。
     fn build(deferred: &[ToolDef], embedder: Option<Arc<dyn EmbeddingProvider>>) -> Self {
         let keywords: Vec<&str> = deferred
             .iter()
             .map(|d| ToolName::parse(&d.name).map_or("", ToolName::search_keywords))
             .collect();
+        let indexed = index_defs(deferred);
         ToolSearch {
-            index: ToolIndex::build(deferred, &keywords),
+            index: ToolIndex::build(&indexed, &keywords),
             tools: deferred
                 .iter()
                 .map(|d| (d.name.clone(), summary(&d.description)))
                 .collect(),
-            embedder: embedder.map(|p| hybrid::Embedder::new(p, deferred)),
+            embedder: embedder.map(|p| hybrid::Embedder::new(p, &indexed)),
         }
     }
 

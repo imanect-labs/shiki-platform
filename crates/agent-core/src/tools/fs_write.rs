@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use authz::AuthContext;
 
-use super::fs::parse_name;
+use super::fs::{decode_workspace_text, parse_name};
 use super::mime::content_type_for;
 use crate::tool::{ArtifactRef, Tool, ToolError, ToolOutcome};
 use crate::workspace::{WorkspaceStore, WorkspaceWrite};
@@ -143,12 +143,14 @@ impl Tool for FsEditTool {
         let new = str_field(&input, "new_string")?;
 
         let bytes = self.workspace.read(ctx, &name, trace_id).await?;
-        // バイナリ（非 UTF-8）ファイルは lossy 変換で内容が壊れるため編集を拒否する（安全側）。
-        let Ok(text) = String::from_utf8(bytes) else {
+        // 文字コードは fs_read と同じ判定で決める（Shift_JIS なども編集できる・BUG-142）。文章として読めない
+        // ファイルは、lossy 変換で内容が壊れるため編集を拒否する（安全側）。
+        let Ok(original) = decode_workspace_text(&name, &bytes) else {
             return Ok(ToolOutcome::error(format!(
                 "'{name}' はテキストファイルではないため fs_edit で編集できません。"
             )));
         };
+        let text = &original.text;
         let count = text.matches(&old).count();
         if count == 0 {
             return Ok(ToolOutcome::error(format!(
@@ -161,10 +163,20 @@ impl Tool for FsEditTool {
             )));
         }
         let updated = text.replacen(&old, &new, 1);
+        // 元の文字コードと BOM のまま書き戻す（CSV の編集と同じ）。その文字コードに無い文字は書かない。
+        let bytes = match textenc::encode_like(&updated, original.encoding, original.bom) {
+            Ok(bytes) => bytes,
+            Err(textenc::Unmappable(c)) => {
+                return Ok(ToolOutcome::error(format!(
+                    "「{c}」は、'{name}' の文字コード（{}）では書けません。別の文字に置き換えてください。",
+                    original.encoding.name()
+                )))
+            }
+        };
         let ct = content_type_for(&name);
         let w = self
             .workspace
-            .write(ctx, &name, updated.into_bytes(), ct, trace_id)
+            .write(ctx, &name, bytes, ct, trace_id)
             .await?;
         Ok(write_outcome(w, self.workspace.is_system()))
     }
@@ -387,6 +399,44 @@ mod tests {
         assert!(!out.is_error);
         let bytes = ws.read(&ctx(), "a.txt", None).await.unwrap();
         assert_eq!(String::from_utf8_lossy(&bytes), "hello shiki");
+    }
+
+    /// Shift_JIS のファイルも編集でき、Shift_JIS のまま書き戻す。Shift_JIS に無い文字は書かない（BUG-142）。
+    #[tokio::test]
+    async fn edit_keeps_the_original_encoding() {
+        let ws = Arc::new(FakeWorkspace::default());
+        let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode("経費,金額\n交通費,1200\n");
+        ws.files
+            .lock()
+            .unwrap()
+            .insert("経費.csv".into(), sjis.into_owned());
+        let edit = FsEditTool::new(ws.clone());
+        let out = edit
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "経費.csv", "old_string": "1200", "new_string": "1500"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let bytes = ws.read(&ctx(), "経費.csv", None).await.unwrap();
+        let (expected, _, _) = textenc::encoding_rs::SHIFT_JIS.encode("経費,金額\n交通費,1500\n");
+        assert_eq!(bytes, expected.into_owned());
+        let out = edit
+            .call(
+                &ctx(),
+                serde_json::json!({"name": "経費.csv", "old_string": "交通費", "new_string": "交通費😀"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.is_error && out.content.contains("Shift_JIS"),
+            "{}",
+            out.content
+        );
+        assert_eq!(ws.read(&ctx(), "経費.csv", None).await.unwrap(), bytes);
     }
 
     #[tokio::test]

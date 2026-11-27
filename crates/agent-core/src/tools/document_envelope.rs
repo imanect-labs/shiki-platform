@@ -77,6 +77,19 @@ pub fn neutralize_tag<'a>(s: &'a str, tag: &str) -> Cow<'a, str> {
     }
 }
 
+/// 畳み込みで先頭だけを残したときに閉じる封筒（開きタグの頭・閉じタグ）。
+///
+/// 開きタグは前方一致で数える（`<shared_artifact owner="…">` のように属性を持つ封筒がある）。どの頭も、閉じタグ
+/// （`</…`）や中和した文字（`&lt;…`）とは一致しない。
+const ENVELOPES: [(&str, &str); 4] = [
+    (OPEN, CLOSE),
+    ("<web_page>", "</web_page>"),
+    // 試運転の観測（会話の AI の try_workflow・T04）。
+    ("<run_output>", "</run_output>"),
+    // ほかの人が書いた artifact（list_workflows・read_workflow・T01）。
+    ("<shared_artifact", "</shared_artifact>"),
+];
+
 /// 畳み込みで先頭だけを残したとき、開いたまま切れた封筒を閉じる（`context::fold` 用）。
 ///
 /// 切れ目が封筒の内側に来ると、後ろに付くこちらの「省略」注記まで封筒の中＝文書のデータに見える。
@@ -84,7 +97,7 @@ pub fn neutralize_tag<'a>(s: &'a str, tag: &str) -> Cow<'a, str> {
 #[must_use]
 pub fn close_dangling(head: &str) -> String {
     let mut out = head.to_string();
-    for (open, close) in [(OPEN, CLOSE), ("<web_page>", "</web_page>")] {
+    for (open, close) in ENVELOPES {
         let opened = head.matches(open).count();
         let closed = head.matches(close).count();
         for _ in closed..opened {
@@ -184,6 +197,32 @@ mod tests {
             "<document>\nx\n</document>"
         );
         assert_eq!(close_dangling("ふつう"), "ふつう");
+    }
+
+    /// 試運転の観測（`<run_output>`）と共有された artifact（`<shared_artifact …>`・属性つき）も閉じる。
+    #[test]
+    fn close_dangling_closes_run_output_and_shared_artifact() {
+        assert_eq!(
+            close_dangling("試運転: 成功\n<run_output>\n途中"),
+            "試運転: 成功\n<run_output>\n途中\n</run_output>"
+        );
+        assert_eq!(
+            close_dangling("<run_output>\nx\n</run_output>"),
+            "<run_output>\nx\n</run_output>"
+        );
+        assert_eq!(
+            close_dangling("共有: <shared_artifact owner=\"bob\">途中"),
+            "共有: <shared_artifact owner=\"bob\">途中\n</shared_artifact>"
+        );
+        assert_eq!(
+            close_dangling("<shared_artifact>a</shared_artifact> <shared_artifact>b"),
+            "<shared_artifact>a</shared_artifact> <shared_artifact>b\n</shared_artifact>"
+        );
+        // 中和した文字は開きタグに数えない。
+        assert_eq!(
+            close_dangling("<run_output>\n&lt;run_output>\n</run_output>"),
+            "<run_output>\n&lt;run_output>\n</run_output>"
+        );
     }
 
     #[test]

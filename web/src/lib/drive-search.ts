@@ -6,7 +6,7 @@
 import * as React from "react";
 
 import type { NodeResponse } from "./storage";
-import { listChildren } from "./storage";
+import { listChildrenUpTo } from "./storage";
 import { searchDocuments, SearchApiError } from "./search";
 
 /// 内容一致のファイル（チャンクを file 単位に集約した最良ヒット）。
@@ -81,9 +81,14 @@ export function useContentSearch(query: string, enabled: boolean) {
   return { hits, loading, disabled };
 }
 
-/// 名前一致（フォルダ/ファイル横断・先頭 1 ページのみ。パレット等の要約表示用）。
+/// 名前一致（フォルダ/ファイル横断・パレット等の要約表示用）。先頭の `limit` 件だけを読む。
+///
+/// 見えるものが ListObjects の上限を超える人では、サーバーが 0 件のページに続きの位置だけを付けて返すことがある
+/// （BUG-187）。ドライブの画面と同じく続きを数回たどり、それでも `limit` 件に届かずに続きが残ったら `incomplete` を
+/// 立てる（パレットは名前一致が無いように見せず、ドライブで続きを探す口を出す）。語が変わったら前の読み込みを止める。
 export function useNameSearch(query: string, enabled: boolean, limit = 6) {
   const [nodes, setNodes] = React.useState<NodeResponse[]>([]);
+  const [incomplete, setIncomplete] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const seq = React.useRef(0);
 
@@ -91,26 +96,38 @@ export function useNameSearch(query: string, enabled: boolean, limit = 6) {
     const q = query.trim();
     if (!enabled || !q) {
       setNodes([]);
+      setIncomplete(false);
       setLoading(false);
       return;
     }
     const mySeq = ++seq.current;
+    const controller = new AbortController();
     setLoading(true);
     void (async () => {
       try {
-        const page = await listChildren({ q, limit, sort: "name", desc: false });
+        const page = await listChildrenUpTo({
+          q,
+          want: limit,
+          sort: "name",
+          desc: false,
+          signal: controller.signal,
+        });
         if (mySeq !== seq.current) return;
-        setNodes(page.items);
+        const found = page.items.slice(0, limit);
+        setNodes(found);
+        setIncomplete(Boolean(page.next_cursor) && found.length < limit);
       } catch {
         if (mySeq !== seq.current) return;
         setNodes([]);
+        setIncomplete(false);
       } finally {
         if (mySeq === seq.current) setLoading(false);
       }
     })();
+    return () => controller.abort();
   }, [query, enabled, limit]);
 
-  return { nodes, loading };
+  return { nodes, incomplete, loading };
 }
 
 /// 名前一致＋内容一致をスコア降順の単一リストへ統合する。

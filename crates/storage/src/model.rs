@@ -94,15 +94,34 @@ pub struct DownloadTicket {
     pub expires_in_secs: u64,
 }
 
-/// 子一覧の 1 ページ（**権限フィルタ済み**・PIT-13）。
+/// 子一覧・名前の検索の 1 ページ（**権限フィルタ済み**・PIT-13）。
 ///
 /// `items` は呼び出しユーザーが viewer 以上を持つノードのみ。`next_cursor` が
-/// `Some` なら続きがあり、次回 `list_children` に渡すと続きから取得できる
-/// （オーバーフェッチ＋keyset カーソル方式。末尾で空ページが 1 回返り得る）。
+/// `Some` なら続きがあり、次回 `list_children`（名前の検索は `search_nodes_by_name`）に渡すと続きから取得できる
+/// （keyset カーソル方式）。ページの後ろに見えるものがあるときだけ `Some` で、ちょうど `limit` 件で尽きたら `None`
+/// （BUG-180）。OpenFGA に問う数の上限に届いたページは `limit` より少ないか空で、続きの位置は見えないノードを
+/// 指しうる（このときは後ろに見えるものが無く、次のページが空で終わることもある・BUG-187）。中身は見えないノードの名前を含みうる内部の値
+/// なので、外へ出す API はテナントと一覧の種類に束縛して暗号化する（`data::DataStore::seal_list_cursor`）。
 #[derive(Debug)]
 pub struct ChildPage {
     pub items: Vec<Node>,
     pub next_cursor: Option<String>,
+}
+
+/// 「共有されたもの」の続きの位置（並びのキー `(updated_at, id)` の最後の値・キーセット）。
+///
+/// 見えないノードを指すことがある（BUG-162）ので、外へ出すときは呼び出し側（API）がテナントに束縛して暗号化する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedPosition {
+    pub updated_at: DateTime<Utc>,
+    pub id: Uuid,
+}
+
+/// 「共有されたもの」の 1 ページ（新しい順）。`next` が `Some` なら続きがある（`items` が空でも続きがあることがある）。
+#[derive(Debug)]
+pub struct SharedPage {
+    pub items: Vec<Node>,
+    pub next: Option<SharedPosition>,
 }
 
 /// 子一覧の並び替えキー。keyset カーソルをこのキーに織り込み、サーバ側でソートする
@@ -131,6 +150,23 @@ impl Default for ChildSort {
             key: ChildSortKey::Name,
             desc: false,
         }
+    }
+}
+
+impl ChildSort {
+    /// 続きの位置を使ってよい一覧を 1 つに決める文字列（並び ＋ `within`。`within` はフォルダーの id・検索の語など）。
+    ///
+    /// 外へ出す続きの位置の封（`data::DataStore::seal_list_cursor` の `scope`）に使い、並びやフォルダーを変えて
+    /// 前の位置を使い回すと読めない位置として断る（BUG-187・D-131）。
+    #[must_use]
+    pub fn cursor_scope(self, within: &str) -> String {
+        let key = match self.key {
+            ChildSortKey::Name => "name",
+            ChildSortKey::Updated => "updated",
+            ChildSortKey::Size => "size",
+        };
+        let dir = if self.desc { "desc" } else { "asc" };
+        format!("{key}:{dir}:{within}")
     }
 }
 

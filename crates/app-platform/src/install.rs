@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::manifest::TrustTier;
 use crate::sign::verify_manifest_signature;
 use crate::store::MiniAppCodeStore;
+use crate::table_roles::AppTableRoles;
 use crate::trusted_key::TrustedKeyStore;
 use crate::{AppPlatformError, MiniAppManifest, Registry};
 
@@ -38,6 +39,20 @@ pub struct InstallRequest {
     pub viewer_roles: Vec<String>,
     /// プロビジョンしたテーブルへ editor を付与するロール。
     pub editor_roles: Vec<String>,
+    /// プロビジョンしたテーブルへ「追加だけ」（submitter・D-113）を付与するロール。追加でき、自分が追加した
+    /// レコードだけ読める（申請のアプリで社員に渡す形）。
+    pub submitter_roles: Vec<String>,
+}
+
+impl InstallRequest {
+    /// テーブルに付ける部署・グループ（インストールの後に変えるときと同じ形・GAP-68）。
+    pub(crate) fn table_roles(&self) -> AppTableRoles {
+        AppTableRoles {
+            viewer_roles: self.viewer_roles.clone(),
+            editor_roles: self.editor_roles.clone(),
+            submitter_roles: self.submitter_roles.clone(),
+        }
+    }
 }
 
 /// インストール結果。
@@ -61,7 +76,8 @@ pub struct InstallService {
     pub(crate) keys: TrustedKeyStore,
     pub(crate) oauth: Option<OAuthClient>,
     pub(crate) audit: AuditRecorder,
-    /// B1 public client の redirect URI（ホスト支援 PKCE のシェル callback・PR10 が消費）。
+    /// B1 public client の redirect URI（ホスト支援 PKCE のシェルのポップアップの戻り先
+    /// `{web のオリジン}/apps/oauth/callback`・BUG-172）。
     pub(crate) b1_redirect_uris: Vec<String>,
     /// B2 confidential secret の保管先（宛先束縛・未配線は保管スキップ＝トリガ無効）。
     pub(crate) secrets: Option<Arc<secrets::SecretStore>>,
@@ -135,14 +151,17 @@ impl InstallService {
             .await?
             .ok_or(AppPlatformError::NotFound)?;
         if entry.yanked {
-            return Err(AppPlatformError::Conflict(
-                "このバージョンは yank されています".into(),
-            ));
+            return Err(AppPlatformError::Conflict(crate::YANKED_VERSION.into()));
         }
         let app_id = entry.artifact_id;
 
         // インストール認可: mini_app_code アーティファクトの owner（human 確定判断）。
         self.require_artifact_owner(ctx, app_id).await?;
+        // ほかの組織の有効なインストールは、この組織から書き換えない（テーブルとクライアントを作る前に断る・BUG-212）。
+        self.installations
+            .ensure_not_in_other_org(ctx, app_id)
+            .await
+            .map_err(map_gateway)?;
 
         // マニフェスト取得（owner なので viewer も満たす）。
         let (_, manifest) = self
@@ -156,13 +175,20 @@ impl InstallService {
 
         // ③ granted ⊆ requested（語彙は CapabilityScope 閉集合・未知は fail-closed）。
         validate_granted(&req.granted_scopes, &manifest.requested_scopes)?;
+        // テーブルに付ける部署・グループの id の形（テーブルを作る前に断る・GAP-68 と同じ決まり）。
+        crate::table_roles::check_role_ids(&req.table_roles())?;
 
         // ④ 所有テーブル・プロビジョン（＋FGA tuple）。失敗時は補償。
         let mut created: Vec<Uuid> = Vec::new();
         let result = self
             .provision(ctx, &manifest, app_id, &req, &mut created, trace_id)
             .await;
-        let (client_b1, client_b2, secret_b2) = match result {
+        let Clients {
+            b1: client_b1,
+            b2: client_b2,
+            b2_secret: secret_b2,
+            b2_service_sub,
+        } = match result {
             Ok(clients) => clients,
             Err(e) => {
                 self.compensate_tables(ctx, &created, trace_id).await;
@@ -212,6 +238,23 @@ impl InstallService {
                 return Err(e);
             }
         };
+
+        // クライアントを今の登録の形で揃えた印（起動時の照合が同じ形のクライアントを揃え直さない・BUG-172）。
+        if self.oauth.is_some() {
+            if let Err(e) = self
+                .installations
+                .mark_clients_repaired(
+                    ctx.tenant_id(),
+                    app_id,
+                    &self.client_spec(),
+                    b2_service_sub.as_deref(),
+                    app_gateway::ClientMarks::default(),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, %app_id, "クライアントを揃えた印を付けられません（起動時の照合が揃え直す）");
+            }
+        }
 
         // B2: secret 保管（宛先束縛）＋ event/cron トリガの実体化（Task 9.12）。
         if let Some(secret) = secret_b2.as_deref() {
@@ -283,9 +326,10 @@ impl InstallService {
         req: &InstallRequest,
         created: &mut Vec<Uuid>,
         trace_id: Option<&str>,
-    ) -> Result<(Option<String>, Option<String>, Option<String>), AppPlatformError> {
+    ) -> Result<Clients, AppPlatformError> {
         let ns = ctx.ns();
         let miniapp_subject = ns.miniapp_principal(&app_id.to_string());
+        let roles = req.table_roles();
         for t in &manifest.tables {
             let table = self
                 .data
@@ -306,19 +350,9 @@ impl InstallService {
                 .write_tuple(&miniapp_subject, Relation::Owner, &obj)
                 .await
                 .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-            // 管理者指定ロールへ viewer/editor を付与（role#member userset）。
-            for (roles, rel) in [
-                (&req.viewer_roles, Relation::Viewer),
-                (&req.editor_roles, Relation::Editor),
-            ] {
-                for role in roles {
-                    let subject = authz::Subject::userset(&ns.role(role), Relation::Member);
-                    self.authz
-                        .write_tuple(&subject, rel, &obj)
-                        .await
-                        .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-                }
-            }
+            // 管理者指定ロールへ viewer/editor/submitter を付与（role#member userset）。インストールの後の変更と
+            // 同じ 1 か所を通す（GAP-68）。
+            self.write_table_roles(ctx, &obj, &roles, true).await?;
             // テーブルの ReBAC を data の外で変えた: 配信（SSE）の認可材料を次のバッチで引き直させ、
             // 材料化の前提（viewer の範囲で値が変わらないか）を検査し直す（data-platform §7.4・§9.4）。
             // どちらも呼ばなくても次の読取・TTL で追いつくため、失敗はインストールを止めない。
@@ -326,38 +360,61 @@ impl InstallService {
         }
 
         // ⑤ Keycloak client 登録（B1 は常時・B2 は server 宣言時のみ）。決定的 client_id
-        // （app-<uuid>-b1/b2）＝再インストールは冪等（409 許容）。oauth 未配線（dev）は None。
+        // （app-<uuid>-b1/b2）＝再インストールは冪等（既にあれば有効に戻して今の形に揃える・BUG-172）。
+        // oauth 未配線（dev）は None。
         let Some(oauth) = &self.oauth else {
             tracing::warn!("Keycloak admin 未配線: client 登録をスキップします（dev モード）");
-            return Ok((None, None, None));
+            return Ok(Clients::default());
         };
         let b1_id = format!("app-{app_id}-b1");
+        // サーバーの関数を持つアプリは、B1 の利用者のトークンを同じアプリの B2 が交換できるようにする（BUG-182）。
+        let b2_id = manifest
+            .server
+            .is_some()
+            .then(|| format!("app-{app_id}-b2"));
         oauth
             .register(
                 app_gateway::ClientKind::PublicPkce,
                 &b1_id,
                 &manifest.name,
                 &self.b1_redirect_uris,
+                b2_id.as_deref(),
             )
             .await
             .map_err(map_gateway)?;
-        let (b2_id, b2_secret) = if manifest.server.is_some() {
-            let id = format!("app-{app_id}-b2");
+        let (b2_secret, b2_service_sub) = if let Some(id) = &b2_id {
             let registered = oauth
                 .register(
                     app_gateway::ClientKind::Confidential,
-                    &id,
+                    id,
                     &manifest.name,
                     &[],
+                    None,
                 )
                 .await
                 .map_err(map_gateway)?;
-            (Some(id), registered.client_secret)
+            (registered.client_secret, registered.service_account_sub)
         } else {
             (None, None)
         };
-        Ok((Some(b1_id), b2_id, b2_secret))
+        Ok(Clients {
+            b1: Some(b1_id),
+            b2: b2_id,
+            b2_secret,
+            b2_service_sub,
+        })
     }
+}
+
+/// インストールが Keycloak に登録したクライアント（Keycloak の管理が未配線なら空）。
+#[derive(Default)]
+struct Clients {
+    b1: Option<String>,
+    b2: Option<String>,
+    /// B2 の secret（secrets に保管する・ゲストへは渡さない）。
+    b2_secret: Option<String>,
+    /// B2 のサービスアカウントの利用者（自動実行のトークンの sub・BUG-183）。
+    b2_service_sub: Option<String>,
 }
 
 /// granted ⊆ requested（両方 CapabilityScope 閉集合でパース・未知は fail-closed）。

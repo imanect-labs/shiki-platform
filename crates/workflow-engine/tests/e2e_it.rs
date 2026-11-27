@@ -215,8 +215,10 @@ async fn interactive_and_scheduled_run_complete_with_exactly_once_effects() {
         "schedule",
         "trg-1",
         &serde_json::Value::Null,
+        None,
     )
     .await
+    .run_id()
     .expect("scheduled run id");
     let worker2 = WorkflowWorker::new(runs.clone(), exec.clone(), WorkerConfig::default())
         .scoped_to_tenant(&tenant);
@@ -293,12 +295,208 @@ async fn suspended_workflow_scheduled_launch_creates_no_run() {
         "schedule",
         "trg-1",
         &serde_json::Value::Null,
+        None,
     )
     .await;
+    // 委譲の不成立は再試行しない見送り（一時失敗と区別する・D-21）。
     assert!(
-        result.is_none(),
-        "委譲失効時は run を作らない（fail-closed）"
+        matches!(
+            result,
+            workflow_engine::LaunchOutcome::Skipped(
+                workflow_engine::SkipReason::DelegationInvalid(_)
+            )
+        ),
+        "委譲失効時は run を作らない（fail-closed）: {result:?}"
     );
+}
+
+/// 必須の欄が空の版は、前から自動実行がオンでも schedule / event で起動しない（BUG-51）。保存は通り、有効化の前の
+/// 確認（D-43・D-83）より前に有効化した版を、委譲を直接書いて作る。見送りは BUG-146 と同じ形（再試行しない
+/// DelegationInvalid・理由の文つき）で、run は作らない。
+#[tokio::test]
+async fn scheduled_launch_skips_enabled_versions_with_blank_required_fields() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let artifacts = Arc::new(ArtifactStore::new(
+        pool.clone(),
+        fga.clone() as Arc<dyn AuthzClient>,
+    ));
+    let workflows = WorkflowStore::new(artifacts.clone());
+    let delegation = DelegationStore::new(pool.clone(), fga.clone() as Arc<dyn AuthzClient>);
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+
+    // AI に聞くの「頼むこと」が空（保存は警告だけで通る・D-43）。
+    let ir = json!({
+        "ir_version": 1,
+        "name": "blank-prompt",
+        "nodes": [ { "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } } ],
+        "edges": [],
+        "triggers": [ { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" } ]
+    });
+    let (wf_id, _ir) = workflows
+        .create(&alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("save");
+    // 前の版の有効化を模して、有効化の前の確認を通さずに委譲を書く。
+    delegation
+        .enable(&alice, wf_id, 1, &[], &[])
+        .await
+        .expect("enable");
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let mut outcomes = Vec::new();
+    for kind in ["schedule", "event"] {
+        outcomes.push(
+            <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
+                &launcher,
+                &tenant,
+                wf_id,
+                kind,
+                "trg-1",
+                &serde_json::Value::Null,
+                None,
+            )
+            .await,
+        );
+    }
+    let created: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // 片付け（ワークフロー・登録・OpenFGA のストア）。
+    artifacts.delete(&alice, wf_id, None).await.unwrap();
+    sqlx::query("DELETE FROM workflow_registration WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").unwrap();
+    let deleted = reqwest::Client::new()
+        .delete(format!("{fga_url}/stores/{}", fga.store_id()))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+
+    for outcome in &outcomes {
+        match outcome {
+            workflow_engine::LaunchOutcome::Skipped(
+                workflow_engine::SkipReason::DelegationInvalid(reason),
+            ) => assert!(
+                reason.starts_with("実行の前に止める設定があります（1 件）: 「")
+                    && reason.contains("が空です"),
+                "{reason}"
+            ),
+            other => panic!("必須の欄が空の版を自動実行で起動した: {other:?}"),
+        }
+    }
+    assert_eq!(created, 0, "run を作らない");
+}
+
+/// 結果を画面に返すの返す値が空でも、自動実行（schedule / event）と子の実行（workflow.start）は起動する（BUG-168 と
+/// BUG-51 の重なり）。これらの run の結果はどの画面にも出ないので、前から自動実行がオンの版を止めない。ボタン・会話・
+/// 画面からの実行だけは、空の結果を返さないよう起動の前に止める。
+#[tokio::test]
+async fn unattended_and_child_launches_run_versions_with_a_blank_reply() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let artifacts = Arc::new(ArtifactStore::new(
+        pool.clone(),
+        fga.clone() as Arc<dyn AuthzClient>,
+    ));
+    let workflows = WorkflowStore::new(artifacts.clone());
+    let delegation = DelegationStore::new(pool.clone(), fga.clone() as Arc<dyn AuthzClient>);
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+
+    // エディターで置いたまま埋めなかった「結果を画面に返す」（値は空の文字）。
+    let ir = json!({
+        "ir_version": 1,
+        "name": "blank-reply",
+        "nodes": [ { "id": "done", "type": "workflow.reply", "params": { "format": "text", "value": "" } } ],
+        "edges": [],
+        "triggers": [
+            { "kind": "interactive" },
+            { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }
+        ]
+    });
+    let (wf_id, _ir) = workflows
+        .create(&alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("save");
+    delegation
+        .enable(&alice, wf_id, 1, &[], &[])
+        .await
+        .expect("enable");
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let mut outcomes = Vec::new();
+    for kind in ["schedule", "event"] {
+        outcomes.push(
+            <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
+                &launcher,
+                &tenant,
+                wf_id,
+                kind,
+                "trg-1",
+                &serde_json::Value::Null,
+                None,
+            )
+            .await,
+        );
+    }
+    let child = launcher.start_child(&alice, wf_id, &json!({}), None).await;
+    let interactive = launcher.start_interactive(&alice, wf_id, &json!({})).await;
+    let created: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // 片付け（run・ワークフロー・登録・OpenFGA のストア）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    artifacts.delete(&alice, wf_id, None).await.unwrap();
+    sqlx::query("DELETE FROM workflow_registration WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").unwrap();
+    let deleted = reqwest::Client::new()
+        .delete(format!("{fga_url}/stores/{}", fga.store_id()))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+
+    for outcome in &outcomes {
+        assert!(
+            matches!(outcome, workflow_engine::LaunchOutcome::Started(_)),
+            "空の結果を画面に返すを持つ自動実行の版を見送った: {outcome:?}"
+        );
+    }
+    assert!(matches!(child, Ok(Some(_))), "子の実行を止めた: {child:?}");
+    match interactive {
+        Err(workflow_engine::run::LauncherError::NotReady(errors)) => {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0].node_id.as_deref(), Some("done"));
+            assert_eq!(
+                errors[0].message,
+                "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
+            );
+        }
+        other => panic!("ボタンからの実行を止めなかった: {other:?}"),
+    }
+    assert_eq!(created, 3, "自動実行 2 件と子の実行 1 件だけを作る");
 }
 
 /// RunGraph が e2e で参照されることを型チェックで担保（未使用 import 警告回避）。

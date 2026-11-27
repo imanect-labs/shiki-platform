@@ -21,7 +21,7 @@ use serde_json::json;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::{IntoParams, ToSchema};
 
-use super::llm_models::{gateway, provider_label, EffortLevel};
+use super::llm_models::{gateway, provider_label, EffortLevel, ModelModality};
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
@@ -68,7 +68,7 @@ pub(crate) fn org_admin_ai_route_decls() -> Vec<RouteDecl> {
 pub struct AdminProvider {
     pub id: String,
     pub label: String,
-    /// アダプタ種別（`anthropic` / `openai` / `openai_responses` / `stub`）。
+    /// アダプタ種別（`anthropic` / `openai` / `openai_responses` / `chatgpt_plan` / `stub` / `typesafe_systemone`）。
     pub kind: String,
     /// 接続先（`scheme://host[:port]` まで）。既定エンドポイントを使う場合は `null`。
     pub endpoint: Option<String>,
@@ -140,6 +140,12 @@ pub struct AdminModel {
     /// 連携した本人だけが使うモデル（ChatGPT プラン・#854）。既定や Auto の振り先にしても、
     /// 本人以外は Auto・次の候補に切り替わる。
     pub personal: bool,
+    /// モデルの種類。`decision`（判定用）はワークフローの判定ノードでだけ使い、既定・Auto の振り先に
+    /// できない（FEAT-1）。
+    pub modality: ModelModality,
+    /// 判定用のモデルの元にする chat モデルの ID（LLM に判定を真似させるとき）。判定するには、
+    /// このモデルも有効にしておく。
+    pub decision_via: Option<String>,
     /// 単価（マイクロ USD / 100 万トークン）。0 は未設定（自社 GPU 等）。
     pub prompt_price_micros_per_mtok: u64,
     pub completion_price_micros_per_mtok: u64,
@@ -224,6 +230,8 @@ pub async fn list_models(
             supports_effort: gw.supports_effort(m),
             enabled: settings.is_enabled(catalog, &m.id),
             personal: gw.is_personal_model(m),
+            modality: m.modality.into(),
+            decision_via: m.decision_via.clone(),
             prompt_price_micros_per_mtok: m.prompt_price_micros_per_mtok,
             completion_price_micros_per_mtok: m.completion_price_micros_per_mtok,
             context_window_tokens: m.context_window_tokens,
@@ -306,7 +314,7 @@ pub struct UpdateAiSettingsRequest {
     request_body = UpdateAiSettingsRequest,
     responses(
         (status = 200, description = "更新後の設定", body = AiSettings),
-        (status = 400, description = "検証エラー（カタログ外・既定が無効・全モデル無効・レート範囲外）"),
+        (status = 400, description = "検証エラー（カタログ外・既定が無効・chat モデルが全部無効・既定や Auto に判定用のモデル・レート範囲外）"),
         (status = 403, description = "組織管理者ではない"),
         (status = 503, description = "LLM 未構成"),
     ),

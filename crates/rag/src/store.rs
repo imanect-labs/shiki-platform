@@ -282,8 +282,14 @@ pub async fn purge_tenant(conn: &mut PgConnection, tenant_id: &str) -> Result<u6
         .rows_affected();
     let jobs = sqlx::query("delete from rag_ingest_job where tenant_id = $1")
         .bind(tenant_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    // まとめての取り込みの進み具合（D-126）。
+    let backfills = sqlx::query("delete from rag_backfill where tenant_id = $1")
+        .bind(tenant_id)
         .execute(conn)
         .await?
         .rows_affected();
-    Ok(chunks + blocks + jobs)
+    Ok(chunks + blocks + jobs + backfills)
 }

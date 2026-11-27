@@ -55,14 +55,15 @@ impl ChatWorker {
     }
 }
 
-/// 保存済みチェックポイント封筒を復元する（#351・自律 run のみ）。
+/// 保存済みチェックポイント封筒を復元する（#351）。
+///
+/// チェックポイントがある run はどれも復元する（自律 run と、作成系の道具を呼んだ通常の会話・R1）。自律でない
+/// run がチェックポイントを書くのは T03 からで、それまでは書いていない（`with_checkpoints(run.autonomous)`）ので、
+/// 古い行が混ざることはない。
 ///
 /// 復元できない（旧形式等の）チェックポイントは警告して新規開始へフォールバックする
 /// （run を止めない・副作用の収束は版管理と冪等キーが担う）。
 pub(super) fn restore_checkpoint(run: &ClaimedRun) -> Option<super::sink::CheckpointEnvelope> {
-    if !run.autonomous {
-        return None;
-    }
     run.checkpoint
         .as_ref()
         .and_then(|j| match serde_json::from_value(j.0.clone()) {
@@ -73,4 +74,22 @@ pub(super) fn restore_checkpoint(run: &ClaimedRun) -> Option<super::sink::Checkp
                 None
             }
         })
+}
+
+/// 再開する run の状態を返す（#351）。チェックポイントが無ければ `None`（新規開始）。
+///
+/// takeover 前のイベントログ（チェックポイント境界まで）から content projection を再構築してから返す（続きだけを
+/// 生成するため、これ無しでは finalize 時に前半のテキスト/ツール結果が消える。境界より後＝中断ステップの途中
+/// イベントは再生成されるので除く）。
+pub(super) async fn resume_state(
+    run: &ClaimedRun,
+    sink: &mut super::sink::WorkerSink,
+) -> Result<Option<agent_core::Checkpoint>, ChatError> {
+    match restore_checkpoint(run) {
+        Some(envelope) => {
+            sink.seed_from_log(envelope.event_seq).await?;
+            Ok(Some(envelope.checkpoint))
+        }
+        None => Ok(None),
+    }
 }

@@ -314,3 +314,119 @@ fn eval_catalog_matches_the_production_ranking() {
         ["office.edit"]
     );
 }
+
+/// D-41: 検索用の短い文を持つツール（emit_workflow）は、説明文の全文ではなくその文で索引に入る。
+/// 説明文にほかのツールの語（スライド・CSV・ノート）がいくら載っていても、それらの依頼で一緒に読み込まれない。
+/// 読み込んだときの要約は説明文の先頭のまま（モデルが読む説明文は変えない）。
+#[test]
+fn tools_with_a_search_text_are_indexed_by_it_not_by_the_long_description() {
+    let long = format!(
+        "ワークフロー（自動化フロー）を JSON IR として保存する。{}",
+        "スライドを編集する・CSV を集計する・ノートの本文を読むノードを並べられる。".repeat(200)
+    );
+    let mut defs = catalog();
+    defs.push(def("emit_workflow", &long));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in ["スライドを編集", "CSV を集計", "ノートの本文"] {
+        let hits = query(&s, q);
+        assert!(!hits.is_empty(), "{q}");
+        assert!(
+            !hits.contains(&"emit_workflow".to_string()),
+            "{q}: {hits:?}"
+        );
+    }
+    for q in [
+        "毎朝 決まった時刻に 自動で実行する仕組みを作る",
+        "create a scheduled workflow",
+    ] {
+        assert_eq!(
+            query(&s, q).first().map(String::as_str),
+            Some("emit_workflow"),
+            "{q}"
+        );
+    }
+    let content = s
+        .handle_lexical(&json!({ "query": "select:emit_workflow" }))
+        .content;
+    assert!(
+        content.contains("emit_workflow: ワークフロー（自動化フロー）を JSON IR として保存する。"),
+        "{content}"
+    );
+}
+
+/// 既存のワークフローを直す依頼では、探す道具（list_workflows）が保存・読む道具と一緒に読み込まれる（GAP-31）。
+/// 新しい会話のモデルは id を知らないので、探す道具が上位に無いと直す流れに入れない。
+#[test]
+fn fixing_an_existing_workflow_loads_the_list_tool() {
+    let mut defs = catalog();
+    defs.push(def(
+        "emit_workflow",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。",
+    ));
+    defs.push(def(
+        "read_workflow",
+        "既存ワークフローの最新 IR（JSON）を読む。",
+    ));
+    defs.push(def(
+        "list_workflows",
+        "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。",
+    ));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in [
+        "既存のワークフローを直す",
+        "経費のワークフローを探して修正",
+        "find the existing workflow and fix it",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "list_workflows"),
+            "{q}: {hits:?}"
+        );
+        assert!(
+            hits.iter().take(5).any(|h| h == "emit_workflow"),
+            "{q}: {hits:?}"
+        );
+    }
+}
+
+/// 作ったワークフローを試す依頼では試運転の道具（try_workflow）が上位に入り、作る依頼では保存の道具
+/// （emit_workflow）が試運転より上に来る（T04）。どちらも説明文ではなく検索用の短い文で索引に入る（D-41）。
+#[test]
+fn trying_a_workflow_loads_the_try_tool_and_making_one_prefers_emit() {
+    let mut defs = catalog();
+    defs.push(def(
+        "emit_workflow",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。",
+    ));
+    defs.push(def(
+        "read_workflow",
+        "既存ワークフローの最新 IR（JSON）を読む。",
+    ));
+    defs.push(def(
+        "list_workflows",
+        "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。",
+    ));
+    defs.push(def(
+        "try_workflow",
+        "保存したワークフローの版を試運転する。承認カードを出し、結果を <run_output> で返す。",
+    ));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in [
+        "作ったワークフローを試して",
+        "ワークフローを試運転して動作確認",
+        "test run the workflow",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "try_workflow"),
+            "{q}: {hits:?}"
+        );
+    }
+    let hits = query(&s, "ワークフローを作って");
+    let at = |name: &str| hits.iter().position(|h| h == name);
+    let emit = at("emit_workflow").expect("作る依頼で emit_workflow が当たる");
+    assert!(
+        at("try_workflow").is_none_or(|t| emit < t),
+        "emit_workflow が try_workflow より上: {hits:?}"
+    );
+}

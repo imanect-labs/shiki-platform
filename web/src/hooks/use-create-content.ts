@@ -11,7 +11,7 @@
 ///   markdown 省略なので ingestion-worker 非稼働でも作成できる）
 /// - Excel(.xlsx): POST /sheets（blank.xlsx テンプレはサーバ正本・#381。変換なし）
 /// - スライド: POST /slides（同名はサーバ側連番リネーム）
-/// - CSV: POST /tabular/save（同名 409 はクライアント側で連番リトライ）
+/// - CSV: POST /tabular/save（同名はサーバ側でノートと同じ規則の連番リネーム・`on_name_taken: add_number`）
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
@@ -20,7 +20,7 @@ import { toast } from "@/components/ui/use-toast";
 import { createDocument, createSheet } from "@/lib/documents-api";
 import { createNote } from "@/lib/notes-api";
 import { createSlide } from "@/lib/slides-api";
-import { saveNewCsv, TabularConflict } from "@/lib/tabular-api";
+import { CsvNameTaken, saveNewCsv } from "@/lib/tabular-api";
 
 export type CreateContentKind = "note" | "document" | "sheet" | "slide" | "csv";
 
@@ -100,28 +100,25 @@ export function useCreateContent({ parentId }: { parentId?: string | null }) {
     [run, parentId],
   );
 
-  // CSV（グリッドエディタ・Task 11P.8）: ヘッダのみの空 CSV。同名は 409 のため連番で
-  // 空きを探す（2 回目以降の作成が黙って失敗しない）。
+  // CSV（グリッドエディタ・Task 11P.8）: ヘッダのみの空 CSV。同名はノート・スライドと同じく
+  // サーバが「無題のスプレッドシート (2).csv」のように番号を付けて保存する（D-112）。
   const createCsvAndOpen = React.useCallback(
     () =>
       run("csv", "CSV の作成に失敗しました", async () => {
-        let saved: Awaited<ReturnType<typeof saveNewCsv>> | null = null;
-        for (let n = 1; n <= 20 && !saved; n++) {
-          const name = n === 1 ? "無題のスプレッドシート" : `無題のスプレッドシート ${n}`;
-          try {
-            saved = await saveNewCsv({
-              parentId: parentId ?? undefined,
-              name,
-              csv: "列1,列2,列3\n,,\n",
-            });
-          } catch (e) {
-            if (!(e instanceof TabularConflict)) throw e;
-          }
+        try {
+          const saved = await saveNewCsv({
+            parentId: parentId ?? undefined,
+            name: "無題のスプレッドシート",
+            csv: "列1,列2,列3\n,,\n",
+            onNameTaken: "add_number",
+          });
+          return `/csv/${saved.node_id}`;
+        } catch (e) {
+          if (!(e instanceof CsvNameTaken)) throw e;
+          throw new Error(
+            "このフォルダーに「無題のスプレッドシート」の CSV が多すぎるため、作成できませんでした。いくつか名前を変えるか削除してから、もう一度作成してください。",
+          );
         }
-        if (!saved) {
-          throw new Error("同名のスプレッドシートが多すぎます。名前を変えて作成してください。");
-        }
-        return `/csv/${saved.node_id}`;
       }),
     [run, parentId],
   );

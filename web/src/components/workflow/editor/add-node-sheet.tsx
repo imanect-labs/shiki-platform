@@ -12,11 +12,14 @@ export function AddNodeSheet({
   onOpenChange,
   contextLabel,
   onPick,
+  refused,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contextLabel: string;
   onPick: (nodeType: string) => void;
+  /// ここには置けないブロックの種類と理由（繰り返しの中など）。
+  refused?: Readonly<Record<string, string>>;
 }) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -33,6 +36,7 @@ export function AddNodeSheet({
         <div className="flex min-h-0 flex-1 flex-col px-4 pb-3 pt-3">
           <AddNodeMenu
             className="max-h-none w-full flex-1"
+            refused={refused}
             onPick={(nodeType) => {
               onOpenChange(false);
               onPick(nodeType);

@@ -73,9 +73,10 @@ pub async fn require_session(
                 // role reconciliation を refresh 周期でも実行する（#91 H-1）。ログイン時のみだと
                 // refresh で延命される長寿命セッションが IdP 側で剥奪済みの role を再ログインまで
                 // 保持し続ける。ここで claims↔FGA を diff 同期し、失効窓を access token 寿命
-                // （≒refresh 周期）まで縮める。login と同じく detached・best-effort で
-                // リクエストレイテンシに載せない。
-                tokio::spawn(crate::routes::auth::provision_roles(
+                // （≒refresh 周期）まで縮める。組織の member も同じ周期でそろえる（D-130・組織を
+                // 離れた人がアプリのゲートウェイで組織に入り続けない）。login と同じく detached・
+                // best-effort でリクエストレイテンシに載せない。
+                tokio::spawn(crate::routes::auth::sync_memberships(
                     state.clone(),
                     record.principal.clone(),
                     tenant.clone(),
@@ -130,7 +131,7 @@ async fn refresh_session(
             if claims.sid.is_some() {
                 record.keycloak_sid = claims.sid.clone();
             }
-            record.principal = claims::principal_from_claims(claims);
+            record.principal = refreshed_principal(state, tenant_id, session_id, claims).await?;
             // 新トークンの tenant とセッションの tenant を再照合する（#91 L-2）。retenant（#89）等で
             // IdP の tenant 属性が変わった場合、旧 tenant のセッションを fail-closed で破棄し、
             // 再ログイン（新 claim）へ誘導する（FGA は旧名前空間を deny するため越境はしないが、
@@ -193,6 +194,26 @@ async fn refresh_session(
                 tracing::warn!(error = %err, "refresh 一過性失敗かつ access 期限切れ");
                 Err(ApiError::Internal(format!("token refresh 一時失敗: {err}")))
             }
+        }
+    }
+}
+
+/// refresh で受け取ったクレームから principal を組み直す（[`claims::principal_from_claims`]）。
+///
+/// sub が利用者の id に使えなければ（D-205・この決まりより前にできたセッションの人）、セッションを捨てて 401 にする
+/// （古い principal で続けさせない・ログインと同じく入口で断る）。
+async fn refreshed_principal(
+    state: &AppState,
+    tenant_id: &str,
+    session_id: &str,
+    claims: claims::Claims,
+) -> Result<authz::Principal, ApiError> {
+    match claims::principal_from_claims(claims) {
+        Ok(principal) => Ok(principal),
+        Err(e) => {
+            tracing::warn!(error = %e, "refresh 後の sub が利用者の id に使えません（セッションを破棄）");
+            let _ = state.sessions.delete(tenant_id, session_id).await;
+            Err(ApiError::Unauthorized)
         }
     }
 }

@@ -189,3 +189,61 @@ fn no_policy_is_visible_to_all_viewers() {
     };
     assert!(visible(&d, &v, &r, &[]));
 }
+
+/// 作成者の列（D-122）の比べは、保存した値ではなく行の owner と比べる。保存形に作成者の列の値があっても
+/// （作成者の列は保存しないので本来は無い）使わない。owner は空にならないので、`ne` は作成者以外で真。
+#[test]
+fn created_by_leaves_compare_the_row_owner() {
+    let mut s = schema(PolicyExpr::FieldCmp {
+        field: "made_by".into(),
+        op: CmpOp::Ne,
+        value: PolicyOperand::UserId,
+    });
+    s.fields
+        .push(FieldDef::new("made_by", FieldType::CreatedBy));
+    crate::field_key::assign_field_ids(None, &mut s).unwrap();
+    let made_by = crate::field_key::json_key(s.field("made_by").unwrap().id);
+    let d = Decomposed::of(&s).unwrap();
+    let m = material(&[], false);
+    let shared = HashSet::new();
+    let v = Viewer {
+        principal: "alice",
+        material: &m,
+        shared: &shared,
+    };
+    let row = |owner: &str, data: Value| RowState {
+        id: Uuid::nil(),
+        owner: owner.into(),
+        data,
+    };
+    // 作成者が本人なら不成立（保存形に別の値があっても owner で決まる）。
+    assert!(!visible(
+        &d,
+        &v,
+        &row("alice", json!({ made_by.clone(): "bob" })),
+        &[]
+    ));
+    assert!(!verify(
+        &s,
+        &v,
+        &row("alice", json!({ made_by.clone(): "bob" }))
+    ));
+    assert!(visible(&d, &v, &row("bob", json!({})), &[]));
+    assert!(verify(&s, &v, &row("bob", json!({}))));
+    // 本人の比べなので SQL は組まない。
+    assert!(group_plan(&d, &s, &v).unwrap().sql.is_empty());
+    // リテラルとの比べは共通葉の SQL で、本体の owner を読む（保存形のキーは読まない）。
+    s.row_policy = Some(RowPolicy {
+        read: PolicyExpr::FieldCmp {
+            field: "made_by".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::Lit(json!("bob")),
+        },
+        write: None,
+    });
+    let d = Decomposed::of(&s).unwrap();
+    let plan = group_plan(&d, &s, &v).unwrap();
+    assert_eq!(plan.sql.len(), 1);
+    assert!(plan.sql[0].contains("r.owner"), "{:?}", plan.sql);
+    assert!(!plan.sql[0].contains(&made_by), "{:?}", plan.sql);
+}

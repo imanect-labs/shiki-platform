@@ -419,3 +419,106 @@ async fn reach_intersects_table_checks_with_the_ceiling_and_co_principal() {
     assert!(!az.has_reach());
     assert!(az.check(&user, Relation::Viewer, &obj_b).await.unwrap());
 }
+
+/// ListObjects の応答の上限（BUG-161）: 個別共有の実効集合が上限に届いたら、本人と所属ロールの直接タプルを
+/// Read で読み直して足す（上限の外の共有も見える）。読み直しはリクエストで 1 回。
+#[tokio::test]
+async fn shared_records_cut_by_list_objects_are_read_again_from_direct_tuples() {
+    let fake = Fake::default();
+    let ctx = base();
+    let ns = ctx.ns();
+    // ListObjects が上限ちょうどの 1,000 件を返す（その外に本人への共有と部署への共有がある）。
+    for _ in 0..authz::visible::LIST_OBJECTS_MAX_RESULTS {
+        fake.grant(&ctx.subject(), &ns.data_record(&Uuid::new_v4().to_string()));
+    }
+    let (mine, via_role) = (Uuid::new_v4(), Uuid::new_v4());
+    fake.grant(&ctx.subject(), &ns.role("sales"));
+    let direct = |s: &Subject, rec: Uuid| {
+        fake.direct.lock().unwrap().insert((
+            s.to_string(),
+            ns.data_record(&rec.to_string()).as_str().to_string(),
+        ));
+    };
+    direct(&ctx.subject(), mine);
+    direct(&ns.role_member("sales"), via_role);
+    // 所属していない部署への共有は足さない。
+    let other = Uuid::new_v4();
+    direct(&ns.role_member("hr"), other);
+
+    let az = AuthzMemo::new(&fake);
+    let m = material::resolve(&ctx, &az, &[]).await.unwrap();
+    assert!(
+        m.shared_record_ids.contains(&mine),
+        "上限の外の本人への共有"
+    );
+    assert!(
+        m.shared_record_ids.contains(&via_role),
+        "上限の外の部署への共有"
+    );
+    assert!(!m.shared_record_ids.contains(&other));
+    assert_eq!(
+        m.shared_record_ids.len(),
+        authz::visible::LIST_OBJECTS_MAX_RESULTS + 2,
+        "重ねない"
+    );
+    assert!(!m.shares_truncated);
+    // 別の式の材料でも、共有の集合は読み直さない。
+    let n = fake.calls();
+    let m2 = material::resolve(&ctx, &az, &[&has_role("x", true)])
+        .await
+        .unwrap();
+    assert_eq!(fake.calls(), n + 1, "名指しのロールの check だけ");
+    assert_eq!(m2.shared_record_ids, m.shared_record_ids);
+
+    // 上限より少なければ読み直さない（これまでどおり ListObjects が正）。
+    let small = Fake::default();
+    small.grant(&ctx.subject(), &ns.data_record(&mine.to_string()));
+    small.direct.lock().unwrap().insert((
+        ctx.subject().to_string(),
+        ns.data_record(&via_role.to_string()).as_str().to_string(),
+    ));
+    let m = material::resolve(&ctx, &AuthzMemo::new(&small), &[])
+        .await
+        .unwrap();
+    assert_eq!(m.shared_record_ids, vec![mine]);
+}
+
+/// 所属ロールの実効集合も上限に届いたら、読み直せない部署の共有は見えない方向に倒し、切り詰めを知らせる。
+/// `$user.roles` の実効集合は上限ちょうどでも fail-closed（BUG-161・これまでは 1,000 件で黙って切れた）。
+#[tokio::test]
+async fn role_sets_cut_by_list_objects_fail_closed() {
+    let fake = Fake::default();
+    let ctx = base();
+    let ns = ctx.ns();
+    for _ in 0..authz::visible::LIST_OBJECTS_MAX_RESULTS {
+        fake.grant(&ctx.subject(), &ns.data_record(&Uuid::new_v4().to_string()));
+    }
+    for i in 0..authz::visible::LIST_OBJECTS_MAX_RESULTS {
+        fake.grant(&ctx.subject(), &ns.role(&format!("r{i}")));
+    }
+    let az = AuthzMemo::new(&fake);
+    let m = material::resolve(&ctx, &az, &[]).await.unwrap();
+    assert!(
+        m.shares_truncated,
+        "読み直せない部署の共有があることを知らせる"
+    );
+
+    let cmp = PolicyExpr::FieldCmp {
+        field: "dept".into(),
+        op: CmpOp::In,
+        value: PolicyOperand::UserRoles { subtree: true },
+    };
+    let err = material::resolve(&ctx, &AuthzMemo::new(&fake), &[&cmp])
+        .await
+        .unwrap_err();
+    assert!(matches!(err, crate::DataError::Invalid(_)), "{err:?}");
+    // 上限より 1 少なければ集合をそのまま使う。
+    fake.revoke(&ctx.subject(), &ns.role("r0"));
+    let m = material::resolve(&ctx, &AuthzMemo::new(&fake), &[&cmp])
+        .await
+        .unwrap();
+    assert_eq!(
+        m.roles(true).len(),
+        authz::visible::LIST_OBJECTS_MAX_RESULTS - 1
+    );
+}

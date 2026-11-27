@@ -70,14 +70,20 @@ pub(crate) async fn subscribe(
     Extension(ctx): Extension<GatewayCtx>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, GatewayError> {
     // 束縛テーブル: アプリ所有 ∩ ユーザー viewer（接続時スナップショット）。
-    let allowed: HashSet<Uuid> = state
+    let listing = state
         .caps
         .data
         .list_app_tables(&ctx.auth, ctx.installation.app_id, 200)
-        .await?
-        .into_iter()
-        .map(|t| t.id)
-        .collect();
+        .await?;
+    if listing.more {
+        // 上限（200 件か、OpenFGA に問う数の上限）を超えたテーブルの変更は届かない（黙って欠けさせない）。
+        tracing::warn!(
+            app_id = %ctx.installation.app_id,
+            tables = listing.items.len(),
+            "events.subscribe: 見えるアプリのテーブルが上限を超えたので、一部のテーブルの変更は届かない"
+        );
+    }
+    let allowed: HashSet<Uuid> = listing.items.into_iter().map(|t| t.id).collect();
     // 接続時点のカーソルから未来分のみ（履歴のリプレイはしない）。
     let cursor = latest_event_id(&state.caps.db, ctx.auth.tenant_id()).await?;
     let db = state.caps.db.clone();

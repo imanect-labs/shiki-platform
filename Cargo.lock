@@ -5199,6 +5199,7 @@ dependencies = [
  "shiki-rag",
  "shiki-sandbox-client",
  "shiki-testenv",
+ "shiki-textenc",
  "shiki-web-access",
  "shiki-websearch",
  "sqlx",
@@ -5257,6 +5258,7 @@ dependencies = [
  "shiki-storage",
  "shiki-tabular",
  "shiki-testenv",
+ "shiki-textenc",
  "shiki-websearch",
  "shiki-workflow-engine",
  "sqlx",
@@ -5281,6 +5283,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "futures",
  "http-body-util",
@@ -5288,6 +5291,8 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "shiki-app-gateway",
  "shiki-artifact",
  "shiki-authz",
  "shiki-data",
@@ -5309,8 +5314,8 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "cron",
  "ed25519-dalek",
+ "futures",
  "hex",
  "reqwest 0.12.28",
  "semver",
@@ -5321,6 +5326,7 @@ dependencies = [
  "shiki-app-gateway",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-cron5",
  "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
@@ -5363,6 +5369,7 @@ name = "shiki-authz"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "futures",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5431,6 +5438,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "shiki-agent-core",
  "shiki-artifact",
  "shiki-authz",
@@ -5443,6 +5451,7 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-office",
  "shiki-rag",
+ "shiki-sandbox-client",
  "shiki-storage",
  "shiki-tabular",
  "shiki-testenv",
@@ -5481,6 +5490,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shiki-cron5"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "shiki-data"
 version = "0.0.0"
 dependencies = [
@@ -5502,6 +5521,7 @@ dependencies = [
  "shiki-jobq",
  "shiki-storage",
  "shiki-testenv",
+ "shiki-textenc",
  "sqlparser",
  "sqlx",
  "thiserror 2.0.18",
@@ -5590,6 +5610,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "figment",
  "futures",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -5602,6 +5623,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -5645,6 +5667,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "chrono",
  "futures",
  "hmac 0.12.1",
  "lindera",
@@ -5660,6 +5683,7 @@ dependencies = [
  "shiki-jobq",
  "shiki-storage",
  "shiki-testenv",
+ "shiki-textenc",
  "sqlx",
  "tantivy",
  "tempfile",
@@ -5696,15 +5720,19 @@ name = "shiki-sandbox-client"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "proptest",
  "prost",
  "protoc-bin-vendored",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tonic-build",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5835,18 +5863,31 @@ dependencies = [
 name = "shiki-tabular"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "csv",
+ "flate2",
  "futures",
  "serde",
  "serde_json",
  "shiki-authz",
  "shiki-storage",
+ "shiki-tabular-protocol",
  "shiki-testenv",
- "sqlparser",
+ "shiki-textenc",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
+]
+
+[[package]]
+name = "shiki-tabular-protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlparser",
 ]
 
 [[package]]
@@ -5854,14 +5895,22 @@ name = "shiki-testenv"
 version = "0.0.0"
 
 [[package]]
+name = "shiki-textenc"
+version = "0.0.0"
+dependencies = [
+ "chardetng",
+ "encoding_rs",
+]
+
+[[package]]
 name = "shiki-web-access"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "chardetng",
  "encoding_rs",
  "reqwest 0.12.28",
  "shiki-sandbox-client",
+ "shiki-textenc",
  "tokio",
  "url",
 ]
@@ -5887,7 +5936,7 @@ dependencies = [
  "base64",
  "chrono",
  "chrono-tz",
- "cron",
+ "futures",
  "proptest",
  "redis",
  "regex",
@@ -5898,12 +5947,16 @@ dependencies = [
  "sha2 0.10.9",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-cron5",
  "shiki-data",
  "shiki-durable",
  "shiki-jobq",
  "shiki-script-runtime",
  "shiki-secrets",
+ "shiki-storage",
+ "shiki-tabular-protocol",
  "shiki-testenv",
+ "shiki-textenc",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -6100,6 +6153,18 @@ checksum = "13c6d1b651dc4edf07eead2a0c6c78016ce971bc2c10da5266861b13f25e7cec"
 dependencies = [
  "log",
  "recursive",
+ "sqlparser_derive",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6dd45d8fc1c79299bfbb7190e42ccbbdf6a5f52e4a6ad98d92357ea965bd289"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

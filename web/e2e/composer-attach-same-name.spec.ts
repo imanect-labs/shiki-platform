@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// issue #880: チャットの「ローカルからアップロード」で、ドライブに同じ名前のファイルが既にあると
 /// finalize が 409 になり「アップロードに失敗しました」で止まっていた（iPhone の写真は

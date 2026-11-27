@@ -3,6 +3,10 @@
 //! ハンドラは薄く、実体は `rag::SearchService`（二段 authz・RRF・rerank・引用監査）。
 //! DTO は rag 側の単一定義（`rag::SearchRequest` / `rag::SearchResponse`）をそのまま
 //! OpenAPI へ流す（手書きミラー禁止・codegen が正）。
+//!
+//! 内訳（`debug`・各段の件数と権限で除いた文書の数）は組織の管理者にだけ返す。権限で除いた数
+//! （`authz_denied_files`）は、検索した語句に当たる見られない文書があることを明かすため（D-80・BUG-94）。
+//! ほかの人の `debug: true` は黙って無視する（403 にしない・利用者の画面は変わらない）。
 
 use axum::{extract::State, Json};
 use rag::{SearchMode, SearchRequest, SearchResponse};
@@ -17,6 +21,7 @@ use crate::{
 ///
 /// 実効結果 = pre-filter（可読 authz_tags）∩ post-filter（OpenFGA file check）。
 /// 閲覧不可のファイルは結果に**絶対に**混入しない（docs/design.md §4.3 二段 authz）。
+/// `debug` の内訳は組織の管理者にだけ返す（ほかの人の指定は無視する・D-80）。
 #[utoipa::path(
     post,
     path = "/search",
@@ -53,8 +58,22 @@ pub async fn search(
             trace_id.as_deref(),
         )
         .await?;
+    // 管理者かどうかは内訳を頼まれたときだけ問う（ふつうの検索に認可の往復を足さない）。剥奪の直後に内訳を
+    // 返さないよう、管理のゲートと同じ HigherConsistency で引く。
+    let debug = if req.debug
+        && crate::middleware::org_admin::is_org_admin(
+            &state,
+            &ctx,
+            authz::Consistency::HigherConsistency,
+        )
+        .await?
+    {
+        Some(output.debug)
+    } else {
+        None
+    };
     Ok(Json(SearchResponse {
         results: output.results,
-        debug: req.debug.then_some(output.debug),
+        debug,
     }))
 }

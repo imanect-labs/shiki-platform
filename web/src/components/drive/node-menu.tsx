@@ -5,6 +5,7 @@ import {
   Download,
   Eye,
   FilePlus2,
+  FileSearch,
   FolderInput,
   FolderOpen,
   History,
@@ -38,6 +39,7 @@ export type NodeAction =
   | "move"
   | "share"
   | "versions"
+  | "reindex"
   | "delete";
 
 /// シェルの浮いたクロームと同じ切替幅（md 未満をスマホとして扱う）。
@@ -71,6 +73,8 @@ function actionGroups(node: NodeResponse): { tiles: ActionDef[]; rows: ActionDef
       { action: "move", label: "移動", icon: FolderInput },
       { action: "newversion", label: "新しいバージョン", icon: FilePlus2 },
       { action: "versions", label: "版履歴", icon: History },
+      // 社内文書の検索への取り込み直し（D-126）。頼めるのはファイルを編集できる人で、断るときはサーバーが理由を言う。
+      { action: "reindex", label: "検索に取り込み直す", icon: FileSearch },
     ],
   };
 }
@@ -194,7 +198,7 @@ export function NodeActionsMenu({
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
       <DropdownMenuContent align={align}>
         {[...tiles, ...rows]
-          // PC は従来の並び（開く・ダウンロード・名前を変更・移動・共有・新しいバージョン・版履歴）。
+          // PC は従来の並び（開く・ダウンロード・名前を変更・移動・共有・新しいバージョン・版履歴・検索に取り込み直す）。
           .sort((a, b) => DESKTOP_ORDER.indexOf(a.action) - DESKTOP_ORDER.indexOf(b.action))
           // フォルダの「開く」は行クリックと同じなので PC のメニューには出さない（従来どおり）。
           .filter((d) => !(node.kind === "folder" && d.action === "open"))
@@ -222,6 +226,7 @@ const DESKTOP_ORDER: NodeAction[] = [
   "share",
   "newversion",
   "versions",
+  "reindex",
 ];
 
 function SheetRow({

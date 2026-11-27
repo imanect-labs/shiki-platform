@@ -9,17 +9,22 @@
 import * as React from "react";
 import type { AppActionEvent, AppActionResult } from "@imanect/yui/react";
 import { figureActions, type Figure } from "@imanect/yui";
-import { CheckCircle2, CircleDashed, Loader2, MinusCircle, XCircle } from "lucide-react";
 
-import { UiActionAlreadyInvoked, UiActionUncertain } from "@/lib/artifact-api";
+import {
+  UiActionAlreadyInvoked,
+  UiActionServerError,
+  UiActionUncertain,
+  UiActionUnavailable,
+} from "@/lib/artifact-api";
 import type { UiActionRun } from "@/lib/chat-api";
-import { cn } from "@/lib/utils";
 
 /// 起動したワークフローの記録 1 件（会話の記録・ミニアプリの記録の共通の形）。
-export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> & {
-  run_id?: string | null;
-  values?: { label: string; value: string }[];
-};
+/// 結果（`reply`）・失敗の理由（`failure`）は押した本人の記録にだけ付く（GAP-09）。
+export type YuiRun = Pick<UiActionRun, "action_id" | "label" | "workflow_name" | "status" | "invoked_at"> &
+  Partial<Pick<UiActionRun, "waiting_for" | "failure" | "reply" | "has_reply" | "reply_tone" | "result_expired">> & {
+    run_id?: string | null;
+    values?: { label: string; value: string }[];
+  };
 
 /// 図のボタンを実行できる場所（確定した回答のメッセージ・ミニアプリの画面）。無ければボタンは無効（表示だけ）。
 export type YuiActionHost = {
@@ -37,8 +42,19 @@ export type YuiActionHost = {
   unsaved?: "reloading" | "stopped";
   /// 実行の後に読み直す（新しい発話・起動の記録を出す）。
   onChanged: () => void;
+  /// 結果が付いていない古い記録を開いたときに、その 1 件を結果つきで読む（GAP-09）。
+  loadRun?: (runId: string) => Promise<YuiRun>;
   /// `app` の図を「アプリとして保存」する（会話の回答の図だけ）。
   saveAsApp?: (block: string, title: string) => void;
+  /// 押す前に分かる、ワークフローのボタンを使えない理由（使う人に足りない権限・GAP-37）。使えるなら null。
+  /// 判定はサーバー（`GET /mini-apps/{id}/access`）が決め、押されたときもサーバーが本人の権限で改めて確かめる。
+  blockedReason?: (workflowName: string) => string | null;
+  /// 止めたボタンが押されたときに確かめ直し、使えない理由を返す（使えるなら null・確かめられなかったときも null にして
+  /// サーバーに任せる）。渡すと、止めたボタンも押せる形で描く（共有してもらった後に、開き直さずに押せる・BUG-217）。
+  recheckBlocked?: (workflowName: string) => Promise<string | null>;
+  /// 止めたボタンが、共有してもらえば押せるようになるか（足りない権限がある。ワークフローが見つからないときは
+  /// 共有しても直らない）。渡さなければ、止めたボタンはどれも共有で直るものとして扱う。
+  fixableBySharing?: (workflowName: string) => boolean;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -47,6 +63,9 @@ export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
 export const YuiNestedContext = React.createContext(false);
 
 const ACTION_KINDS = new Set(["app", "ask", "plan"]);
+
+/// 止めたボタンの理由に添える一言（押されたら確かめ直す・BUG-217）。
+const BLOCKED_HINT = "共有してもらった後は、開き直さずに押せます。";
 
 /// ブロックの識別子（CRLF を LF にし、末尾の空白を落としたソースの SHA-256 の先頭 16 桁）。
 export async function blockHash(source: string): Promise<string> {
@@ -70,7 +89,25 @@ export type YuiActionProps = {
   runs: readonly YuiRun[];
   /// 「アプリとして保存」（会話の回答の `app` の図だけ）。
   saveAsApp?: () => void;
+  /// 図の一部のボタンだけを使えないときの、ボタンの文言と理由（図の下に出す・GAP-37）。図のボタンがすべて使えない
+  /// ときは `actionDisabledReason` で図ごと止める。
+  blockedNotes?: { label: string; reason: string }[];
+  /// 止めたボタンの理由の後に添える一言（押されたら確かめ直せる置き場所だけ・BUG-217）。
+  blockedHint?: string;
+  /// 図の描き直しの鍵。ワークフローを起動できたら変わり、入力を空にする（同じ申請を二度出させない・GAP-151）。
+  formKey?: number;
+  /// 描き直して消えた図の中の「起動しました」の文（図の下に出す・次に図のボタンを押すまで）。
+  sentNote?: string | null;
+  /// 図のボタンが押された（`sentNote` を消す）。
+  onFigureButton?: () => void;
+  /// 最後に起動できたときに、すでにあった記録の鍵（[`runFollowKey`]）。その後に増えた 1 件を画面の中に入れる（BUG-298）。
+  follow?: ReadonlySet<string> | null;
 };
+
+/// 記録 1 件の鍵（押した時刻とボタン。run_id は起動の途中で付くので含めない）。
+export function runFollowKey(r: Pick<YuiRun, "action_id" | "invoked_at">): string {
+  return `${r.action_id}\u0000${r.invoked_at}`;
+}
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
 export function useYuiActions(
@@ -86,6 +123,13 @@ export function useYuiActions(
   // 結果の分からない送信（通信が途中で切れた）の冪等キー。同じボタン・同じ値で押し直したときは
   // 同じキーで送り、サーバーが受け付けていた場合に二つ目の run を起動しない。
   const pendingKeys = React.useRef(new Map<string, string>());
+  // 起動できた後の描き直しと、図の下の文（GAP-151）・押した後に増えた記録を追うための、押した時点の記録（BUG-298）。
+  const [formKey, setFormKey] = React.useState(0);
+  const [sentNote, setSentNote] = React.useState<string | null>(null);
+  const [follow, setFollow] = React.useState<ReadonlySet<string> | null>(null);
+  const runsNow = React.useRef<readonly YuiRun[]>([]);
+  runsNow.current = host?.uiRuns ?? [];
+  const onFigureButton = React.useCallback(() => setSentNote(null), []);
   const [hash, setHash] = React.useState<string | null>(null);
   React.useEffect(() => {
     if (!usable) return;
@@ -104,6 +148,15 @@ export function useYuiActions(
       if (!host || host.unsaved || !hash) return { ok: false, message: "いまは実行できません" };
       const key = `${hash}:${e.actionId}`;
       const target = e.action.target;
+      // 押す前の記録（この後に増えた 1 件が押した結果・BUG-298）。送っている間の読み直しで先に増えても取り違えない。
+      const before = new Set(runsNow.current.map(runFollowKey));
+      // 使う人に足りない権限があるボタンは送らない（理由はボタンの近くにも出している・GAP-37）。押されたら確かめ直し、
+      // 共有してもらっていれば、そのまま送る（BUG-217）。
+      let blocked = target.kind === "workflow" ? (host.blockedReason?.(target.name) ?? null) : null;
+      if (blocked && target.kind === "workflow" && host.recheckBlocked) {
+        blocked = await host.recheckBlocked(target.name);
+      }
+      if (blocked) return { ok: false, message: blocked };
       if (target.kind === "workflow" && !host.isBound(key)) {
         return { ok: false, message: `ワークフロー「${target.name}」が見つからないか、使う権限がありません` };
       }
@@ -113,13 +166,22 @@ export function useYuiActions(
       try {
         await host.invoke(key, e.values as Record<string, unknown>, idempotencyKey);
         pendingKeys.current.delete(sent);
+        const message = target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました";
+        if (target.kind === "workflow") {
+          setFollow(before);
+          // app の図は描き直して入力を空にする（成功の後も値とボタンが残ると、同じ申請を二度出しやすい・GAP-151）。
+          // 図の中の文は描き直すと消えるので、同じ文を図の下に出す。失敗したときは描き直さず、入力を残す。
+          if (e.section) {
+            setSentNote(message);
+            setFormKey((k) => k + 1);
+          }
+        }
         host.onChanged();
-        return {
-          ok: true,
-          message: target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました",
-        };
+        return { ok: true, message };
       } catch (err) {
-        if (err instanceof UiActionUncertain) {
+        // 受け付けたか分からない・サーバーの誤り・いま使えない（5xx と通信の切れ）。押し直しは同じキーで送る
+        // （受け付けていた場合に二つ目の run を起動しない）。文言は起きたことごとに分ける（GAP-41）。
+        if (err instanceof UiActionUncertain || err instanceof UiActionServerError || err instanceof UiActionUnavailable) {
           if (idempotencyKey) pendingKeys.current.set(sent, idempotencyKey);
           return { ok: false, message: err.message };
         }
@@ -146,10 +208,36 @@ export function useYuiActions(
   if (host.unsaved || !hash) return { actionDisabledReason: "準備しています…", runs: [] };
   const prefix = `${hash}:`;
   const save = host.saveAsApp;
+  // 使う人に足りない権限があるボタン（GAP-37）。理由は図の下に言う。押されたら確かめ直せる置き場所（BUG-217）では
+  // ボタンを押せるままにし、確かめ直せない置き場所では、図のボタンがすべて使えなければ図ごと止める。
+  const actions = figure ? figureActions(figure) : [];
+  const blocked = host.blockedReason
+    ? actions.flatMap((a) => {
+        if (a.target.kind !== "workflow") return [];
+        const reason = host.blockedReason?.(a.target.name);
+        const fixable = host.fixableBySharing?.(a.target.name) ?? true;
+        return reason ? [{ label: a.label, reason, fixable }] : [];
+      })
+    : [];
+  if (blocked.length > 0 && blocked.length === actions.length && !host.recheckBlocked) {
+    const reasons = [...new Set(blocked.map((b) => b.reason))];
+    return {
+      actionDisabledReason: reasons.join(" "),
+      runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
+    };
+  }
+  // 「開き直さずに押せます」は、共有してもらえば押せるボタンがあるときだけ添える（見つからないワークフローは、共有しても
+  // 直らない・付録 C の P7）。
   return {
     onAction,
+    ...(blocked.length > 0 ? { blockedNotes: blocked.map(({ label, reason }) => ({ label, reason })) } : {}),
+    ...(blocked.some((b) => b.fixable) && host.recheckBlocked ? { blockedHint: BLOCKED_HINT } : {}),
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
+    formKey,
+    sentNote,
+    onFigureButton,
+    follow,
     // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。
     ...(save && figure?.kind === "app" && figureActions(figure).every((a) => a.target.kind === "workflow")
       ? { saveAsApp: () => save(hash, figure.title) }
@@ -157,62 +245,59 @@ export function useYuiActions(
   };
 }
 
-const STATUS: Record<UiActionRun["status"], { label: string; icon: React.ElementType; tone: string; spin?: boolean }> = {
-  starting: { label: "起動中", icon: Loader2, tone: "text-muted-foreground", spin: true },
-  queued: { label: "待ち", icon: CircleDashed, tone: "text-muted-foreground" },
-  running: { label: "実行中", icon: Loader2, tone: "text-muted-foreground", spin: true },
-  succeeded: { label: "成功", icon: CheckCircle2, tone: "text-primary" },
-  failed: { label: "失敗", icon: XCircle, tone: "text-destructive" },
-  cancelled: { label: "取り消し", icon: MinusCircle, tone: "text-muted-foreground" },
-  skipped: { label: "見送り（同時実行の上限）", icon: MinusCircle, tone: "text-muted-foreground" },
-};
-
-function time(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-/// 図のボタンで起動したワークフローの記録（図の下・新しいものが下）。
-export function YuiRunList({ runs }: { runs: readonly YuiRun[] }) {
-  if (runs.length === 0) return null;
-  return (
-    <ul className="mt-2 space-y-1 text-[12px]" aria-label="起動したワークフロー" data-testid="yui-runs">
-      {runs.map((r) => {
-        const s = STATUS[r.status];
-        const Icon = s.icon;
-        const values = (r.values ?? []).map((v) => `${v.label}: ${v.value}`).join("・");
-        return (
-          <li
-            key={`${r.action_id}-${r.invoked_at}-${r.run_id ?? ""}`}
-            className="flex min-w-0 items-start gap-2 rounded-lg border border-border bg-secondary/30 px-2.5 py-1.5"
-            data-status={r.status}
-          >
-            <Icon className={cn("mt-0.5 size-3.5 shrink-0", s.tone, s.spin && "animate-spin")} aria-hidden />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="font-medium text-foreground">
-                  {r.label} → {r.workflow_name}
-                </span>
-                <span className={s.tone}>{s.label}</span>
-                <span className="text-muted-foreground">{time(r.invoked_at)}</span>
-              </div>
-              {values ? <p className="truncate text-muted-foreground" title={values}>{values}</p> : null}
-            </div>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 /// 本文に ```ui（Yui）のブロックがあるか。生成の後にメッセージを読み直す（ボタンの束縛と id を得る）かの判断に使う。
 export function hasYuiBlock(text: string): boolean {
   return /^[ \t]*(?:>[ \t]*)*(?:`{3,}|~{3,})[ \t]*y?ui\b/im.test(text);
 }
 
-/// まだ終わっていない起動があるか（あれば会話を少しずつ読み直して状態を更新する）。
+/// 動いている起動があるか（起動中・順番待ち・実行中。待機中は含めない）。
 export function hasOpenRuns(runs: readonly YuiRun[] | undefined): boolean {
   return (runs ?? []).some((r) => r.status === "starting" || r.status === "queued" || r.status === "running");
+}
+
+/// 待機中（時間・できごと・承認を待っている）の起動があるか。
+export function hasWaitingRuns(runs: readonly YuiRun[] | undefined): boolean {
+  return (runs ?? []).some((r) => r.status === "waiting");
+}
+
+/// 待機中の起動しか無いときに読み直す間隔（何日も待つ承認を 3 秒ごとに読み直さない・BUG-20）。
+export const WAITING_REFRESH_MS = 30_000;
+
+/// 起動の記録を読み直す間隔。動いている起動があれば `activeMs`、待機中だけなら 30 秒、終わっていれば読み直さない。
+export function runsRefreshDelay(runs: readonly YuiRun[] | undefined, activeMs = 3000): number | null {
+  if (hasOpenRuns(runs)) return activeMs;
+  if (hasWaitingRuns(runs)) return WAITING_REFRESH_MS;
+  return null;
+}
+
+/// 起動の記録が終わるまで読み直す（間隔は [`runsRefreshDelay`]）。待機中だけのときは、画面に戻った時
+/// （フォーカス・タブの表示）にも読み直す。`tick` は読み直しを終えるたびに変わる値（失敗しても次を予約する）。
+export function useRunsRefresh(
+  runs: readonly YuiRun[] | undefined,
+  refresh: () => void,
+  tick: unknown,
+  activeMs = 3000,
+): void {
+  const delay = runsRefreshDelay(runs, activeMs);
+  const latest = React.useRef(refresh);
+  latest.current = refresh;
+  React.useEffect(() => {
+    if (delay == null) return;
+    const t = window.setTimeout(() => latest.current(), delay);
+    return () => window.clearTimeout(t);
+  }, [delay, tick]);
+  const waitingOnly = delay === WAITING_REFRESH_MS;
+  React.useEffect(() => {
+    if (!waitingOnly) return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") latest.current();
+    };
+    const onFocus = () => latest.current();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [waitingOnly]);
 }

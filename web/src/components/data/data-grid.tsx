@@ -77,6 +77,7 @@ import {
 import {
   cellValue,
   displayCell,
+  fileRefIds,
   FORMAT_COLORS,
   formatFor,
   formatValue,
@@ -87,14 +88,31 @@ import {
   withFieldLabels,
   type ColumnModel,
 } from "@/lib/data-view";
+import { cachedNodeName } from "@/lib/node-name-cache";
 import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
+import { useFileNames } from "./use-file-names";
 
 /// 先頭ページは小さく（初回描画を速く）、以降は上限いっぱいで取る。
 const FIRST_PAGE = 100;
 const NEXT_PAGE = 200;
 /// 読み込み済みの末尾からこの行数以内が見えたら次のページを取る。
 const PREFETCH_ROWS = 120;
+/// ファイルの列の名前を引く範囲: 見えている行の前後に足す行数と、範囲を丸める単位（スクロールのたびに範囲を
+/// 変えない）。名前は見えている範囲の行のものだけを引き、引き直す（読み込んだ全部の行を引き直し続けない・GAP-150）。
+const FILE_NAME_OVERSCAN = 50;
+const FILE_NAME_STEP = 25;
+
+/// 表示行の `window`（表示行の位置の範囲）に出る行（群の見出しは見出しの文字を作った行）。
+function rowsInWindow(display: readonly DisplayRow[], source: readonly DataRecord[], window: { from: number; to: number }): DataRecord[] {
+  const out: DataRecord[] = [];
+  for (let i = Math.max(0, window.from); i < Math.min(display.length, window.to); i++) {
+    const d = display[i];
+    const r = source[d.kind === "row" ? d.index : d.first];
+    if (r) out.push(r);
+  }
+  return out;
+}
 /// 続きがあるときに末尾に置く「読み込み中」の行数。
 const LOADING_ROWS = 20;
 
@@ -121,7 +139,8 @@ function useGuardSyntheticClicks() {
 type DisplayRow =
   /// `open`: 読み込んだ最後の行を含む群（続きのページにまだ同じ群の行があり得る）。並びは群の順なので、
   /// それ以外の群の件数は確定している。
-  | { kind: "group"; level: number; key: string; label: string; count: number; open: boolean }
+  /// `first`: 群の見出しの文字を作った行（群の最初の行・ファイル名を引く対象を決めるのに使う）。
+  | { kind: "group"; level: number; key: string; label: string; count: number; open: boolean; first: number }
   | { kind: "row"; index: number };
 
 export type DataGridHandle = {
@@ -171,8 +190,14 @@ type Props = {
   onPeers?: (peers: Peer[]) => void;
   /// 自分の取込の最中（取り込んだ行の出現を「新しいレコード」と数えない・終わったら呼び出し側が読み直す）。
   importing?: boolean;
-  /// 行が 1 件も無いときの「レコードを追加」（編集できる人だけ）。
+  /// 行が 1 件も無いときの「レコードを追加」（編集できる人と、追加だけの人）。
   onAddRecord?: () => void;
+  /// 追加だけで共有されている（D-113）: 編集はできないが追加はでき、見えるのは自分が追加したレコードだけ。
+  addOnly?: boolean;
+  /// 追加だけの人が自分のレコードで状態を進められる・直せる状態（D-127・サーバの閲覧者の文脈 `own_records`）。
+  /// 自分（`me`）が追加した行のうち、状態が `moveFrom` の行の状態のセルと、`editIn` の行の直接入力できるセルだけを
+  /// 開けるようにする（実際に書けるかはサーバが行ごとに決める）。
+  ownEdit?: { me: string; moveFrom: readonly string[]; editIn: readonly string[] } | null;
   /// 閲覧者が読めるスキーマの列（サーバの文言の参照名を表示名に直す・非表示の列を含む）。
   fields?: readonly FieldDef[];
   /// FSM の状態の列（セルは「進める先」のメニューで開き、遷移 API を呼ぶ・2-C-P2-4）。
@@ -233,7 +258,7 @@ const RECONNECT_MS = (attempt: number) => Math.min(10_000, 2_000 * 2 ** attempt)
 
 function groupLabel(r: DataRecord, key: string, col: ColumnModel | undefined): string {
   const s = col
-    ? displayCell(r, col, cachedUserName, cachedRoleName).text
+    ? displayCell(r, col, cachedUserName, cachedRoleName, cachedNodeName).text
     : formatValue(cellValue(r, key), null, key);
   return s === "" ? "（空）" : s;
 }
@@ -259,12 +284,16 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     onPeers,
     importing,
     onAddRecord,
+    addOnly,
+    ownEdit,
     fields,
     fsm,
     onSchemaChanged,
   },
   ref,
 ) {
+  /// セルを開ける操作（編集の受け口）を渡すか（編集できる人か、自分のレコードの一部を直せる追加だけの人）。
+  const editHandlers = canEdit || Boolean(ownEdit && (ownEdit.moveFrom.length > 0 || ownEdit.editIn.length > 0));
   const importingRef = React.useRef(importing);
   importingRef.current = importing;
   const onSchemaChangedRef = React.useRef(onSchemaChanged);
@@ -737,6 +766,12 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version, columns, showingStale]);
+  // ファイルの列（file_ref）のファイル名を引く（閲覧者が開けるファイルだけ・引けたら描き直す）。引くのは見えている
+  // 範囲とその前後の行の分だけ（範囲は下の effect が表示行から決める・GAP-150）。
+  const hasFileColumns = React.useMemo(() => columns.some((c) => c.field?.type === "file_ref"), [columns]);
+  const [fileWindow, setFileWindow] = React.useState({ from: 0, to: 2 * FILE_NAME_OVERSCAN });
+  const [fileIds, setFileIds] = React.useState<readonly string[]>([]);
+  const fileNamesVersion = useFileNames(fileIds);
 
   const display: DisplayRow[] = React.useMemo(() => {
     if (groupKeys.length === 0) return source.map((_, index) => ({ kind: "row", index }));
@@ -772,6 +807,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
               label: `${col?.label ?? groupKeys[l]}: ${groupLabel(r, groupKeys[l], col)}`,
               count: counts.get(key) ?? 0,
               open: openKeys.has(key),
+              first: index,
             });
           }
         }
@@ -782,7 +818,13 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion]);
+  }, [version, groupKeys, collapsed, colByKey, showingStale, namesVersion, fileNamesVersion]);
+
+  // 名前を引くファイルの id（見えている範囲の行の分）。同じ顔ぶれなら前の配列のまま（引き直しを始め直さない）。
+  React.useEffect(() => {
+    const next = hasFileColumns ? fileRefIds(rowsInWindow(display, source, fileWindow), columns) : [];
+    setFileIds((prev) => (prev.length === next.length && prev.every((id, i) => id === next[i]) ? prev : next));
+  }, [display, source, fileWindow, columns, hasFileColumns]);
 
   // 見えている範囲が表示行の末尾に届いていれば続きを読む。グループを畳むと読み込んだ行が表示行に現れない
   // ので、行数ではなく表示行で見る（7,500 行の群を畳むと 1 ページで止まっていた・A P3）。ページを読むたび
@@ -873,10 +915,17 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const c = columns[col];
       if (!r || !c) return { kind: GridCellKind.Loading, allowOverlay: false };
       const v = cellValue(r, c.key);
-      const shown = displayCell(r, c, cachedUserName, cachedRoleName);
+      const shown = displayCell(r, c, cachedUserName, cachedRoleName, cachedNodeName);
       const text = shown.text;
       const isFsm = Boolean(fsm && c.key === fsm.field && c.field);
-      const editable = canEdit && !showingStale && (isEditable(c.field) || isFsm);
+      // 追加だけの人は、自分が追加した行で、作成者として許された状態のときだけ（D-127）。
+      const state = fsm ? cellValue(r, fsm.field) : null;
+      const own =
+        ownEdit != null &&
+        r.owner === ownEdit.me &&
+        typeof state === "string" &&
+        (isFsm ? ownEdit.moveFrom.includes(state) : ownEdit.editIn.includes(state));
+      const editable = (canEdit || own) && !showingStale && (isEditable(c.field) || isFsm);
       const fmt = formatFor(grid, r, c.key);
       const numeric = c.field?.type === "number" || c.field?.result_type === "number";
       const override: Partial<Theme> | undefined = pending.current.has(r.id)
@@ -911,7 +960,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       return cell;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fsm],
+    [display, columns, canEdit, ownEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fileNamesVersion, fsm],
   );
 
   /// 行の保存を順に送る（同じ行の保存の完了を待ってから・保存中は薄く色を付ける）。
@@ -1272,8 +1321,13 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     (r: Rectangle) => {
       visibleRegion.current = r;
       if (r.y + r.height + PREFETCH_ROWS >= display.length) void fetchNext();
+      if (hasFileColumns) {
+        const from = Math.max(0, Math.floor((r.y - FILE_NAME_OVERSCAN) / FILE_NAME_STEP) * FILE_NAME_STEP);
+        const to = Math.ceil((r.y + r.height + FILE_NAME_OVERSCAN) / FILE_NAME_STEP) * FILE_NAME_STEP;
+        setFileWindow((w) => (w.from === from && w.to === to ? w : { from, to }));
+      }
     },
-    [display.length, fetchNext],
+    [display.length, fetchNext, hasFileColumns],
   );
 
   /// 直前のクリック（mouseup）のセルと時刻。glide は「前のクリックから 500ms 以内」をセルに関係なくダブルクリック
@@ -1434,6 +1488,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       )}
       ref={containerRef}
       data-testid="data-grid"
+      // 編集できるか（追加だけ・閲覧だけの人は 0・E2E が編集の操作を出していないことを確かめる）。
+      data-editable={canEdit ? "1" : "0"}
+      data-own-edit={!canEdit && editHandlers ? "1" : undefined}
       data-more-right={moreRight || undefined}
       data-loaded={status.current.loaded}
       data-first-render-ms={status.current.firstRenderMs ?? undefined}
@@ -1505,8 +1562,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             className="absolute left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-2.5 rounded-xl border bg-card px-6 py-5 text-center text-sm text-muted-foreground shadow-xs"
             data-testid="data-grid-empty"
           >
-            <p>まだレコードがありません</p>
-            {onAddRecord && canEdit ? (
+            {/* 追加だけの人に見えるのは自分が追加したレコードと個別に共有されたレコード（他の人のレコードの有無は言わない）。 */}
+            <p>{addOnly ? "まだ自分が追加したレコードはありません" : "まだレコードがありません"}</p>
+            {onAddRecord && (canEdit || addOnly) ? (
               <button
                 type="button"
                 onClick={onAddRecord}
@@ -1627,10 +1685,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         rows={totalRows}
         rowHeight={rowHeight}
         getCellContent={getCellContent}
-        onCellEdited={canEdit ? onCellEdited : undefined}
-        provideEditor={canEdit ? provideEditor : undefined}
-        onFinishedEditing={canEdit ? onFinishedEditing : undefined}
-        onKeyDown={canEdit ? typeAhead.onKeyDown : undefined}
+        onCellEdited={editHandlers ? onCellEdited : undefined}
+        provideEditor={editHandlers ? provideEditor : undefined}
+        onFinishedEditing={editHandlers ? onFinishedEditing : undefined}
+        onKeyDown={editHandlers ? typeAhead.onKeyDown : undefined}
         // 選択中のセルをもう一度クリックしても編集欄を開かない（開いたまま Enter を押すと「変更なしで確定 →
         // 1 つ下へ移動」になり、続けて打った文字が下の行に保存されていた・D-10）。編集は Enter・ダブルクリック・
         // 文字の入力で始める（表計算と同じ）。
@@ -1642,7 +1700,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         gridSelection={selection}
         // 選択は同期で確定する（クリック直後の Enter・打鍵が、選択の反映前の描画に届いて取りこぼされない）。
         onGridSelectionChange={onSelectionChange}
-        onDelete={canEdit && !embedded ? onDelete : undefined}
+        onDelete={editHandlers && !embedded ? onDelete : undefined}
         highlightRegions={highlightRegions}
         onHeaderClicked={onHeaderClick ? (col) => columns[col] && onHeaderClick(columns[col].key) : undefined}
         onHeaderMenuClick={onHeaderMenu ? (col, b) => columns[col] && onHeaderMenu(columns[col].key, b) : undefined}

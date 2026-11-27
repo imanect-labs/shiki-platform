@@ -1,0 +1,12 @@
+-- 「同じ入力でもう一度実行」で作った run に、やり直しの元の run を持たせる（GAP-89 の残り）。
+--
+-- 実行履歴は予定の日時の由来（schedule・specified・parent）を run の行から導く（`run::planned::SCHEDULED_FROM`）。
+-- やり直しの run は元の run の予定の日時を引き継ぐ（GAP-88・D-154 (c)）が、手動の実行なので、行からは実行のダイアログで
+-- 指定した日時（specified）と区別できなかった。
+--
+--   rerun_of = やり直しの元の run（「同じ入力でもう一度実行」で作った run だけ・ほかの run は null）。予定の日時のある
+--              やり直しの run の由来は rerun（元の実行の予定の日時）になる。元の run が後で消えても値は残す（由来を言う
+--              だけで、元の run を読みには行かない）ので、外部キーにしない。
+--
+-- 前からある run は埋めない（null のまま・由来は今までどおり）。
+alter table workflow_run add column rerun_of uuid;

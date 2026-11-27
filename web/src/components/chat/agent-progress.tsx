@@ -8,10 +8,52 @@
  */
 
 import type * as React from "react";
+import dynamic from "next/dynamic";
+import { Loader2 } from "lucide-react";
+
+import { Skeleton } from "@/components/ui/skeleton";
+import type { ToolName } from "@/generated/gui-spec";
 
 import { DataWriteSummary } from "./data-approval-summary";
 import { DriveMoveSummary } from "./drive-move-approval-summary";
 import type { ApprovalRequest } from "@/lib/chat-api";
+
+/// 試運転のカードの中身は、承認を待つときにだけ読み込む（ブロックの名前を引くワークフローのカタログを、会話の画面の
+/// 最初の読み込みに載せない）。読み込むまでは中身と同じ骨組みを出す。
+const TryWorkflowSummary = dynamic(() => import("./try-approval-summary").then((m) => m.TryWorkflowSummary), {
+  ssr: false,
+  loading: () => (
+    <div className="mb-2 space-y-2" aria-busy="true">
+      <p className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        試運転の内容を確かめています…
+      </p>
+      <Skeleton className="h-4 w-3/4" />
+      <Skeleton className="h-16 w-full rounded-lg" />
+    </div>
+  ),
+});
+
+/// 承認カードで、生の JSON の代わりに読める形の中身を出すツール（名前は生成した語彙で縛る）。
+const SUMMARIZED_TOOLS = ["data_record_write", "drive.move", "try_workflow"] as const satisfies readonly ToolName[];
+type SummarizedTool = (typeof SUMMARIZED_TOOLS)[number];
+
+function isSummarized(name: string): name is SummarizedTool {
+  return (SUMMARIZED_TOOLS as readonly string[]).includes(name);
+}
+
+/// 承認カードの読める形の中身（業務データの書込はテーブル名・対象・変える列を、ファイルの移動は何をどこへ移すかを、
+/// 試運転はどのワークフローのどの版を誰が作ったか・入力・起きることを）。
+function ApprovalSummary({ name, input }: { name: SummarizedTool; input: unknown }) {
+  switch (name) {
+    case "data_record_write":
+      return <DataWriteSummary input={input} />;
+    case "drive.move":
+      return <DriveMoveSummary input={input} />;
+    case "try_workflow":
+      return <TryWorkflowSummary input={input} />;
+  }
+}
 
 /** 予算警告バナー（上限接近）。 */
 export function BudgetBanner({ kind, used, limit }: { kind: string; used: number; limit: number }) {
@@ -55,15 +97,10 @@ export function ApprovalCard({
         </span>
         <span className="text-[13px] font-semibold text-foreground">承認が必要です</span>
       </div>
-      {request.name === "data_record_write" || request.name === "drive.move" ? (
+      {isSummarized(request.name) ? (
         <>
-          {/* 業務データの書込はテーブル名・対象・変える列を、ファイルの移動は何をどこへ移すかを
-              読める形で（生の id と JSON は畳んでおく）。 */}
-          {request.name === "drive.move" ? (
-            <DriveMoveSummary input={request.input} />
-          ) : (
-            <DataWriteSummary input={request.input} />
-          )}
+          {/* 読める形で出し、生の id と JSON は畳んでおく。 */}
+          <ApprovalSummary name={request.name} input={request.input} />
           <details className="mb-2 text-[11px] text-muted-foreground">
             <summary className="cursor-pointer select-none">送る内容（JSON）</summary>
             <pre className="mt-1 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-foreground/70">

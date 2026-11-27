@@ -141,7 +141,7 @@
   - Next.js App Router 雛形、OIDCログイン（Keycloak へリダイレクト → **BFF が code/token 交換**。ブラウザはトークンを保持せず**セッション Cookie のみ**）。
   - ログイン後に `/me` を呼んで表示する最小画面。
   - **型生成パイプライン**: `utoipa` が出すOpenAPI仕様 → `openapi-typescript` でTSクライアント/型生成。
-    SSEイベント型は ts-rs/typeshare でRustから生成。生成物は commit せず CI/スクリプトで再生成可能に。
+    SSEイベント型は ts-rs/typeshare でRustから生成。生成物（`crates/*/bindings`）は commit し、Rust の定義とのずれは CI の `scripts/check-ts-bindings.sh` が落とす（#422）。
   - 認証付き fetch ラッパ（**`credentials:'include'` でセッション Cookie 送出**。SSE は Cookie 自動添付。POST ストリームは Task 3.5 方式）。
 - **受け入れ条件**:
   - [ ] ブラウザでログイン→`/me`の自分情報が表示される

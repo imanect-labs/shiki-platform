@@ -53,6 +53,7 @@ pub(super) fn chat_store(state: &AppState) -> Result<&ChatStore, ApiError> {
     responses(
         (status = 200, description = "作成したスレッド", body = Thread),
         (status = 401, description = "未認証"),
+        (status = 400, description = "ミニアプリの束ねた skill が使えない（理由は部品の位置つき）", body = super::gui_errors::GuiValidationErrorResponse),
         (status = 503, description = "chat 無効"),
     ),
     security(("session" = [])),
@@ -73,6 +74,13 @@ pub async fn create_thread(
             .resolve(&ctx, pin.artifact_id, pin.version, trace.as_deref())
             .await
             .map_err(super::gui_errors::map_gui_err)?;
+        // 束ねた skill が使えない（削除された・本文が壊れた）アプリでは、スレッドを作らない（作っても発話のたびに
+        // skill のピンの読込で失敗する・skill は絞る側なので外して動かさない・BUG-17）。理由は部品の位置つきで返す。
+        if let Some(reason) = resolved.skill.unavailable() {
+            return Err(super::gui_errors::map_gui_err(gui::GuiError::Validation(
+                vec![reason.clone()],
+            )));
+        }
         mini_app_pin = Some((resolved.id, resolved.version));
         skill_pins = resolved
             .body

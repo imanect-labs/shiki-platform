@@ -98,9 +98,13 @@ fn required_scope(tool: ToolName) -> Option<CapabilityScope> {
     }
 }
 
-/// [`AgentEvent`] → SSE 中立形。
-fn to_ai_event(ev: &AgentEvent) -> AiEvent {
-    match ev {
+/// [`AgentEvent`] → SSE 中立形（ミニアプリの契約に載せないものは `None`）。
+fn to_ai_event(ev: &AgentEvent) -> Option<AiEvent> {
+    Some(match ev {
+        // コンテキストの内訳はチャット画面の表示用。ミニアプリの契約には載せない。
+        // 参照カード（D-204）はチャットの画面の部品で、ゲートウェイの道具は作らない。下の Debug の
+        // 受け口で中身（id・名前）をミニアプリへ流さないよう、ここで明示して落とす。
+        AgentEvent::ContextUsage(_) | AgentEvent::BuilderRef { .. } => return None,
         AgentEvent::Text(t) => AiEvent {
             event: "text".into(),
             data: json!({ "text": t }),
@@ -140,7 +144,7 @@ fn to_ai_event(ev: &AgentEvent) -> AiEvent {
             event: "event".into(),
             data: json!({ "debug": format!("{other:?}") }),
         },
-    }
+    })
 }
 
 /// AgentEvent を mpsc へ写す sink（受信側が消えたら協調キャンセル）。
@@ -151,12 +155,11 @@ struct ChannelSink {
 #[async_trait::async_trait]
 impl EventSink for ChannelSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), agent_core::AgentError> {
-        // コンテキストの内訳はチャット画面の表示用。ミニアプリの契約には載せない。
-        if matches!(event, AgentEvent::ContextUsage(_)) {
+        let Some(out) = to_ai_event(&event) else {
             return Ok(());
-        }
+        };
         // 受信側 drop（クライアント切断）は is_cancelled が拾う。ここでは無視してよい。
-        let _ = self.tx.send(to_ai_event(&event)).await;
+        let _ = self.tx.send(out).await;
         Ok(())
     }
 
@@ -184,7 +187,12 @@ impl AgentPort for GatewayAgentPort {
             .unwrap_or(DEFAULT_MAX_STEPS)
             .clamp(1, MAX_STEPS_CEILING);
         let mut opts = AgentOptions::chat(max_steps);
-        opts.model = spec.model.clone();
+        // モデルは省略も明示も組織の設定で決める（agent-core の既定＝デプロイ既定に頼らない・明示モデルは置き換えず、
+        // 使えなければ断る・BUG-12・D-117）。ゲートウェイの経路が先に同じ規則で確かめ、分かる誤りで断っている。
+        let choice =
+            app_gateway::resolve_app_model(&self.llm, ctx, spec.model.as_deref(), None).await?;
+        opts.model = Some(choice.model);
+        opts.effort = choice.effort;
         if let Some(cap) = spec.max_tokens.and_then(|t| u32::try_from(t).ok()) {
             opts.max_tokens = Some(opts.max_tokens.map_or(cap, |d| d.min(cap)));
         }
@@ -293,6 +301,293 @@ mod tests {
         // 宣言なし → 提示なし。
         let (tools, skipped) = build_tools(&[], &all, None, None);
         assert!(tools.is_empty() && skipped.is_empty());
+    }
+
+    /// モデルを省略したミニアプリの agent.invoke は、agent-core の既定（デプロイ既定）ではなく組織の既定で
+    /// 動き、会計にも同じ名前が残る（BUG-12）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn omitted_agent_model_follows_the_organization_default() {
+        use futures::StreamExt;
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let entry = |id: &str| llm_gateway::ModelEntry {
+            id: id.into(),
+            ..Default::default()
+        };
+        let llm = LlmGateway::build(
+            pool.clone(),
+            reqwest::Client::new(),
+            llm_gateway::GatewayConfig {
+                catalog: llm_gateway::ModelCatalog {
+                    default_model: "stub-m".into(),
+                    models: vec![entry("stub-m"), entry("stub-n")],
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tenant = format!("t-{}", uuid::Uuid::new_v4().simple());
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            "acme".into(),
+            authz::TenantId::parse(tenant.clone()).unwrap(),
+        );
+        let patch = llm_gateway::SettingsPatch {
+            default_model: Some("stub-n".into()),
+            ..Default::default()
+        };
+        llm.update_tenant_settings(&ctx, &patch)
+            .await
+            .unwrap()
+            .unwrap();
+        let port = GatewayAgentPort {
+            llm: Arc::new(llm),
+            search: None,
+            storage: None,
+        };
+        let app_id = uuid::Uuid::new_v4();
+        let events = port
+            .invoke(
+                &ctx,
+                AgentInvokeSpec {
+                    app_id,
+                    prompt: "こんにちは".into(),
+                    model: None,
+                    declared_tools: vec![],
+                    scopes: vec![],
+                    max_tokens: None,
+                    max_steps: Some(1),
+                    max_cost_usd_micros: 1_000_000,
+                    trace_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        let events: Vec<AiEvent> = events.collect().await;
+        assert!(events.iter().any(|e| e.event == "done"), "{events:?}");
+        let models: Vec<String> =
+            sqlx::query_scalar("SELECT model FROM llm_usage WHERE tenant_id = $1 AND app_id = $2")
+                .bind(&tenant)
+                .bind(app_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(models, ["stub-n"]);
+
+        // 組織がモデルの選択を禁じると、既定と違うモデルを明示した呼び出しは port でも断る（ゲートウェイの経路が先に
+        // 確かめた後に設定が変わったときの守り・D-117）。既定と同じモデルの明示は通る。
+        let lock = llm_gateway::SettingsPatch {
+            allow_user_choice: Some(false),
+            ..Default::default()
+        };
+        port.llm
+            .update_tenant_settings(&ctx, &lock)
+            .await
+            .unwrap()
+            .unwrap();
+        let spec = |model: &str| AgentInvokeSpec {
+            app_id,
+            prompt: "こんにちは".into(),
+            model: Some(model.into()),
+            declared_tools: vec![],
+            scopes: vec![],
+            max_tokens: None,
+            max_steps: Some(1),
+            max_cost_usd_micros: 1_000_000,
+            trace_id: None,
+        };
+        let refused = port.invoke(&ctx, spec("stub-m")).await.err();
+        assert!(
+            matches!(&refused, Some(GatewayError::Invalid(m)) if m.contains("「stub-m」は使えません")),
+            "選択を禁じた組織で既定と違うモデルが通った: {refused:?}"
+        );
+        let events: Vec<AiEvent> = port
+            .invoke(&ctx, spec("stub-n"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().any(|e| e.event == "done"), "{events:?}");
+
+        // 作った行を片付ける（会計は run_agent が終わる前に書く）。
+        for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// プロバイダ（OpenAI 互換）を `base` に向けて agent.invoke を 1 回動かし、error イベントの中身を返す（作った行は
+    /// 消す）。`STORAGE_TEST_DATABASE_URL` が無ければ `None`（スキップ）。
+    #[allow(clippy::print_stderr)]
+    async fn agent_error_at(base: String) -> Option<String> {
+        use futures::StreamExt;
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return None;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let llm = LlmGateway::build(
+            pool.clone(),
+            reqwest::Client::new(),
+            llm_gateway::GatewayConfig {
+                provider: llm_gateway::ProviderConfig {
+                    kind: llm_gateway::ProviderKind::Openai,
+                    base_url: Some(base),
+                    api_key: Some("k".into()),
+                    ..Default::default()
+                },
+                catalog: llm_gateway::ModelCatalog {
+                    default_model: "m1".into(),
+                    models: vec![llm_gateway::ModelEntry {
+                        id: "m1".into(),
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tenant = format!("t-{}", uuid::Uuid::new_v4().simple());
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            "acme".into(),
+            authz::TenantId::parse(tenant.clone()).unwrap(),
+        );
+        let port = GatewayAgentPort {
+            llm: Arc::new(llm),
+            search: None,
+            storage: None,
+        };
+        let events: Vec<AiEvent> = port
+            .invoke(
+                &ctx,
+                AgentInvokeSpec {
+                    app_id: uuid::Uuid::new_v4(),
+                    prompt: "こんにちは".into(),
+                    model: None,
+                    declared_tools: vec![],
+                    scopes: vec![],
+                    max_tokens: None,
+                    max_steps: Some(1),
+                    max_cost_usd_micros: 1_000_000,
+                    trace_id: None,
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let error = events.iter().find(|e| e.event == "error");
+        assert!(error.is_some(), "error イベントが出る: {events:?}");
+        Some(error.unwrap().data.to_string())
+    }
+
+    /// プロバイダの 5xx（529 を含む）の本文（要求の ID・組織の ID）は、ミニアプリの agent.invoke の error イベントにも
+    /// 載せない（誤りの種類の語だけ・BUG-210）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    async fn agent_errors_do_not_carry_the_provider_body() {
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().fallback(|| async {
+            (
+                axum::http::StatusCode::from_u16(529).unwrap(),
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_8"}"#,
+            )
+                .into_response()
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let Some(shown) = agent_error_at(base).await else {
+            return;
+        };
+        for leaked in ["org-secret", "req_secret_8", "Overloaded for"] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(shown.contains("overloaded_error"), "{shown}");
+    }
+
+    /// プロバイダに接続できないときの agent.invoke の error イベントに、送り先の URL（ホスト・ポート・パス・base_url の
+    /// userinfo）を載せない（誤りの種類だけ・BUG-218）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    async fn agent_errors_do_not_name_an_unreachable_provider() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+        let Some(shown) = agent_error_at(format!("http://user:pw-secret@{addr}/llm-base")).await
+        else {
+            return;
+        };
+        let port = addr.port().to_string();
+        for leaked in [
+            "127.0.0.1",
+            port.as_str(),
+            "pw-secret",
+            "/llm-base",
+            "http://",
+        ] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(
+            shown.contains("プロバイダに接続できませんでした"),
+            "{shown}"
+        );
+    }
+
+    /// 参照カード（D-204）とコンテキストの内訳はミニアプリの SSE に出ない（Debug の受け口へも落ちない）。
+    #[tokio::test]
+    async fn builder_refs_are_not_streamed_to_mini_apps() {
+        let (tx, mut rx) = mpsc::channel::<AiEvent>(8);
+        let mut sink = ChannelSink { tx };
+        let item =
+            json!({ "kind": "data_table", "id": "t-secret-id", "name": "顧客", "version": 1 });
+        sink.emit(AgentEvent::BuilderRef { item }).await.unwrap();
+        sink.emit(AgentEvent::Text("本文".into())).await.unwrap();
+        drop(sink);
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            seen.push(e);
+        }
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0].event, "text");
+        assert!(!seen[0].data.to_string().contains("t-secret-id"));
     }
 
     #[test]

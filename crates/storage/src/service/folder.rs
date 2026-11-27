@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use crate::tuple_commit::{commit_tx_with_tuples, node_creation_tuples};
 
 impl StorageService {
     /// フォルダに対する指定 relation を本人 ctx で検証する（deny は監査つき Forbidden）。
@@ -250,46 +251,15 @@ impl StorageService {
                 trace_id,
             )
             .await?;
-            // DB 側が確定したので FGA tuple を書く（commit 前）。
+            // DB 側が確定したので owner・parent の FGA tuple を書いてから commit する。区間は別の
+            // タスクで最後まで走る（補償の決まりは tuple_commit・BUG-134）。
             let folder_obj = ctx.ns().folder(&folder_id.to_string());
-            self.authz
-                .write_tuple(&ctx.subject(), Relation::Owner, &folder_obj)
-                .await
-                .map_err(StorageError::Authz)?;
-            if let Some(p) = parent_id {
-                if let Err(e) = self
-                    .authz
-                    .write_tuple(
-                        &Subject::object(&ctx.ns().folder(&p.to_string())),
-                        Relation::Parent,
-                        &folder_obj,
-                    )
-                    .await
-                {
-                    let _ = self
-                        .authz
-                        .delete_tuple(&ctx.subject(), Relation::Owner, &folder_obj)
-                        .await;
-                    return Err(StorageError::Authz(e));
-                }
-            }
-            if let Err(e) = tx.commit().await {
-                let _ = self
-                    .authz
-                    .delete_tuple(&ctx.subject(), Relation::Owner, &folder_obj)
-                    .await;
-                if let Some(p) = parent_id {
-                    let _ = self
-                        .authz
-                        .delete_tuple(
-                            &Subject::object(&ctx.ns().folder(&p.to_string())),
-                            Relation::Parent,
-                            &folder_obj,
-                        )
-                        .await;
-                }
-                return Err(StorageError::from(e));
-            }
+            commit_tx_with_tuples(
+                self.authz.clone(),
+                tx,
+                node_creation_tuples(ctx, parent_id, &folder_obj),
+            )
+            .await?;
             row_to_node(row)
         }
         .await;

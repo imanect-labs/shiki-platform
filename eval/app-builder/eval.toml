@@ -1,0 +1,101 @@
+# eval/app-builder（abeval）の設定。鍵の項目は置かない（読み込みで拒む）。本物の鍵を読むのは手元の中継
+# （~/.config/shiki-dev/anthropic-relay.py・127.0.0.1:8787）だけ。
+
+# 単価（マイクロ USD／100 万トークン・GAP-30 §6.1）。段の境は「入力＋キャッシュの読み＋キャッシュの書き」が
+# tier_threshold_tokens を超えたら high（手元の中継の cost_of と同じ）。
+[pricing]
+tier_threshold_tokens = 100000
+
+[pricing."claude-haiku-5-5".low]
+input = 100000
+output = 500000
+cache_read = 10000
+cache_write_5m = 125000
+cache_write_1h = 200000
+
+[pricing."claude-haiku-5-5".high]
+input = 500000
+output = 2500000
+cache_read = 50000
+cache_write_5m = 625000
+cache_write_1h = 1000000
+
+# 上限（USD）。eval_cap_usd（評価の累計・月で区切らない）と run_cap_usd（1 回の実行）は abeval.proxy が
+# 送る前に強制する。global_cap_usd は手元の中継が強制する外側の歯止め（ここでは表示だけ）。
+[caps]
+eval_cap_usd = 35
+run_cap_usd = 10
+global_cap_usd = 95
+
+[proxy]
+listen = "127.0.0.1:18200"
+# 上流は手元の中継（鍵はそこで付く）。abeval.proxy はダミーの鍵を送る。
+upstream = "http://127.0.0.1:8787"
+allowed_models = ["claude-haiku-5-5"]
+# 試行の割り当てに使う会話 ID のヘッダー（製品のプロバイダの session_header と同じ名前にする）。上流へは送らない。
+session_header = "x-abeval-session"
+# 手元の中継の台帳で用途を分ける x-campaign-tag の接頭辞（abeval/<exp>/<run>/<trial>）。
+tag_prefix = "abeval"
+
+[paths]
+# 版のバイナリ（bin/）と中継の制御の合言葉（proxy.token・権限 600）。
+home = "~/.local/share/shiki-eval"
+# 評価の台帳（上限の正本・作業ツリーの外・権限 600）。作業ツリーを作り直しても、別の checkout から流しても、
+# 同じ台帳で累計を数える（作業ツリーの中に置くと $0 から数え直しになり、$35 の歯止めがすり抜ける）。
+ledger = "~/.local/share/shiki-eval/ledger.jsonl"
+# 会話の全文・要求の本文・試行の記録（.gitignore 済み）。
+cache = "data/cache"
+# 手元の中継の台帳（読むだけ・外側の残りの表示に使う）。
+relay_ledger = "~/.local/state/shiki-campaign/anthropic-spend.jsonl"
+
+[server]
+api_url = "http://localhost:10067"
+
+[mode_a]
+# 生成と validate の並列度（stub の配管の実行は直列・同じテーブルを使うため）。
+parallel = 4
+# 1 回の生成の送信の上限（再試行は 429・5xx・接続の誤りだけ）。
+max_attempts = 4
+
+[mode_b]
+# 承認待ちのうち、承認するツール（D-162・H8 (a)。既定で却下し、ここに載せたものだけ承認する）。
+# D-10 の試運転のツールが入ったら足す。
+approve_tools = []
+# 1 試行の会話の壁時計の上限（秒）。超えたら run を取り消し、timeout として errors に入れる（製品の承認待ちの
+# 上限 30 分より先に効く）。
+wall_clock_secs = 360
+# 完了を待つときの読み直しの間隔（秒）。
+poll_secs = 2
+# run_case の 1 回の起動の待ちの上限（秒）。
+run_case_timeout_secs = 180
+
+[capture]
+# 取り込んだ system の「今日の日付」の一文を置き換える固定の日付（Mode A のモデルが見る「今日」）。課題の
+# scheduled_at（2026-11-09 の月曜）と違う週の日にする（同じだと、「先週」や「今日」を決め打ちした IR も
+# run_case を通ってしまう・tests/test_core_tasks.py が確かめる）。
+fixed_date = "2026-11-04"
+
+# 1 試行の見積もり（USD・GAP-30 §13）。plan は最悪で上限を判定する。
+# a と b は E0（2026-11-07・vn・Haiku 5.5・effort medium・4 課題）の実測で置き換えた: Mode A は平均 $0.0037・
+# 最大 $0.0054（12 試行）、Mode B は平均 $0.0107・最大 $0.0214（12 試行・手数の上限 6 に達した試行を含む）。
+# 最悪は、E0 に無い大きな課題に備えて実測の最大のおよそ 1.6〜2 倍にした。effort high と手数 12 は推測のまま。
+[estimates.a]
+central = 0.0037
+worst = 0.010
+
+[estimates.b]
+central = 0.0107
+worst = 0.035
+
+[estimates.b.effort_worst]
+high = 0.07
+
+[estimates.b.steps_worst]
+12 = 0.10
+
+[report]
+# 版のラベルを古い順に並べる。まとめ（summary.md）の比べ方で、各版を直前の版と比べる（例: vm − vn）。版を足したら
+# 最後に足す。git の先祖の順ではなく、直しを積んだ順に書く（v1〔71e9b79a〕は後で載せ直したので vn の先祖ではない
+# が、vn はその直しを含む）。版の記録（data/versions/）の版がすべて載っていることと、先祖の順に逆らわないことは
+# tests/test_version_order.py が確かめる。
+version_order = ["v0", "v1", "vn", "vm", "vf", "vg"]

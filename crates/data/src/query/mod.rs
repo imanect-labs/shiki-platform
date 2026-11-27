@@ -6,7 +6,8 @@
 //! （モジュール可視性 pub(crate)・crate 外非公開）。
 //!
 //! - [`ir`] — 外部契約（条件木・複数ソート・keyset・集計・件数）
-//! - [`bound`] — 束縛・検証（索引到達可能性・マスク 403）。結合・半結合化・HAVING は [`bound_query`]
+//! - [`bound`] — 束縛・検証（索引到達可能性・マスク 403）。結合・半結合化・HAVING は [`bound_query`]。列を書く位置ごとの
+//!   規則は [`field_use`]（ワークフローの保存時の照合も同じ関数を使う）
 //! - [`scopes`] — リンクの半結合・結合の参照先テーブル（閲覧者本人の権限で開く・PIT-20）
 //! - [`limits`] — 入口の資源上限（SQL 面と IR 直投入の共通・data-platform §16.1.1）
 //! - [`reject`] — 入口での拒否理由（422・構造化・存在オラクルを作らないエラー契約）
@@ -25,6 +26,7 @@ pub(crate) mod bound_query;
 pub(crate) mod eval;
 pub(crate) mod executor;
 pub(crate) mod fetch;
+pub(crate) mod field_use;
 pub(crate) mod ir;
 pub(crate) mod join_run;
 pub(crate) mod limits;

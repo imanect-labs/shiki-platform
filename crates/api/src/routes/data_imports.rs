@@ -1,7 +1,7 @@
 //! 構造化データ API — 一括取込（Task 15.11・data-platform §16.7・監査 B2-6）。
 //!
 //! - `POST /data/tables/{id}/imports`: JSON の行（`{ rows: [{ key?, data }] }`）で取込を始める。
-//! - `POST /data/tables/{id}/imports/csv`: CSV（`text/csv`・UTF-8・見出し行あり）で取込を始める。
+//! - `POST /data/tables/{id}/imports/csv`: CSV（`text/csv`・UTF-8・Shift_JIS・BOM 付きの UTF-16・見出し行あり）で取込を始める。
 //!   列の照合と値の変換の規則は `data::bulk::csv`（参照名 → 表示名・`_key` 列は行キー・空のセルは値なし・
 //!   multi_select / record_ref は `;` 区切りか JSON 配列）。
 //! - `GET /data/tables/{id}/imports/{import_id}`: 取込の進捗（件数・状態・parity）。
@@ -292,7 +292,7 @@ pub async fn start_import(
     post,
     path = "/data/tables/{id}/imports/csv",
     params(("id" = Uuid, Path, description = "テーブル ID"), CsvImportQuery),
-    request_body(content = String, content_type = "text/csv", description = "UTF-8 の CSV（見出し行あり・`_key` 列は行キー）"),
+    request_body(content = String, content_type = "text/csv", description = "CSV（UTF-8・Shift_JIS・BOM 付きの UTF-16。見出し行あり・`_key` 列は行キー）"),
     responses(
         (status = 202, description = "取込を始めた（検証と適用は非同期）", body = StartImportResponse),
         (status = 400, description = "入力の形の誤り（code=import_invalid・未知の列・派生列・行数超過・文字コード）", body = crate::error_body::ImportInvalidBody),

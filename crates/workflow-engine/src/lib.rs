@@ -6,10 +6,12 @@
 //! - [`ir::validate`]: 保存時検証 V1〜V7（全件エラー収集）。
 //! - [`store`]: IR を artifact（kind=workflow）として保存・バージョン管理・取得する薄い層。
 
+pub mod approval;
 pub mod capability;
 pub mod concurrency;
 pub mod control;
 pub mod delegation;
+mod find;
 pub mod ir;
 pub mod layout;
 pub mod nodes;
@@ -22,40 +24,77 @@ pub mod store;
 pub mod summary;
 pub mod vocab;
 
+pub use approval::{
+    approval_id_for, AcceptedDecision, ApprovalChoiceSpec, ApprovalKey, ApprovalResolution,
+    ApprovalRow, ApprovalStore, ApprovalSuspend, AssigneeKind, AssigneeRef, DecisionStart,
+    DecisionTx, InboxCursor, PendingMove,
+};
 pub use capability::{
     check_scope_ceiling, effective_scopes, CapabilityAudit, EffectJournal, JournalDecision,
-    ScopeCeiling,
+    OutboundCheck, ScopeCeiling,
 };
 pub use concurrency::{ConcurrencyStore, ScopeKind, Slot};
 pub use control::{branch_port, switch_port};
 pub use delegation::{
     active_delegator, delegated_objects, DelegationError, DelegationStore, GrantRequest,
-    RunAdmission,
+    RevokedDelegation, RunAdmission,
 };
+pub use find::{FindWorkflows, FoundWorkflow, FoundWorkflows};
 pub use ir::scopes::complete_declared_scopes;
-pub use ir::validate::{semantics_warnings, validate, Catalog, ValidationError, SEMANTICS_CHANGED};
+pub use ir::validate::{
+    empty_regions, empty_values, enable_blockers, node_ports, pattern_within, query_link_tables,
+    referenced_files, referenced_folders, referenced_tables, required_text_empty, run_blockers,
+    save_warnings, semantics_warnings, unattended_run_blockers, user_model_blockers,
+    valid_host_pattern, validate, Catalog, CatalogTable, ValidationError,
+    APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE,
+    DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL, EFFORT_IGNORED, EMPTY_REGION, EMPTY_VALUES,
+    FIELD_NOT_INDEXED, FIELD_NOT_USABLE, LIST_FOLDER_REQUIRED, MODEL_UNAVAILABLE_FOR_USER,
+    OUTPUT_SCHEMA_FEW_TOKENS, PLAIN_KEY_HEADER, REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY,
+    SAVE_WARNING_CODES, SEMANTICS_CHANGED, STATUS_NOT_WRITABLE, TEMPLATE_ESCAPED_VAR,
+    TEMPLATE_UNCLOSED_BRACE, UNKNOWN_FILE, UNKNOWN_FOLDER, UNKNOWN_INPUT, WRITE_FOLDER_REQUIRED,
+};
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
+pub use nodes::llm_structured::{
+    LLM_OUTPUT_INVALID, LLM_OUTPUT_TRUNCATED, LLM_REFUSED, REPAIR_CALL_SUFFIX,
+};
 pub use nodes::{
-    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq,
-    DataWriteOp, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts,
-    PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    AgentInvokeReq, AgentLimits, AgentToolGateway, ApprovalTarget, CapabilityNodeExecutor,
+    CodeRunReq, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, DataWriteOp, DataWriteReq,
+    DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq,
+    LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
+    StorageWriteReq, WebFetchReq, BULK_FAILED_ROWS,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{
-    DelegationView, EnableError, RegistrationService, RegistrationView, SuggestedGrant,
+    AccessGap, AccessKind, AccessNeed, AccessObject, AccessUnchecked, DelegationView, EnableError,
+    RegistrationService, RegistrationView, RetiredWorkflow, Revocation, SuggestedGrant,
 };
-pub use retry::{backoff_with_jitter, classify, RetryClass};
+pub use retry::{
+    backoff_with_jitter, classify, wait_policy, RetryClass, WaitPolicy, INDEX_WAIT,
+    INDEX_WAIT_MAX_MINUTES,
+};
 pub use run::{
-    CancelOutcome, GcReport, HistoryGcWorker, ResumeOutcome, RunDetail, RunEventRow, RunListFilter,
-    RunListItem, RunStatusReader, StepDetail, StepOverview,
+    ApprovalWait, CancelSignal, ConcurrencyLimits, DataWaitCandidate, DueApprovalCursor,
+    DueApprovalPage, DueSweepLimits, EventWaitGate, EventWaitSubscriber, NodeContext, NodeExecutor,
+    NodeResult, PendingApproval, ResolvedApproval, RunOrigin, RunStatus, RunStore, RunStoreError,
+    RunTrial, ScheduledAtSource, StepStatus, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
+    DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use run::{
-    ConcurrencyLimits, NodeContext, NodeExecutor, NodeResult, RunStatus, RunStore, StepStatus,
-    WorkerConfig, WorkflowRunLauncher, WorkflowWorker, DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
+    CancelOutcome, GcReport, HistoryGcWorker, PromoteReport, ResumeOutcome, RunDetail, RunEventRow,
+    RunListFilter, RunListItem, RunStatusReader, StepDetail, StepOverview,
 };
-pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
+pub use run::{
+    FailureCategory, LiveState, OwnOutcome, ReplyBody, ReplyFile, ReplySection, ReplyTone,
+    ResumeAdvice, ResumeHint, RunFailure, RunOutcomeReader, RunReply, WaitingFor,
+};
+pub use scheduler::{
+    Coalesce, DataTriggerCandidate, EventTriggerRef, FileTriggerCandidate, FireOutcome,
+    LaunchOutcome, LeaderLease, RunLauncher, SchedulerStore, SkipReason,
+};
 pub use store::{WorkflowStore, WorkflowStoreError};
 pub use summary::{
-    FailedRun, WorkflowRunCount, WorkflowSearchHit, WorkflowSummary, WorkflowSummaryStore,
+    FailedRun, WorkflowInputs, WorkflowRunCount, WorkflowSearchHit, WorkflowSummary,
+    WorkflowSummaryStore,
 };

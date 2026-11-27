@@ -14,7 +14,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
-import { Check, ChevronRight, Filter, ListX, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Check, ChevronRight, Filter, ListX, Loader2, RefreshCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,8 @@ import {
   formatDuration,
   RUN_STATUS_OPTIONS,
   RunStatusBadge,
+  SCHEDULED_AT_LABELS,
+  SCHEDULED_AT_MARKS,
   TRIGGER_KIND_LABELS,
   TRIGGER_KIND_OPTIONS,
 } from "./status";
@@ -114,7 +116,7 @@ const COLUMNS: ColumnDef<RunListItem>[] = [
   {
     id: "status",
     header: "状態",
-    cell: ({ row }) => <RunStatusBadge status={row.original.status} />,
+    cell: ({ row }) => <RunStatusBadge status={row.original.status} waitingFor={row.original.waitingFor} />,
   },
   {
     id: "trigger",
@@ -124,6 +126,22 @@ const COLUMNS: ColumnDef<RunListItem>[] = [
         {TRIGGER_KIND_LABELS[row.original.triggerKind] ?? row.original.triggerKind}
       </span>
     ),
+  },
+  {
+    // 予定の日時（スケジュールのどの回の分か・指定して試した日時・GAP-89）。予定の日時のある実行が無ければ列を出さない。
+    id: "scheduled",
+    header: "予定の日時",
+    cell: ({ row }) => {
+      const scheduled = row.original.scheduled;
+      if (!scheduled) return <span className="text-xs text-muted-foreground">—</span>;
+      const mark = SCHEDULED_AT_MARKS[scheduled.source];
+      return (
+        <span className="flex flex-col" data-testid="run-scheduled-at" data-source={scheduled.source}>
+          <span className="text-xs tabular-nums">{formatDateTime(scheduled.at)}</span>
+          {mark ? <span className="text-[11px] text-muted-foreground">{mark}</span> : null}
+        </span>
+      );
+    },
   },
   {
     id: "version",
@@ -185,6 +203,9 @@ export function RunsTable({
   const [triggerKinds, setTriggerKinds] = React.useState<string[]>([]);
   const [exhausted, setExhausted] = React.useState(false);
   const [loadingMore, setLoadingMore] = React.useState(false);
+  // 読み込みの失敗を「まだ実行していません」に見せない（付録 C の P5・BUG-189）。先頭のページと続きを分けて持つ。
+  const [failed, setFailed] = React.useState(false);
+  const [moreFailed, setMoreFailed] = React.useState(false);
 
   const filter = React.useMemo(
     () => ({ statuses, triggerKinds, limit: PAGE_SIZE }),
@@ -195,8 +216,10 @@ export function RunsTable({
   const loadFirst = React.useCallback(
     async (merge: boolean) => {
       const fresh = await listRuns(workflowId, filter);
+      setFailed(false);
       setItems((prev) => {
-        if (!merge || prev === null) {
+        // 空（まだ無いか、読み込めなかった）なら、先頭のページとして置く（続きの有無もここで決める）。
+        if (!merge || prev === null || prev.length === 0) {
           setExhausted(fresh.length < PAGE_SIZE);
           return fresh;
         }
@@ -221,7 +244,12 @@ export function RunsTable({
   // フィルタ変更・明示リフレッシュで取り直し。
   React.useEffect(() => {
     setItems(null);
-    loadFirst(false).catch(() => setItems([]));
+    setFailed(false);
+    setMoreFailed(false);
+    loadFirst(false).catch(() => {
+      setItems([]);
+      setFailed(true);
+    });
   }, [loadFirst]);
   React.useEffect(() => {
     if (refreshSignal > 0) loadFirst(true).catch(() => undefined);
@@ -240,6 +268,7 @@ export function RunsTable({
   const loadMore = async () => {
     if (!items || items.length === 0) return;
     setLoadingMore(true);
+    setMoreFailed(false);
     try {
       const last = items[items.length - 1];
       const page = await listRuns(workflowId, {
@@ -249,15 +278,21 @@ export function RunsTable({
       setItems((prev) => [...(prev ?? []), ...page]);
       if (page.length < PAGE_SIZE) setExhausted(true);
     } catch {
-      // 次回のクリックで再試行できる。
+      // 押し直すと同じ位置から読む。
+      setMoreFailed(true);
     } finally {
       setLoadingMore(false);
     }
   };
 
+  const showScheduled = (items ?? []).some((i) => i.scheduled !== null);
+  const columns = React.useMemo(
+    () => (showScheduled ? COLUMNS : COLUMNS.filter((c) => c.id !== "scheduled")),
+    [showScheduled],
+  );
   const table = useReactTable({
     data: items ?? [],
-    columns: COLUMNS,
+    columns,
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => row.runId,
   });
@@ -295,21 +330,62 @@ export function RunsTable({
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
-      ) : items.length === 0 ? (
+      ) : failed && items.length === 0 ? (
         <div className="rounded-xl border">
           <EmptyState
-            icon={ListX}
-            title="実行の記録がありません"
-            description={
-              statuses.length || triggerKinds.length
-                ? "フィルタに一致する実行がありません。条件を変えてみてください。"
-                : "エディタの「実行」ボタンやスケジュールで動くと、ここに記録が並びます。"
+            icon={AlertTriangle}
+            title="実行履歴を読み込めませんでした"
+            description="少し待ってから、もう一度読み込んでください。"
+            role="alert"
+            data-testid="runs-load-failed"
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setItems(null);
+                  loadFirst(false).catch(() => {
+                    setItems([]);
+                    setFailed(true);
+                  });
+                }}
+              >
+                もう一度読み込む
+              </Button>
             }
           />
         </div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border">
+          {statuses.length || triggerKinds.length ? (
+            <EmptyState
+              icon={ListX}
+              title="条件に合う実行はありません"
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setStatuses([]);
+                    setTriggerKinds([]);
+                  }}
+                >
+                  条件を外す
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={ListX}
+              title="まだ実行していません"
+              description="「実行」ボタン、スケジュール、ファイルやテーブルの変更で実行すると、ここに並びます。"
+            />
+          )}
+        </div>
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card">
-          {/* PC: 7 列の表。スマホ: 1 行 1 カード（状態・日時・所要時間・きっかけ）。 */}
+          {/* PC: 7 列の表（予定の日時のある実行があれば 8 列）。スマホ: 1 行 1 カード（状態・日時・所要時間・きっかけ・
+              予定の日時）。 */}
           <div className="hidden overflow-x-auto md:block">
             <table className="w-full text-left">
               <thead>
@@ -361,7 +437,7 @@ export function RunsTable({
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
                     <span className="flex items-center gap-2">
-                      <RunStatusBadge status={run.status} />
+                      <RunStatusBadge status={run.status} waitingFor={run.waitingFor} />
                       <span className="truncate text-xs text-muted-foreground">
                         {TRIGGER_KIND_LABELS[run.triggerKind] ?? run.triggerKind}・v{run.version}
                       </span>
@@ -372,6 +448,16 @@ export function RunsTable({
                         {formatDuration(run.startedAt, run.finishedAt)}
                       </span>
                     </span>
+                    {run.scheduled ? (
+                      <span
+                        className="text-xs text-muted-foreground"
+                        data-testid="run-scheduled-at"
+                        data-source={run.scheduled.source}
+                      >
+                        {SCHEDULED_AT_LABELS[run.scheduled.source]}:{" "}
+                        <span className="tabular-nums">{formatDateTime(run.scheduled.at)}</span>
+                      </span>
+                    ) : null}
                   </span>
                   <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                 </button>
@@ -379,7 +465,13 @@ export function RunsTable({
             ))}
           </ul>
           {!exhausted ? (
-            <div className="border-t p-2 text-center">
+            <div className="flex flex-col items-center gap-1 border-t p-2 text-center">
+              {moreFailed ? (
+                <p role="alert" className="text-xs text-destructive">
+                  <span className="inline-block">続きを読み込めませんでした。</span>
+                  <span className="inline-block">「さらに読み込む」でもう一度試します。</span>
+                </p>
+              ) : null}
               <Button
                 variant="ghost"
                 size="sm"

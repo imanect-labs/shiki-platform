@@ -1,0 +1,122 @@
+{
+ "task": "app02-triage",
+ "variant": "null",
+ "case": "bug",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-cba333-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "cd2dd4d5-f588-4db9-8282-e24c880a7ace",
+    "status": "succeeded",
+    "input": {
+     "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
+     "subject": "画面が真っ白になる"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null,
+    "started_at": "2026-11-09T08:00:40.300139+00:00"
+   }
+  ],
+  "rows": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "0f41020e-0664-4e43-a93d-e18a33ac6071",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "32485795-e692-426f-8124-f9827c4e50a7",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "e3386156-a918-4a57-a230-5efa0443c951",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "0f41020e-0664-4e43-a93d-e18a33ac6071",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "32485795-e692-426f-8124-f9827c4e50a7",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "e3386156-a918-4a57-a230-5efa0443c951",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-09T08:00:34.565620+00:00"
+ }
+}

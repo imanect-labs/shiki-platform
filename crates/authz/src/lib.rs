@@ -38,6 +38,7 @@ pub mod scope;
 pub mod subject;
 pub mod tenancy;
 pub mod tenant_id;
+pub mod visible;
 pub mod vocab;
 
 pub use client::{
@@ -45,7 +46,7 @@ pub use client::{
 };
 pub use context::{AuthContext, Principal, PrincipalKind};
 pub use error::AuthzError;
-pub use ident::{validate_local_id, validate_tenant_id, IdentViolation};
+pub use ident::{validate_local_id, validate_tenant_id, validate_user_id, IdentViolation};
 pub use object::{FgaObject, Namespace, TENANT_SEP};
 pub use org_group::GroupLayout;
 pub use scope::CapabilityScope;

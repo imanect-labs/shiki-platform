@@ -1,0 +1,655 @@
+[
+ {
+  "description": "隔離サンドボックスで Python コードを実行し、標準出力/エラーを返す。numpy・pandas・openpyxl が使え、添付の .xlsx も pandas.read_excel でそのまま読める。計算・データ処理・整形に使う（ネットワークは遮断）。**会話に添付されたファイルは /workspace/<ファイル名> に配置済み**なのでそのまま読める（置けなかった場合は結果に注記が付く）。/workspace に書いたファイルは実行後に自動保存され会話に添付される。グラフ描画は行わず、結果の数値/表を返すこと。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "code": {
+     "description": "実行する Python コード",
+     "type": "string"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "type": "object"
+  },
+  "name": "code_interpreter"
+ },
+ {
+  "description": "公開 web を検索し、タイトル・URL・スニペットを返す。最新情報や社外の情報が必要なときに使う。ページ本文が必要なら結果の URL を web_fetch で取得する。社内文書は doc_search を使うこと。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "query": {
+     "description": "検索クエリ（自然文/キーワード）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "name": "web_search"
+ },
+ {
+  "description": "URL のページを取得し、本文を抽出して Markdown で返す（広告・ナビ・スクリプトは除去済み・リダイレクトは追従しない）。web_search で得た URL の内容を読むときに使う。長いページは query に知りたい論点を書くと関連する節だけ返り、offset で続きを読める。取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。",
+  "input_schema": {
+   "additionalProperties": false,
+   "properties": {
+    "offset": {
+     "description": "続きを読む開始位置（任意・文字単位）。前回の結果が打ち切られたときに、示された値をそのまま渡す。",
+     "minimum": 0,
+     "type": "integer"
+    },
+    "query": {
+     "description": "知りたい論点（任意）。長いページから関連する節だけを抜き出す。ページ全体が要るときは指定しない。",
+     "type": "string"
+    },
+    "url": {
+     "description": "取得する URL（http/https）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "type": "object"
+  },
+  "name": "web_fetch"
+ },
+ {
+  "defer_loading": true,
+  "description": "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir だけを渡し、既存の編集は workflow_id と、read_workflow が返した version を expected_version に必ず渡す（無いと保存しない。編集の前に必ず read_workflow で今の IR を読む。id が分からなければ list_workflows で探す）。保存しただけでは実行されない。検証に失敗するとエラーが全件返るので、全部直して再実行する。成功するとユーザーにカードが表示され、エディタで開ける。\n【骨格】{\"ir_version\":1,\"name\":\"英小文字・数字・ハイフンの安定名（^[a-z][a-z0-9-]{0,63}$）\",\"display_name\":\"日本語の表示名\",\"declared_scopes\":[…]（省略可。ノードが要するスコープは保存時に補われる）,\"triggers\":[…],\"input_schema\":{…}（interactive の入力・省略可）,\"nodes\":[…],\"edges\":[…]}\n- triggers: {\"kind\":\"interactive\"}（ボタン・チャットから実行）| {\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}（分 時 日 月 曜日。この例は平日の 9 時。曜日は 0 と 7 が日曜、1 が月曜〜6 が土曜で、MON〜SUN の名前でも書ける）| {\"kind\":\"event\",\"source\":\"storage.write\",\"scope\":{\"folder\":\"<フォルダの uuid>\"}}（そのフォルダ（配下を含む）にファイルが保存されたときに起動。新しいファイル（op \"create\"）と既存のファイルの新しい版（op \"update\"・上書き・Office やノートの保存）の両方で起き、filter の /op で絞れる。新しい版は同じファイルの保存が 60 秒途切れてから最後の版で 1 回だけ起動する。このワークフロー自身の保存（workflow.start の子を含む）では起きない）| {\"kind\":\"event\",\"source\":\"data.record.created\" か \"data.record.updated\" か \"data.transition\",\"scope\":{\"table\":\"<テーブルの uuid>\"},\"filter\"?:条件}（テーブルの行が追加・更新・状態変更されたときに起動。有効化した人に見える行・列の変更だけで起き、一括取込とこのワークフロー自身の書込では起きない。状態は filter の /to で絞る）。EventSource = \"storage.write\" | \"data.record.created\" | \"data.record.updated\" | \"data.transition\"。control.wait（kind: event）の scope も同じ形が必須（データ変更は \"record\":値式 で行を絞れる・filter は {\"$from\":\"event\"} で届いたできごとを読む）。\n- input_schema: JSON Schema のサブセット（type・properties・required・items・enum など。$ref・oneOf は使えない）。入力は {\"$from\":\"input\",\"path\":\"/キー\"} で読む。任意の注記 \"x-order\":[\"title\",\"body\"] は、画面（エディタの入力項目・実行の入力欄・ミニアプリの部品の候補）に並べる項目の順（properties のキーだけを重ねずに書く。省くと properties のキーは保存で辞書順に並び替わる）。\n- nodes の要素（? は省略可）: {\"id\":\"<ノード id>\",\"type\":\"<ノード種>\",\"label\":\"日本語の短い名前\",\"params\":{…},\"parent\"?:\"<map の id>\",\"on_error\"?:\"fail_run\"|\"continue\",\"retry\"?:{\"max_attempts\":3},\"timeout_sec\"?:60,\"cache\"?:{\"ttl_sec\":86400}}。id は ^[a-z][a-z0-9_]{0,63}$（英小文字で始め、英小文字・数字・_ だけ。例: find_requests）。cache は ai.decide だけに書ける（【AI で判定】）。\n- edges の要素: {\"from\":\"<ノード id>\",\"from_port\":\"out\",\"to\":\"<ノード id>\"}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout、ai.decide は route で決まる（【AI で判定】）。無い出口につないだエッジは保存できない。\n- 入るエッジは 1 ノード 1 本まで（複数を受けられるのは control.join だけ）。\n- on_error が \"continue\" のノードが失敗すると、出力は {\"error\":{\"code\",\"message\",…}} になり error の出口へ進む（error につないだ先が無ければ run は失敗する）。\n- map 領域: control.map は items の要素ごとに、\"parent\":\"<map の id>\" を持つノードを繰り返す。領域の中は parent が同じノードどうしだけをつなぐ（入口は入るエッジなし・出口はちょうど 1 つ・map ノードから領域へのエッジは書かない）。領域の中では {\"$from\":\"each\",\"path\":\"/item\"}（今の要素）と /index（番号）が使える。領域の中のノードは、map ノードの前のノード（エッジでたどれるもの。入れ子なら外側の map の前も）の出力も nodes.<id>.output で読める（承認者の表を先に引いて、1 件ずつ書く、など）。map ノード自身と map の後ろのノードは読めない。\n【きっかけの内容】event トリガの run では {\"$from\":\"trigger\",\"path\":\"/<項目>\"} で読む（control.wait の event は出力を nodes.<id>.output の path で読む）。\n- storage.write: { file_id: string（保存されたファイルの ID）, version: number（保存された版の番号）, op: string（\"create\"（新しいファイル）か \"update\"（新しい版））, kind: string（常に \"file\"）, parent_id: string | null（保存先のフォルダの ID）, size: number | null（ファイルの大きさ（バイト））, actor: string（保存した人の ID（ワークフローが保存したときはワークフローの ID））, blob_sha256: string | null（内容のハッシュ） }\n- data.record.created / data.record.updated / data.transition: { source: string（できごとの種類（トリガの source と同じ））, table_id: string（テーブルの ID）, record_id: string（追加・更新された行の ID）, rev: number（変更後の行の版）, change: string（\"create\"（追加）・\"update\"（更新）・\"transition\"（状態の変更））, from: string | null（変更前の状態（状態が変わったときだけ））, to: string | null（変更後の状態（状態が変わったときだけ））, changed: Array<string>（変わった列の参照名（有効化した人に読める列だけ））, changes: { [列の参照名]: { old: unknown, new: unknown } }（変わった列ごとの変更前と変更後の値）, actor: string（変更した人の ID（ワークフローが書いたときは有効化した人））, by_workflow: boolean（ワークフローの書込による変更か（人の操作だけで動かすなら false で絞る））, occurred_at: string（変更の日時（RFC 3339））, record: { id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, … } | null（今の行（有効化した人に見える値・大きすぎると null））, truncated: boolean（大きすぎて record と changes を省いたか） }\n【値の書き方】params の値（ValueExpr）は次の 3 つ。\n- リテラル: 文字列・数値・真偽・null・object・array。object / array の中にも下の 2 つを置ける。\n- 参照 {\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（実行情報 { date: string（実行した日・例 2026-10-28）, started_at: string（実行した日時・例 2026-10-28T09:00:00+09:00）, scheduled_at: string（予定の日時・例 2026-11-09T09:00:00+09:00・スケジュールで動いた実行では予定の時刻（遅れて動いても変わらない）。「別のワークフローを実行」で動いた実行では、元の実行に予定の日時があればその日時、無ければ実行した日時。手動の実行では指定した日時か、実行した日時。きっかけで動いた実行では、実行した日時と同じ）, started_by: string（実行した人・手動で実行した人のユーザー ID（メンバーの列と比べられる）。スケジュールやきっかけで動いた実行には入らない）, run_id: string（実行の ID）, tenant_id: string（契約全体の ID） }。日時は日本時間で、同じ実行の中ではやり直しても同じ値）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n- 文章の組み立て {\"$template\":\"件名: {title}（{count} 件）\",\"vars\":{\"title\":{\"$from\":\"input\",\"path\":\"/title\"},\"count\":…}}。差し込みは {名前} で、名前は vars のキー（vars に無い名前はエラー）。{{ と }} は差し込みではなく波括弧そのものを出す書き方（{{title}} と書くと「{title}」という文字が出る）。\n- url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n- schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {\"$from\":\"run\",\"path\":\"/date\"} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。CSV の content には、CSV の文字のほか、csv.query の結果（{\"$from\":\"nodes.<id>.output\"}・{columns, rows} の表）や、項目のまとまりのリスト（列は項目の名前を合わせたもので名前の順）をそのまま渡せる（CSV に組み立てる。数・入れ子の値・csv.query が打ち切った表〔truncated〕は失敗する）。\n- csv.query は CSV と Excel（.xlsx。表示している左端のシートが data で、ほかのシートは FROM \"集計\" のようにシートの名前で読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {列の名前: 値}。{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{columns, rows} の表）を渡す。\n- storage.list は名前の順に 100 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n- llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n- http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n- http.request の headers は {\"ヘッダーの名前\": 値}（名前はリテラル・値は差し込みや参照も書ける・20 個まで・値は 4 KB まで）。Host・Content-Length・Transfer-Encoding・Connection・Keep-Alive・Proxy-Connection・Proxy-Authorization・TE・Trailer・Upgrade・Expect・Accept-Encoding と、シークレットを付けるヘッダー（既定は Authorization）は書けない（保存できない）。Idempotency-Key・Content-Type を書くと、Shiki が付ける値の代わりにそれを送る。API キー・トークン・パスワードなどの鍵は headers（と script の Shiki.http.request の headers）に書かない（書いた値は IR とバージョン履歴に残り、ワークフローを見られる人に見え、応答に映り返っても隠さない。Authorization など鍵の名前のヘッダーに値をそのまま書くと保存の注意 ir.plain_key_header が返る）。鍵は利用者が登録したシークレットを secret（{\"name\":\"<参照名>\"}。既定は Authorization: Bearer で付け、ほかのヘッダーに付けるなら \"attach\":{\"kind\":\"header\",\"header\":\"X-Api-Key\"}）で付ける。使えるシークレットが無ければ、鍵を書かずに、利用者にシークレットの登録を頼む。送り先が内部のネットワークのアドレスにつながる URL には送れない（管理者がそのホストを社内の送り先として登録したときだけ送れる）。\n- script.run の中の書き込み（Shiki.storage.write・Shiki.data の書き込み・Shiki.workflow.start）と、GET 以外の Shiki.http.request は、呼んだ順に結果を記録し、処理が途中で止まって動かし直したときは送り直さずに前の結果を使う。書く内容・送る内容と呼ぶ順番は、input と前のノードの出力だけで決める（Date.now()・Math.random() の値を本文や名前に入れない。日時が要るなら {\"$from\":\"run\",\"path\":\"/started_at\"} などを input で渡す）。動かし直したときに前と違う内容になると effect_conflict で失敗する。\n- workflow.start の name は、保存する人が見られる既存のワークフローの name（無い・見えない name は保存できない）。\n- 条件（control.branch の condition・トリガと control.wait の filter）: {\"cmp\":{\"left\":値,\"op\":CmpOp,\"right\":値}}・{\"all\":[条件…]}・{\"any\":[条件…]}・{\"not\":条件}。CmpOp = \"eq\" | \"neq\" | \"lt\" | \"lte\" | \"gt\" | \"gte\" | \"in\" | \"contains\" | \"starts_with\" | \"ends_with\" | \"exists\" | \"is_null\" | \"matches\"（exists・is_null は right を書かない）。例: {\"all\":[{\"cmp\":{\"left\":{\"$from\":\"input\",\"path\":\"/amount\"},\"op\":\"gte\",\"right\":50000}},{\"not\":{\"cmp\":{\"left\":{\"$from\":\"input\",\"path\":\"/category\"},\"op\":\"in\",\"right\":[\"交通費\",\"通信費\"]}}},{\"any\":[{\"cmp\":{\"left\":{\"$from\":\"input\",\"path\":\"/note\"},\"op\":\"exists\"}},{\"cmp\":{\"left\":{\"$from\":\"input\",\"path\":\"/urgent\"},\"op\":\"eq\",\"right\":true}}]}]}\n- data.query の filter は形が違う: {\"cmp\":{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}（all / any / not は同じ）。query.limit は 1〜200（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{\"metric\":\"count\"}] や {\"metric\":\"sum\",\"field\":\"<数値の列>\"}）で書け、結果は groups に入る（エディタの画面では作れない）。\n- 同じものを 2 件にしない書き込み（同じ日・同じ ID の行を再実行や取り込み直しで増やさない）は、data.record.upsert（match_on に重複を許さない〔unique〕列の参照名、data にその列の値と書く値。あれば書き換え、なければ追加。出力の created で分かる）か、data.bulk_upsert の match_on（id の無い行をその列の値で探して更新）を使う。data.query で探してから data.record.create と data.record.update に分けて書かない（同時に動くと 2 件できる）。match_on に選べるのは、data_schema で（重複を許さない）と出る列だけ（ほかの列は保存できない。無ければ、そういう列を足すよう利用者に頼む）。\n- 在庫を減らす・合計に足すような数の書き換えは add（{\"<数の列>\": 足す数}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。\n- 前日・先週・先月・月末・週の初めなどの日付は transform.date で求める（script で計算しない）。base を省くと実行情報の scheduled_at（schedule では予定の時刻で、遅れて動いても変わらない）から数える。workflow.start で始めた実行の scheduled_at は、始めた実行に予定の日時（schedule の予定の時刻・手動の実行で指定した日時）があればそれを引き継ぐ（子の transform.date も同じ週・月を数えるので、予定の日時を入力で渡さない）。始めた実行に予定の日時が無いとき（日時を指定しない手動の実行・きっかけで動いた実行・ミニアプリから動いた実行）は、子の scheduled_at は子の実行が始まった日時（子の started_at と同じ）になる。そのような実行が承認や待ちの後で子を始め、子でも親と同じ日・週を数えるなら、親の transform.date の結果（start など）を子の入力で渡す。手動の実行では、実行のダイアログの「詳しい設定」で予定の日時を指定して試せる。shift でずらし（{\"amount\":-1,\"unit\":\"week\"} で先週）、period（day・week・month・year）を書くと、その日を含む期間の最初の日 start・最後の日 end（YYYY-MM-DD。テーブルの日付の列は start 以上・end 以下で絞る）と、始まりの日時 start_at・次の期間の始まりの日時 next_start_at（日時の列は start_at 以上・next_start_at より前で絞る）が出る。週の初めは week_starts_on（既定 monday）、時間帯は tz（既定 Asia/Tokyo）。月をずらした先にその日が無ければ月末になる。\n【例】そのまま保存できる IR。\n例 1（入力を AI で要約してファイルに保存する）: {\"ir_version\":1,\"name\":\"summarize-inquiry\",\"display_name\":\"問い合わせを要約して保存\",\"declared_scopes\":[\"storage.write\"],\"triggers\":[{\"kind\":\"interactive\"}],\"input_schema\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"x-order\":[\"title\",\"body\"]},\"nodes\":[{\"id\":\"summarize\",\"type\":\"llm.invoke\",\"label\":\"要約する\",\"params\":{\"system\":\"あなたは社内の問い合わせ窓口の担当者です。\",\"prompt\":{\"$template\":\"次の問い合わせを 3 行で要約してください。\\n件名: {title}\\n本文: {body}\",\"vars\":{\"title\":{\"$from\":\"input\",\"path\":\"/title\"},\"body\":{\"$from\":\"input\",\"path\":\"/body\"}}}}},{\"id\":\"save_summary\",\"type\":\"storage.write\",\"label\":\"要約を保存\",\"params\":{\"name\":{\"$template\":\"summary-{run_id}.md\",\"vars\":{\"run_id\":{\"$from\":\"run\",\"path\":\"/run_id\"}}},\"content\":{\"$template\":\"# {title}\\n\\n{summary}\",\"vars\":{\"title\":{\"$from\":\"input\",\"path\":\"/title\"},\"summary\":{\"$from\":\"nodes.summarize.output\",\"path\":\"/text\"}}},\"content_type\":\"text/markdown\"}}],\"edges\":[{\"from\":\"summarize\",\"from_port\":\"out\",\"to\":\"save_summary\"}]}\n例 2（毎朝、承認待ちの高額の申請を 1 件ずつ AI で確認し、取得に失敗したら記録する）: {\"ir_version\":1,\"name\":\"review-large-requests\",\"display_name\":\"高額の申請を AI で確認する\",\"declared_scopes\":[\"data.read\",\"storage.write\"],\"triggers\":[{\"kind\":\"schedule\",\"cron\":\"0 9 * * 1-5\",\"tz\":\"Asia/Tokyo\"}],\"nodes\":[{\"id\":\"find\",\"type\":\"data.query\",\"label\":\"承認待ちの高額の申請\",\"on_error\":\"continue\",\"params\":{\"table\":\"<data_schema で調べたテーブルの id>\",\"query\":{\"filter\":{\"all\":[{\"cmp\":{\"field\":\"status\",\"op\":\"eq\",\"value\":\"pending\"}},{\"cmp\":{\"field\":\"amount\",\"op\":\"gte\",\"value\":50000}}]},\"limit\":50}}},{\"id\":\"has_items\",\"type\":\"control.branch\",\"label\":\"1 件以上あるか\",\"params\":{\"condition\":{\"cmp\":{\"left\":{\"$from\":\"nodes.find.output\",\"path\":\"/items\"},\"op\":\"exists\"}}}},{\"id\":\"per_item\",\"type\":\"control.map\",\"label\":\"1 件ずつ\",\"params\":{\"items\":{\"$from\":\"nodes.find.output\",\"path\":\"/items\"},\"on_item_error\":\"collect\"}},{\"id\":\"review\",\"type\":\"llm.invoke\",\"parent\":\"per_item\",\"label\":\"確認点を挙げる\",\"params\":{\"prompt\":{\"$template\":\"次の申請で確認すべき点を箇条書きで挙げてください。\\n{record}\",\"vars\":{\"record\":{\"$from\":\"each\",\"path\":\"/item/data\"}}}}},{\"id\":\"save_review\",\"type\":\"storage.write\",\"parent\":\"per_item\",\"label\":\"確認メモを保存\",\"params\":{\"folder\":\"<保存先のフォルダの id>\",\"name\":{\"$template\":\"review-{id}.md\",\"vars\":{\"id\":{\"$from\":\"each\",\"path\":\"/item/id\"}}},\"content\":{\"$from\":\"nodes.review.output\",\"path\":\"/text\"}}},{\"id\":\"record_failure\",\"type\":\"storage.write\",\"label\":\"失敗を記録\",\"params\":{\"folder\":\"<保存先のフォルダの id>\",\"name\":\"review-failed.txt\",\"content\":{\"$from\":\"nodes.find.output\",\"path\":\"/error/message\"}}}],\"edges\":[{\"from\":\"find\",\"to\":\"has_items\"},{\"from\":\"find\",\"from_port\":\"error\",\"to\":\"record_failure\"},{\"from\":\"has_items\",\"from_port\":\"true\",\"to\":\"per_item\"},{\"from\":\"review\",\"to\":\"save_review\"}]}\n【llm.invoke のモデル】model はふつう省略する（省略すると組織の既定のモデルで動く）。指定するときは次の id のどれかを書く（このユーザーの組織で使えるもの）: claude-haiku-5-5, default。\n【AI の出力の形】llm.invoke に output_schema（JSON Schema のリテラル）を書くと、出力は { text, model, data } になり、data に形で検証した値が入る（後続は {\"$from\":\"nodes.<id>.output\",\"path\":\"/data/<項目>\"} で読む。分類・抽出は script で JSON を解析せずにこれを使い、選択肢は enum で縛る）。\n- 根は {\"type\":\"object\"}。オブジェクトは決めた項目だけ（additionalProperties は false か省略。省略しても閉じたものとして扱う）。type は 1 つの型か [型, \"null\"]。項目名は英字か _ で始め英数字と _ だけ。使えるのは input_schema と同じキーワード（$ref・anyOf・oneOf は使えない）。\n- 上限: 入れ子 5 段・項目 100・任意の項目（required に無い項目）24・null を許す項目 16・enum の値 256（どれも全体で数える）。\n- 項目の順: オブジェクトに \"x-order\":[\"summary\",\"category\"] を書くと、AI はその順に項目を書く（properties のキーだけを重ねずに書く・入れ子のオブジェクトにも書ける）。省くと項目は名前の辞書順で AI に渡る。理由や要約を先に、結論（enum の選択など）を後に並べると、答えの質が上がることがある。\n- 形に合わない出力は 1 回だけ直させ、それでも合わなければ step は llm_output_invalid で失敗する。上限で切れたら llm_output_truncated、AI が回答を拒否したら llm_refused（どちらも直さない）。max_tokens を書くなら 1024 以上（思考の分も数える）。\n- effort（\"low\" | \"medium\" | \"high\"）は思考の深さ。省略は組織の既定。model を省略して組織の既定の Auto で動くときと、組織がモデルの選択を禁じているときは組織の設定に従い、書いても使われない（保存時に ir.effort_ignored の警告）ので、model を選んだときだけ書く。分類・抽出は low で足りることが多い。\n例（ノード）: {\"id\":\"classify\",\"type\":\"llm.invoke\",\"label\":\"種類を判定\",\"params\":{\"prompt\":{\"$template\":\"次の問い合わせを 1 行で要約し、種類を決めてください。\\n{body}\",\"vars\":{\"body\":{\"$from\":\"input\",\"path\":\"/body\"}}},\"output_schema\":{\"type\":\"object\",\"required\":[\"summary\",\"category\"],\"x-order\":[\"summary\",\"category\"],\"properties\":{\"category\":{\"type\":\"string\",\"enum\":[\"billing\",\"bug\",\"howto\",\"other\"]},\"summary\":{\"type\":\"string\",\"maxLength\":100}}}}}\n【AI で判定】ai.decide は、判定の材料（state・値式。文字・オブジェクト・配列で 32 KiB まで）について、質問（questions・リテラルだけ）に決められた値域で答え、確からしさ（0〜1）を付けて返す。分類・はい/いいえ・段階の判定は llm.invoke よりこれを使う（答えが必ず選択肢の中に入る）。\n- model は判定用のモデルの id（必須・リテラル。文章を生成するモデルは書けない）。このユーザーの組織で使える判定用のモデルは無いので、ai.decide は保存できない（分類は llm.invoke の output_schema の enum で書く）。\n- questions（20 件まで）の要素: {\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"} に、choice は \"options\":[{\"key\":\"billing\",\"label\":\"請求\",\"description\":\"請求書・返金についての問い合わせ\"}, …]（2〜100 件。キーに out / uncertain / error / default / timeout / true / false は使えない。label は利用者に見せる選択肢の名前で、答えの label になる（質問の中で重ならない・100 字まで。答えをテーブルの選択肢の列に書き込むなら、列の選択肢と同じ文字にする）。description は AI への手がかり（省略可）で、label とつないで AI に渡す。label を省略すると、description（それも無ければキー）が答えの label になる）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜10 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n- 出力 /answers/<key>: choice は { value（選択肢のキー）, label, confidence, probabilities }、score は { value（確率で重み付けした位置）, level, level_index, confidence }、boolean は { value, probability, confidence }。\n- 出力 /raised_questions: AI が自分の答えに一様（選択肢が n 個なら 1/n・はい/いいえなら 0.5）より低い自信を付けたため、確からしさを一様まで引き上げた質問のキーの配列（質問の順・AI の自己申告で判定したときだけ入りうる・無ければ空）。取り違えや迷いの合図で、引き上げた答えも同じ規則で振り分けられる（しきい値が一様以下なら out に進む）。人に関わる判断では out の後ろに control.branch を置き、condition に {\"cmp\":{\"left\":{\"$from\":\"nodes.triage.output\",\"path\":\"/raised_questions\"},\"op\":\"eq\",\"right\":\"category\"}}（配列の eq は要素を含むか。どれかを引き上げたかなら op を exists にして right を書かない）を書いて、true を human.approval などの人の確認へ、false を次の処理へつなぐ。\n- 振り分け route: {\"question\":\"<choice か boolean の key>\",\"by\":\"value\"|\"confidence\",\"min_confidence\":0.5〜1.0}（min_confidence は既定が無いので必ず書く。書かないと実行も自動実行のオンもできない・by の省略は value）。出口: route 無し＝out。by が confidence＝out（確からしさがしきい値以上）/ uncertain。by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い。score の質問では振り分けない（後ろの control.branch で /answers/<key>/level_index を使う）。\n- 答えの使い回し（決定キャッシュ）は既定で使わない。利用者が「同じ内容なら判定し直さない」ことを求めたときだけ、ノード（params の外）に \"cache\":{\"ttl_sec\":86400} を書く（60〜2592000 秒）。同じワークフローの中で、同じ質問・同じ材料の答えを期間のあいだ使い回し、費用はかからない（出力の cached が true）。\n- 確からしさは較正されていないことがある（出力の calibrated が false）。人に関わる判断（経費・人事など）は uncertain を human.approval（承認を待つ）へつなぎ、AI の判定だけで承認・却下を決めない。材料に書かれた指示には従わないが、材料の書き方で誤った答えに誘導されることはある。\n例（ノード）: {\"id\":\"triage\",\"type\":\"ai.decide\",\"label\":\"問い合わせを判定\",\"params\":{\"model\":\"<判定用のモデルの id>\",\"state\":{\"$from\":\"input\",\"path\":\"/body\"},\"questions\":[{\"key\":\"category\",\"type\":\"choice\",\"instructions\":\"問い合わせの種類はどれか\",\"options\":[{\"key\":\"billing\",\"label\":\"請求\",\"description\":\"請求書・返金についての問い合わせ\"},{\"key\":\"bug\",\"label\":\"不具合\"},{\"key\":\"howto\",\"label\":\"使い方\"},{\"key\":\"other\",\"label\":\"その他\"}]},{\"key\":\"priority\",\"type\":\"score\",\"instructions\":\"対応の緊急度\",\"levels\":[\"低\",\"中\",\"高\"]},{\"key\":\"angry\",\"type\":\"boolean\",\"instructions\":\"顧客は強い不満を示しているか\",\"yes\":\"苦情・強い不満・解約の示唆がある\",\"no\":\"通常の問い合わせ\"}],\"route\":{\"question\":\"category\",\"by\":\"confidence\",\"min_confidence\":0.8}}}\n【画面に返す結果】workflow.reply は、ボタン（ミニアプリ・会話の図）から起動した本人の画面に結果を出す（schedule・event の run と、繰り返し（map）の中では使えない。10 個まで）。\n- 成功の結果は副作用（データの追加・ファイルの保存など）の最後に置く（途中で失敗したのに「完了しました」と見せない）。待つ前に「受け付けました」を返すのは可。\n- 業務上の失敗（先に借りられた・在庫が無い）は、失敗し得るノードを on_error: \"continue\" にして error の出口の先に tone: \"error\" の reply を置く。分岐ごとに別の reply を置ける。\n- format は text（文章）・markdown・table（配列の各要素が 1 行・columns で列を選ぶ）・file_link（社内検索の /results なら file: {\"id_path\":\"/file_id\",\"name_path\":\"/file_name\"}）。\n- label・columns の見出しなど固定の文言は、アプリを使う人全員に見える（秘密を書かない）。値は押した本人の権限で読んだものだけが入る。\n【AI エージェント】agent.invoke は instruction（自然文の依頼。コードではない）を、allowed_tools に書いた道具で調べながら果たし、最後の回答を出力の /text に書く。allowed_tools を省くと道具なし。道具: rag.search（社内検索・スコープ rag.query） / storage.list（フォルダの一覧・スコープ storage.read） / storage.read（テキストのファイルを読む・スコープ storage.read） / doc.read（文書の本文を読む・スコープ doc.read） / web.search（Web 検索・スコープ http.egress・社外へ出る） / web.fetch（Web ページを読む・スコープ http.egress・社外へ出る） / code.run（プログラムで計算する・スコープ sandbox.exec）。書込の道具は無い（書き込みは後ろのノードで行う）。web.fetch は egress_allowlist（管理者が AI エージェント用に許可したサイトの中から選ぶ。http.request の許可先とは別で、管理者が許可していなければ web.fetch は使えない）が要る。context に参考データ（file_id など）を渡せる。手順の決まった処理は llm.invoke と能力ノードをつなぐ方が安く確実。\n【ノード】type（名前）: 説明。params は TS の表記（? は省略可・ValueExpr は上の値）。出力は後続が nodes.<id>.output の path で読む形。\n- control.branch（条件分岐）: 条件を満たすかどうかで「はい / いいえ」に分ける。params { condition: Condition }。出力 実行の入力をそのまま通す（分岐・合流の結果としては参照しない）。出口 true/false。\n- control.switch（振り分け）: 値に応じて複数の行き先に振り分ける。params { value: ValueExpr, cases: Array<SwitchCase> }（SwitchCase = { port: string, equals: unknown }）。出力 実行の入力をそのまま通す（分岐・合流の結果としては参照しない）。\n- control.join（合流）: 分かれた流れを待ち合わせて 1 つに戻す。params { mode?: JoinMode }（JoinMode = \"all\" | \"any\"）。出力 実行の入力をそのまま通す（分岐・合流の結果としては参照しない）。\n- control.map（繰り返し）: リストの要素ごとに同じ処理を繰り返す。params { items: ValueExpr, max_concurrency?: number, on_item_error: MapItemError }（MapItemError = \"fail_map\" | \"collect\"）。出力 { items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors?: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }。\n- control.wait（待機）: 指定した時間・時刻・できごとまで待つ。params { kind: WaitKind, duration_sec?: ValueExpr, until?: ValueExpr, source?: EventSource | null, scope?: unknown, filter?: Condition, timeout_sec?: ValueExpr, on_timeout?: WaitTimeout }（WaitKind = \"duration\" | \"until\" | \"event\"、WaitTimeout = \"fail\" | \"continue\"）。出力 event なら届いたできごとの内容・時間待ちは null。\n- storage.read（ファイルを読む）: ファイルの中身を文章として読みます。PDF や Word は、社内文書の検索に取り込まれた本文を読みます。。params { file: ValueExpr }。出力 { file_id: string（読んだファイルの ID）, id: string（file_id と同じ・古い名前）, name: string, version: number（読んだバージョン・CSV を編集の前提にできる）, content_type: string, size: number, encoding?: string（読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）・文章のファイルのときだけ）, text: string（中身の文章（先頭の BOM は含まない）・PDF や Word は社内文書の検索に取り込まれた本文で、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入る）, truncated: boolean（PDF や Word の本文が長く、上限の字数で切ったとき true・文章のファイルは切らない（いつも false）） }。スコープ storage.read。\n- storage.write（ファイルを保存）: ドライブに新しいファイルを作って保存します。すでにあるファイルは書き換えません。。params { folder?: ValueExpr, name: ValueExpr, content: ValueExpr, content_type?: ValueExpr, on_name_taken?: NameTakenPolicy, encoding?: CsvEncoding }（CsvEncoding = \"utf8_bom\" | \"utf8\" | \"shift_jis\"、NameTakenPolicy = \"fail\" | \"add_number\"）。出力 { file_id: string（保存したファイルの ID）, id: string（file_id と同じ・古い名前）, name: string（保存した名前・番号を付けたときは付けた名前）, version: number, sha256: string, size: number }。スコープ storage.write。\n- storage.list（フォルダ一覧）: フォルダの中のファイル一覧を取得する。params { folder?: ValueExpr, cursor?: ValueExpr }。出力 { items: Array<{ id: string, name: string, kind: string, size: number }>（名前の順・最大 100 件・kind は file か folder）, truncated: boolean（続きがあるとき true・残りは items に入らない）, next_cursor: string | null（続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null） }。スコープ storage.read。\n- rag.search（社内検索）: 権限の範囲で社内ドキュメントを検索する。params { query: ValueExpr, top_k?: ValueExpr }。出力 { results: Array<{ file_id: string, file_name: string, content: string, relevance: \"high\" | \"medium\" | \"low\", score: number }>（関連の強いものから並ぶ・relevance は関連の強さの目安・score は順位から決めた値（1 位は 1、2 位は 0.5）で関連の強さではない） }。スコープ rag.query。\n- llm.invoke（AI に聞く）: AI に文章の生成・要約・分類などを頼む。params { model?: string, prompt: ValueExpr, system?: ValueExpr, max_tokens?: ValueExpr, effort?: LlmEffort, output_schema?: Record<string, unknown> }（LlmEffort = \"low\" | \"medium\" | \"high\"）。出力 { text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }。\n- agent.invoke（AI エージェント）: AI がツールを使って複数手順の作業をこなす。params { instruction: ValueExpr, context?: ValueExpr, allowed_tools?: Array<AgentTool>, model?: string, max_steps?: number, max_tokens?: number, egress_allowlist: Array<string>, max_duration_sec?: ValueExpr }（AgentTool = \"rag.search\" | \"storage.list\" | \"storage.read\" | \"doc.read\" | \"web.search\" | \"web.fetch\" | \"code.run\" | \"data.list_tables\" | \"data.query\" | \"data.get\"）。出力 { text: string（最後の回答・Markdown）, complete: boolean（false は上限で打ち切った回答）, stop: \"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\", model: string, citations: Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>（使った資料・50 件まで）, tool_calls: Array<{ tool: string, ok: boolean }>, skipped_tools: Array<string>（指定したが使えなかった道具）, usage: { steps: number, tokens: number, cost_usd_micros: number } }。\n- ai.decide（AI で判定）: 質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す。params { model: string, state: ValueExpr, questions: Array<DecideQuestion>, route?: DecideRoute }（DecideOption = { key: string, label?: string, description?: string }、DecideQuestion = { key: string, type: DecideQuestionType, instructions: string, options?: Array<DecideOption>, levels?: Array<string>, yes?: string, no?: string }、DecideQuestionType = \"choice\" | \"score\" | \"boolean\"、DecideRoute = { question: string, by?: DecideRouteBy, min_confidence?: number }、DecideRouteBy = \"value\" | \"confidence\"）。出力 { answers: { [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }（確からしさ・確率は 0〜1。choice の label は選択肢の名前（無ければ説明、それも無ければキー））, model: string（指定した判定用のモデル）, resolved_model: string（実際に答えた決定器の版）, provider: string | null（答えた決定器（llm_decider・typesafe・stub））, calibrated: boolean（false は確からしさが較正されていない（AI の自己申告・得票率））, method: \"native\" | \"verbalized\" | \"vote\", samples: number（1 回の判定で答えさせた回数）, cached: boolean（決定キャッシュの答えを使い回したか（ノードに cache を書いたときだけ true になり得る））, routed: { question: string, port: string } | null（route を書いたとき・進んだ出口）, raised_questions: Array<string>（AI が自分の答えに一様（はい/いいえなら 50%）より低い自信を付け、一様まで引き上げた質問のキー（質問の順・AI の自己申告のときだけ入りうる・無ければ空）） }。\n- http.request（外部 API 呼び出し）: 社外のサービス（API）にリクエストを送る。params { method?: HttpMethod, url: string, path_suffix?: ValueExpr, body?: ValueExpr, secret?: HttpSecretRef, headers?: { [key in string]?: ValueExpr }, redirect?: RedirectPolicy, fail_on_error_status?: boolean }（HttpMethod = \"GET\" | \"POST\" | \"PUT\" | \"PATCH\" | \"DELETE\" | \"HEAD\"、HttpSecretRef = { name: string, attach?: SecretAttach }、RedirectPolicy = \"deny\"、SecretAttach = { kind: SecretAttachKind, header?: string }、SecretAttachKind = \"bearer\" | \"header\"）。出力 { status: number, host: string, body: unknown（JSON なら解析した値・それ以外は文字列） }。スコープ http.egress。\n- script.run（スクリプト）: TypeScript の小さなプログラムで計算・変換する。params { source: ScriptSourceSpec, input?: ValueExpr }（ScriptSourceSpec = { inline?: string, artifact?: string }）。出力 main(input) の戻り値そのもの。\n- workflow.start（別のフローを開始）: 別のワークフローを起動する（結果は待たない）。params { name: ValueExpr, input?: ValueExpr }。出力 { run_id: string | null }（子の結果は待たない）。スコープ workflow.start。\n- workflow.reply（結果を画面に返す）: ボタンや会話から起動した人の画面に、処理の結果を表示する。params { format: ReplyFormat, label?: string, tone?: ReplyTone, value: ValueExpr, columns?: Array<ReplyColumn>, file?: ReplyFileSpec }（ReplyColumn = { label: string, path: string }、ReplyFileSpec = { id_path?: string, name_path?: string }、ReplyFormat = \"text\" | \"markdown\" | \"table\" | \"file_link\"、ReplyTone = \"neutral\" | \"success\" | \"warning\" | \"error\"）。出力 画面に出す節 { format: \"text\" | \"markdown\" | \"table\" | \"file_link\", label?: string, tone: string, truncated: boolean, text?: string（text・markdown）, columns?: Array<string>, rows?: Array<Array<string>>, total_rows?: number（table）, files?: Array<{ id: string, name: string }>（file_link） }（後続から参照するものではない）。\n- csv.query（CSV を集計）: CSV か Excel のファイルを SQL で集計したり、条件に合う行を取り出したりします。ファイルは書き換えません。。params { file: ValueExpr, sql: ValueExpr }。出力 { columns: Array<string>（列の名前・同じ名前の 2 つ目からは a_1 のように付け直す）, column_types: Array<string>（列の型の名前・BIGINT（整数）・DOUBLE（数値）・BOOLEAN（はい／いいえ）・VARCHAR（テキスト）・DATE（日付）など）, rows: Array<Array<string | null>>（値は列の種類にかかわらずテキスト・空は null・日付は 2024-01-31 の形）, items: Array<{ [列の名前]: string | number | boolean | null }>（1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない）, total_rows: number | null（結果の行の数・打ち切ったときは null）, truncated: boolean（10,000 行か、結果の大きさの上限で打ち切ったとき true）, version: number（集計した CSV のバージョン・CSV を編集の前提にできる） }。スコープ csv.read。\n- csv.patch（CSV を編集）: CSV のセル・行・列を書き換えて新しいバージョンを保存する。params { file: ValueExpr, base_rev: ValueExpr, ops: ValueExpr }。出力 { file_id: string（編集した CSV の ID）, node_id: string（file_id と同じ・古い名前）, version: number（編集の後のバージョン）, rows: number, cols: number }。スコープ csv.write。\n- csv.write（CSV を保存）: ドライブに新しい CSV ファイルを作って保存します。すでにあるファイルは書き換えません。。params { folder?: ValueExpr, name: ValueExpr, content: ValueExpr, on_name_taken?: NameTakenPolicy, encoding?: CsvEncoding }（CsvEncoding = \"utf8_bom\" | \"utf8\" | \"shift_jis\"、NameTakenPolicy = \"fail\" | \"add_number\"）。出力 { file_id: string（保存した CSV の ID）, node_id: string（file_id と同じ・古い名前）, version: number, name: string（保存した名前・番号を付けたときは付けた名前） }。スコープ csv.write。\n- data.query（データを調べる）: テーブルから、条件に合うレコードを読みます。一度に読めるのは最大 200 件です。。params { table: ValueExpr, query?: DataQuery }（DataQuery = { aggregate?: Array<MetricSpec>, cursor?: string, filter?: Condition, group_by?: Array<string>, group_limit?: number, group_sort?: Array<GroupSortKey>, having?: HavingCond, joins?: Array<JoinSpec>, limit?: number, search?: string, search_fields?: Array<string>, select?: Array<string>, snapshot?: boolean, sort?: Array<SortKey>, with_count?: boolean }）。出力 { items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>, groups?: Array<集計の行>（aggregate のとき）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき） }。スコープ data.read。\n- data.record.create（データを追加）: 業務データに新しいレコードを追加する。params { table: ValueExpr, data: ValueExpr }。出力 レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }。スコープ data.write。\n- data.record.update（データを更新）: 業務データのレコードを書き換える。params { table: ValueExpr, record: ValueExpr, patch: ValueExpr, expected_rev?: ValueExpr, add?: ValueExpr }。出力 レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }。スコープ data.write。\n- data.record.upsert（レコードを追加か更新）: 選んだ列の値が同じレコードがあれば書き換え、なければ追加します。。params { table: ValueExpr, match_on: string, data: ValueExpr, add?: ValueExpr }。出力 レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string, created: boolean（追加したら true、書き換えたら false） }。スコープ data.write。\n- data.transition（状態を進める）: 申請・承認などの状態を次へ進める。params { table: ValueExpr, record: ValueExpr, to: ValueExpr, expected_rev?: ValueExpr }。出力 レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }。スコープ data.write。\n- data.record.delete（データを削除）: 業務データのレコードを削除する。params { table: ValueExpr, record: ValueExpr, expected_rev?: ValueExpr }。出力 { id: string, deleted: true }。スコープ data.write。\n- data.bulk_upsert（データをまとめて登録）: 業務データにレコードをまとめて追加・更新する。params { table: ValueExpr, rows: ValueExpr, abort_on_invalid?: boolean, match_on?: string }。出力 { import_id: string, status: string, rows_total: number, rows_applied: number, rows_invalid: number, rows_rejected: number, errors: Array<{ row: number, key: string | null, message: string }>, last_error: string | null, rows_matched?: number（同じレコードを探す列で、あるレコードに当たって更新に回した件数） }。スコープ data.write。\n- skill.invoke（スキルを使う）: インストール済みのスキル（定型作業）を呼び出す。params { skill: string, input?: ValueExpr }。出力 script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }。\n- transform.date（日付を計算）: 基準の日から、前日・先週・先月などの日付と、週や月の最初と最後の日を求めます。。params { base?: ValueExpr, shift?: DateShift, period?: DateUnit, week_starts_on?: WeekStart, tz?: string }（DateShift = { amount: ValueExpr, unit: DateUnit }、DateUnit = \"day\" | \"week\" | \"month\" | \"year\"、WeekStart = \"monday\" | \"sunday\"）。出力 { date: string（ずらした日・YYYY-MM-DD）, start: string（期間の最初の日（週の初め・月初など））, end: string（期間の最後の日（週の終わり・月末など））, start_at: string（期間の始まりの日時・時差つき）, next_start_at: string（次の期間の始まりの日時・期間はこれより前まで）, year: number（ずらした日の年）, month: number（ずらした日の月）, day: number（ずらした日の日）, weekday: number（ずらした日の曜日・1＝月曜〜7＝日曜） }。\n- human.approval（承認を待つ）: テーブルの行について担当者の承認・却下・差し戻しを待って分岐する。params { title: string, instructions?: string, record: ApprovalRecord, assignees: Array<ApprovalAssignee>, approve: ApprovalChoice, reject?: ApprovalChoice, return?: ApprovalChoice, show_fields?: Array<string>, timeout_sec?: number, on_timeout?: WaitTimeout }（ApprovalAssignee = { user?: ValueExpr, role?: ValueExpr, field?: string }、ApprovalChoice = { to: string, label?: string, comment?: ApprovalComment }、ApprovalComment = \"optional\" | \"required\"、ApprovalRecord = { table: string, id: ValueExpr }、WaitTimeout = \"fail\" | \"continue\"）。出力 { approval_id: string, decision: \"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\", to: string | null（判断で進んだ状態）, decided_by: string | null（判断した人の ID）, decided_at: string | null, comment: string | null, record_id: string, rev: number | null（判断の後の rev） }（行の値は載せない。必要なら後で「データを調べる」で読む）。出口 approved/withdrawn。スコープ notify.send。\n",
+  "input_schema": {
+   "properties": {
+    "expected_version": {
+     "description": "workflow_id を渡すときは必須。read_workflow が返した version をそのまま渡す（無ければ保存しない。他者の編集と競合したら失敗が返る）",
+     "type": "integer"
+    },
+    "ir": {
+     "description": "ワークフロー IR（JSON DAG）全体",
+     "type": "object"
+    },
+    "workflow_id": {
+     "description": "更新対象の既存ワークフロー ID（UUID の文字列）。新規作成なら省略",
+     "type": "string"
+    }
+   },
+   "required": [
+    "ir"
+   ],
+   "type": "object"
+  },
+  "name": "emit_workflow"
+ },
+ {
+  "defer_loading": true,
+  "description": "既存ワークフローの最新 IR（JSON）を読む。emit_workflow で編集する前に必ず呼び、返った IR を基に変更し、返った version を emit_workflow の expected_version に渡すこと。workflow_id には id（UUID）か name を渡す。id も name も分からなければ list_workflows で探す。",
+  "input_schema": {
+   "properties": {
+    "workflow_id": {
+     "description": "ワークフロー ID（UUID）か name（list_workflows が返す）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workflow_id"
+   ],
+   "type": "object"
+  },
+  "name": "read_workflow"
+ },
+ {
+  "defer_loading": true,
+  "description": "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。id・版・きっかけ・自動実行の状態・実行の入力の項目・編集できるかを返す。既存のワークフローを直す・中身を確かめるよう頼まれて id が分からないときに使う。見つけたら read_workflow で今の IR と version を読み、直した IR を emit_workflow に workflow_id とexpected_version を付けて渡すと、新しい版として保存される（新しく作らない）。ユーザーが持ち主のものだけを返す。見つからなければ include_shared: true で、ほかの人から共有されたものも探す。",
+  "input_schema": {
+   "properties": {
+    "include_shared": {
+     "description": "ほかの人から共有されたものも含める（既定 false）",
+     "type": "boolean"
+    },
+    "limit": {
+     "description": "返す件数（既定 20・最大 30）",
+     "maximum": 30,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "query": {
+     "description": "名前・表示名・説明に含む語（例: 経費）。省略すると新しい順にすべて",
+     "maxLength": 100,
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "name": "list_workflows"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成した内容を新しいノートの下書きとして用意する。ユーザーが「〜のドキュメントを作って」「ノートにして」等と依頼したときに使う。呼ぶと下書きノート画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の文書を同時に作る場合は別の name で呼ぶ。",
+  "input_schema": {
+   "properties": {
+    "markdown": {
+     "description": "ノート本文の Markdown",
+     "type": "string"
+    },
+    "name": {
+     "description": "ノート名（.md は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "markdown"
+   ],
+   "type": "object"
+  },
+  "name": "save_note"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成したスライド一式を新しいスライドの下書きとして用意する。ユーザーが「パワポを作って」「スライドにして」等と依頼したときに使う。呼ぶと下書きスライド画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。本文 HTML は 1280×720（16:9）キャンバス前提で、h1/h2/h3/p/ul/li/table/div（インライン style）の基本要素だけで構成する（script 等は自動除去される）。見栄えの指針: 1 スライド 1 メッセージ・大きな見出し（表紙 h1 は 64px 級、本文スライドは h2 40px 級）・箇条書きは 5 点以内・十分な余白（div の padding で確保）・配色はテーマに合わせてインライン style で指定する。利用可能な theme_id（この閉集合以外は指定不可）: plain（白基調: 背景 #ffffff・本文 #1f2937・見出し #111827・アクセント #2563eb） / dark（ダーク: 背景 #0f172a・本文 #e2e8f0・見出し #f8fafc・アクセント #38bdf8） / warm（和紙（暖色）: 背景 #faf6ef・本文 #44403c・見出し #1c1917・アクセント #b45309） / forest（深緑: 背景 #f4f9f4・本文 #1f2937・見出し #14532d・アクセント #15803d）。",
+  "input_schema": {
+   "properties": {
+    "name": {
+     "description": "スライド名（.slide は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    },
+    "slides": {
+     "description": "スライド列（先頭が表紙）",
+     "items": {
+      "properties": {
+       "html": {
+        "description": "スライド本文 HTML（1280×720 前提・基本要素サブセット）",
+        "type": "string"
+       },
+       "notes": {
+        "description": "スピーカーノート（任意）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "html"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "theme_id": {
+     "description": "テーマ（省略可・カタログの閉集合）",
+     "enum": [
+      "plain",
+      "dark",
+      "warm",
+      "forest"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "slides"
+   ],
+   "type": "object"
+  },
+  "name": "save_slide"
+ },
+ {
+  "defer_loading": true,
+  "description": "会話で生成した表データを新しい CSV の下書きとして用意する。ユーザーが「〜の表を作って」「一覧表にして」等と依頼したときに使う。呼ぶと下書き CSV 画面（グリッド）が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の表を同時に作る場合は別の name で呼ぶ。既存 CSV の編集は csv.patch を使うこと。",
+  "input_schema": {
+   "properties": {
+    "csv": {
+     "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）",
+     "type": "string"
+    },
+    "name": {
+     "description": "CSV 名（.csv は自動付与）。同じ name で呼び直すと同じ下書きを更新する",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "csv"
+   ],
+   "type": "object"
+  },
+  "name": "save_csv"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）の現在の内容を正規化 Markdown で読み取る。document.edit で編集する前に、見出し構成や既存内容を把握するために使う。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id"
+   ],
+   "type": "object"
+  },
+  "name": "document_read"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）を共同編集参加者として編集する。人が同時に書いている箇所を壊さないよう、**変える所だけを変える一番小さい操作**を選ぶ。語句の訂正・言い換え・見出しの改名・文や項目の削除は replace_text（find の語句を replace に。空にすると段落・項目ごと消える）。段落・リスト・表を書式付きで書き直すなら replace_block（find を含む最上位のブロックを置換。リストの項目の中で同じ種類のリストを渡すとその項目だけを置換＝チェックの付け外しもこれ）。段落・項目の後ろに足すなら insert_after（リストの項目の後ろに同じ種類のリストを渡すと同じリストに続く）。find は本文の文字どおりで、文書全体で一意にする（重なるなら heading で節を絞る）。1 つの段落・項目・表のセルの中の語句に限る（表は行ではなくセルの文字を渡す）。節単位は replace_section（見出しを残して本文を置換）・insert_after_heading・delete_section（見出しごと消す）・move_section（before_heading の前へ。省略で末尾）。append は末尾に追記、replace_all は全文の作り直し（最終手段）、set_meta はタイトル・タグ等。既定は直接適用（あなたの名義で反映）。mode=\"suggest\" で提案として入れ、人間が承認/棄却できる。ops は全部適用されるか何も適用されないかのどちらかで、適用できないときは理由が返るので、直して ops 全体を送り直す。グラフ等の図は markdown に ```ui ブロックとして書く（末尾に図だけ足すなら document.embed）。",
+  "input_schema": {
+   "properties": {
+    "mode": {
+     "default": "direct",
+     "description": "direct=直接適用（既定）/ suggest=提案マーク付き",
+     "enum": [
+      "direct",
+      "suggest"
+     ],
+     "type": "string"
+    },
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "編集操作列（順に適用）",
+     "items": {
+      "properties": {
+       "before_heading": {
+        "description": "move_section の移動先（この見出しの前へ。省略で末尾）",
+        "type": "string"
+       },
+       "find": {
+        "description": "場所を決める本文の語句（replace_text / replace_block / insert_after）。文書全体で一意に",
+        "type": "string"
+       },
+       "heading": {
+        "description": "対象の見出しの文字（節単位の操作）。find を使う操作では、探す範囲をその節に絞る。同じ見出しが複数あるときは「親の見出し > 見出し」",
+        "type": "string"
+       },
+       "key": {
+        "description": "プロパティ名（set_meta・title/icon/tags/任意）",
+        "type": "string"
+       },
+       "markdown": {
+        "description": "入れる/置換する Markdown（replace_block / insert_after / replace_section / insert_after_heading / append / replace_all）",
+        "type": "string"
+       },
+       "op": {
+        "enum": [
+         "replace_text",
+         "replace_block",
+         "insert_after",
+         "replace_section",
+         "insert_after_heading",
+         "delete_section",
+         "move_section",
+         "append",
+         "replace_all",
+         "set_meta"
+        ],
+        "type": "string"
+       },
+       "replace": {
+        "description": "差し替える文字（replace_text・書式記号は使えない・空で削除）",
+        "type": "string"
+       },
+       "value": {
+        "description": "プロパティ値（set_meta・tags は , 区切り）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "op"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "document_edit"
+ },
+ {
+  "defer_loading": true,
+  "description": "ノート（.md ファイル）の本文末尾にグラフ・表・構成図などの図を入れる。ユーザーが「このグラフをノートに入れて」「図をノートに追加して」等と依頼したときに使う。source は回答の本文に書く ```ui ブロックの中身（Yui の記述・フェンスは不要）。表示だけの種類に限る（app・ask・plan は入れられない）。追記のみで既存内容は消さない。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "ノートのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "source": {
+     "description": "```ui ブロックの中身（例: \"bar 月別の売上\\n4月 | 120\\n5月 | 150\"）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id",
+    "source"
+   ],
+   "type": "object"
+  },
+  "name": "document_embed"
+ },
+ {
+  "defer_loading": true,
+  "description": "スライド（.slide ファイル）の現在の内容を正規化 JSON で読み取る（各スライドのid・本文 HTML・スピーカーノート・メタデータ）。slide.edit で編集する前に、スライド構成と id を把握するために使う。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "スライドのノード ID",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id"
+   ],
+   "type": "object"
+  },
+  "name": "slide_read"
+ },
+ {
+  "defer_loading": true,
+  "description": "スライド（.slide ファイル）を共同編集参加者として編集する。人間が編集中でも安全に同時編集できる（CRDT で収束）。操作: append_slide（末尾に追加）/ insert_slide_after（指定 id の直後に挿入）/ replace_slide（本文 HTML 置換）/ remove_slide / set_notes（スピーカーノート）/ set_background（{\"color\":\"#rrggbb\"}）/ set_meta（title・theme_id 等）。編集前に slide.read で構成と id を確認すること。本文 HTML は 1280×720（16:9）キャンバス前提で、h1/h2/h3/p/ul/li/table/div（インライン style）の基本要素だけで構成する（script 等は自動除去される）。見栄えの指針: 1 スライド 1 メッセージ・大きな見出し（表紙 h1 は 64px 級、本文スライドは h2 40px 級）・箇条書きは 5 点以内・十分な余白（div の padding で確保）・配色はテーマに合わせてインライン style で指定する。利用可能な theme_id（この閉集合以外は指定不可）: plain（白基調: 背景 #ffffff・本文 #1f2937・見出し #111827・アクセント #2563eb） / dark（ダーク: 背景 #0f172a・本文 #e2e8f0・見出し #f8fafc・アクセント #38bdf8） / warm（和紙（暖色）: 背景 #faf6ef・本文 #44403c・見出し #1c1917・アクセント #b45309） / forest（深緑: 背景 #f4f9f4・本文 #1f2937・見出し #14532d・アクセント #15803d）。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "スライドのノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "編集操作列（順に適用）",
+     "items": {
+      "properties": {
+       "bg": {
+        "description": "背景指定（set_background・例 {\"color\":\"#ffffff\"}）",
+        "type": "object"
+       },
+       "html": {
+        "description": "スライド本文 HTML（append_slide/insert_slide_after/replace_slide）",
+        "type": "string"
+       },
+       "key": {
+        "description": "プロパティ名（set_meta・title/theme_id/tags/任意）",
+        "type": "string"
+       },
+       "notes": {
+        "description": "スピーカーノート（set_notes・追加系では任意）",
+        "type": "string"
+       },
+       "op": {
+        "enum": [
+         "append_slide",
+         "insert_slide_after",
+         "replace_slide",
+         "remove_slide",
+         "set_notes",
+         "set_background",
+         "set_meta"
+        ],
+        "type": "string"
+       },
+       "slide_id": {
+        "description": "対象スライド id（append_slide/set_meta 以外で必須）",
+        "type": "string"
+       },
+       "value": {
+        "description": "プロパティ値（set_meta）",
+        "type": "string"
+       }
+      },
+      "required": [
+       "op"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "slide_edit"
+ },
+ {
+  "defer_loading": true,
+  "description": "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。Excel（.xlsx）も読める。表示している左端のシートが `data` で、ほかのシートは FROM \"集計\" のようにシートの名前で読める（結果にシートの一覧が出る）。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。",
+  "input_schema": {
+   "properties": {
+    "node_id": {
+     "description": "CSV のノード ID",
+     "format": "uuid",
+     "type": "string"
+    },
+    "sql": {
+     "description": "読み取り専用 SELECT（テーブル名 data）",
+     "type": "string"
+    }
+   },
+   "required": [
+    "node_id",
+    "sql"
+   ],
+   "type": "object"
+  },
+  "name": "csv_query"
+ },
+ {
+  "defer_loading": true,
+  "description": "CSV をパッチ編集して新しいバージョンを保存する（編集権限が要る）。ops は cell_update /row_insert / row_delete / column_add / column_delete / column_rename。base_rev には編集前の版（csv.query 等で得た version）を渡す（競合検出）。",
+  "input_schema": {
+   "properties": {
+    "base_rev": {
+     "description": "編集前の版（競合検出）",
+     "type": "integer"
+    },
+    "node_id": {
+     "format": "uuid",
+     "type": "string"
+    },
+    "ops": {
+     "description": "パッチ操作列",
+     "items": {
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "node_id",
+    "base_rev",
+    "ops"
+   ],
+   "type": "object"
+  },
+  "name": "csv_patch"
+ },
+ {
+  "defer_loading": true,
+  "description": "新しい CSV ファイルを保存する（保存先フォルダの作成権限が要る）。csv には CSV 本文（ヘッダ行＋データ行）を渡す。",
+  "input_schema": {
+   "properties": {
+    "csv": {
+     "description": "CSV 本文",
+     "type": "string"
+    },
+    "name": {
+     "description": "ファイル名（.csv は自動付与）",
+     "type": "string"
+    },
+    "parent_id": {
+     "description": "保存先フォルダ（省略で直下）",
+     "format": "uuid",
+     "type": "string"
+    }
+   },
+   "required": [
+    "name",
+    "csv"
+   ],
+   "type": "object"
+  },
+  "name": "csv_write"
+ },
+ {
+  "description": "社内の構造化データ（テーブル）を検索・集計する（読み取り専用）。見えない行・列はあなたの権限で自動的に除かれる。列の参照名・型・選択肢が分からなければ先に data_schema で確かめること。query は DataQuery: filter は条件木（{\"cmp\":{\"field\":\"status\",\"op\":\"eq\",\"value\":\"承認待ち\"}}・{\"all\":[...]}・{\"any\":[...]}・{\"not\":{...}}。op は eq / neq / lt / lte / gt / gte / in / contains / starts_with / ends_with / exists / is_null）、sort は [{\"field\":\"amount\",\"descending\":true}]（作成・更新日時・作成者は _created_at / _updated_at / _owner）、select は返す列、limit は件数（既定 50・最大 200）、集計は group_by ＋ aggregate （[{\"metric\":\"sum\",\"field\":\"amount\"}]・metric は count / sum / avg / min / max）、with_count で総数。例: 経費の承認待ちを金額の大きい順 → {\"table\":\"経費\",\"query\":{\"filter\":{\"cmp\":{\"field\":\"status\",\"op\":\"eq\",\"value\":\"承認待ち\"}},\"sort\":[{\"field\":\"amount\",\"descending\":true}]}}\n\n閲覧できるテーブル（名前 / id）:\n- 経費申請 / @table:claims\n- 承認者 / @table:approvers\n",
+  "input_schema": {
+   "properties": {
+    "query": {
+     "description": "DataQuery（filter / sort / select / limit / cursor / group_by / aggregate / with_count / search）",
+     "properties": {
+      "aggregate": {
+       "description": "[{metric, field}]",
+       "items": {
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "cursor": {
+       "description": "前ページの続きの位置",
+       "type": "string"
+      },
+      "filter": {
+       "description": "条件木（cmp / all / any / not）",
+       "type": "object"
+      },
+      "group_by": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "limit": {
+       "maximum": 200,
+       "minimum": 1,
+       "type": "integer"
+      },
+      "search": {
+       "description": "検索対象の列への部分一致",
+       "type": "string"
+      },
+      "select": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "sort": {
+       "description": "[{field, descending}]（最大 4 キー）",
+       "items": {
+        "type": "object"
+       },
+       "type": "array"
+      },
+      "with_count": {
+       "type": "boolean"
+      }
+     },
+     "type": "object"
+    },
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "name": "data_query"
+ },
+ {
+  "description": "テーブルの列（参照名・型・表示名・選択肢・状態の列）を調べる（読み取り専用）。data_query の filter / sort / select や data_record_write の値には、ここで得た参照名を使う。table は data_query の一覧の名前か id。",
+  "input_schema": {
+   "properties": {
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table"
+   ],
+   "type": "object"
+  },
+  "name": "data_schema"
+ },
+ {
+  "defer_loading": true,
+  "description": "テーブルのレコードを 1 件作成（op=create）または更新（op=update・変更する列だけ）する。編集権限が要り（「追加だけ」のテーブルは作成と、作成者に許された状態の自分のレコードの更新だけ）、実行前にユーザーの承認を求める。data のキーは data_schema の参照名。状態の列（承認フロー）と作成者の列は書き換えられない。table は data_query の一覧の名前か id。",
+  "input_schema": {
+   "properties": {
+    "data": {
+     "description": "列の参照名 → 値（update は変更する列だけ・null で値を消す）",
+     "type": "object"
+    },
+    "expected_rev": {
+     "description": "楽観ロック（data_query の rev）",
+     "type": "integer"
+    },
+    "op": {
+     "enum": [
+      "create",
+      "update"
+     ],
+     "type": "string"
+    },
+    "record_id": {
+     "description": "update の対象",
+     "format": "uuid",
+     "type": "string"
+    },
+    "table": {
+     "description": "テーブルの名前（一覧）か id",
+     "type": "string"
+    }
+   },
+   "required": [
+    "table",
+    "op",
+    "data"
+   ],
+   "type": "object"
+  },
+  "name": "data_record_write"
+ },
+ {
+  "description": "まだ読み込まれていないツールを検索して読み込む。次のツールは定義が読み込まれていないため、このままでは呼び出せない: emit_workflow, read_workflow, list_workflows, save_note, save_slide, save_csv, document.read, document.edit, document.embed, slide.read, slide.edit, csv.query, csv.patch, csv.write, data_record_write。必要になったら、やりたいこと（日本語/英語の自然文）かツール名の一部で検索する。見つかったツールは読み込まれ、以降は通常どおり呼び出せる。名前が分かっていれば `select:csv.query,csv.patch` の形で直接読み込める。",
+  "input_schema": {
+   "properties": {
+    "limit": {
+     "description": "読み込む最大件数（既定 5）",
+     "maximum": 10,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "query": {
+     "description": "探したい操作（例: 「CSV を集計する」「edit a slide」）、ツール名の一部、または `select:<名前>,<名前>`。`+csv 集計` のように `+語` を付けると名前にその語を含むものに絞る。",
+     "type": "string"
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "name": "tool_search"
+ }
+]

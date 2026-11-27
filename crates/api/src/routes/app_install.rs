@@ -32,6 +32,10 @@ pub struct InstallAppRequest {
     /// プロビジョンしたテーブルへ editor を付与するロール ID。
     #[serde(default)]
     pub editor_roles: Vec<String>,
+    /// プロビジョンしたテーブルへ「追加だけ」（submitter・D-113）を付与するロール ID。追加でき、自分が
+    /// 追加したレコードだけ読める。
+    #[serde(default)]
+    pub submitter_roles: Vec<String>,
 }
 
 /// インストール応答。
@@ -66,9 +70,10 @@ impl From<Installed> for InstallAppResponse {
     responses(
         (status = 200, description = "インストール完了", body = InstallAppResponse),
         (status = 400, description = "granted ⊄ requested・未知スコープ・信頼ティア不許可"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない・署名検証失敗"),
         (status = 404, description = "レジストリに存在しない"),
-        (status = 409, description = "yank 済み・テーブル名衝突"),
+        (status = 409, description = "テーブル名衝突など。取り下げた版なら code=yanked と理由の message。同じテナントのほかの組織にインストールがあれば code=installed_in_other_org と理由の message", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -88,6 +93,7 @@ pub async fn install_app(
                 granted_scopes: req.granted_scopes,
                 viewer_roles: req.viewer_roles,
                 editor_roles: req.editor_roles,
+                submitter_roles: req.submitter_roles,
             },
             trace.as_deref(),
         )
@@ -99,11 +105,23 @@ pub async fn install_app(
     Ok(Json(installed.into()))
 }
 
-/// インストール一覧（管理 UI 用）。
+/// インストール一覧（管理 UI 用）。呼ぶ人の組織が入れたアプリだけを返す（PIT-45・BUG-197）。
+///
+/// 各項目に `table_count`（アプリが持つ、呼ぶ人の組織の生きているテーブルの数）を添える。0 より多いアプリだけ、
+/// 画面がテーブルを使える部署・グループを変える口を出す（GAP-68）。
+///
+/// 呼ぶ人がアプリの持ち主なら、自動実行（event・cron）の関数の直近の失敗を `function_failures`
+/// （[`app_platform::AppFunctionFailure`] の配列・新しい順）に添える（失敗が無いときと、持ち主でないときは付けない・GAP-60）。
+///
+/// 各項目に `yanked`（入れた版の公開を取り下げたか）を添える。取り下げても入れたアプリは動き続け、新しくは入れられ
+/// ない（GAP-69b）。
 #[utoipa::path(
     get,
     path = "/apps/installations",
-    responses((status = 200, description = "インストール一覧")),
+    responses(
+        (status = 200, description = "インストール一覧"),
+        (status = 401, description = "未認証"),
+    ),
     security(("session" = [])),
 )]
 pub async fn list_installations(
@@ -116,6 +134,55 @@ pub async fn list_installations(
         .list(&ctx)
         .await
         .map_err(|e| ApiError::Internal(format!("installations: {e}")))?;
+    let ids: Vec<Uuid> = items.iter().map(|i| i.app_id).collect();
+    let counts = state.data.app_table_counts(&ctx, &ids).await?;
+    // 失敗の添え物を読めない（OpenFGA の一時的な障害など）ときも、一覧は返す（添えないのは持ち主でないときと同じ
+    // 見え方なので、明かすことは増えない）。
+    let failures = match state.installs.function_failures(&ctx, &ids).await {
+        Ok(failures) => failures,
+        Err(e) => {
+            tracing::warn!(error = %e, "自動実行の関数の失敗を読めません（一覧には添えません）");
+            std::collections::HashMap::new()
+        }
+    };
+    // 入れた版の公開を取り下げたか（GAP-69b）。入れたアプリは動き続けるので、読めなくても一覧は返す（添えないだけ）。
+    let installed: Vec<(Uuid, String, String)> = items
+        .iter()
+        .map(|i| (i.app_id, i.app_name.clone(), i.installed_version.clone()))
+        .collect();
+    let yanked = match state
+        .installs
+        .registry()
+        .yanked_installs(&ctx, &installed)
+        .await
+    {
+        Ok(yanked) => yanked,
+        Err(e) => {
+            tracing::warn!(error = %e, "入れた版の取り下げを読めません（一覧には添えません）");
+            std::collections::HashSet::new()
+        }
+    };
+    let items: Vec<serde_json::Value> = items
+        .into_iter()
+        .map(|i| {
+            let count = counts.get(&i.app_id).copied().unwrap_or(0);
+            let failed = failures.get(&i.app_id).cloned();
+            let is_yanked =
+                yanked.contains(&(i.app_id, i.app_name.clone(), i.installed_version.clone()));
+            let mut v = serde_json::to_value(i).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("table_count".into(), count.into());
+                obj.insert("yanked".into(), is_yanked.into());
+                if let Some(failed) = failed {
+                    obj.insert(
+                        "function_failures".into(),
+                        serde_json::to_value(failed).unwrap_or_default(),
+                    );
+                }
+            }
+            v
+        })
+        .collect();
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
@@ -126,8 +193,10 @@ pub async fn list_installations(
     params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
     responses(
         (status = 204, description = "アンインストール完了"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
         (status = 404, description = "インストールが存在しない"),
+        (status = 409, description = "同じテナントのほかの組織のインストール（code=installed_in_other_org と理由の message）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -144,6 +213,60 @@ pub async fn uninstall_app(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// アプリのテーブルと、それを使える部署・グループ（GAP-68・インストールとアンインストールができる人だけ）。
+#[utoipa::path(
+    get,
+    path = "/apps/installations/{app_id}/roles",
+    params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
+    responses(
+        (status = 200, description = "アプリのテーブルと、見られる・編集できる・追加だけの部署・グループ", body = app_platform::AppTableAccess),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "アーティファクト owner でない"),
+        (status = 404, description = "インストールが存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn app_table_roles(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(app_id): Path<Uuid>,
+) -> Result<Json<app_platform::AppTableAccess>, ApiError> {
+    Ok(Json(state.installs.table_roles(&ctx, app_id).await?))
+}
+
+/// アプリのテーブルを使える部署・グループを足す・外す（GAP-68）。
+///
+/// 意味はインストールの要求の `viewer_roles`・`editor_roles`・`submitter_roles` と同じで、アプリのすべてのテーブルに
+/// 効く。足す部署・グループは同じテナントのディレクトリに居ること。変えた内容は監査に残る。
+#[utoipa::path(
+    patch,
+    path = "/apps/installations/{app_id}/roles",
+    params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
+    request_body = app_platform::AppTableRolesChange,
+    responses(
+        (status = 200, description = "変えた後のアプリのテーブルと部署・グループ", body = app_platform::AppTableAccess),
+        (status = 400, description = "部署・グループの id が不正・見つからない・足して外す食い違い・件数の上限・テーブルが無い"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "アーティファクト owner でない"),
+        (status = 404, description = "インストールが存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn update_app_table_roles(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(app_id): Path<Uuid>,
+    Json(change): Json<app_platform::AppTableRolesChange>,
+) -> Result<Json<app_platform::AppTableAccess>, ApiError> {
+    Ok(Json(
+        state
+            .installs
+            .update_table_roles(&ctx, app_id, change, trace.as_deref())
+            .await?,
+    ))
+}
+
 /// アプリ利用量（capability＋llm・user×app 集計・Task 9.15）。
 #[utoipa::path(
     get,
@@ -151,6 +274,7 @@ pub async fn uninstall_app(
     params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
     responses(
         (status = 200, description = "利用量集計"),
+        (status = 401, description = "未認証"),
         (status = 403, description = "アーティファクト owner でない"),
     ),
     security(("session" = [])),
@@ -164,23 +288,84 @@ pub async fn app_usage(
     Ok(Json(usage))
 }
 
-/// レジストリ一覧（インストール UI 用・publish 済みエントリ）。
+/// レジストリ一覧の 1 項目（登録の行と、呼ぶ人が取り下げられるか・GAP-69b）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RegistryListItem {
+    #[serde(flatten)]
+    pub entry: RegistryEntry,
+    /// 呼ぶ人がこの公開を取り下げられるか（アプリの持ち主か組織の管理者・画面の出し分けだけ）。
+    pub can_yank: bool,
+}
+
+/// レジストリ一覧（`GET /apps/registry`）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RegistryListResponse {
+    pub items: Vec<RegistryListItem>,
+}
+
+/// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。取り下げたものと、実体の
+/// アーティファクトを消したものは出さない（D-203・GAP-69a）。
+///
+/// 各項目に `can_yank`（呼ぶ人が取り下げられるか＝アプリの持ち主か組織の管理者・画面の出し分け）を添える。判定を
+/// 読めない（OpenFGA の一時的な障害など）ときは `false` にして一覧は返す（取り下げの口が確かめ直す・GAP-69b）。
 #[utoipa::path(
     get,
     path = "/apps/registry",
-    responses((status = 200, description = "レジストリ一覧")),
+    responses(
+        (status = 200, description = "レジストリ一覧", body = RegistryListResponse),
+        (status = 401, description = "未認証"),
+    ),
     security(("session" = [])),
 )]
 pub async fn list_registry(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<RegistryListResponse>, ApiError> {
     let items = state
         .installs
         .registry()
-        .list(&ctx, "mini_app_code", 200)
+        .list_installable(&ctx, "mini_app_code", 200)
         .await?;
-    Ok(Json(serde_json::json!({ "items": items })))
+    let can_yank = match state.installs.yankable(&ctx, &items).await {
+        Ok(can_yank) => can_yank,
+        Err(e) => {
+            tracing::warn!(error = %e, "取り下げられるかを読めません（取り下げの口を出しません）");
+            vec![false; items.len()]
+        }
+    };
+    let items = items
+        .into_iter()
+        .zip(can_yank)
+        .map(|(entry, can_yank)| RegistryListItem { entry, can_yank })
+        .collect();
+    Ok(Json(RegistryListResponse { items }))
+}
+
+/// コードアプリの公開を取り下げる（D-203・GAP-69b）。
+///
+/// 新しいインストールが止まり、組織の公開アプリの一覧から外れる。入れてあるアプリは動き続け、登録の行も残る
+/// （動いているものを止めるのはアンインストール）。取り下げられるのは、アプリの持ち主と組織の管理者。もう取り下げて
+/// いても 204（監査は取り下げたときだけ `app.yank` を残す）。
+#[utoipa::path(
+    post,
+    path = "/apps/registry/{id}/yank",
+    params(("id" = Uuid, Path, description = "レジストリのエントリの ID（`GET /apps/registry` の `id`）")),
+    responses(
+        (status = 204, description = "取り下げた（もう取り下げていたときも）"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "アプリの持ち主でも組織の管理者でもない"),
+        (status = 404, description = "呼ぶ人の組織のコードアプリの登録に無い（ほかの組織・skill の登録を含む）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn yank_registry_entry(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    state.installs.yank(&ctx, id, trace.as_deref()).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// オフライン import 要求（署名付きマニフェスト・エアギャップ配布）。
@@ -200,6 +385,7 @@ pub struct ImportAppRequest {
     request_body = ImportAppRequest,
     responses(
         (status = 200, description = "レジストリ登録済み", body = RegistryEntry),
+        (status = 401, description = "未認証"),
         (status = 403, description = "署名検証失敗・鍵不明/失効"),
         (status = 409, description = "同名 version は登録済み（不変 publish）"),
     ),
@@ -350,10 +536,19 @@ pub(crate) fn app_install_route_decls() -> Vec<crate::server::RouteDecl> {
         r("/apps/installations/{app_id}", &["DELETE"], Session, || {
             delete(uninstall_app)
         }),
+        r(
+            "/apps/installations/{app_id}/roles",
+            &["GET", "PATCH"],
+            Session,
+            || get(app_table_roles).patch(update_app_table_roles),
+        ),
         r("/apps/registry/import", &["POST"], Session, || {
             post(import_app)
         }),
         r("/apps/registry", &["GET"], Session, || get(list_registry)),
+        r("/apps/registry/{id}/yank", &["POST"], Session, || {
+            post(yank_registry_entry)
+        }),
         r("/apps/{app_id}/usage", &["GET"], Session, || get(app_usage)),
     ]
 }

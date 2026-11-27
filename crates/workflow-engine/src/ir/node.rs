@@ -35,6 +35,59 @@ pub struct Node {
     /// エラー時の扱い（既定 fail_run）。
     #[serde(default)]
     pub on_error: OnError,
+    /// 結果のキャッシュ（step 属性・ir.md §4・既定は使わない）。いまは ai.decide の決定キャッシュだけ
+    /// （ほかの種で書くと保存時に `ir.cache_unsupported`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<StepCache>,
+}
+
+/// step 属性 `cache`（ai.decide の決定キャッシュ・ir.md §7.11・D-52 の H6）。
+///
+/// 同じ決定器の版・同じ質問・同じ判定材料の答えを、同じワークフローの中で `ttl_sec` のあいだ使い回す
+/// （範囲はテナント＋組織＋ワークフロー）。当たっても組織の許可は確かめ、会計はしない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct StepCache {
+    /// 答えを使い回す期間（秒・省略は [`DEFAULT_CACHE_TTL_SEC`]・[`MIN_CACHE_TTL_SEC`]〜[`MAX_CACHE_TTL_SEC`]）。
+    #[serde(default = "default_cache_ttl_sec")]
+    pub ttl_sec: u32,
+}
+
+/// `cache.ttl_sec` の既定（1 日）。
+pub const DEFAULT_CACHE_TTL_SEC: u32 = 86_400;
+/// `cache.ttl_sec` の下限（1 分）。
+pub const MIN_CACHE_TTL_SEC: u32 = 60;
+/// `cache.ttl_sec` の上限（30 日）。答えは実行履歴の保持期間（`tenant.workflow_retention_days`）を過ぎると日次の
+/// 実行履歴 GC が消す（run/store/gc.rs）ので、保持期間がこれより短いテナントではそちらが実際の上限になる。
+pub const MAX_CACHE_TTL_SEC: u32 = 30 * 86_400;
+
+const fn default_cache_ttl_sec() -> u32 {
+    DEFAULT_CACHE_TTL_SEC
+}
+
+/// step 属性 `cache` を付けられる種の決まり（ノードカタログの `step_cache`・web のフォームが読む）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct StepCacheLimits {
+    pub default_ttl_sec: u32,
+    pub min_ttl_sec: u32,
+    pub max_ttl_sec: u32,
+}
+
+impl StepCacheLimits {
+    /// 決定キャッシュの決まり（[`DEFAULT_CACHE_TTL_SEC`] ほか）。
+    pub const DECISION: StepCacheLimits = StepCacheLimits {
+        default_ttl_sec: DEFAULT_CACHE_TTL_SEC,
+        min_ttl_sec: MIN_CACHE_TTL_SEC,
+        max_ttl_sec: MAX_CACHE_TTL_SEC,
+    };
+
+    /// `ttl_sec` が範囲の内か。
+    #[must_use]
+    pub const fn admits(self, ttl_sec: u32) -> bool {
+        ttl_sec >= self.min_ttl_sec && ttl_sec <= self.max_ttl_sec
+    }
 }
 
 /// リトライポリシ（ir.md §4・PIT-31 思想で既定リトライなし）。
@@ -124,6 +177,31 @@ mod tests {
         assert_eq!(n.retry.max_attempts, 1);
         assert_eq!(n.on_error, OnError::FailRun);
         assert!(n.parent.is_none());
+        assert!(n.cache.is_none(), "キャッシュは既定で使わない");
+    }
+
+    #[test]
+    fn step_cache_defaults_its_ttl_and_rejects_unknown_keys() {
+        let n: Node = serde_json::from_value(json!({
+            "id": "judge", "type": "ai.decide", "cache": {}
+        }))
+        .unwrap();
+        assert_eq!(
+            n.cache,
+            Some(StepCache {
+                ttl_sec: DEFAULT_CACHE_TTL_SEC
+            })
+        );
+        // 書かなければ直列化にも出さない（既存の IR の見た目を変えない）。
+        let plain: Node =
+            serde_json::from_value(json!({ "id": "x", "type": "ai.decide" })).unwrap();
+        assert!(serde_json::to_value(&plain).unwrap().get("cache").is_none());
+        let bad: Result<Node, _> = serde_json::from_value(json!({
+            "id": "x", "type": "ai.decide", "cache": { "key": "mine" }
+        }));
+        assert!(bad.is_err(), "キーは選べない（版・質問・材料から決まる）");
+        assert!(StepCacheLimits::DECISION.admits(MIN_CACHE_TTL_SEC));
+        assert!(!StepCacheLimits::DECISION.admits(MAX_CACHE_TTL_SEC + 1));
     }
 
     #[test]

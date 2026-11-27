@@ -26,6 +26,8 @@ struct Mock {
     token_forms: Vec<HashMap<String, String>>,
     revoked: Vec<HashMap<String, String>>,
     responses: Vec<(HeaderMap, Value)>,
+    /// 推論 API が返す誤り（無ければ成功のストリームを返す）。
+    responses_error: Option<(StatusCode, Value)>,
     /// トークンエンドポイントの応答を遅らせる（認証サーバが遅い状況）。
     token_delay: std::time::Duration,
 }
@@ -79,7 +81,11 @@ async fn spawn_mock() -> (String, Shared) {
         .route(
             "/v1/responses",
             post(|State(m): State<Shared>, headers: HeaderMap, Json(body): Json<Value>| async move {
-                m.lock().unwrap().responses.push((headers, body));
+                let mut m = m.lock().unwrap();
+                m.responses.push((headers, body));
+                if let Some((status, body)) = m.responses_error.clone() {
+                    return (status, Json(body)).into_response();
+                }
                 (
                     [("content-type", "text/event-stream")],
                     concat!(
@@ -87,6 +93,7 @@ async fn spawn_mock() -> (String, Shared) {
                         "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
                     ),
                 )
+                    .into_response()
             }),
         )
         .with_state(shared.clone());
@@ -371,12 +378,12 @@ async fn disconnect_revokes_and_forgets_all_but_the_host_id() {
 async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
     let f = fixture().await;
     connect(&f, &ctx("me"), 3600).await;
-    let provider = ChatGptPlanProvider::new(
+    let provider = Arc::new(ChatGptPlanProvider::new(
         reqwest::Client::new(),
         f.account.clone(),
         "gpt-6.1-sol".into(),
         crate::config::LlmTimeouts::default(),
-    );
+    ));
     assert_eq!(provider.name(), "chatgpt_plan");
     let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
     req.max_tokens = Some(100);
@@ -407,6 +414,43 @@ async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
         (json!(false), json!(true))
     );
     assert!(body.get("max_output_tokens").is_none());
+}
+
+/// プランの対象外・認証の失敗は、本文を文言に入れない形（BUG-87）でもプランの文言へ写る。本文の要求の ID は出さない。
+#[tokio::test]
+async fn plan_failures_are_explained_without_the_provider_body() {
+    let f = fixture().await;
+    connect(&f, &ctx("me"), 3600).await;
+    let provider = Arc::new(ChatGptPlanProvider::new(
+        reqwest::Client::new(),
+        f.account.clone(),
+        "gpt-6.1-sol".into(),
+        crate::config::LlmTimeouts::default(),
+    ));
+    let me = ctx("me");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let fail = |status: StatusCode, body: Value| {
+        f.mock.lock().unwrap().responses_error = Some((status, body));
+    };
+    fail(
+        StatusCode::FORBIDDEN,
+        json!({ "detail": { "code": "subscription_sharing_user_not_eligible",
+                            "message": "not eligible (request req_secret_1)" } }),
+    );
+    let Err(LlmError::BadRequest(msg)) = provider.for_caller(&me).stream(&req).await else {
+        panic!("プランの対象外は BadRequest");
+    };
+    assert!(msg.contains("Plus / Pro"), "{msg}");
+    assert!(!msg.contains("req_secret_1"), "{msg}");
+    fail(
+        StatusCode::UNAUTHORIZED,
+        json!({ "error": { "message": "token expired for org-secret", "code": "token_expired" } }),
+    );
+    let Err(LlmError::Unavailable(msg)) = provider.for_caller(&me).stream(&req).await else {
+        panic!("認証の失敗は再ログインの案内");
+    };
+    assert!(msg.contains("再ログイン"), "{msg}");
+    assert!(!msg.contains("org-secret"), "{msg}");
 }
 
 #[tokio::test]

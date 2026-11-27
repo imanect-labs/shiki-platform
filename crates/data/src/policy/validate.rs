@@ -89,8 +89,9 @@ pub(crate) fn promote_policy_fields(schema: &mut TableSchema) -> Vec<String> {
     }
     let mut promoted = Vec::new();
     for f in &mut schema.fields {
-        if refs.contains(&f.key.as_str()) && !(f.indexed || f.unique) && !f.field_type.is_derived()
-        {
+        // 作成者の列は owner の擬似列で評価する（常に索引済み・列の索引は作らない）。
+        let skip = f.indexed || f.unique || f.field_type.is_derived() || f.is_created_by();
+        if refs.contains(&f.key.as_str()) && !skip {
             f.indexed = true;
             promoted.push(f.key.clone());
         }
@@ -107,9 +108,12 @@ fn require_indexed(schema: &TableSchema, expr: &PolicyExpr, path: &str) -> Resul
             Ok(())
         }
         PolicyExpr::FieldCmp { field, .. } => match schema.field(field) {
-            Some(f) if !(f.indexed || f.unique) => Err(crate::schema_invalid(format!(
-                "{path}: row_policy が参照するフィールド '{field}' は indexed の宣言が必要です"
-            ))),
+            // 作成者の列は owner の擬似列（常に索引済み）で評価する。
+            Some(f) if !(f.indexed || f.unique || f.is_created_by()) => {
+                Err(crate::schema_invalid(format!(
+                    "{path}: row_policy が参照するフィールド '{field}' は indexed の宣言が必要です"
+                )))
+            }
             _ => Ok(()),
         },
         _ => Ok(()),
@@ -174,9 +178,10 @@ fn validate_expr(
             }
             match value {
                 PolicyOperand::UserId => {
-                    if f.field_type != FieldType::UserRef {
+                    // 作成者の列（レコードの作成者・D-122）も user_ref と同じく本人と比べられる。
+                    if !matches!(f.field_type, FieldType::UserRef | FieldType::CreatedBy) {
                         return Err(crate::schema_invalid(format!(
-                            "{path}: '$user.id' は user_ref フィールドにのみ比較できます（'{field}' は {:?}）",
+                            "{path}: '$user.id' は user_ref・created_by フィールドにのみ比較できます（'{field}' は {:?}）",
                             f.field_type
                         )));
                     }
@@ -216,9 +221,11 @@ fn validate_lit(
 ) -> Result<(), DataError> {
     let scalar_ok = |v: &serde_json::Value| match ty {
         FieldType::Number => v.is_number(),
-        FieldType::Text | FieldType::Select | FieldType::UserRef | FieldType::RoleRef => {
-            v.is_string()
-        }
+        FieldType::Text
+        | FieldType::Select
+        | FieldType::UserRef
+        | FieldType::RoleRef
+        | FieldType::CreatedBy => v.is_string(),
         _ => false,
     };
     match op {

@@ -1,7 +1,7 @@
 //! 隔離 DuckDB ランナー（Phase 11-pre Task 11P.7・PIT-39）。
 //!
-//! 非特権プロセスとして stdin から [`tabular::RunnerRequest`] を 1 件読み、ロックダウンした
-//! DuckDB で実行し、[`tabular::RunnerResponse`] を stdout へ書く。**資格情報を持たない**
+//! 非特権プロセスとして stdin から [`tabular_protocol::RunnerRequest`] を 1 件読み、ロックダウンした
+//! DuckDB で実行し、[`tabular_protocol::RunnerResponse`] を stdout へ書く。**資格情報を持たない**
 //! （認可は api 側で完了済み）。CSV の解釈はこのプロセス内でのみ行う。
 //!
 //! # ロックダウン手順（順序が重要）
@@ -11,13 +11,28 @@
 //! 2. `SET enable_external_access=false` — 以降 SQL からの任意パス/URL 到達を封じる。
 //! 3. `SET lock_configuration=true` — 設定変更（外部アクセス再有効化等）を封じる。
 //! 4. autoload/autoinstall 無効化。
-//! 5. ユーザーの**検証済み**読み取り専用 SQL を `data` に対して実行。
+//! 5. ユーザーの**検証済み**読み取り専用 SQL を `data`（Excel はシートの名前の表も）に対して実行。
+//!
+//! Excel（.xlsx・[`InputFormat::Xlsx`]）は 1 の代わりに [`xlsx`] が展開して左端のシートを `data` に入れる
+//! （CSV を集計の読み取りだけ・D-17）。集計は、SQL が名前で読むほかのシートも、その名前の表にする（GAP-84）。
+//! 読めない Excel は利用者が直す誤り（`input_error`）として返す。
+//!
+//! 集計の結果は、行の数（`max_rows`）と大きさ（`max_result_bytes`）の上限の手前で打ち切る（GAP-92・[`query`]）。
+//!
+//! 入力を読む前に、プロセスのアドレス空間に上限（RLIMIT_AS・[`tabular_protocol::protocol::runner_address_space_bytes`]）を
+//! 付ける。DuckDB の memory_limit は Rust 側（Excel の読み取り）の確保に効かないため。超えると確保に失敗して
+//! 落ち、api はメモリの超過として返す（PIT-39）。
+
+mod query;
+mod xlsx;
 
 use std::io::{Read, Write};
 
-use duckdb::types::ValueRef;
-use duckdb::{Connection, Row};
-use tabular::{RunnerOp, RunnerRequest, RunnerResponse};
+use duckdb::Connection;
+use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+use tabular_protocol::protocol::runner_address_space_bytes;
+use tabular_protocol::tables;
+use tabular_protocol::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
     let mut input = Vec::new();
@@ -34,9 +49,31 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = limit_address_space(request.memory_limit_mb) {
+        emit(&RunnerResponse::failure(format!(
+            "メモリの上限の設定に失敗: {e}"
+        )));
+        std::process::exit(1);
+    }
     let response = execute(&request).unwrap_or_else(RunnerResponse::failure);
     emit(&response);
     let _ = std::io::stdout().flush();
+}
+
+/// プロセスのアドレス空間に上限を付ける（下げるだけ。すでにもっと低い上限があればそれを使う）。
+fn limit_address_space(memory_limit_mb: u32) -> std::io::Result<()> {
+    let wanted = runner_address_space_bytes(memory_limit_mb);
+    let limit = getrlimit(Resource::As)
+        .maximum
+        .map_or(wanted, |max| max.min(wanted));
+    setrlimit(
+        Resource::As,
+        Rlimit {
+            current: Some(limit),
+            maximum: Some(limit),
+        },
+    )
+    .map_err(std::io::Error::from)
 }
 
 fn emit(resp: &RunnerResponse) {
@@ -46,30 +83,76 @@ fn emit(resp: &RunnerResponse) {
 }
 
 fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
+    // 追加テーブル（複数 CSV の JOIN・#1037）は CSV の主ファイルへのクエリだけ（グリッドは単一ファイル。Excel は
+    // シートの名前が表の名前になるので、追加の表の名前とぶつかりうる）。api も先に断る。
+    if !req.extra_tables.is_empty() {
+        if !matches!(req.op, RunnerOp::Query { .. }) {
+            return Err("追加テーブルはクエリでのみ使えます".into());
+        }
+        if req.format != InputFormat::Csv {
+            return Err("追加テーブルは CSV のファイルへのクエリでのみ使えます".into());
+        }
+        if req.extra_tables.len() > tables::MAX_EXTRA_TABLES {
+            return Err("追加テーブルが多すぎます".into());
+        }
+    }
     let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
     if matches!(req.op, RunnerOp::ReservedWords) {
         // ファイルは一切読まない（csv_path は無視）。それでも外部アクセスは封じてから引く。
         lockdown(&conn)?;
         return reserved_words(&conn);
     }
-    lockdown_load(&conn, req)?;
-    match &req.op {
-        RunnerOp::Schema => schema(&conn),
-        RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
-        RunnerOp::Query { sql } => query(&conn, sql, req.max_rows),
-        RunnerOp::ReservedWords => Err("unreachable".into()),
+    if matches!(req.op, RunnerOp::Dialect) {
+        // 推定だけ（利用者の SQL は流さない）。読むのは渡された信頼パスだけ。
+        set_quotas(&conn, req)?;
+        return dialect(&conn, &req.csv_path);
     }
+    let (query_types, book) = match req.format {
+        InputFormat::Csv => (lockdown_load(&conn, req)?, None),
+        InputFormat::Xlsx => {
+            set_quotas(&conn, req)?;
+            let want = match &req.op {
+                RunnerOp::Query { sql } => xlsx::Want::Query(sql),
+                _ => xlsx::Want::Data,
+            };
+            let mut loaded = match xlsx::load(&conn, &req.csv_path, want) {
+                Ok(loaded) => loaded,
+                Err(xlsx::LoadError::Input(e)) => return Ok(RunnerResponse::input_failure(e.0)),
+                Err(xlsx::LoadError::Internal(e)) => return Err(e),
+            };
+            lockdown(&conn)?;
+            let types = std::mem::take(&mut loaded.types);
+            (
+                matches!(req.op, RunnerOp::Schema).then_some(types),
+                Some(loaded),
+            )
+        }
+    };
+    let mut response = match &req.op {
+        RunnerOp::Schema => schema(&conn, query_types),
+        RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
+        RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows, req.max_result_bytes),
+        RunnerOp::Dialect => Err("unreachable: dialect".into()),
+        RunnerOp::ReservedWords => Err("unreachable: reserved_words".into()),
+    }?;
+    // Excel のシートの一覧と、data の見出しにした行（GAP-84・GAP-83）。
+    if let Some(book) = book {
+        response.sheets = book.sheets;
+        response.header_row = book.header_row;
+    }
+    Ok(response)
 }
 
 /// SQL の予約語（引用符なしの識別子に使えない語）を DuckDB 自身から引く（#1061）。
 /// 追加テーブル名の予約語判定（[`lockdown_load`]）と同じ条件。
 fn reserved_words(conn: &Connection) -> Result<RunnerResponse, String> {
     // 予約語は百語程度。上限に当たったら欠けた一覧を返さず失敗にする（欠けると補完が予約語を出す）。
-    let resp = select(
+    let resp = query::read_rows(
         conn,
         "SELECT keyword_name AS keyword FROM duckdb_keywords() \
          WHERE keyword_category = 'reserved' ORDER BY keyword_name",
         10_000,
+        None,
     )?;
     if resp.truncated {
         return Err("予約語の一覧が多すぎます".into());
@@ -77,14 +160,50 @@ fn reserved_words(conn: &Connection) -> Result<RunnerResponse, String> {
     Ok(resp)
 }
 
-/// CSV をロードしてから外部アクセスを封鎖する（順序が要）。
-fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
-    // メモリ/スレッド/一時領域のクォータ。
+/// メモリ/スレッド/一時領域のクォータ。
+fn set_quotas(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
     conn.execute_batch(&format!(
         "SET memory_limit='{}MB'; SET threads=1; SET max_temp_directory_size='0GB';",
         req.memory_limit_mb
     ))
-    .map_err(|e| format!("クォータ設定に失敗: {e}"))?;
+    .map_err(|e| format!("クォータ設定に失敗: {e}"))
+}
+
+/// 区切りと改行を推定する（BUG-144）。読み込み（[`lockdown_load`] の `read_csv_auto`）と同じ推定器と引数
+/// （`header=true`）なので、集計が列を分けたのと同じ区切りになる。
+fn dialect(conn: &Connection, csv_path: &str) -> Result<RunnerResponse, String> {
+    let mut stmt = conn
+        .prepare("SELECT Delimiter, NewLineDelimiter FROM sniff_csv(?, header=true)")
+        .map_err(|e| format!("区切りの推定の準備に失敗: {e}"))?;
+    let (delimiter, newline): (String, String) = stmt
+        .query_row([csv_path], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| format!("区切りの推定に失敗: {e}"))?;
+    // 改行は `\r\n` などのエスケープした文字列で返る（実際の改行の文字のこともある）。
+    let crlf = newline.contains('\r') || newline.contains("\\r");
+    Ok(RunnerResponse {
+        ok: true,
+        dialect: Some(CsvDialect {
+            delimiter: unescape_delimiter(&delimiter),
+            newline: if crlf { "\r\n" } else { "\n" }.into(),
+        }),
+        ..RunnerResponse::default()
+    })
+}
+
+/// 推定器が返す区切りのエスケープ（`\t`）を文字に戻す。
+fn unescape_delimiter(delimiter: &str) -> String {
+    match delimiter {
+        "\\t" => "\t".into(),
+        other => other.into(),
+    }
+}
+
+/// CSV をロードしてから外部アクセスを封鎖する（順序が要）。
+///
+/// Schema のときは、集計（Query）で読むときの列の型も返す（グリッドは全列を文字で読むが、ワークフローの列の案内は
+/// 集計の結果の値の種類を言う）。
+fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<Option<Vec<String>>, String> {
+    set_quotas(conn, req)?;
 
     // 唯一のファイル読取: 我々が渡した信頼パスから data テーブルへ。
     // - グリッド（Schema/Rows）: 全列 VARCHAR で取り込み、型推論の副作用を避ける
@@ -101,54 +220,58 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
     stmt.execute([req.csv_path.as_str()])
         .map_err(|e| format!("CSV ロードに失敗: {e}"))?;
     drop(stmt);
+    let query_types = if matches!(req.op, RunnerOp::Schema) {
+        // 集計と同じ推定（型推論あり・同じ引数）。パスは api が置いた一時ファイル（引用符は重ねて打ち消す）。
+        let sql = format!(
+            "DESCRIBE SELECT * FROM read_csv_auto('{}', header=true)",
+            req.csv_path.replace('\'', "''")
+        );
+        // 推定できなくてもグリッドは読める（型は文字のまま返す）。
+        query::describe(conn, &sql).ok().map(|(_, types)| types)
+    } else {
+        None
+    };
 
-    // 追加テーブル（複数 CSV の JOIN・#1037）。Query 経路だけで許す（グリッドは単一ファイル）。
+    // 追加テーブル（複数 CSV の JOIN・#1037）。Query 経路だけで許す（グリッドは単一ファイル・[`execute`] が先に断る）。
     // 名前は api 側でも検証済みだが、ここでも同じ規則で再検証してから識別子へ埋め込む
     // （英小文字/数字/_ のみ＝引用符の外へ出られない・多層防御）。ロックダウン前にすべて読む。
-    if !req.extra_tables.is_empty() {
-        if !matches!(req.op, RunnerOp::Query { .. }) {
-            return Err("追加テーブルはクエリでのみ使えます".into());
+    for t in &req.extra_tables {
+        if !tables::is_valid_table_name(&t.name) || t.name == tables::PRIMARY_TABLE {
+            return Err(format!("テーブル名 `{}` は使えません", t.name));
         }
-        if req.extra_tables.len() > tabular::MAX_EXTRA_TABLES {
-            return Err("追加テーブルが多すぎます".into());
-        }
-        for t in &req.extra_tables {
-            if !tabular::is_valid_table_name(&t.name) || t.name == tabular::PRIMARY_TABLE {
-                return Err(format!("テーブル名 `{}` は使えません", t.name));
-            }
-            // SQL の予約語（order / group / select など）は引用符なしでは参照できず、JOIN が必ず
-            // 構文エラーになる。語彙は DuckDB 自身の duckdb_keywords() を正とする（手書きしない）。
-            let reserved: i64 = conn
-                .query_row(
-                    "SELECT count(*) FROM duckdb_keywords() \
-                     WHERE keyword_name = ? AND keyword_category = 'reserved'",
-                    [t.name.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(|e| format!("予約語の確認に失敗: {e}"))?;
-            if reserved > 0 {
-                return Err(format!(
-                    "テーブル名 `{}` は SQL の予約語なので使えません（別の名前にしてください）",
-                    t.name
-                ));
-            }
-            let sql = format!(
-                "CREATE TABLE \"{}\" AS SELECT * FROM read_csv_auto(?, all_varchar={all_varchar}, header=true)",
+        // SQL の予約語（order / group / select など）は引用符なしでは参照できず、JOIN が必ず
+        // 構文エラーになる。語彙は DuckDB 自身の duckdb_keywords() を正とする（手書きしない）。
+        let reserved: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_keywords() \
+                 WHERE keyword_name = ? AND keyword_category = 'reserved'",
+                [t.name.as_str()],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("予約語の確認に失敗: {e}"))?;
+        if reserved > 0 {
+            return Err(format!(
+                "テーブル名 `{}` は SQL の予約語なので使えません（別の名前にしてください）",
                 t.name
-            );
-            let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| format!("テーブル `{}` のロード準備に失敗: {e}", t.name))?;
-            stmt.execute([t.csv_path.as_str()])
-                .map_err(|e| format!("テーブル `{}` の CSV ロードに失敗: {e}", t.name))?;
+            ));
         }
+        let sql = format!(
+            "CREATE TABLE \"{}\" AS SELECT * FROM read_csv_auto(?, all_varchar={all_varchar}, header=true)",
+            t.name
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("テーブル `{}` のロード準備に失敗: {e}", t.name))?;
+        stmt.execute([t.csv_path.as_str()])
+            .map_err(|e| format!("テーブル `{}` の CSV ロードに失敗: {e}", t.name))?;
     }
 
-    lockdown(conn)
+    lockdown(conn)?;
+    Ok(query_types)
 }
 
-/// 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
-/// enable_external_access を戻せないようにする。
+/// 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で enable_external_access を戻せないように
+/// する。表を作った後に呼ぶ。
 fn lockdown(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "SET autoinstall_known_extensions=false; \
@@ -156,8 +279,7 @@ fn lockdown(conn: &Connection) -> Result<(), String> {
          SET enable_external_access=false; \
          SET lock_configuration=true;",
     )
-    .map_err(|e| format!("ロックダウン設定に失敗: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("ロックダウン設定に失敗: {e}"))
 }
 
 fn total_rows(conn: &Connection) -> Result<u64, String> {
@@ -166,30 +288,20 @@ fn total_rows(conn: &Connection) -> Result<u64, String> {
         .map_err(|e| e.to_string())
 }
 
-fn schema(conn: &Connection) -> Result<RunnerResponse, String> {
-    let (columns, types) = describe(conn, "DESCRIBE SELECT * FROM data")?;
+/// 列の名前と型と総行数。型は集計で読むときの型（分かれば・列の数が合うときだけ）。
+fn schema(conn: &Connection, query_types: Option<Vec<String>>) -> Result<RunnerResponse, String> {
+    let (columns, types) = query::describe(conn, "DESCRIBE SELECT * FROM data")?;
+    let column_types = match query_types {
+        Some(t) if t.len() == columns.len() => t,
+        _ => types,
+    };
     Ok(RunnerResponse {
         ok: true,
         columns,
-        column_types: types,
-        rows: Vec::new(),
+        column_types,
         total_rows: Some(total_rows(conn)?),
-        truncated: false,
-        error: None,
+        ..RunnerResponse::default()
     })
-}
-
-fn describe(conn: &Connection, sql: &str) -> Result<(Vec<String>, Vec<String>), String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let mut names = Vec::new();
-    let mut types = Vec::new();
-    let mut r = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = r.next().map_err(|e| e.to_string())? {
-        // DESCRIBE: column_name, column_type, ...
-        names.push(row.get::<_, String>(0).map_err(|e| e.to_string())?);
-        types.push(row.get::<_, String>(1).unwrap_or_default());
-    }
-    Ok((names, types))
 }
 
 fn rows(conn: &Connection, offset: u64, max_rows: u32) -> Result<RunnerResponse, String> {
@@ -199,72 +311,7 @@ fn rows(conn: &Connection, offset: u64, max_rows: u32) -> Result<RunnerResponse,
         u64::from(max_rows).saturating_add(1),
         offset
     );
-    let mut resp = select(conn, &sql, max_rows)?;
+    let mut resp = query::read_rows(conn, &sql, max_rows, None)?;
     resp.total_rows = Some(total);
     Ok(resp)
-}
-
-fn query(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse, String> {
-    // ユーザー SQL は api 側で検証済み（単一 SELECT）。ラップして結果サイズを打ち切る。
-    let wrapped = format!(
-        "SELECT * FROM ({sql}) AS q LIMIT {}",
-        u64::from(max_rows).saturating_add(1)
-    );
-    select(conn, &wrapped, max_rows)
-}
-
-/// SELECT を実行し、全セルを文字列化して返す（max_rows で打ち切り）。
-fn select(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let mut r = stmt.query([]).map_err(|e| e.to_string())?;
-    // 列名は**実行後**に取れる（query() 前だと DuckDB が None を返す）。Rows 経由で取得。
-    let columns: Vec<String> = r
-        .as_ref()
-        .map(|s| s.column_names().iter().map(ToString::to_string).collect())
-        .unwrap_or_default();
-    let ncols = columns.len();
-    let mut out_rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut truncated = false;
-    while let Some(row) = r.next().map_err(|e| e.to_string())? {
-        if out_rows.len() as u32 >= max_rows {
-            truncated = true;
-            break;
-        }
-        let mut cells = Vec::with_capacity(ncols);
-        for i in 0..ncols {
-            cells.push(cell_to_string(row, i));
-        }
-        out_rows.push(cells);
-    }
-    Ok(RunnerResponse {
-        ok: true,
-        columns,
-        column_types: Vec::new(),
-        rows: out_rows,
-        total_rows: None,
-        truncated,
-        error: None,
-    })
-}
-
-/// セルを文字列へ（NULL は None）。all_varchar ロードなので基本 Text。
-fn cell_to_string(row: &Row<'_>, i: usize) -> Option<String> {
-    match row.get_ref(i) {
-        Ok(ValueRef::Null) => None,
-        Ok(ValueRef::Text(bytes)) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Ok(ValueRef::Boolean(b)) => Some(b.to_string()),
-        Ok(ValueRef::TinyInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::SmallInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::Int(n)) => Some(n.to_string()),
-        Ok(ValueRef::BigInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::HugeInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UTinyInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::USmallInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UBigInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::Float(f)) => Some(f.to_string()),
-        Ok(ValueRef::Double(f)) => Some(f.to_string()),
-        Ok(other) => Some(format!("{other:?}")),
-        Err(_) => None,
-    }
 }

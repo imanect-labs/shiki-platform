@@ -1,8 +1,9 @@
 //! 1 インジェスト・ジョブの実処理（Task 2.8/2.9）。
 //!
 //! op ごとの索引整合:
-//! - `create` / `update` / `restore`: parse → chunk → embed → rag_chunk 差替え →
-//!   Qdrant upsert（＋旧版掃除）→ Tantivy 差替え。
+//! - `create` / `update` / `restore` / `reindex`: parse → chunk → embed → rag_chunk 差替え →
+//!   Qdrant upsert（＋旧版掃除）→ Tantivy 差替え。`reindex` は取り込み直しの依頼（内容は変わらない・
+//!   いまの内容のバージョン・D-126）。
 //! - `move`: authz_tags 再評価のみ（rag_chunk 更新・Qdrant payload 再書込・Tantivy 再投入。
 //!   再パース/再埋め込みはしない）。
 //! - `rename`: no-op（ファイル名は検索ハイドレーション時に node JOIN で現在値を返す）。
@@ -10,7 +11,7 @@
 //!
 //! 冪等性: `(tenant_id, node_id, version, op)` を rag_ingest_job の一意キーとし、
 //! 成功/スキップ済みのジョブは再配信されても再処理しない。stale イベント
-//! （node の現行 version と不一致）は skipped として捨てる。
+//! （より新しい内容のバージョンがある・[`storage::CONTENT_VERSION_SQL`]）は skipped として捨てる。
 
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ use authz::{AuthContext, Principal};
 use uuid::Uuid;
 
 use super::job_state::{begin_job, finish_job};
+use super::text_source::{is_text_type, text_for_worker, TextForWorker};
 use super::{IngestMessage, PipelineDeps};
 use crate::chunker::{chunk_document, ChunkParams};
 use crate::embedding::EmbedInput;
@@ -28,7 +30,7 @@ use crate::store;
 use crate::types::ChunkKind;
 use crate::vector_store::ChunkPoint;
 
-/// パース対象の MIME（worker の対応形式と対にする）。
+/// パース対象の MIME（worker の対応形式と対にする）。取り込めるかの判定は [`parsable_type`] の 1 か所。
 const SUPPORTED_TYPES: &[&str] = &[
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -41,6 +43,30 @@ const SUPPORTED_TYPES: &[&str] = &[
     "text/csv",
     "text/plain",
 ];
+
+/// 取り込める種類なら、パラメーターを除いた小文字の MIME（取り込めない種類・種類が無いなら `None`）。
+///
+/// 取り込み（[`handle`]）と、索引にまだ本文が無い理由の判定（[`crate::SearchService::index_state`]）が使う。
+/// MIME はブラウザーが付けた値をそのまま保存しているので、Excel を入れた Windows のブラウザーが `.csv` に付ける
+/// `application/vnd.ms-excel` は、名前が `.csv` で終わるときだけ CSV（`text/csv`）として扱う（中身が文章で
+/// なければ、取り込みの文字コードの判定で断る・D-118）。本物の `.xls` は取り込まない。
+#[must_use]
+pub fn parsable_type(content_type: Option<&str>, file_name: &str) -> Option<String> {
+    let base = content_type
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if SUPPORTED_TYPES.contains(&base.as_str()) {
+        return Some(base);
+    }
+    let csv_name = file_name
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("csv"));
+    (base == "application/vnd.ms-excel" && csv_name).then(|| "text/csv".to_string())
+}
 
 /// ジョブの結果（ログ・rag_ingest_job の status に対応）。
 #[derive(Debug)]
@@ -120,7 +146,8 @@ pub async fn handle(
         .is_some_and(|s| s.kind == "folder");
     let result = match (message.op.as_str(), is_folder) {
         ("move" | "delete" | "restore", true) => fan_out_folder(deps, &ctx, message).await,
-        ("create" | "update" | "restore", _) => index_node(deps, &ctx, message).await,
+        // 取り込み直し（`reindex`・D-126）は、いまの内容のバージョンで作成・更新と同じに取り込む。
+        ("create" | "update" | "restore" | "reindex", _) => index_node(deps, &ctx, message).await,
         ("move", _) => retag_node(deps, &ctx, message).await,
         ("rename", _) => Ok(IndexOutcome::Skipped("rename-noop")),
         ("delete", _) => remove_node(deps, &ctx, message).await,
@@ -161,20 +188,16 @@ async fn index_node(
     if snapshot.kind != "file" {
         return Ok(IndexOutcome::Skipped("folder"));
     }
-    // stale イベント: 現行版と不一致（更新が続いた）なら最新版のイベントに任せる。
-    if snapshot.version != message.version {
+    // stale イベント: このジョブより新しい内容がある（更新が続いた）なら、新しい内容のイベントに任せる。
+    // 比べるのは内容のバージョン（`node.version` ではない）。名前の変更・移動は `node.version` を進めるが取り込み
+    // 直さない（rename は no-op・move は retag）ので、`node.version` と比べると、取り込みより先に名前を変えた
+    // ファイルが二度と取り込まれない。ごみ箱から戻したジョブは戻したときの `node.version`（内容のバージョン以上）。
+    if message.version < snapshot.content_version {
         return Ok(IndexOutcome::Skipped("superseded"));
     }
-    let content_type = snapshot.content_type.as_deref().unwrap_or("");
-    let base_type = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    if !SUPPORTED_TYPES.contains(&base_type.as_str()) {
+    let Some(base_type) = parsable_type(snapshot.content_type.as_deref(), &snapshot.name) else {
         return Ok(IndexOutcome::Skipped("unsupported-type"));
-    }
+    };
     if snapshot.size_bytes.unwrap_or(0) > deps.config.max_parse_bytes {
         return Ok(IndexOutcome::Skipped("too-large"));
     }
@@ -182,17 +205,34 @@ async fn index_node(
         return Ok(IndexOutcome::Skipped("no-blob"));
     };
 
-    // parse（worker への blob 受け渡しは内部向け・短 TTL presigned GET）。
-    let source_url = deps
-        .indexer_storage
-        .presign_internal_get(ctx.tenant_id(), ctx.org(), blob_sha256)
-        .await?;
+    // parse。文章のファイルは、文字コードを決めて UTF-8 にしたバイト列を渡す（worker に判定を持たせない・D-118）。
+    // ほかの種類（PDF・Office など）は、worker が内部向け・短 TTL の presigned GET で原本を読む。
+    let text = if is_text_type(&base_type) {
+        let bytes = deps
+            .indexer_storage
+            .read_blob(ctx.tenant_id(), ctx.org(), blob_sha256)
+            .await?;
+        text_for_worker(&bytes, &base_type, deps.config.max_parse_bytes)?
+    } else {
+        TextForWorker::Original
+    };
+    let source_url;
+    let source = match &text {
+        TextForWorker::Utf8(body) => ParseSource::Bytes(body),
+        TextForWorker::Original => {
+            source_url = deps
+                .indexer_storage
+                .presign_internal_get(ctx.tenant_id(), ctx.org(), blob_sha256)
+                .await?;
+            ParseSource::Url(&source_url)
+        }
+    };
     let parsed = deps
         .parser
         .parse(
             ctx,
             ParseRequest {
-                source: ParseSource::Url(&source_url),
+                source,
                 content_type: &base_type,
                 file_name: &snapshot.name,
             },
@@ -433,4 +473,32 @@ async fn replace_fulltext(
     })
     .await
     .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parsable_type;
+
+    /// Excel を入れた Windows のブラウザーが `.csv` に付ける MIME は、名前が `.csv` のときだけ CSV として取り込む
+    /// （本物の `.xls` は取り込まない・D-118）。
+    #[test]
+    fn ms_excel_csv_is_parsed_as_csv() {
+        let ms_excel = Some("application/vnd.ms-excel");
+        assert_eq!(
+            parsable_type(ms_excel, "経費.csv").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(
+            parsable_type(ms_excel, "経費.CSV").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(parsable_type(ms_excel, "経費.xls"), None);
+        assert_eq!(parsable_type(ms_excel, ".csv"), None);
+        assert_eq!(
+            parsable_type(Some("text/csv; charset=shift_jis"), "a.csv").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(parsable_type(Some("image/png"), "a.csv"), None);
+        assert_eq!(parsable_type(None, "a.csv"), None);
+    }
 }

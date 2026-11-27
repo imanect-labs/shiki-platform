@@ -481,3 +481,351 @@ async fn many_blocks_are_read_in_order_across_windows() {
     assert_eq!(seen.len(), 50, "全ブロックを読む: {read}");
     assert_eq!(read.matches("段落").count(), 50, "重複しない");
 }
+
+/// このテストのテナントで積んだ行を片付ける（索引・取り込みの記録・内容の履歴・ファイル・監査）。
+async fn cleanup(env: &Env) {
+    let tenant = env.ctx.tenant_id();
+    for sql in [
+        "delete from rag_chunk where tenant_id = $1",
+        "delete from doc_block where tenant_id = $1",
+        "delete from rag_ingest_job where tenant_id = $1",
+        "delete from storage_event_outbox where tenant_id = $1",
+        "delete from job_queue where tenant_id = $1",
+        "delete from node_version where tenant_id = $1",
+        "delete from node where tenant_id = $1",
+        "delete from blob where tenant_id = $1",
+        "delete from audit_log where tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 先頭から続けて読む（D-111・ワークフローの「ファイルを読む」）: 窓を 1 つにつなぐので、ページの印や
+/// 「（前の続き）」が窓の境目で重ならず、1 回の SQL の件数の上限（400 件）を超える文書も順に欠けなく読める。
+/// 上限の字数で切ったときは続きの位置が返る（切った印）。監査は 1 回だけ残る。
+#[tokio::test]
+async fn reads_whole_text_across_batches_and_marks_the_cut() {
+    let Some(env) = setup().await else { return };
+    let node = make_file(&env, "就業規則.pdf", 1).await;
+    chunk(&env, &node, 1, 0, "leaf", Some(1), &[], "検索用").await;
+    block(&env, &node, 1, 0, "heading", 1, "第1条 目的").await;
+    for i in 1..=500 {
+        // 2 ページ目から後ろは 100 段落ごとにページが変わる。
+        block(
+            &env,
+            &node,
+            1,
+            i,
+            "paragraph",
+            1 + i / 100,
+            &format!("段落{i:03}"),
+        )
+        .await;
+    }
+    let ctx = &env.ctx;
+    let whole = page(
+        env.search
+            .read_document_text(ctx, &node, 200_000, Some("trace-whole"))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(whole.version, 1);
+    assert_eq!(whole.next, None, "文書の終わりまで読んだ");
+    assert!(whole
+        .text
+        .starts_with("〔p.1〕\n## 第1条 目的\n\n段落001\n\n"));
+    let order: Vec<usize> = (1..=500)
+        .map(|i| {
+            whole
+                .text
+                .find(&format!("段落{i:03}\n"))
+                .expect("全段落を読む")
+        })
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "順に並ぶ");
+    assert_eq!(whole.text.matches("段落").count(), 500, "重複しない");
+    // ページの印はページが変わる所に 1 回だけ（窓の境目で繰り返さない）。
+    for p in 1..=6 {
+        assert_eq!(
+            whole.text.matches(&format!("〔p.{p}〕")).count(),
+            1,
+            "p.{p}"
+        );
+    }
+    assert!(!whole.text.contains("前の続き"));
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log \
+         where tenant_id = $1 and action = 'rag.doc_read' and trace_id = 'trace-whole'",
+    )
+    .bind(ctx.tenant_id())
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "続けて読んでも監査は 1 回");
+
+    // 上限の字数で切ると、続きの位置が返る（切った印）。切った後ろの段落は入らない。
+    let head = page(
+        env.search
+            .read_document_text(ctx, &node, 60, None)
+            .await
+            .unwrap(),
+    );
+    assert!(head.next.is_some(), "上限で切った");
+    assert!(head.text.chars().count() <= 60, "{}", head.text);
+    assert!(head.text.contains("段落001") && !head.text.contains("段落100"));
+
+    // pre-filter（可読集合）で読めなければ本文を返さない（read_document と同じ契約）。
+    sqlx::query("update rag_chunk set authz_tags = $1 where node_id = $2")
+        .bind(vec![ctx
+            .ns()
+            .folder(&Uuid::new_v4().to_string())
+            .as_str()
+            .to_string()])
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let denied = env
+        .search
+        .read_document_text(ctx, &node, 200_000, None)
+        .await
+        .unwrap();
+    cleanup(&env).await;
+    assert_eq!(denied, DocRead::Denied);
+}
+
+/// 索引に本文が無い理由（D-111）: 取り込めない種類・大きすぎる・取り込み待ち・取り込みに失敗・本文が無い・取り込まない
+/// 場所にある・取り込みが届いていない。いまの内容は内容の履歴の最新で決めるので、名前の変更で node.version が進んでも
+/// 索引の本文を読める。新しい内容の取り込みが終わるまでは、古い内容を「読める」と言わない。「待てば読める」は、
+/// 取り込みへ向かう記録（outbox の未処理のイベント・取り込みの待ち行列・取り込みの記録）があるときだけ言う。
+#[tokio::test]
+async fn index_state_tells_why_the_text_is_not_readable_yet() {
+    let Some(env) = setup().await else { return };
+    let ctx = &env.ctx;
+    let mut node = make_file(&env, "契約書.pdf", 1).await;
+    sqlx::query("update node set content_type = 'application/pdf' where id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    node.content_type = Some("application/pdf".into());
+    let record_version = |version: i64| {
+        sqlx::query(
+            "insert into node_version (node_id, version, org, tenant_id, blob_sha256, size_bytes, \
+                                       content_type, author) \
+             values ($1, $2, $3, $4, $5, 10, 'application/pdf', 'alice')",
+        )
+        .bind(node.id)
+        .bind(version)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(node.blob_sha256.clone().unwrap())
+    };
+    let job = |version: i64, op: &'static str, status: &'static str| {
+        sqlx::query(
+            "insert into rag_ingest_job (tenant_id, org, node_id, version, op, status) \
+             values ($1, $2, $3, $4, $5, $6) \
+             on conflict (tenant_id, node_id, version, op) do update set status = excluded.status",
+        )
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(node.id)
+        .bind(version)
+        .bind(op)
+        .bind(status)
+    };
+    let set_node_version = |version: i64| {
+        sqlx::query("update node set version = $2 where id = $1")
+            .bind(node.id)
+            .bind(version)
+    };
+    record_version(1).execute(&env.pool).await.unwrap();
+    let mut states = Vec::new();
+    let mut state = |label: &'static str, s: rag::IndexState| states.push((label, s));
+
+    // 取り込みへ向かう記録がどこにも無い（社内文書の検索を有効にする前に置いた・outbox の掃除で消えた）。
+    state(
+        "記録が無い",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 書き込みと同じ Tx で outbox に積まれ、relay がまだ取り込みへ積んでいない。
+    sqlx::query(
+        "insert into storage_event_outbox (org, tenant_id, node_id, version, op, actor) \
+         values ($1, $2, $3, 1, 'create', 'alice')",
+    )
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
+    .bind(node.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    state(
+        "outbox にある",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // relay が取り込みの待ち行列へ積んだ（outbox は処理済み）。
+    sqlx::query("update storage_event_outbox set processed_at = now() where tenant_id = $1")
+        .bind(ctx.tenant_id())
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into job_queue (queue, tenant_id, payload) values ('rag_ingest', $1, $2)")
+        .bind(ctx.tenant_id())
+        .bind(
+            serde_json::json!({ "tenant_id": ctx.tenant_id(), "org": ctx.org(),
+            "node_id": node.id, "version": 1, "op": "create", "actor": "alice" }),
+        )
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "待ち行列にある",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    sqlx::query("delete from job_queue where tenant_id = $1")
+        .bind(ctx.tenant_id())
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    // 取り込み中・一時的な失敗のやり直し待ちは、待てば読める。
+    job(1, "create", "failed").execute(&env.pool).await.unwrap();
+    state(
+        "やり直し待ち",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 取り込みを飛ばした（前の版で、取り込みより先に名前を変えたファイル）: 待っても取り込まれない。
+    job(1, "create", "skipped")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "取り込みを飛ばした",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 取り込みが終わったのに本文が無い（文字の無い文書）。
+    job(1, "create", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "本文が無い",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    chunk(&env, &node, 1, 0, "leaf", Some(1), &[], "第1条").await;
+    state(
+        "取り込み済み",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 名前の変更は node.version を進めるが、内容は同じなので読める。
+    set_node_version(2).execute(&env.pool).await.unwrap();
+    node.version = 2;
+    state(
+        "名前の変更の後",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // ごみ箱に入れて索引を消し（v3）、戻した（v4）。戻した取り込みが記録に入る前でも、本文が無いとは言わない。
+    job(3, "delete", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from rag_chunk where node_id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    set_node_version(4).execute(&env.pool).await.unwrap();
+    node.version = 4;
+    state(
+        "ごみ箱から戻した直後",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    job(4, "restore", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    chunk(&env, &node, 4, 0, "leaf", Some(1), &[], "第1条").await;
+    state(
+        "ごみ箱から戻して取り込み直した",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 新しい内容（v5）の取り込みが終わるまでは、古い内容（v1）を読めると言わない。
+    record_version(5).execute(&env.pool).await.unwrap();
+    set_node_version(5).execute(&env.pool).await.unwrap();
+    node.version = 5;
+    job(5, "update", "running")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "新しい内容の取り込み待ち",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    job(5, "update", "dead").execute(&env.pool).await.unwrap();
+    state(
+        "新しい内容の取り込みに失敗",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 別の org の文脈ではノードも索引も見えない（本文は返さない）。
+    let other = test_ctx_org(ctx.tenant_id(), "alice", "other-org");
+    state(
+        "別の org",
+        env.search.index_state(&other, &node).await.unwrap(),
+    );
+    // システム領域（AI エージェントの作業用のフォルダー）のファイルは取り込まない。
+    sqlx::query("update node set system = true where id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "システム領域",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+
+    // 種類と大きさは、取り込みの記録より先に決まる。
+    let mut image = node.clone();
+    image.content_type = Some("image/png".into());
+    state("画像", env.search.index_state(ctx, &image).await.unwrap());
+    let mut unknown = node.clone();
+    unknown.content_type = None;
+    state(
+        "種類が分からない",
+        env.search.index_state(ctx, &unknown).await.unwrap(),
+    );
+    let mut big = node.clone();
+    let limit_bytes = RagConfig::default().max_parse_bytes;
+    big.size_bytes = Some(limit_bytes + 1);
+    state(
+        "大きすぎる",
+        env.search.index_state(ctx, &big).await.unwrap(),
+    );
+    cleanup(&env).await;
+
+    use rag::IndexState as S;
+    assert_eq!(
+        states,
+        vec![
+            ("記録が無い", S::NotIngested),
+            ("outbox にある", S::Pending),
+            ("待ち行列にある", S::Pending),
+            ("やり直し待ち", S::Pending),
+            ("取り込みを飛ばした", S::NotIngested),
+            ("本文が無い", S::Empty),
+            ("取り込み済み", S::Ready),
+            ("名前の変更の後", S::Ready),
+            ("ごみ箱から戻した直後", S::Pending),
+            ("ごみ箱から戻して取り込み直した", S::Ready),
+            ("新しい内容の取り込み待ち", S::Pending),
+            ("新しい内容の取り込みに失敗", S::Failed),
+            ("別の org", S::Pending),
+            ("システム領域", S::Excluded),
+            ("画像", S::Unsupported),
+            ("種類が分からない", S::Unsupported),
+            ("大きすぎる", S::TooLarge { limit_bytes }),
+        ]
+    );
+}

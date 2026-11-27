@@ -84,7 +84,8 @@ pub struct TableIndexOverview {
 
 /// 上限の対象になる索引列か（値索引を持つ通常列・材料化した派生列。リンクと対称列は数えない）。
 pub(crate) fn counts_toward_cap(f: &FieldDef) -> bool {
-    if f.is_reverse_link() || f.field_type == FieldType::RecordRef {
+    // 作成者の列は列の索引を持たない（owner の擬似列で引く・D-122）。
+    if f.is_reverse_link() || f.field_type == FieldType::RecordRef || f.is_created_by() {
         return false;
     }
     if f.field_type.is_derived() {
@@ -107,6 +108,7 @@ pub(crate) fn promotable(f: &FieldDef) -> bool {
     !f.field_type.is_derived()
         && !f.is_reverse_link()
         && f.field_type != FieldType::RecordRef
+        && !f.is_created_by()
         && !f.indexed
         && !f.unique
 }
@@ -279,7 +281,8 @@ async fn delete_rows(
 }
 
 impl DataStore {
-    /// 列の索引を昇格する（自動昇格の本体・`approve` は上限超過の明示の承認＝owner のみ）。
+    /// 列の索引を昇格する（自動昇格の本体・`approve` は上限超過の明示の承認＝owner のみ）。追加だけの人
+    /// （D-113）の並べ替え・絞り込みも閲覧者と同じく契機にする（上限超過の承認は owner だけ）。
     ///
     /// 2 万行未満のテーブルはこの呼び出しの中で有効化まで済ませる（`Active`）。それ以上は
     /// バックフィルを積んで `Preparing` を返す。既に索引があれば今の状態を返す（冪等）。
@@ -293,7 +296,7 @@ impl DataStore {
     ) -> Result<IndexPromotion, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
             .await?;
         // 存在しない列と読めない列は同じ 403（列の存在オラクルを作らない・data-platform §16.1）。
         if self.masked_fields(ctx, &az, &table).await?.contains(field) {
@@ -452,14 +455,20 @@ impl DataStore {
             .map_err(map_db)?;
         let ledger = load_states(&mut conn, table.keys).await?;
         let want = value_table(f);
+        // 作成者の列は owner の擬似列の索引で引く（D-122）。
+        let id = if f.is_created_by() {
+            crate::model::SYSTEM_FIELD_OWNER
+        } else {
+            f.id
+        };
         let st = ledger
             .iter()
-            .find(|(fid, t, _)| *fid == f.id && *t == want)
+            .find(|(fid, t, _)| *fid == id && *t == want)
             .map_or(IndexState::Absent, |s| s.2);
         let status = match st {
             IndexState::Active => IndexStatus::Active,
             IndexState::Building => IndexStatus::Preparing,
-            IndexState::Absent if purge_pending(&mut conn, table.keys, f.id, want).await? => {
+            IndexState::Absent if purge_pending(&mut conn, table.keys, id, want).await? => {
                 IndexStatus::Preparing
             }
             IndexState::Absent => IndexStatus::Absent,
@@ -476,7 +485,7 @@ impl DataStore {
         })
     }
 
-    /// テーブルの索引の一覧（viewer・件数や内部キーは返さない）。
+    /// テーブルの索引の一覧（viewer か追加だけ・件数や内部キーは返さない）。
     pub async fn table_indexes(
         &self,
         ctx: &AuthContext,
@@ -485,7 +494,7 @@ impl DataStore {
     ) -> Result<TableIndexOverview, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexList, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataIndexList, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
         let mut fields = Vec::new();

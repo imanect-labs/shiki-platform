@@ -209,6 +209,25 @@ pub(crate) fn canonical_number(n: &Number) -> Option<String> {
     Dec::parse(&n.to_string()).map(|d| d.canonical())
 }
 
+/// 2 つの JSON 数値の和を 10 進で正確に求める（`0.1 + 0.2` は `0.3`・数式の和と同じ演算）。
+///
+/// ワークフローの「足す数」（GAP-16）が、いまの値に足した値を書くのに使う。桁があふれたら `None`。f64 の最短表記で
+/// 同じ値へ戻らない和は 10 進表記の文字列で返す（精度を黙って落とさない。number の列への書込は検証が断る）。
+#[must_use]
+pub fn add_numbers(a: &Number, b: &Number) -> Option<Value> {
+    use crate::formula::decimal::Decimal;
+    let sum = Decimal::from_number(a)?.checked_add(Decimal::from_number(b)?)?;
+    Some(sum.to_json())
+}
+
+/// JSON 数値を、10 進で同じ値なら同じ文字にする（`1` と `1.0` と `1e0` は `1`・unique の正規化と同じ比べ方）。
+///
+/// ワークフローのまとめて登録が、同じレコードを探す列の値（GAP-16）を見つけたレコードと突き合わせるのに使う。
+#[must_use]
+pub fn number_key(n: &Number) -> Option<String> {
+    canonical_number(n)
+}
+
 /// `NumericSpec` 自体の妥当性（スキーマ検証）。
 pub(crate) fn validate_spec(f: &FieldDef) -> Result<(), DataError> {
     let Some(spec) = &f.numeric_spec else {

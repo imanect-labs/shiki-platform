@@ -3,17 +3,74 @@
 //! AI 編集も dnd 保存も同一パイプラインを通す。最初の 1 件で止めず全エラーを配列で返す
 //! （dnd がノード上に表示）。V4 は secret 照合＋skill 照合（10.1b・#344）。
 
+mod agent;
+pub use agent::{pattern_within, valid_host_pattern};
+mod approval;
+pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
+mod cache;
+pub use cache::CACHE_UNSUPPORTED;
+mod data_keys;
+pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
+mod data_query;
+pub use data_query::{query_link_tables, FIELD_NOT_INDEXED, FIELD_NOT_USABLE};
+mod status_writes;
+pub use status_writes::STATUS_NOT_WRITABLE;
+mod decide;
+pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
+mod exists;
+mod http_keys;
+pub use exists::{
+    referenced_files, referenced_folders, referenced_tables, UNKNOWN_FILE, UNKNOWN_FOLDER,
+};
+pub use http_keys::PLAIN_KEY_HEADER;
+mod input_refs;
+pub use input_refs::UNKNOWN_INPUT;
+mod llm;
+pub use llm::{EFFORT_IGNORED, MIN_STRUCTURED_MAX_TOKENS, OUTPUT_SCHEMA_FEW_TOKENS};
+mod ports;
+pub use ports::{node_ports, output_ports};
+mod readiness;
+pub use readiness::{
+    blank_ok_when_set, empty_regions, empty_values, enable_blockers, required_pick_fields,
+    required_text_empty, run_blockers, unattended_run_blockers, BLANK_OK_WHEN_SET, EMPTY_REGION,
+    EMPTY_VALUES, LIST_FOLDER_REQUIRED, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
+};
 mod refs;
 pub(crate) use refs::parse_skill_ref;
+mod reply;
+mod transition;
+pub use reply::{MAX_REPLIES, REPLY_WITHOUT_INTERACTIVE};
 mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
+mod template;
+pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
+mod timeout;
+mod user_models;
+pub use user_models::user_model_blockers;
+mod v1_schema;
 mod v2_graph;
+pub use v2_graph::UNCONNECTED_NODE;
 mod v3_vocab;
+pub use v3_vocab::{MODEL_UNAVAILABLE_FOR_USER, OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
 mod v5_dataflow;
+mod warning_codes;
+pub use warning_codes::SAVE_WARNING_CODES;
 
 use std::collections::BTreeMap;
 
-use crate::ir::WorkflowIr;
+use crate::ir::{Node, WorkflowIr};
+use crate::vocab::NodeType;
+
+/// 誤りの文言でブロックを名指しする名前（付けた名前・無ければブロックの種類の名前・それも無ければ id）。
+pub(crate) fn block_name(node: &Node) -> String {
+    match node.label.as_deref().map(str::trim) {
+        Some(label) if !label.is_empty() => label.to_string(),
+        _ => NodeType::parse(&node.node_type).map_or_else(
+            || node.id.clone(),
+            |nt| crate::vocab::label_ja(nt).to_string(),
+        ),
+    }
+}
 
 /// 検証エラー（コード＋メッセージ＋位置）。dnd がノード/エッジに紐付けて表示する。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
@@ -71,12 +128,143 @@ impl ValidationError {
 pub struct Catalog {
     /// 登録済み secret の参照名 → 許可ホスト（V4 secret 照合・宛先束縛の事前チェック）。
     pub secrets: BTreeMap<String, Vec<String>>,
-    /// テナントのモデルカタログ（llm.invoke の model 照合・空なら照合スキップ）。
-    pub models: Vec<String>,
+    /// llm.invoke に書けるモデル（組織が許可したモデル・本人専用と、保存する人のアカウントで使えないものを除く・D-169）。
+    ///
+    /// `None` は照合しない（LLM が未構成）。`Some` は空でも照合する（組織が許可したモデルが 0 件なら
+    /// 明示したモデルはすべて拒否する・BUG-37）。model の省略はどちらでも通る（組織の既定・BUG-12）。ただし、実行時に
+    /// 動く既定のモデルが保存する人のアカウントで使えなければ [`Self::default_model_unavailable`] が止める（D-185）。
+    pub models: Option<Vec<String>>,
+    /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。`Some` なら、これと違う
+    /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。判定のモデルには掛けない（判定には
+    /// 組織の既定が無く、実行時の判定のチョークポイントも選択の禁止を見ない）。
+    pub model_lock: Option<String>,
+    /// 組織の既定が Auto か（モデルを省略した llm.invoke は Auto の思考強度で動き、ノードに書いた思考の深さを
+    /// 使わない・D-75。保存時の警告 [`EFFORT_IGNORED`] に使う）。分からない構成（LLM が未構成）では false。
+    pub default_is_auto: bool,
+    /// ai.decide に書ける判定用のモデル（組織が許可し、元にする chat モデルも許可されているもの・FEAT-1）。
+    ///
+    /// [`Self::models`] と同じく、`None` は照合しない（LLM が未構成）。`Some` は空でも照合する（判定用の
+    /// モデルが 0 件なら ai.decide はすべて拒否する）。llm.invoke・agent.invoke にここのモデルを書くと
+    /// `ir.model_modality_mismatch`。
+    pub decision_models: Option<Vec<String>>,
+    /// 組織では使えるが、保存する人のアカウントでは使えない chat モデル（文章を生成するモデル・利用者ごとのプロバイダの
+    /// 制限・D-169）。
+    ///
+    /// API 層が保存する人の制限で詰める（[`Self::models`] からは除いてある）。llm.invoke・agent.invoke に書くと
+    /// [`MODEL_UNAVAILABLE_FOR_USER`]（組織で使えないモデルの `ir.unknown_model` と言い分け、一覧から選び直すよう言う）。
+    /// ai.decide に書くと、制限の無い人と同じく `ir.model_modality_mismatch`（種類の違いを先に言う）。空なら制限なし。
+    pub user_restricted_models: Vec<String>,
+    /// 組織では使えるが、保存する人のアカウントでは使えない判定用のモデル（元にする chat モデルが使えないものも・
+    /// D-169）。
+    ///
+    /// API 層が保存する人の制限で詰める（[`Self::decision_models`] からは除いてある）。ai.decide に書くと
+    /// [`MODEL_UNAVAILABLE_FOR_USER`]、llm.invoke・agent.invoke に書くと `ir.model_modality_mismatch`。空なら制限なし。
+    pub user_restricted_decision_models: Vec<String>,
+    /// モデルを省いた llm.invoke・agent.invoke と、instructions だけのスキルを呼ぶ skill.invoke が実行時に動くモデル
+    /// （組織の既定か Auto の振り先）が、保存する人のアカウントでは使えないとき、そのモデル（D-185）。`Some` なら、
+    /// モデルを省いたノードとそのスキルを呼ぶノード（[`Self::script_skills`]）を
+    /// [`MODEL_UNAVAILABLE_FOR_USER`] で止める（実行の主体は制限しないので、省いたまま保存すると自動実行が制限された
+    /// モデルで動く）。
+    pub default_model_unavailable: Option<String>,
+    /// 保存ユーザーのインストール済み skill のうち、shiki script で動くもの（`name@version`・LLM を呼ばない・D-185）。
+    ///
+    /// API 層は [`Self::default_model_unavailable`] が `Some` のときだけ詰める。ここに無いインストール済みの skill
+    /// （instructions だけ・shell script だけ）を呼ぶ skill.invoke は、実行時に組織の既定のモデルで動くので、既定が保存する
+    /// 人のアカウントで使えなければ [`MODEL_UNAVAILABLE_FOR_USER`] で止める（中身を引けなかった skill も止める）。
+    pub script_skills: std::collections::BTreeSet<String>,
     /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
     pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// 承認（human.approval）・状態を進める（data.transition）・状態のきっかけ・同じレコードを探す列と足す数
+    /// （GAP-16）が束縛するテーブル（UUID → 保存者に見える列・重複を許さない列と FSM の状態・V4・GAP-08・
+    /// BUG-105）。API 層が IR のテーブルを保存者の権限で引いて詰める（見えないテーブルは入れない）。`None` は
+    /// 照合しない（テーブルを引けない構成・AI 編集の説明文の検査など）。
+    pub tables: Option<BTreeMap<String, CatalogTable>>,
+    /// AI エージェントの web.fetch が読んでよいサイトの天井（管理者が決める `workflow.agent.web_allowlist`・
+    /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
+    /// 構成・AI 編集の説明文の検査など）。`Some(空)` は外部サイトを許可しない。
+    pub web_ceiling: Option<Vec<String>>,
+    /// IR が名指しするテーブルのうち、保存者に見えるもの（閲覧か追加だけ・小文字のハイフンつきの UUID・V4・GAP-35）。
+    ///
+    /// API 層が [`referenced_tables`] のテーブルを保存者の権限で引いて詰める（見えない・無いテーブルは入れない＝
+    /// どちらも同じ誤り）。業務データのブロック・データ変更のきっかけ・データを待つブロックの実在の照合に使う。
+    /// `None` は照合しない（引けない構成・AI 編集の説明文の検査など）。
+    pub table_ids: Option<std::collections::BTreeSet<String>>,
+    /// IR が名指しするフォルダーのうち、保存者に見えるもの（閲覧・V4・GAP-35）。API 層が [`referenced_folders`] を
+    /// 保存者の権限で引いて詰める。`None` は照合しない。
+    pub folder_ids: Option<std::collections::BTreeSet<String>>,
+    /// IR が名指しするファイル（ファイルを読む・CSV を集計・CSV を編集の file）のうち、保存者に見えるもの（閲覧・V4・
+    /// GAP-91）。API 層が [`referenced_files`] を保存者の権限で引いて詰める。`None` は照合しない。
+    pub file_ids: Option<std::collections::BTreeSet<String>>,
+    /// 別のワークフローを実行（workflow.start）が名前で指す相手のうち、保存者に見えるもの（V4・BUG-107）。
+    ///
+    /// API 層が IR の workflow.start の名前（リテラル）だけを保存者の権限で引いて詰める（見えない・無い名前は
+    /// 入れない＝どちらも同じ誤り）。`None` は照合しない（引けない構成・AI 編集の説明文の検査など）。
+    pub workflows: Option<std::collections::BTreeSet<String>>,
+}
+
+/// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。
+///
+/// 条件の意味論の切替で振る舞いが変わり得る条件（[`SEMANTICS_CHANGED`]・[`semantics_warnings`]）と、
+/// vars のキーを `{{key}}` と書いたテンプレート（[`TEMPLATE_ESCAPED_VAR`]）と、閉じの無い `{` のある
+/// テンプレート（[`TEMPLATE_UNCLOSED_BRACE`]・D-37）と、同じテーブルで重なる
+/// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
+/// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
+/// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、出力の形を書いた llm.invoke の
+/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、組織の設定に従うので使われない思考の深さ
+/// （[`EFFORT_IGNORED`]・D-75・組織の設定は `catalog` から読む）と、判定のしきい値が低い・出口が多い・
+/// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
+/// FEAT-1）と、線が 1 本も無いブロック（[`UNCONNECTED_NODE`]・実行の始めに動く・BUG-106）と、必須の文字の欄が空のもの
+/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）と、中にブロックの無い繰り返し（[`EMPTY_REGION`]・
+/// 有効化と実行の前には止める・D-85）と、値を書く欄の中身の無い入れ物（[`EMPTY_VALUES`]・何も止めない）と、
+/// 入力項目に無い項目を指す入力の参照（[`UNKNOWN_INPUT`]・GAP-35）と、「外部 API 呼び出し」の鍵を入れることの多い
+/// 名前のヘッダーにそのまま書いた値（[`PLAIN_KEY_HEADER`]・GAP-19）。
+/// 出しうるコードは [`SAVE_WARNING_CODES`] に載せる（web はその表から生成した定数で受ける・BUG-48）。
+#[must_use]
+pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError> {
+    let mut out = semantics_warnings(ir);
+    out.extend(template::warnings(ir));
+    out.extend(readiness::required_text_empty(ir));
+    out.extend(readiness::empty_regions(ir));
+    out.extend(readiness::empty_values(ir));
+    out.extend(v3_vocab::event_warnings(ir));
+    out.extend(approval::warnings(ir));
+    out.extend(reply::warnings(ir));
+    out.extend(llm::warnings(ir));
+    out.extend(llm::org_warnings(ir, catalog));
+    out.extend(decide::warnings(ir));
+    out.extend(v2_graph::warnings(ir));
+    out.extend(input_refs::warnings(ir));
+    out.extend(http_keys::warnings(ir));
+    // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
+    debug_assert!(
+        out.iter()
+            .all(|w| SAVE_WARNING_CODES.iter().any(|(_, c)| *c == w.code)),
+        "SAVE_WARNING_CODES に無い警告: {out:?}"
+    );
+    out
+}
+
+/// V1c: 入力項目（input_schema）の形の誤り。起動の検査が確かめられない形（`$ref`・`oneOf` など・GAP-35）と、
+/// 起動の検証は注記として読み飛ばす項目の並び `x-order` の形（properties のキーの文字列の配列・重なりなし・D-60）を、
+/// 保存で止める。
+fn input_schema_errors(schema: &serde_json::Value) -> Vec<ValidationError> {
+    let shape = crate::ir::input_schema::schema_errors(schema);
+    let order = crate::ir::input_schema::order_errors(schema);
+    shape
+        .into_iter()
+        .chain(order)
+        .map(|(at, message)| {
+            ValidationError::new(v1_schema::SCHEMA_VIOLATION, message)
+                .at_path(format!("/input_schema{at}"))
+        })
+        .collect()
+}
+
+/// params の契約の誤りの文言（V1b）。
+fn params_message(message: &str) -> String {
+    format!("params が不正です: {message}")
 }
 
 /// IR の JSON を V1〜V7 で検証する。エラーが 1 件でもあれば `Err(全件)`。
@@ -86,16 +274,17 @@ pub fn validate(
     value: &serde_json::Value,
     catalog: &Catalog,
 ) -> Result<WorkflowIr, Vec<ValidationError>> {
-    // V1: スキーマ（deny-unknown・型・必須）。パース失敗はここで打ち切る（後段が構造に依存）。
-    let ir = match WorkflowIr::from_json(value) {
-        Ok(ir) => ir,
-        Err(e) => {
-            return Err(vec![ValidationError::new(
-                "ir.schema_violation",
-                format!("スキーマ検証に失敗しました: {e}"),
-            )]);
-        }
+    // V1: スキーマ（deny-unknown・型・必須）。読めなければ後段（構造に依存）へは進まず、全体・ブロック・線・
+    // きっかけ・ブロックの設定・入力項目の誤りを、まとめて位置つきで返す（GAP-35）。
+    let Ok(ir) = WorkflowIr::from_json(value) else {
+        return Err(v1_schema::errors(value));
     };
+    // V7 のうちブロック・線の数と大きさの上限は、ほかの段より先に確かめ、超えたら上限の誤りだけを返す（読めない IR と
+    // 同じ・D-147）。大きな IR のブロックの設定や入力項目の pattern を、上限で止める前に読み切らない（BUG-222）。
+    let limits = size_limit_errors(ir.nodes.len(), ir.edges.len(), value);
+    if !limits.is_empty() {
+        return Err(limits);
+    }
 
     let mut errors = Vec::new();
     // ワークフロー名は安定参照名の契約 `^[a-z][a-z0-9-]{0,63}$`（workflow.start の名前解決に使う）。
@@ -109,7 +298,9 @@ pub fn validate(
         ));
     }
     // V1b: ノード params の typed 契約照合（deny-unknown・必須・型・ir.md §7「params の正は codegen」）。
-    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。
+    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。出力の形の pattern は
+    // ワークフローの全体で数える（BUG-226）。
+    let mut patterns = crate::ir::patterns::PatternBudget::for_save();
     for node in &ir.nodes {
         let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
             continue;
@@ -117,27 +308,50 @@ pub fn validate(
         if !nt.available_stage_a() {
             continue;
         }
-        if let Err(issue) = crate::ir::params::check_params(nt, &node.params) {
+        for issue in crate::ir::params::params_issues_with(nt, &node.params, &mut patterns) {
             errors.push(
-                ValidationError::new(
-                    "ir.schema_violation",
-                    format!("params が不正です: {}", issue.message),
-                )
-                .at_node(&node.id)
-                .at_path(issue.path),
+                ValidationError::new(v1_schema::SCHEMA_VIOLATION, params_message(&issue.message))
+                    .at_node(&node.id)
+                    .at_path(issue.path),
             );
         }
     }
-    // V7: 上限（他段より先に軽く弾く）。
-    v7_limits(value, &ir, &mut errors);
-    // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性）。
+    // V1d: step 属性 `cache`（付けられる種・期限の範囲・T10）。
+    cache::v1(&ir, &mut errors);
+    // V1c: input_schema の形（起動の検査が断る形・GAP-35）と項目の並びの注記 `x-order`（D-60）。
+    if let Some(schema) = &ir.input_schema {
+        errors.extend(input_schema_errors(schema));
+    }
+    // V7: 上限（ブロック・線の数と大きさは最初に確かめた）。
+    v7_limits(&ir, &mut errors);
+    // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性・reply は本体だけ）。
     v2_graph::check(&ir, &mut errors);
+    reply::v2(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
-    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344）。
+    decide::v3(&ir, catalog, &mut errors);
+    agent::v3(
+        &ir,
+        catalog,
+        &ir.declared_scopes.iter().map(String::as_str).collect(),
+        &mut errors,
+    );
+    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態・
+    // 状態を進めるテーブルと状態のきっかけのテーブル・BUG-105）。
     refs::v4_refs(&ir, catalog, &mut errors);
+    approval::v4(&ir, catalog, &mut errors);
+    transition::v4(&ir, catalog, &mut errors);
+    // 同じレコードを探す列は重複を許さない列・足す数は数の列（GAP-16）。
+    data_keys::v4(&ir, catalog, &mut errors);
+    // データを検索の絞り込み・並べ替え・まとめ・集計の列は、実行時に断られない列（BUG-244）。
+    data_query::v4(&ir, catalog, &mut errors);
+    // 状態の列は状態を進めるでだけ変えられ、追加したレコードは最初の状態になる（BUG-251）。
+    status_writes::v4(&ir, catalog, &mut errors);
+    // 業務データのブロック・データ変更のきっかけのテーブルと、フォルダー・ファイルの実在（GAP-35・GAP-91）。
+    exists::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
+    agent::v5(&ir, &mut errors);
     // V6: script コンパイル（inline の swc パース・禁止構文）。
     refs::v6_script(&ir, &mut errors);
 
@@ -148,8 +362,47 @@ pub fn validate(
     }
 }
 
-/// V7: 上限（ir.md §8）。
-fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
+/// ブロックの数の上限（V7）。
+const MAX_NODES: usize = 200;
+/// 線の数の上限（V7）。
+const MAX_EDGES: usize = 500;
+/// IR の大きさの上限（V7・JSON のバイト数）。
+const MAX_IR_BYTES: usize = 1024 * 1024;
+
+/// V7 のうち、ブロック・線の数と IR の大きさの上限の誤り。読める IR は [`validate`] が、読めない IR は V1 が、ほかの段より
+/// 先に確かめる（同じ数・同じ文言・超えたら上限の誤りだけを返す）。
+fn size_limit_errors(
+    nodes: usize,
+    edges: usize,
+    value: &serde_json::Value,
+) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    if nodes > MAX_NODES {
+        errors.push(ValidationError::new(
+            "ir.limit_exceeded",
+            format!("ノード数が上限 {MAX_NODES} を超過しています: {nodes}"),
+        ));
+    }
+    if edges > MAX_EDGES {
+        errors.push(ValidationError::new(
+            "ir.limit_exceeded",
+            format!("エッジ数が上限 {MAX_EDGES} を超過しています: {edges}"),
+        ));
+    }
+    // IR サイズ（1MB）。
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        if bytes.len() > MAX_IR_BYTES {
+            errors.push(ValidationError::new(
+                "ir.limit_exceeded",
+                format!("IR が上限 1MB を超過しています: {} bytes", bytes.len()),
+            ));
+        }
+    }
+    errors
+}
+
+/// V7: 上限（ir.md §8）。ブロック・線の数と大きさは [`size_limit_errors`] が先に見る。
+fn v7_limits(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     use crate::ir::expr::MAX_CONDITION_DEPTH;
 
     if ir.ir_version == 0 || ir.ir_version > crate::ir::MAX_IR_VERSION {
@@ -158,27 +411,6 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             format!("未知の ir_version: {}", ir.ir_version),
         ));
     }
-    if ir.nodes.len() > 200 {
-        errors.push(ValidationError::new(
-            "ir.limit_exceeded",
-            format!("ノード数が上限 200 を超過しています: {}", ir.nodes.len()),
-        ));
-    }
-    if ir.edges.len() > 500 {
-        errors.push(ValidationError::new(
-            "ir.limit_exceeded",
-            format!("エッジ数が上限 500 を超過しています: {}", ir.edges.len()),
-        ));
-    }
-    // IR サイズ（1MB）。
-    if let Ok(bytes) = serde_json::to_vec(value) {
-        if bytes.len() > 1024 * 1024 {
-            errors.push(ValidationError::new(
-                "ir.limit_exceeded",
-                format!("IR が上限 1MB を超過しています: {} bytes", bytes.len()),
-            ));
-        }
-    }
     // policies の run_timeout 上限。
     if ir.policies.run_timeout_sec > crate::ir::MAX_RUN_TIMEOUT_SEC {
         errors.push(ValidationError::new(
@@ -186,6 +418,16 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             "run_timeout_sec が上限（30 日）を超過しています".to_string(),
         ));
     }
+    // テンプレートの vars の数（ir.md §3.2・§8）。
+    template::check_limits(ir, errors);
+    // 承認の期限は実行の期限未満（GAP-08）。
+    approval::v7(ir, errors);
+    // 画面に返す結果の数とリテラルの型（GAP-09）。
+    reply::v7(ir, errors);
+    // AI エージェントの手順・時間・トークン・依頼の上限（BUG-6）。
+    agent::v7(ir, errors);
+    // ノードの時間の上限（ノード種の上限・AI エージェントは作業時間の上限以上・BUG-96）。
+    timeout::v7(ir, errors);
     // 条件木の深さ（トリガ filter・branch/wait params の condition）。
     for t in &ir.triggers {
         if let crate::ir::Trigger::Event(ev) = t {
@@ -272,6 +514,80 @@ mod tests {
         assert!(validate(&ok, &catalog()).is_ok());
     }
 
+    /// 親の連鎖が輪になった繰り返しを含む IR でも、検証は止まって誤りを返す（V2 の深さの数え上げと V5 の祖先の
+    /// たどりが止まらず、保存と検証の API が返らなかった）。
+    #[test]
+    fn a_cyclic_parent_chain_returns_errors() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "m", "type": "control.map", "parent": "m",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "leaf", "type": "storage.read", "parent": "m",
+                  "params": { "file": { "$from": "nodes.m.output" } } }
+            ],
+            "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        assert!(errs.iter().any(|e| e.code == "ir.bad_region"), "{errs:?}");
+    }
+
+    /// BUG-151: 置いたばかりの業務データ・ファイルを読む・スキルのブロック（エディタは選ぶ欄・書く欄を空の文字で置く）は
+    /// 保存でき、空の欄は保存の警告になる（実行と自動実行のオンの前に止まる）。以前は「項目 'data' がありません」・
+    /// 「skill 参照は skill:<name>@<version> 形式です」で保存が止まった。
+    #[test]
+    fn freshly_placed_data_blocks_can_be_saved() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "add", "type": "data.record.create", "params": { "table": "", "data": "" } },
+                { "id": "move", "type": "data.transition", "params": { "table": "", "record": "", "to": "" } },
+                { "id": "bulk", "type": "data.bulk_upsert", "params": {} },
+                { "id": "read", "type": "storage.read", "params": { "file": "" } },
+                { "id": "skill", "type": "skill.invoke", "params": { "skill": "" } }
+            ],
+            "edges": [
+                { "from": "add", "to": "move" }, { "from": "move", "to": "bulk" },
+                { "from": "bulk", "to": "read" }, { "from": "read", "to": "skill" }
+            ]
+        });
+        // 使ってよい操作は保存の API と同じく補う。
+        let (ir, _) = crate::ir::scopes::complete_declared_scopes(&ir);
+        let parsed = validate(&ir, &catalog()).expect("置いたばかりのブロックを保存できる");
+        let warned: Vec<_> = save_warnings(&parsed, &catalog())
+            .into_iter()
+            .map(|w| (w.code, w.node_id, w.path))
+            .collect();
+        let at = |node: &str, field: &str| {
+            (
+                REQUIRED_TEXT_EMPTY.to_string(),
+                Some(node.to_string()),
+                Some(format!("/params/{field}")),
+            )
+        };
+        assert_eq!(
+            warned,
+            vec![
+                at("add", "table"),
+                at("add", "data"),
+                at("move", "table"),
+                at("move", "record"),
+                at("move", "to"),
+                at("bulk", "table"),
+                at("bulk", "rows"),
+                at("read", "file"),
+                at("skill", "skill"),
+            ]
+        );
+        // 材料（テーブルの一覧）を引ける構成でも、空のテーブルは照合しない（見えないテーブルの誤りにしない）。
+        let with_tables = Catalog {
+            tables: Some(BTreeMap::new()),
+            ..Catalog::default()
+        };
+        assert!(validate(&ir, &with_tables).is_ok());
+    }
+
     #[test]
     fn v5_from_source_requires_exact_vocabulary() {
         // `each.item` のような「先頭一致だが実行時に解決不能」な source は保存時に弾く。
@@ -293,6 +609,47 @@ mod tests {
         }
     }
 
+    /// BUG-1 の再現（AI が `{{変数}}` で書いた IR）: 保存は通すが、波括弧が出ることを警告で知らせる。
+    #[test]
+    fn mustache_template_saves_with_a_warning() {
+        let ir = json!({
+            "ir_version": 1, "name": "bug1-mustache", "declared_scopes": [],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "echo", "type": "script.run", "params": {
+                "source": { "inline": "function main(i){ return { got: i }; }" },
+                "input": { "$template": "件名: {{title}} / 金額: {{amount}} 円",
+                    "vars": { "title": { "$from": "input", "path": "/title" },
+                              "amount": { "$from": "input", "path": "/amount" } } } } }],
+            "edges": []
+        });
+        let parsed = validate(&ir, &catalog()).expect("保存は止めない");
+        let w = save_warnings(&parsed, &Catalog::default());
+        assert_eq!(w.len(), 2, "{w:#?}");
+        assert!(w.iter().all(|e| e.code == TEMPLATE_ESCAPED_VAR));
+        // 条件の意味論の切替の一覧（shiki-admin workflow-conditions）には混ぜない。
+        assert!(semantics_warnings(&parsed).is_empty());
+    }
+
+    /// AI が書きがちな誤り（存在しない出口・vars に無い差し込み・祖先でない vars の参照）は全件まとめて返す。
+    #[test]
+    fn ai_style_mistakes_are_all_reported() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["storage.write"],
+            "nodes": [
+                { "id": "ask", "type": "llm.invoke", "params": { "prompt": "要約して" } },
+                { "id": "save", "type": "storage.write", "params": {
+                    "name": { "$template": "summary-{d}.md", "vars": { "date": "2026-10-25" } },
+                    "content": { "$template": "{t}", "vars": { "t": { "$from": "ask" } } } } }
+            ],
+            "edges": [{ "from": "ask", "from_port": "next", "to": "save" }]
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        let codes: Vec<&str> = errs.iter().map(|e| e.code.as_str()).collect();
+        assert!(codes.contains(&"ir.unknown_port"), "{errs:#?}");
+        assert!(codes.contains(&"ir.bad_template"), "{errs:#?}");
+        assert!(codes.contains(&"ir.bad_ref"), "{errs:#?}");
+    }
+
     #[test]
     fn v1b_params_violation_has_node_and_path() {
         // typed params 契約違反が node_id＋path 付きの ir.schema_violation になる（dnd 表示契約）。
@@ -301,7 +658,7 @@ mod tests {
             "name": "wf",
             "declared_scopes": ["storage.read"],
             "nodes": [
-                { "id": "read", "type": "storage.read", "params": {} }
+                { "id": "read", "type": "storage.read", "params": { "file": "x", "surprise": 1 } }
             ],
             "edges": []
         });
@@ -325,11 +682,39 @@ mod tests {
         assert_eq!(errs[0].code, "ir.schema_violation");
     }
 
+    /// D-60: input_schema の `x-order` は保存でき、形が合わなければ位置つきで保存を止める。
+    #[test]
+    fn v1c_input_order_is_checked_on_save() {
+        let ir = |order: serde_json::Value| {
+            json!({
+                "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                "input_schema": { "type": "object", "x-order": order, "properties": {
+                    "title": { "type": "string" }, "amount": { "type": "integer" } } },
+                "nodes": [{ "id": "ask", "type": "llm.invoke", "params": { "prompt": "要約して" } }],
+                "edges": []
+            })
+        };
+        let saved = validate(&ir(json!(["title", "amount"])), &catalog()).expect("保存できる");
+        assert_eq!(
+            saved.input_schema.as_ref().and_then(|s| s.get("x-order")),
+            Some(&json!(["title", "amount"]))
+        );
+        let errs = validate(&ir(json!(["title", "amout"])), &catalog()).unwrap_err();
+        assert_eq!(errs.len(), 1, "{errs:#?}");
+        assert_eq!(errs[0].code, "ir.schema_violation");
+        assert_eq!(errs[0].path.as_deref(), Some("/input_schema/x-order/1"));
+        assert_eq!(
+            errs[0].message,
+            "x-order の「amout」は properties にありません"
+        );
+        assert_eq!(errs[0].node_id, None);
+    }
+
     #[test]
     fn v3_unknown_scope_and_node() {
         let ir = json!({
             "ir_version": 1, "name": "wf",
-            "declared_scopes": ["notify.send"],  // 未実装（予約語彙）
+            "declared_scopes": ["sheet.read"],  // 未実装（予約語彙）
             "nodes": [{ "id": "q", "type": "notify.send", "params": {} }],
             "edges": []
         });
@@ -428,6 +813,77 @@ mod tests {
         let ir = json!({ "ir_version": 1, "name": "wf", "declared_scopes": ["storage.read"], "nodes": nodes, "edges": [] });
         let errs = validate(&ir, &catalog()).unwrap_err();
         assert!(errs.iter().any(|e| e.code == "ir.limit_exceeded"));
+    }
+
+    /// 大きさの上限を超える読める IR は、ほかの段より先に上限の誤りだけを返す（読めない IR と同じ・入力項目の pattern や
+    /// ブロックの設定を読み切らない・BUG-222）。
+    #[test]
+    fn readable_irs_over_the_size_limit_return_only_the_limit() {
+        let props: serde_json::Map<String, serde_json::Value> = (0..40_000)
+            .map(|i| (format!("p{i}"), json!({ "type": "string", "pattern": "(" })))
+            .collect();
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "input_schema": { "type": "object", "properties": props },
+            "nodes": [], "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        assert_eq!(errs.len(), 1, "{:?}", &errs[..errs.len().min(3)]);
+        assert_eq!(errs[0].code, "ir.limit_exceeded");
+        assert!(errs[0].message.contains("1MB"), "{}", errs[0].message);
+    }
+
+    /// 「AI に聞く」の出力の形の pattern は、ブロックをまたいでワークフローの全体で 50 個まで数え、超えた分は
+    /// コンパイルしない（BUG-226）。読める IR でも読めない IR でも同じ。
+    #[test]
+    fn output_schema_patterns_are_counted_across_blocks() {
+        use crate::ir::patterns::{compiled_count, MAX_PATTERNS};
+
+        let schema = |p: &str| {
+            let props: serde_json::Map<String, serde_json::Value> = (0..30)
+                .map(|i| {
+                    (
+                        format!("k{i:02}"),
+                        json!({ "type": "string", "pattern": p }),
+                    )
+                })
+                .collect();
+            let required: Vec<String> = props.keys().cloned().collect();
+            json!({ "type": "object", "properties": props, "required": required })
+        };
+        let ask = |id: &str, p: &str| {
+            json!({ "id": id, "type": "llm.invoke",
+                    "params": { "prompt": "仕分けて", "max_tokens": 2048, "output_schema": schema(p) } })
+        };
+        let ir = |extra: Option<(&str, serde_json::Value)>| {
+            let mut ir = json!({
+                "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                "nodes": [ask("a", "^x$"), ask("b", "^x$"), ask("c", "(")],
+                "edges": [{ "from": "a", "to": "b" }, { "from": "b", "to": "c" }]
+            });
+            if let Some((k, v)) = extra {
+                ir[k] = v;
+            }
+            ir
+        };
+        let check = |ir: &serde_json::Value| {
+            let before = compiled_count();
+            let errs = validate(ir, &catalog()).unwrap_err();
+            assert!(compiled_count() - before <= MAX_PATTERNS, "{errs:#?}");
+            errs.into_iter()
+                .filter(|e| e.path.as_deref().is_some_and(|p| p.ends_with("/pattern")))
+                .map(|e| (e.node_id, e.message))
+                .collect::<Vec<_>>()
+        };
+        let want = vec![(
+            Some("b".to_string()),
+            format!(
+                "params が不正です: 出力の形の pattern は、すべての「AI に聞く」を合わせて {MAX_PATTERNS} 個までです。どれかのブロックの pattern を減らしてください。"
+            ),
+        )];
+        assert_eq!(check(&ir(None)), want);
+        // 読めない IR（全体に知らない項目）でも、ブロックの設定の確かめで同じ数え方をする。
+        assert_eq!(check(&ir(Some(("surprise", json!(1))))), want);
     }
 
     #[test]

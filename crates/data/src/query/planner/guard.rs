@@ -178,6 +178,13 @@ impl<'a> Guard<'a> {
             out.extend_from_slice(&t.to_le_bytes());
         }
         out.push(u8::from(self.ctx.schema.row_policy.is_some()));
+        // 行述語の形（材料は含まない）。スキーマの世代が同じでも、追加だけの閲覧者には絞った述語
+        // （`IsOwner AND 元の述語`・D-113・[`crate::table_access`]）で降下するので、テキストが違う。
+        if let Some(p) = &self.ctx.schema.row_policy {
+            let shape = format!("{:?}", p.read);
+            out.extend_from_slice(&(shape.len() as u64).to_le_bytes());
+            out.extend_from_slice(shape.as_bytes());
+        }
     }
 
     /// 認可駆動の入口の形（選言の種類と列・`HasRole` の畳み込みの結果。材料は積まない）。
@@ -258,6 +265,21 @@ impl<'a> Guard<'a> {
             PolicyExpr::All(v) => v.iter().find_map(|c| self.driver_of(c)),
             PolicyExpr::FieldCmp { field, op, value } => {
                 let f = self.ctx.schema.field(field)?;
+                if f.is_created_by() {
+                    // 作成者の列は owner の擬似列で引く（D-122）。等値だけを入口にする。
+                    if !active(SYSTEM_FIELD_OWNER, IndexTable::Text) {
+                        return None;
+                    }
+                    return match (op, value) {
+                        (CmpOp::Eq, PolicyOperand::UserId) => {
+                            Some(Driver::Owner(self.ctx.user.to_string()))
+                        }
+                        (CmpOp::Eq, PolicyOperand::Lit(v)) => {
+                            Some(Driver::Owner(v.as_str()?.to_string()))
+                        }
+                        _ => None,
+                    };
+                }
                 let numeric = f.field_type == FieldType::Number;
                 let table = if numeric {
                     IndexTable::Num

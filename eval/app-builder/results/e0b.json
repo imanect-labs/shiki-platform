@@ -1,0 +1,5926 @@
+{
+ "experiment": "e0b",
+ "created_at": "2026-11-07T03:00:46+00:00",
+ "model": "claude-haiku-5-5",
+ "runs": [
+  {
+   "spec": {
+    "exp": "e0b",
+    "mode": "b",
+    "label": "vn",
+    "tasks": [
+     "basic-summary-file",
+     "app01-claim-submit",
+     "app03-weekly-summary",
+     "app11-checkout"
+    ],
+    "phrasings": [
+     "flow",
+     "app",
+     "auto"
+    ],
+    "trials": 3,
+    "efforts": [
+     "medium"
+    ],
+    "max_steps": null
+   },
+   "trials": 12,
+   "central_usd": 0.36,
+   "worst_usd": 0.6,
+   "eval_spent_usd": 0.043751,
+   "relay_spent_usd": 0.250544,
+   "run_id": "e0b.vn.b.20261107T025426",
+   "cap_usd": 0.72,
+   "caps": {
+    "run": 10.0,
+    "eval": 35.0,
+    "global": 95.0
+   },
+   "problems": [],
+   "notes": [],
+   "splits": [],
+   "finished_at": "2026-11-07T03:00:46+00:00",
+   "stub": false,
+   "regrade_from": null,
+   "g8_skipped": null
+  }
+ ],
+ "versions": {
+  "vn": {
+   "node_types": [
+    "agent.invoke",
+    "ai.decide",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.record.upsert",
+    "data.transition",
+    "http.request",
+    "human.approval",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "transform.date",
+    "workflow.reply",
+    "workflow.start"
+   ],
+   "commit": "eeb6f2e34ef93697e685a2449b8dbc6c4ba3b77c",
+   "binary_sha256": "637562e919031d778072342a10c0121ce94a7f9a8738f646abac3701e017fdb8",
+   "config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
+   "capture_sha": "e69603ba10ee8585aeeb37fc09505a423eef1dfba4058717284248fc5378cde3",
+   "fingerprint_sha": "6494c35963ac86d0e065b52f6d6eae19d43510938a15b4839d8f5aa51e324509",
+   "capture_changed": [],
+   "capabilities": {
+    "node_ports": true,
+    "trigger": true,
+    "scheduled_at": true,
+    "custom_instructions": true,
+    "fsm": true,
+    "list_workflows": null
+   },
+   "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-07T02:46:40+00:00",
+    "results": {
+     "port_next": {
+      "errors": [
+       "ir.unknown_port"
+      ],
+      "warnings": []
+     },
+     "template_var": {
+      "errors": [
+       "ir.bad_template"
+      ],
+      "warnings": []
+     },
+     "unknown_folder": {
+      "errors": [
+       "ir.unknown_folder"
+      ],
+      "warnings": []
+     }
+    }
+   }
+  }
+ },
+ "grader": {
+  "grader": 11,
+  "ir_lint_schema": 3,
+  "ir_lint_sha256": "4b66092e29ab4f1999b0b8e6337542ffa993ef0116de4eb5bb2d811f02d39e36",
+  "ir_lint_build": {
+   "commit": "d5a215b672d7049dc6eba743833c2cce41c00b67",
+   "dirty": false,
+   "built_at": "2026-11-09T11:54:12+00:00"
+  }
+ },
+ "conditions": [
+  "vn/b/medium"
+ ],
+ "trials": [
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "basic-summary-file",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-summary-file.flow.0.medium",
+   "key": "ef734cbf2c5c89bf0fba7ef9dec761ce745ea0d8e9a7def2bbd525f000dc49e2",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "storage.write"
+     ],
+     "display_name": "件名と本文を 3 行に要約して保存",
+     "edges": [
+      {
+       "from": "summarize",
+       "from_port": "out",
+       "to": "save_summary"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "body": {
+        "title": "本文",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "body"
+      ]
+     },
+     "ir_version": 1,
+     "name": "summarize-to-folder-daily",
+     "nodes": [
+      {
+       "id": "summarize",
+       "label": "本文を 3 行に要約",
+       "params": {
+        "prompt": {
+         "$template": "次の件名と本文を、日本語で必ず 3 行に要約してください。各行は箇条書きの記号を付けず、1 行 1 文で書いてください。\n\n件名: {title}\n本文:\n{body}",
+         "vars": {
+          "body": {
+           "$from": "input",
+           "path": "/body"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "system": "あなたは社内文書の要約担当です。日本語で、指定された行数に必ず従ってください。"
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save_summary",
+       "label": "要約を Markdown で保存",
+       "params": {
+        "content": {
+         "$template": "# {title}\n\n{summary}\n",
+         "vars": {
+          "summary": {
+           "$from": "nodes.summarize.output",
+           "path": "/text"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:out",
+        "name": {
+         "$template": "要約-{date}.md",
+         "vars": {
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        },
+        "on_name_taken": "add_number"
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "save_summary": [
+       "out"
+      ],
+      "summarize": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 14.074,
+   "cost": {
+    "chat_micros": 6424,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 6424,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6424,
+     "usage_micros": 6419,
+     "diff_micros": 5,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "basic-summary-file",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-summary-file.app.1.medium",
+   "key": "4f868ee1b8357732881916b0b7dfe97deed72008e247a5e6032e06b05cc6dedc",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "storage.write"
+     ],
+     "display_name": "問い合わせを要約して保存",
+     "edges": [
+      {
+       "from": "summarize",
+       "from_port": "out",
+       "to": "save_summary"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "body": {
+        "title": "本文",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "body"
+      ]
+     },
+     "ir_version": 1,
+     "name": "inquiry-summary-save",
+     "nodes": [
+      {
+       "id": "summarize",
+       "label": "3行で要約",
+       "params": {
+        "prompt": {
+         "$template": "次の問い合わせを日本語で、3行程度の箇条書きではなく、3行の文章で要約してください。余計な前置きや見出しは付けないでください。\n件名: {title}\n本文: {body}",
+         "vars": {
+          "body": {
+           "$from": "input",
+           "path": "/body"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "system": "あなたは社内の問い合わせ窓口の担当者です。"
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save_summary",
+       "label": "要約を保存",
+       "params": {
+        "content": {
+         "$template": "# {title}\n\n{summary}\n",
+         "vars": {
+          "summary": {
+           "$from": "nodes.summarize.output",
+           "path": "/text"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:out",
+        "name": {
+         "$template": "要約-{date}.md",
+         "vars": {
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        },
+        "on_name_taken": "add_number"
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "save_summary": [
+       "out"
+      ],
+      "summarize": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 13.896,
+   "cost": {
+    "chat_micros": 6400,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 6400,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6400,
+     "usage_micros": 6395,
+     "diff_micros": 5,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "basic-summary-file",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-summary-file.auto.2.medium",
+   "key": "9e24344ac85e7126319a6e2fd054733d34962fc8e2d0daf84c328acc732d7851",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 1,
+     "tool_search": 2
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "storage.write"
+     ],
+     "display_name": "件名と本文を要約して保存",
+     "edges": [
+      {
+       "from": "summarize",
+       "from_port": "out",
+       "to": "save_summary"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "body": {
+        "title": "本文",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "body"
+      ]
+     },
+     "ir_version": 1,
+     "name": "summarize-to-folder",
+     "nodes": [
+      {
+       "id": "summarize",
+       "label": "要約する",
+       "params": {
+        "prompt": {
+         "$template": "次の文章を要約してください。\n件名: {title}\n本文: {body}",
+         "vars": {
+          "body": {
+           "$from": "input",
+           "path": "/body"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "system": "あなたは記録係です。文章を正確に、簡潔に要約してください。"
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save_summary",
+       "label": "要約を保存",
+       "params": {
+        "content": {
+         "$template": "# {title}\n\n{summary}",
+         "vars": {
+          "summary": {
+           "$from": "nodes.summarize.output",
+           "path": "/text"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:out",
+        "name": {
+         "$template": "要約-{date}.md",
+         "vars": {
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        },
+        "on_name_taken": "add_number"
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "save_summary": [
+       "out"
+      ],
+      "summarize": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "normal",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "files:count",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
+       },
+       {
+        "kind": "files:contains",
+        "ok": true,
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 14.11,
+   "cost": {
+    "chat_micros": 7129,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 7129,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7129,
+     "usage_micros": 7125,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app01-claim-submit",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.flow.0.medium",
+   "key": "6b918dc2cffa29a6f5521be532a4352aeb5a0b1513ee8fa6c247c9d01001b32e",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "経費申請の受付",
+     "edges": [
+      {
+       "from": "amount_check",
+       "from_port": "true",
+       "to": "find_manager"
+      },
+      {
+       "from": "find_manager",
+       "to": "add_high"
+      },
+      {
+       "from": "add_high",
+       "to": "reply_high"
+      },
+      {
+       "from": "amount_check",
+       "from_port": "false",
+       "to": "find_section_chief"
+      },
+      {
+       "from": "find_section_chief",
+       "to": "add_low"
+      },
+      {
+       "from": "add_low",
+       "to": "reply_low"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "amount": {
+        "title": "金額",
+        "type": "number"
+       },
+       "applicant": {
+        "title": "申請者",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "amount",
+       "applicant"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "amount",
+       "applicant"
+      ]
+     },
+     "ir_version": 1,
+     "name": "expense-request-intake",
+     "nodes": [
+      {
+       "id": "amount_check",
+       "label": "金額が10万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "find_manager",
+       "label": "部長を探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "add_high",
+       "label": "経費申請を追加（部長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_manager.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_high",
+       "label": "受付結果を返す（部長承認）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "経費申請を受け付けました。承認者: {approver}（金額 10 万円以上）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.add_high.output",
+           "path": "/data/approver"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "find_section_chief",
+       "label": "課長を探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "add_low",
+       "label": "経費申請を追加（課長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_section_chief.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_low",
+       "label": "受付結果を返す（課長承認）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "経費申請を受け付けました。承認者: {approver}（金額 10 万円未満）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.add_low.output",
+           "path": "/data/approver"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "add_high": [
+       "out"
+      ],
+      "add_low": [
+       "out"
+      ],
+      "amount_check": [
+       "true",
+       "false"
+      ],
+      "find_manager": [
+       "out"
+      ],
+      "find_section_chief": [
+       "out"
+      ],
+      "reply_high": [
+       "out"
+      ],
+      "reply_low": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 26.994,
+   "cost": {
+    "chat_micros": 7673,
+    "run_case_micros": 0,
+    "lines": 4,
+    "usage_missing": 0,
+    "total_micros": 7673,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7673,
+     "usage_micros": 7669,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app01-claim-submit",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.app.1.medium",
+   "key": "6a3b4124a0307e4868bddfc578de2d719a3bee68313c2f61e869f05b183b0bc7",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 3,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_query": 1,
+     "data_schema": 2,
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "経費申請の登録（承認者を自動判定）",
+     "edges": [
+      {
+       "from": "is_large",
+       "from_port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "find_bucho",
+       "to": "add_bucho"
+      },
+      {
+       "from": "add_bucho",
+       "to": "reply_bucho"
+      },
+      {
+       "from": "is_large",
+       "from_port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_kacho",
+       "to": "add_kacho"
+      },
+      {
+       "from": "add_kacho",
+       "to": "reply_kacho"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "amount": {
+        "minimum": 1,
+        "title": "金額",
+        "type": "number"
+       },
+       "applicant": {
+        "title": "申請者",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "amount",
+       "applicant"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "amount",
+       "applicant"
+      ]
+     },
+     "ir_version": 1,
+     "name": "expense-request-submit",
+     "nodes": [
+      {
+       "id": "is_large",
+       "label": "10万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "find_bucho",
+       "label": "部長を承認者表から探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "add_bucho",
+       "label": "部長承認で申請を登録",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_bucho.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_bucho",
+       "label": "完了を表示（部長）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "申請を登録しました（状態: 申請中）。承認者: {approver}（部長）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.add_bucho.output",
+           "path": "/data/approver"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "find_kacho",
+       "label": "課長を承認者表から探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "add_kacho",
+       "label": "課長承認で申請を登録",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_kacho.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_kacho",
+       "label": "完了を表示（課長）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "申請を登録しました（状態: 申請中）。承認者: {approver}（課長）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.add_kacho.output",
+           "path": "/data/approver"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "add_bucho": [
+       "out"
+      ],
+      "add_kacho": [
+       "out"
+      ],
+      "find_bucho": [
+       "out"
+      ],
+      "find_kacho": [
+       "out"
+      ],
+      "is_large": [
+       "true",
+       "false"
+      ],
+      "reply_bucho": [
+       "out"
+      ],
+      "reply_kacho": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 28.882,
+   "cost": {
+    "chat_micros": 8840,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 8840,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 8840,
+     "usage_micros": 8835,
+     "diff_micros": 5,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app01-claim-submit",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.auto.2.medium",
+   "key": "4347ccaea38dd01e67e91fc4245bd398e5efbe9d1a3fe15295b6144be4b4009d",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_query": 1,
+     "data_schema": 2,
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "経費申請の受付と承認者の割り当て",
+     "edges": [
+      {
+       "from": "pick_level",
+       "from_port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "find_bucho",
+       "to": "create_bucho"
+      },
+      {
+       "from": "create_bucho",
+       "to": "reply_bucho"
+      },
+      {
+       "from": "pick_level",
+       "from_port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_kacho",
+       "to": "create_kacho"
+      },
+      {
+       "from": "create_kacho",
+       "to": "reply_kacho"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "amount": {
+        "title": "金額",
+        "type": "number"
+       },
+       "applicant": {
+        "title": "申請者",
+        "type": "string"
+       },
+       "title": {
+        "title": "件名",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "amount",
+       "applicant"
+      ],
+      "type": "object",
+      "x-order": [
+       "title",
+       "amount",
+       "applicant"
+      ]
+     },
+     "ir_version": 1,
+     "name": "expense-request-intake",
+     "nodes": [
+      {
+       "id": "pick_level",
+       "label": "金額で承認者を選び分け",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "find_bucho",
+       "label": "部長を探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "create_bucho",
+       "label": "申請中の行を作成（部長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_bucho.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_bucho",
+       "label": "結果を表示（部長）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "経費申請「{title}」を受け付けました。承認者: {approver}（部長）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.create_bucho.output",
+           "path": "/data/approver"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "find_kacho",
+       "label": "課長を探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "create_kacho",
+       "label": "申請中の行を作成（課長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_kacho.output",
+          "path": "/items/0/data/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_kacho",
+       "label": "結果を表示（課長）",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "経費申請「{title}」を受け付けました。承認者: {approver}（課長）",
+         "vars": {
+          "approver": {
+           "$from": "nodes.create_kacho.output",
+           "path": "/data/approver"
+          },
+          "title": {
+           "$from": "input",
+           "path": "/title"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "create_bucho": [
+       "out"
+      ],
+      "create_kacho": [
+       "out"
+      ],
+      "find_bucho": [
+       "out"
+      ],
+      "find_kacho": [
+       "out"
+      ],
+      "pick_level": [
+       "true",
+       "false"
+      ],
+      "reply_bucho": [
+       "out"
+      ],
+      "reply_kacho": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "small",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "large",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "boundary",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 26.365,
+   "cost": {
+    "chat_micros": 7924,
+    "run_case_micros": 0,
+    "lines": 4,
+    "usage_missing": 0,
+    "total_micros": 7924,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7924,
+     "usage_micros": 7920,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app03-weekly-summary",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app03-weekly-summary.flow.0.medium",
+   "key": "129cb7a2e3bbca6216c85691874defce30f9b58ca2f84556d92334db34c70237",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 2,
+    "emit_failed": 1,
+    "validation_errors": 1,
+    "validation_codes": {
+     "ir.script_syntax": 1
+    },
+    "steps": 3,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 2,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write",
+      "storage.write"
+     ],
+     "display_name": "週次集計と週報の作成",
+     "edges": [
+      {
+       "from": "week",
+       "to": "reports"
+      },
+      {
+       "from": "reports",
+       "to": "agg"
+      },
+      {
+       "from": "agg",
+       "to": "has_rows"
+      },
+      {
+       "from": "has_rows",
+       "from_port": "true",
+       "to": "save_rows"
+      },
+      {
+       "from": "save_rows",
+       "to": "summary"
+      },
+      {
+       "from": "summary",
+       "to": "save_md"
+      }
+     ],
+     "ir_version": 1,
+     "name": "weekly-report",
+     "nodes": [
+      {
+       "id": "week",
+       "label": "先週の範囲を求める",
+       "params": {
+        "period": "week",
+        "shift": {
+         "amount": -1,
+         "unit": "week"
+        },
+        "tz": "Asia/Tokyo",
+        "week_starts_on": "monday"
+       },
+       "type": "transform.date"
+      },
+      {
+       "id": "reports",
+       "label": "先週の日報を読む",
+       "params": {
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "gte",
+             "value": {
+              "$from": "nodes.week.output",
+              "path": "/start"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "lte",
+             "value": {
+              "$from": "nodes.week.output",
+              "path": "/end"
+             }
+            }
+           }
+          ]
+         },
+         "limit": 200,
+         "select": [
+          "rep",
+          "visits",
+          "prospect"
+         ]
+        },
+        "table": "@table:daily"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "agg",
+       "label": "担当者ごとに集計",
+       "params": {
+        "input": {
+         "items": {
+          "$from": "nodes.reports.output",
+          "path": "/items"
+         },
+         "start": {
+          "$from": "nodes.week.output",
+          "path": "/start"
+         }
+        },
+        "source": {
+         "inline": "function main(input) {\n  const m = {};\n  for (const it of (input.items || [])) {\n    const d = it.data || {};\n    const rep = d.rep && String(d.rep).trim() ? String(d.rep).trim() : '(担当者未入力)';\n    if (!m[rep]) m[rep] = { rep, visits: 0, prospect: 0 };\n    m[rep].visits += Number(d.visits || 0);\n    m[rep].prospect += Number(d.prospect || 0);\n  }\n  const rows = Object.values(m).map(r => ({ week_start: input.start, rep: r.rep, visits: r.visits, prospect: r.prospect }));\n  const lines = rows.map(r => r.rep + ': 訪問 ' + r.visits + ' 件 / 見込み額 ' + r.prospect);\n  return { count: rows.length, rows, summary_table: lines.join('\\n') };\n}"
+        }
+       },
+       "type": "script.run"
+      },
+      {
+       "id": "has_rows",
+       "label": "集計対象があるか",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.agg.output",
+           "path": "/count"
+          },
+          "op": "gt",
+          "right": 0
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "save_rows",
+       "label": "週次集計に追加",
+       "params": {
+        "rows": {
+         "$from": "nodes.agg.output",
+         "path": "/rows"
+        },
+        "table": "@table:weekly"
+       },
+       "type": "data.bulk_upsert"
+      },
+      {
+       "id": "summary",
+       "label": "週報の文章を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の担当者別の先週（{start} の週）の集計から、週報の本文を 5 行以内で作成してください。見出しは不要です。数値は集計どおりに書いてください。\n\n{table}",
+         "vars": {
+          "start": {
+           "$from": "nodes.week.output",
+           "path": "/start"
+          },
+          "table": {
+           "$from": "nodes.agg.output",
+           "path": "/summary_table"
+          }
+         }
+        },
+        "system": "あなたは営業チームの週報を書く担当者です。事実だけを使い、短く分かりやすい日本語の Markdown で書いてください。"
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save_md",
+       "label": "週報を保存",
+       "params": {
+        "content": {
+         "$template": "# 週報（{start} の週）\n\n{body}",
+         "vars": {
+          "body": {
+           "$from": "nodes.summary.output",
+           "path": "/text"
+          },
+          "start": {
+           "$from": "nodes.week.output",
+           "path": "/start"
+          }
+         }
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:weekly_folder",
+        "name": {
+         "$template": "週報-{start}.md",
+         "vars": {
+          "start": {
+           "$from": "nodes.week.output",
+           "path": "/start"
+          }
+         }
+        },
+        "on_name_taken": "add_number"
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "cron": "0 9 * * 1",
+       "kind": "schedule",
+       "tz": "Asia/Tokyo"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "agg": [
+       "out"
+      ],
+      "has_rows": [
+       "true",
+       "false"
+      ],
+      "reports": [
+       "out"
+      ],
+      "save_md": [
+       "out"
+      ],
+      "save_rows": [
+       "out"
+      ],
+      "summary": [
+       "out"
+      ],
+      "week": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_rows",
+        "node_id": "save_rows",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "save_rows",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_rows",
+        "node_id": "save_rows",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "save_rows",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 42.523,
+   "cost": {
+    "chat_micros": 13501,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 13501,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 13501,
+     "usage_micros": 13496,
+     "diff_micros": 5,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app03-weekly-summary",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app03-weekly-summary.app.1.medium",
+   "key": "b4fde7d7f37c9f99272862b5aadd963b4344681c5aefa9c2104c65020c5d848f",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 2,
+    "validation_errors": 2,
+    "validation_codes": {
+     "abeval.no_ir": 2
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write",
+      "storage.write"
+     ],
+     "display_name": "週報の自動作成",
+     "edges": [
+      {
+       "from": "calc",
+       "to": "fetch"
+      },
+      {
+       "from": "fetch",
+       "to": "sum"
+      },
+      {
+       "from": "sum",
+       "to": "upsert"
+      },
+      {
+       "from": "upsert",
+       "to": "report"
+      },
+      {
+       "from": "report",
+       "to": "save"
+      }
+     ],
+     "ir_version": 1,
+     "name": "weekly-sales-report",
+     "nodes": [
+      {
+       "id": "calc",
+       "label": "前の週の月〜日",
+       "params": {
+        "period": "week",
+        "shift": {
+         "amount": -1,
+         "unit": "week"
+        },
+        "tz": "Asia/Tokyo",
+        "week_starts_on": "monday"
+       },
+       "type": "transform.date"
+      },
+      {
+       "id": "fetch",
+       "label": "前の週の日報",
+       "params": {
+        "query": {
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "gte",
+             "value": {
+              "$from": "nodes.calc.output",
+              "path": "/start"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "lte",
+             "value": {
+              "$from": "nodes.calc.output",
+              "path": "/end"
+             }
+            }
+           }
+          ]
+         },
+         "limit": 200,
+         "select": [
+          "rep",
+          "visits",
+          "prospect"
+         ]
+        },
+        "table": "@table:daily"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "sum",
+       "label": "担当者ごとに合計",
+       "params": {
+        "input": {
+         "items": {
+          "$from": "nodes.fetch.output",
+          "path": "/items"
+         },
+         "week_start": {
+          "$from": "nodes.calc.output",
+          "path": "/start"
+         }
+        },
+        "source": {
+         "inline": "function main(input) { const byRep = new Map(); for (const it of input.items) { const rep = it.data.rep || '(未設定)'; const cur = byRep.get(rep) || { visits: 0, prospect: 0 }; cur.visits += Number(it.data.visits || 0); cur.prospect += Number(it.data.prospect || 0); byRep.set(rep, cur); } const rows = [...byRep.entries()].map(([rep, v]) => ({ week_start: input.week_start, rep: rep, visits: v.visits, prospect: v.prospect })); rows.sort((a, b) => (a.rep < b.rep ? -1 : a.rep > b.rep ? 1 : 0)); const summary = rows.map(r => r.rep + ': 訪問 ' + r.visits + ' 件、見込み額 ' + r.prospect).join('\\n'); return { rows: rows, summary: summary }; }"
+        }
+       },
+       "type": "script.run"
+      },
+      {
+       "id": "upsert",
+       "label": "週次集計に書き込む",
+       "params": {
+        "rows": {
+         "$from": "nodes.sum.output",
+         "path": "/rows"
+        },
+        "table": "@table:weekly"
+       },
+       "type": "data.bulk_upsert"
+      },
+      {
+       "id": "report",
+       "label": "週報の文章を作る",
+       "params": {
+        "prompt": {
+         "$template": "以下は {start}〜{end} の担当者別の日報集計です。Markdown の週報を作成してください。見出し（# 週報 {start}〜{end}）、週全体の概要（2〜3 文）、担当者ごとの訪問件数と見込み額の箇条書き、来週への一言。数字は下記の集計どおりに書き、推測で足さないでください。\n\n{summary}",
+         "vars": {
+          "end": {
+           "$from": "nodes.calc.output",
+           "path": "/end"
+          },
+          "start": {
+           "$from": "nodes.calc.output",
+           "path": "/start"
+          },
+          "summary": {
+           "$from": "nodes.sum.output",
+           "path": "/summary"
+          }
+         }
+        },
+        "system": "あなたは営業チームの週報を作成する担当者です。"
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save",
+       "label": "週報を保存",
+       "params": {
+        "content": {
+         "$from": "nodes.report.output",
+         "path": "/text"
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:weekly_folder",
+        "name": {
+         "$template": "週報-{start}.md",
+         "vars": {
+          "start": {
+           "$from": "nodes.calc.output",
+           "path": "/start"
+          }
+         }
+        },
+        "on_name_taken": "add_number"
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "cron": "0 9 * * 1",
+       "kind": "schedule",
+       "tz": "Asia/Tokyo"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "calc": [
+       "out"
+      ],
+      "fetch": [
+       "out"
+      ],
+      "report": [
+       "out"
+      ],
+      "save": [
+       "out"
+      ],
+      "sum": [
+       "out"
+      ],
+      "upsert": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "upsert",
+        "node_id": "upsert",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "upsert",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "upsert",
+        "node_id": "upsert",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "upsert",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 57.577,
+   "cost": {
+    "chat_micros": 21380,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 21380,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 21380,
+     "usage_micros": 21374,
+     "diff_micros": 6,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app03-weekly-summary",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app03-weekly-summary.auto.2.medium",
+   "key": "94674f000ede59e0cacf9f65bc0250df935d85768ef6d6f2613bf62b4641b34f",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write",
+      "storage.write"
+     ],
+     "display_name": "週次営業集計と週報作成",
+     "edges": [
+      {
+       "from": "base",
+       "to": "q"
+      },
+      {
+       "from": "q",
+       "to": "agg"
+      },
+      {
+       "from": "agg",
+       "to": "save_rows"
+      },
+      {
+       "from": "save_rows",
+       "to": "summary"
+      },
+      {
+       "from": "summary",
+       "to": "write"
+      }
+     ],
+     "ir_version": 1,
+     "name": "weekly-sales-summary",
+     "nodes": [
+      {
+       "id": "base",
+       "label": "先週の月曜・日曜を求める",
+       "params": {
+        "period": "week",
+        "shift": {
+         "amount": -1,
+         "unit": "week"
+        },
+        "tz": "Asia/Tokyo",
+        "week_starts_on": "monday"
+       },
+       "type": "transform.date"
+      },
+      {
+       "id": "q",
+       "label": "先週の日報を担当者別に集計",
+       "params": {
+        "query": {
+         "aggregate": [
+          {
+           "field": "visits",
+           "metric": "sum"
+          },
+          {
+           "field": "prospect",
+           "metric": "sum"
+          },
+          {
+           "metric": "count"
+          }
+         ],
+         "filter": {
+          "all": [
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "gte",
+             "value": {
+              "$from": "nodes.base.output",
+              "path": "/start"
+             }
+            }
+           },
+           {
+            "cmp": {
+             "field": "report_date",
+             "op": "lte",
+             "value": {
+              "$from": "nodes.base.output",
+              "path": "/end"
+             }
+            }
+           }
+          ]
+         },
+         "group_by": [
+          "rep"
+         ]
+        },
+        "table": "@table:daily"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "agg",
+       "label": "担当者別の行と合計を組み立てる",
+       "params": {
+        "input": {
+         "end": {
+          "$from": "nodes.base.output",
+          "path": "/end"
+         },
+         "groups": {
+          "$from": "nodes.q.output",
+          "path": "/groups"
+         },
+         "start": {
+          "$from": "nodes.base.output",
+          "path": "/start"
+         }
+        },
+        "source": {
+         "inline": "function main(input) {\n  const groups = Array.isArray(input.groups) ? input.groups : [];\n  const pickNum = (g, re) => { const k = Object.keys(g).find(k => re.test(k) && typeof g[k] === 'number'); return k ? g[k] : 0; };\n  const rows = groups.map(g => {\n    const rep = g.rep ?? (g.group && g.group.rep) ?? Object.values(g).find(v => typeof v === 'string') ?? '';\n    return { week_start: input.start, rep: rep, visits: pickNum(g, /visit/i), prospect: pickNum(g, /prospect/i) };\n  });\n  const totals = rows.reduce((t, r) => ({ visits: t.visits + r.visits, prospect: t.prospect + r.prospect }), { visits: 0, prospect: 0 });\n  const table = rows.map(r => '- ' + r.rep + ': 訪問 ' + r.visits + '件、見込み額 ' + r.prospect + '円').join('\\n') || '（先週の日報はありません）';\n  return { rows: rows, totals: { visits: totals.visits, prospect: totals.prospect, reps: rows.length }, table: table, week_start: input.start, week_end: input.end };\n}"
+        }
+       },
+       "type": "script.run"
+      },
+      {
+       "id": "save_rows",
+       "label": "週次集計に登録",
+       "params": {
+        "abort_on_invalid": true,
+        "rows": {
+         "$from": "nodes.agg.output",
+         "path": "/rows"
+        },
+        "table": "@table:weekly"
+       },
+       "type": "data.bulk_upsert"
+      },
+      {
+       "id": "summary",
+       "label": "週報の文章を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の営業集計をもとに、週報の文章を Markdown で作成してください。見出し、全体の合計、担当者別の要点、来週に向けた一言の順にまとめてください。数値は必ず下記の値をそのまま使い、推測で数値を足さないでください。\n\n対象期間: {start} 〜 {end}\n全体: 訪問件数 {visits}件、見込み額 {prospect}円、担当者 {reps}名\n担当者別:\n{table}",
+         "vars": {
+          "end": {
+           "$from": "nodes.base.output",
+           "path": "/end"
+          },
+          "prospect": {
+           "$from": "nodes.agg.output",
+           "path": "/totals/prospect"
+          },
+          "reps": {
+           "$from": "nodes.agg.output",
+           "path": "/totals/reps"
+          },
+          "start": {
+           "$from": "nodes.base.output",
+           "path": "/start"
+          },
+          "table": {
+           "$from": "nodes.agg.output",
+           "path": "/table"
+          },
+          "visits": {
+           "$from": "nodes.agg.output",
+           "path": "/totals/visits"
+          }
+         }
+        }
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "write",
+       "label": "週報を保存",
+       "params": {
+        "content": {
+         "$from": "nodes.summary.output",
+         "path": "/text"
+        },
+        "content_type": "text/markdown",
+        "folder": "@folder:weekly_folder",
+        "name": {
+         "$template": "週報-{start}.md",
+         "vars": {
+          "start": {
+           "$from": "nodes.base.output",
+           "path": "/start"
+          }
+         }
+        }
+       },
+       "type": "storage.write"
+      }
+     ],
+     "triggers": [
+      {
+       "cron": "0 9 * * 1",
+       "kind": "schedule",
+       "tz": "Asia/Tokyo"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "agg": [
+       "out"
+      ],
+      "base": [
+       "out"
+      ],
+      "q": [
+       "out"
+      ],
+      "save_rows": [
+       "out"
+      ],
+      "summary": [
+       "out"
+      ],
+      "write": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_rows",
+        "node_id": "save_rows",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "save_rows",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "last_week",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "weekly {}: 0 行（期待 2）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '佐藤', 'week_start': '2026-11-02', 'visits': Decimal('9'), 'prospect': Decimal('150000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "weekly: {'rep': '鈴木', 'week_start': '2026-11-02', 'visits': Decimal('6'), 'prospect': Decimal('420000')} に合う行が無い（[]）"
+       },
+       {
+        "kind": "files:count",
+        "ok": false,
+        "detail": "weekly_folder/^週報-2026-11-02( \\(\\d+\\))?\\.md$: 0 件（期待 1・増えたもの []）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_rows",
+        "node_id": "save_rows",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.bulk_upsert: 1 行目に未知のキー 'prospect' があります（id / rev / key / data のみ）",
+         "node_id": "save_rows",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 35.478,
+   "cost": {
+    "chat_micros": 9351,
+    "run_case_micros": 0,
+    "lines": 4,
+    "usage_missing": 0,
+    "total_micros": 9351,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 9351,
+     "usage_micros": 9347,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app11-checkout",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app11-checkout.flow.0.medium",
+   "key": "3f77a04db0c22f6a2a495cbeaf41bea7c2c372e1cbf17d9a1d1319d10455f6c0",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 3,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "備品を貸し出す",
+     "edges": [
+      {
+       "from": "find",
+       "to": "has_item"
+      },
+      {
+       "from": "has_item",
+       "from_port": "true",
+       "to": "is_stock"
+      },
+      {
+       "from": "has_item",
+       "from_port": "false",
+       "to": "reply_notfound"
+      },
+      {
+       "from": "is_stock",
+       "from_port": "true",
+       "to": "to_loaned"
+      },
+      {
+       "from": "is_stock",
+       "from_port": "false",
+       "to": "reply_busy"
+      },
+      {
+       "from": "to_loaned",
+       "to": "set_borrower"
+      },
+      {
+       "from": "set_borrower",
+       "to": "add_loan"
+      },
+      {
+       "from": "add_loan",
+       "to": "reply_ok"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "borrower": {
+        "title": "借りる人",
+        "type": "string"
+       },
+       "code": {
+        "title": "管理番号",
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "borrower"
+      ],
+      "type": "object",
+      "x-order": [
+       "code",
+       "borrower"
+      ]
+     },
+     "ir_version": 1,
+     "name": "equipment-loan-checkout",
+     "nodes": [
+      {
+       "id": "find",
+       "label": "管理番号で備品を探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 2
+        },
+        "table": "@table:equipment"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "has_item",
+       "label": "備品が見つかったか",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/id"
+          },
+          "op": "exists"
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "is_stock",
+       "label": "状態が在庫か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "path": "/items/0/data/status"
+          },
+          "op": "eq",
+          "right": "在庫"
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "to_loaned",
+       "label": "状態を貸出中にする",
+       "params": {
+        "expected_rev": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/rev"
+        },
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "table": "@table:equipment",
+        "to": "貸出中"
+       },
+       "type": "data.transition"
+      },
+      {
+       "id": "set_borrower",
+       "label": "借りている人を登録",
+       "params": {
+        "expected_rev": {
+         "$from": "nodes.to_loaned.output",
+         "path": "/rev"
+        },
+        "patch": {
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         }
+        },
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "table": "@table:equipment"
+       },
+       "type": "data.record.update"
+      },
+      {
+       "id": "add_loan",
+       "label": "貸出記録を追加",
+       "params": {
+        "data": {
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         },
+         "code": {
+          "$from": "input",
+          "path": "/code"
+         },
+         "loaned_on": {
+          "$from": "run",
+          "path": "/date"
+         }
+        },
+        "table": "@table:loans"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_ok",
+       "label": "完了を返す",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "管理番号 {code} の備品を {borrower} さんに貸し出しました（貸出日 {date}）。",
+         "vars": {
+          "borrower": {
+           "$from": "input",
+           "path": "/borrower"
+          },
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          },
+          "date": {
+           "$from": "run",
+           "path": "/date"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "reply_busy",
+       "label": "貸出中を返す",
+       "params": {
+        "format": "text",
+        "tone": "warning",
+        "value": {
+         "$template": "管理番号 {code} の備品は在庫になく、貸出中です。変更していません。",
+         "vars": {
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "reply_notfound",
+       "label": "見つからないを返す",
+       "params": {
+        "format": "text",
+        "tone": "error",
+        "value": {
+         "$template": "管理番号 {code} の備品は見つかりませんでした。",
+         "vars": {
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "add_loan": [
+       "out"
+      ],
+      "find": [
+       "out"
+      ],
+      "has_item": [
+       "true",
+       "false"
+      ],
+      "is_stock": [
+       "true",
+       "false"
+      ],
+      "reply_busy": [
+       "out"
+      ],
+      "reply_notfound": [
+       "out"
+      ],
+      "reply_ok": [
+       "out"
+      ],
+      "set_borrower": [
+       "out"
+      ],
+      "to_loaned": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'name': 'プロジェクター', 'status': '貸出中'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'name': 'プロジェクター', 'status': '貸出中'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 32.191,
+   "cost": {
+    "chat_micros": 11039,
+    "run_case_micros": 0,
+    "lines": 5,
+    "usage_missing": 0,
+    "total_micros": 11039,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 11039,
+     "usage_micros": 11035,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app11-checkout",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app11-checkout.app.1.medium",
+   "key": "a5b64ea5ccec2d8e705a48734eaba7baa0cd21e5e0494ffeacdbc8de5ca78786",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 3,
+    "validation_errors": 3,
+    "validation_codes": {
+     "abeval.no_ir": 3
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read"
+     ],
+     "display_name": "備品の貸し出し",
+     "edges": [],
+     "input_schema": {
+      "properties": {
+       "borrower": {
+        "type": "string"
+       },
+       "code": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "borrower"
+      ],
+      "type": "object"
+     },
+     "ir_version": 1,
+     "name": "equipment-loan",
+     "nodes": [
+      {
+       "id": "find",
+       "label": "備品を管理番号で探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:equipment"
+       },
+       "type": "data.query"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 2
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [
+       {
+        "code": "flow_through",
+        "node_id": null,
+        "detail": "入力 'borrower' をどの値式も読まない（下流に届かない）"
+       }
+      ],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.record.create がありません"
+       },
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       },
+       {
+        "code": "node_any_of",
+        "node_id": null,
+        "detail": "['control.branch', 'control.switch'] のどれもありません"
+       },
+       {
+        "code": "node_any_of",
+        "node_id": null,
+        "detail": "['data.record.update', 'data.record.upsert'] のどれもありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "find": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": false,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行が無い（[{'code': 'E-01', 'name': 'プロジェクター', 'status': '在庫'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "loans {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": true,
+    "s4": false,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 code='E-01' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 borrower='松本' が LLM・行・ファイルに届かない"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行が無い（[{'code': 'E-01', 'name': 'プロジェクター', 'status': '在庫'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "loans {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 50.008,
+   "cost": {
+    "chat_micros": 20047,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 20047,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 20047,
+     "usage_micros": 20042,
+     "diff_micros": 5,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  },
+  {
+   "exp": "e0b",
+   "mode": "b",
+   "label": "vn",
+   "task": "app11-checkout",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app11-checkout.auto.2.medium",
+   "key": "a8adffba5494a0fb6de3c1722b16490dabeb6a41c95eb6da54b47d798c136bc6",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 1,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 2,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "備品の貸出受付",
+     "edges": [
+      {
+       "from": "find",
+       "to": "has_item"
+      },
+      {
+       "from": "has_item",
+       "from_port": "true",
+       "to": "is_zaiko"
+      },
+      {
+       "from": "has_item",
+       "from_port": "false",
+       "to": "reply_notfound"
+      },
+      {
+       "from": "is_zaiko",
+       "from_port": "true",
+       "to": "transition"
+      },
+      {
+       "from": "is_zaiko",
+       "from_port": "false",
+       "to": "reply_busy"
+      },
+      {
+       "from": "transition",
+       "to": "set_borrower"
+      },
+      {
+       "from": "set_borrower",
+       "to": "log"
+      },
+      {
+       "from": "log",
+       "to": "reply_ok"
+      }
+     ],
+     "input_schema": {
+      "properties": {
+       "borrower": {
+        "title": "借りる人",
+        "type": "string"
+       },
+       "code": {
+        "title": "管理番号",
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "borrower"
+      ],
+      "type": "object",
+      "x-order": [
+       "code",
+       "borrower"
+      ]
+     },
+     "ir_version": 1,
+     "name": "equipment-checkout",
+     "nodes": [
+      {
+       "id": "find",
+       "label": "備品を管理番号で探す",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "code",
+           "op": "eq",
+           "value": {
+            "$from": "input",
+            "path": "/code"
+           }
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:equipment"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "has_item",
+       "label": "備品が見つかったか",
+       "params": {
+        "condition": {
+         "not": {
+          "cmp": {
+           "left": {
+            "$from": "nodes.find.output",
+            "default": null,
+            "path": "/items/0/id"
+           },
+           "op": "is_null"
+          }
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "is_zaiko",
+       "label": "状態が在庫か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.find.output",
+           "default": null,
+           "path": "/items/0/data/status"
+          },
+          "op": "eq",
+          "right": "在庫"
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "transition",
+       "label": "状態を貸出中に進める",
+       "params": {
+        "expected_rev": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/rev"
+        },
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
+        "table": "@table:equipment",
+        "to": "貸出中"
+       },
+       "type": "data.transition"
+      },
+      {
+       "id": "set_borrower",
+       "label": "借りている人を入力し直す",
+       "params": {
+        "patch": {
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         }
+        },
+        "record": {
+         "$from": "nodes.transition.output",
+         "path": "/id"
+        },
+        "table": "@table:equipment"
+       },
+       "type": "data.record.update"
+      },
+      {
+       "id": "log",
+       "label": "貸出記録を追加",
+       "params": {
+        "data": {
+         "borrower": {
+          "$from": "input",
+          "path": "/borrower"
+         },
+         "code": {
+          "$from": "input",
+          "path": "/code"
+         },
+         "loaned_on": {
+          "$from": "run",
+          "path": "/date"
+         }
+        },
+        "table": "@table:loans"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "reply_ok",
+       "label": "完了を返す",
+       "params": {
+        "format": "text",
+        "tone": "success",
+        "value": {
+         "$template": "{code} を {borrower} さんに貸し出しました。",
+         "vars": {
+          "borrower": {
+           "$from": "input",
+           "path": "/borrower"
+          },
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "reply_busy",
+       "label": "貸出中を返す",
+       "params": {
+        "format": "text",
+        "tone": "warning",
+        "value": {
+         "$template": "{code} は貸出中のため、貸し出しできません。",
+         "vars": {
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      },
+      {
+       "id": "reply_notfound",
+       "label": "見つからないを返す",
+       "params": {
+        "format": "text",
+        "tone": "error",
+        "value": {
+         "$template": "管理番号 {code} の備品が見つかりません。",
+         "vars": {
+          "code": {
+           "$from": "input",
+           "path": "/code"
+          }
+         }
+        }
+       },
+       "type": "workflow.reply"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": {
+      "find": [
+       "out"
+      ],
+      "has_item": [
+       "true",
+       "false"
+      ],
+      "is_zaiko": [
+       "true",
+       "false"
+      ],
+      "log": [
+       "out"
+      ],
+      "reply_busy": [
+       "out"
+      ],
+      "reply_notfound": [
+       "out"
+      ],
+      "reply_ok": [
+       "out"
+      ],
+      "set_borrower": [
+       "out"
+      ],
+      "transition": [
+       "out"
+      ]
+     }
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'name': 'プロジェクター', 'status': '貸出中'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "available",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "equipment: {'status': '貸出中', 'borrower': '松本'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'name': 'プロジェクター', 'status': '貸出中'}]）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "busy",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態は見ない（['succeeded']）"
+       },
+       {
+        "kind": "rows:unchanged",
+        "ok": true,
+        "detail": "equipment: 実行の前と同じ"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "loans {}: 0 行（期待 0）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 30.007,
+   "cost": {
+    "chat_micros": 8465,
+    "run_case_micros": 0,
+    "lines": 4,
+    "usage_missing": 0,
+    "total_micros": 8465,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 8465,
+     "usage_micros": 8461,
+     "diff_micros": 4,
+     "ok": true
+    }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
+  }
+ ],
+ "out_of_scope": [],
+ "cost": {
+  "exp_usd": 0.128173
+ },
+ "aggregates": [
+  {
+   "condition": "vn/b/medium",
+   "label": "vn",
+   "mode": "b",
+   "effort": "medium",
+   "max_steps": null,
+   "trials": 12,
+   "tasks": 4,
+   "s1": {
+    "n": 12,
+    "true": 12,
+    "rate": 1.0
+   },
+   "s2s": {
+    "n": 12,
+    "true": 1,
+    "rate": 0.08333333333333333
+   },
+   "s2w": {
+    "n": 12,
+    "true": 0,
+    "rate": 0.0
+   },
+   "s2d": {
+    "n": 12,
+    "true": 4,
+    "rate": 0.3333333333333333
+   },
+   "s3": {
+    "n": 12,
+    "true": 9,
+    "rate": 0.75
+   },
+   "s5": {
+    "n": 12,
+    "true": 11,
+    "rate": 0.9166666666666666
+   },
+   "headline": {
+    "n": 12,
+    "true": 8,
+    "rate": 0.6666666666666666
+   },
+   "headline_ci": {
+    "mean": 0.6666666666666666,
+    "lo": 0.25,
+    "hi": 1.0,
+    "n_tasks": 4
+   },
+   "pass_at_k": {
+    "1": 0.6666666666666667,
+    "2": 0.75,
+    "3": 0.75
+   },
+   "cost_usd": 0.128173,
+   "cost_per_completed_task_usd": 0.042724333333333336,
+   "mean_secs": 31.008750000000003,
+   "retries": 0,
+   "s8": {
+    "asked": 0,
+    "claimed_without_save": 0,
+    "no_emit": 0,
+    "unknown": 0
+   },
+   "s4": {
+    "n": 12,
+    "true": 8,
+    "rate": 0.6666666666666666
+   },
+   "s6": {
+    "emit_count": 1.6666666666666667,
+    "validation_errors": 0.5,
+    "steps": 2.8333333333333335,
+    "hit_step_limit": {
+     "n": 12,
+     "true": 1,
+     "rate": 0.08333333333333333
+    },
+    "emit_loaded": {
+     "n": 12,
+     "true": 12,
+     "rate": 1.0
+    }
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "serious": 0,
+    "tools": []
+   }
+  }
+ ],
+ "failures": {
+  "validation": {
+   "abeval.no_ir": 5,
+   "ir.script_syntax": 1
+  },
+  "lint": {},
+  "task": {
+   "flow_through": 1
+  },
+  "dynamic": {
+   "unexpected_status": 3,
+   "not_delivered": 2
+  },
+  "steps_stub": {
+   "invalid": 3
+  },
+  "steps_runs": {
+   "invalid": 3
+  },
+  "steps_by_node_stub": {
+   "data.bulk_upsert/invalid": 3
+  },
+  "steps_by_node_runs": {
+   "data.bulk_upsert/invalid": 3
+  }
+ },
+ "regrades": [
+  {
+   "at": "2026-11-09T12:34:08+00:00",
+   "grader": 11,
+   "from_grader": {
+    "grader": 7,
+    "ir_lint_schema": 3,
+    "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+   },
+   "stub_runs": true,
+   "label": "vn",
+   "trials": 12,
+   "stub_trials": 12,
+   "changed_headlines": 0
+  }
+ ]
+}

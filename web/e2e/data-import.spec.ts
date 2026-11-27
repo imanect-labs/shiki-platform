@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { shiftJis } from "./fixtures/shift-jis";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 業務データの CSV 取込（監査 B3-6・一括取込の HTTP API）: テーブル画面から CSV を選んで取り込み、
 /// 検証 → 適用の進捗と、取り込めなかった行の理由を見せる。合格した行は表に出る。
@@ -24,7 +29,9 @@ async function createTable(page: Page): Promise<string> {
     },
   });
   expect(res.status(), await res.text()).toBe(201);
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
+  return id;
 }
 
 test("CSV を取り込み、進捗と取り込めなかった行を見せる", async ({ page }) => {
@@ -71,6 +78,75 @@ test("CSV を取り込み、進捗と取り込めなかった行を見せる", a
   await expect(page.getByTestId("import-progress")).toHaveAttribute("data-status", "done");
   await page.getByTestId("import-again").click();
   await expect(page.getByTestId("import-drop")).toBeVisible();
+});
+
+const SHOTS = process.env.E2E_SHOTS_DIR;
+
+/// 日本語の Windows の Excel が既定で保存する Shift_JIS の CSV も取り込める（GAP-45）。以前は「UTF-8 で保存して
+/// ください」で断っていた。ファイルを選ぶ欄は、読める文字コードを言う。
+test("Shift_JIS の CSV を取り込む（GAP-45）", async ({ browser, page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const tableId = await createTable(page);
+  await page.goto(`/data/${tableId}`);
+  await expect(page.getByTestId("data-grid")).toBeVisible();
+  await page.getByTestId("import-open").click();
+  const dialog = page.getByTestId("import-dialog");
+  await expect(dialog.getByText("またはここにドロップ（UTF-8 か Shift_JIS・最大 32 MB）")).toBeVisible();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/data-import-encodings-pc.png` });
+
+  const bytes = shiftJis("件名,金額,状態\n出張旅費,12000,申請中\n交通費,450,承認\n");
+  expect(() => new TextDecoder("utf-8", { fatal: true }).decode(bytes)).toThrow();
+  await dialog.getByLabel("取り込む CSV ファイル").setInputFiles({
+    name: "経費-sjis.csv",
+    mimeType: "application/vnd.ms-excel",
+    buffer: bytes,
+  });
+  const started = page.waitForResponse(
+    (r) => r.url().includes(`/data/tables/${tableId}/imports/csv`) && r.request().method() === "POST",
+  );
+  await page.getByTestId("import-submit").click();
+  expect((await started).status()).toBe(202);
+  const progress = page.getByTestId("import-progress");
+  await expect(progress).toHaveAttribute("data-status", "done", { timeout: 60_000 });
+  await expect(progress.getByText("2 行を取り込みました。")).toBeVisible();
+  await page.getByTestId("import-close").click();
+  await expect(page.getByTestId("data-count")).toHaveText("2 件");
+  // 取り込んだ値は文字化けしていない（グリッドは canvas なので、サーバーの行で確かめる。画面は撮って目で見る）。
+  // data-loaded は読み込んだ回数（閉じたときに読み直すので 1 とは限らない）。
+  await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", /^[1-9]\d*$/);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/data-import-sjis-grid-pc.png` });
+  const rows = await page.request.get(`/api/data/tables/${tableId}/records`);
+  expect(rows.ok(), await rows.text()).toBeTruthy();
+  const items = ((await rows.json()) as { items: { data: { name?: string; status?: string } }[] }).items
+    .map((r) => [r.data.name, r.data.status])
+    .sort();
+  expect(items).toEqual([
+    ["交通費", "承認"],
+    ["出張旅費", "申請中"],
+  ]);
+
+  const phoneCtx = await browser.newContext({
+    storageState: await page.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 3,
+    ignoreHTTPSErrors: true,
+  });
+  try {
+    const phone = await phoneCtx.newPage();
+    await phone.goto(`/data/${tableId}`);
+    await phone.getByTestId("import-open").click();
+    const phoneDialog = phone.getByTestId("import-dialog");
+    // 直前の取込の結果は sessionStorage にあるので、別の文脈のスマホではファイルを選ぶ欄から始まる。
+    await expect(phoneDialog.getByText("またはここにドロップ（UTF-8 か Shift_JIS・最大 32 MB）")).toBeVisible();
+    expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/data-import-encodings-phone.png` });
+  } finally {
+    await phoneCtx.close();
+  }
 });
 
 test("見出しに無い列は取込を始めずに理由を出す", async ({ page }) => {

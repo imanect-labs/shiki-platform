@@ -60,12 +60,14 @@ export function NodeRow({
         drop.over && DROP_OVER,
         LIST_GRID,
       )}
+      data-node-id={node.id}
       {...longPress}
       {...(dnd ? dragProps(node, setDragging) : {})}
       {...drop.props}
     >
       <button
         type="button"
+        data-node-primary
         onClick={primary}
         className="flex min-w-0 items-center gap-3.5 text-left outline-none focus-visible:underline"
       >

@@ -23,6 +23,7 @@
 mod ack;
 mod delivery;
 mod gc;
+mod origin;
 mod stream;
 
 pub use ack::{ack_consumers, register_ack_consumer, unregister_ack_consumer, RAG_ACK_CONSUMER};
@@ -36,6 +37,7 @@ pub use gc::{
     gc_delivered, gc_delivered_registered, outbox_backlog, ConsumerLag, HeadBlocker, OutboxBacklog,
     DEFAULT_GC_BATCH,
 };
+pub use origin::{write_origins, WriteOrigin, ORIGIN_RUN_KEY};
 pub use stream::{
     lock_consumer_seq, mark_delivered_seq, private_payloads, stream_bounds, stream_entries_after,
     undelivered_table_events, StreamBounds, StreamEntry,
@@ -59,6 +61,13 @@ pub enum WriteOp {
     Move,
     Delete,
     Restore,
+    /// 社内文書の検索への取り込み直しの依頼（内容もメタも変わらない・D-126・GAP-51）。
+    ///
+    /// 取り込みの記録が無いファイル（検索を有効にする前に置いた・前の版の不具合で取り込みを飛ばした）と、取り込みに
+    /// 失敗したファイルを、いまの内容のバージョンで取り込み直す。積むのは社内文書の検索（`rag`）で、読むのも取り込みの
+    /// relay だけ。ほかの consumer（ワークフローのきっかけ・ミニアプリの関数・購読）は `op` を許可した値で絞るので、
+    /// このイベントは読み飛ばす（ファイルの保存のきっかけにならない）。
+    Reindex,
 }
 
 impl WriteOp {
@@ -70,6 +79,7 @@ impl WriteOp {
             WriteOp::Move => "move",
             WriteOp::Delete => "delete",
             WriteOp::Restore => "restore",
+            WriteOp::Reindex => "reindex",
         }
     }
 }
@@ -86,6 +96,8 @@ pub struct WriteEvent {
 }
 
 /// 既存トランザクション上で 1 件発行する（書込と同一 txn で原子的に outbox へ入れる）。
+///
+/// consumer 非公開部には書込の由来の run の印だけを載せる（[`origin`]・run の書込でなければ `null`）。
 pub async fn emit_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -93,10 +105,11 @@ pub async fn emit_on(
     trace_id: Option<&str>,
 ) -> Result<(), StorageError> {
     let payload_str = event.payload.to_string();
+    let private_str = origin::with_origin(ctx, None).to_string();
     sqlx::query(
         "INSERT INTO storage_event_outbox \
-         (org, tenant_id, node_id, version, op, actor, trace_id, payload) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)",
+         (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)",
     )
     .bind(ctx.org())
     .bind(ctx.tenant_id())
@@ -106,6 +119,7 @@ pub async fn emit_on(
     .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&payload_str)
+    .bind(&private_str)
     .execute(conn)
     .await?;
     Ok(())
@@ -115,7 +129,8 @@ pub async fn emit_on(
 ///
 /// `private_payload` は `storage_event_outbox.private_payload` へ入り、**汎用の consumer
 /// （[`claim`] / [`claim_undelivered`] / [`peek_app_events_after`]）は読まない**。購読ストリームの
-/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。
+/// before 判定の旧値など、外へ出してはならない材料だけを置く（Phase 15 Task 15.6）。書込の由来の run の印は
+/// ここで必ず足す（[`origin`]・材料の無い件も印だけの非公開部を持つ）。
 pub async fn emit_many_on(
     conn: &mut PgConnection,
     ctx: &AuthContext,
@@ -129,13 +144,13 @@ pub async fn emit_many_on(
     let mut versions = Vec::with_capacity(events.len());
     let mut ops = Vec::with_capacity(events.len());
     let mut payloads = Vec::with_capacity(events.len());
-    let mut privates: Vec<Option<String>> = Vec::with_capacity(events.len());
+    let mut privates: Vec<String> = Vec::with_capacity(events.len());
     for (e, p) in events {
         node_ids.push(e.node_id);
         versions.push(e.version);
         ops.push(e.op.as_str().to_string());
         payloads.push(e.payload.to_string());
-        privates.push(p.as_ref().map(Value::to_string));
+        privates.push(origin::with_origin(ctx, p.as_ref()).to_string());
     }
     sqlx::query(
         "INSERT INTO storage_event_outbox \
@@ -180,25 +195,50 @@ pub struct OutboxEvent {
     pub system: bool,
 }
 
+/// [`claim`] と [`claim_tenant`] の SQL（`$1` は件数・`$filter` は未処理の条件に足す絞り込み）。
+macro_rules! claim_sql {
+    ($filter:literal) => {
+        concat!(
+            "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                    o.payload, o.created_at, coalesce(n.system, false) AS system \
+             FROM storage_event_outbox o \
+             LEFT JOIN node n ON n.id = o.node_id \
+             WHERE o.processed_at IS NULL ",
+            $filter,
+            "ORDER BY o.id \
+             FOR UPDATE OF o SKIP LOCKED \
+             LIMIT $1"
+        )
+    };
+}
+
 /// 未処理イベントを FIFO で `limit` 件まで取り出す（**呼び出し側の txn 上で**）。
 ///
 /// `FOR UPDATE SKIP LOCKED` で同時消費者が同じ行を二重に掴まないようにする。掴んだ行は
 /// 同一 txn 内で処理 → [`mark_processed`] → commit する。commit 前に失敗すればロックが解放され
 /// **未処理のまま再配信**される（at-least-once）。
 pub async fn claim(conn: &mut PgConnection, limit: i64) -> Result<Vec<OutboxEvent>, StorageError> {
-    let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
-                o.payload, o.created_at, coalesce(n.system, false) AS system \
-         FROM storage_event_outbox o \
-         LEFT JOIN node n ON n.id = o.node_id \
-         WHERE o.processed_at IS NULL \
-         ORDER BY o.id \
-         FOR UPDATE OF o SKIP LOCKED \
-         LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(conn)
-    .await?;
+    let rows: Vec<OutboxRow> = sqlx::query_as(claim_sql!(""))
+        .bind(limit)
+        .fetch_all(conn)
+        .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
+/// [`claim`] を 1 テナントのイベントに絞る（ほかのテナントの未処理のイベントは掴まない）。
+///
+/// 本番の消費者は全テナントを [`claim`] で流す。これは、共有のデータベースで relay を自分で回す結合テストが、
+/// ほかのテストのテナントのイベントを処理済みにしないために使う（BUG-159）。
+pub async fn claim_tenant(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    let rows: Vec<OutboxRow> = sqlx::query_as(claim_sql!("AND o.tenant_id = $2 "))
+        .bind(limit)
+        .bind(tenant_id)
+        .fetch_all(conn)
+        .await?;
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 
@@ -265,6 +305,54 @@ pub async fn peek_app_events_after(
     .bind(limit.clamp(1, 500))
     .fetch_all(pool)
     .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
+/// テーブル（`record_id` を渡せばその行）のデータ変更のイベント（`data.record.changed` と
+/// `data.record.transitioned`）のうち、位置が `after_id` より後で版が `after_version` より後のものを id 順に
+/// 最大 `limit` 件読む（読み取り専用・配送状態に触れない・配送済みかを問わない）。
+///
+/// ワークフローの wait(event) の受付の突合（BUG-42）が、購読の commit より先に配送された変更を引き直すのに
+/// 使う。保持期間の GC で消えたイベントは返らない。event_type / table_id は列に写してある（migration 0115・
+/// #1074）。2 種とも索引 `storage_event_outbox_table_change_idx`（tenant_id, payload_table_id, payload_event_type, id）
+/// を id の順にたどれるよう、列の `=` で引く（RLS の下でも jsonb の取り出しは索引の条件に使えない）。
+#[allow(clippy::too_many_arguments)]
+pub async fn data_change_events_after(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    table_id: Uuid,
+    record_id: Option<Uuid>,
+    after_id: i64,
+    after_version: i64,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    const COLS: &str =
+        "o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                        o.payload, o.created_at";
+    const MATCH: &str = "o.tenant_id = $1 AND o.payload_table_id = $2 \
+                         AND ($3::text IS NULL OR o.payload ->> 'record_id' = $3) \
+                         AND o.id > $4 AND o.version > $5";
+    // tenant-sql: allow(tenant 条件は MATCH の o.tenant_id = $1 にあり format! で差し込む・字句の誤検知)
+    let sql = format!(
+        "SELECT * FROM ( \
+           (SELECT {COLS} FROM storage_event_outbox o \
+             WHERE o.payload_event_type = 'data.record.changed' AND {MATCH} \
+             ORDER BY o.id LIMIT $6) \
+           UNION ALL \
+           (SELECT {COLS} FROM storage_event_outbox o \
+             WHERE o.payload_event_type = 'data.record.transitioned' AND {MATCH} \
+             ORDER BY o.id LIMIT $6) \
+         ) e ORDER BY e.id LIMIT $6"
+    );
+    let rows: Vec<OutboxRow> = sqlx::query_as(&sql)
+        .bind(tenant_id)
+        .bind(table_id.hyphenated().to_string())
+        .bind(record_id.map(|r| r.hyphenated().to_string()))
+        .bind(after_id)
+        .bind(after_version)
+        .bind(limit.max(0))
+        .fetch_all(conn)
+        .await?;
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 

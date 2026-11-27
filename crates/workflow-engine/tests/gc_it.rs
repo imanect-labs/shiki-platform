@@ -423,3 +423,98 @@ async fn journal_purge_reaches_past_a_full_batch_of_live_runs() {
     .unwrap();
     assert_eq!(alive_left, 2500, "生存 run の journal は 1 件も消さない");
 }
+
+/// ワークフローを 1 件作る（決定キャッシュの GC が artifact の有無を見るので実在が要る）。`deleted` なら論理削除済み。
+async fn create_workflow_artifact(pool: &PgPool, tenant: &str, deleted: bool) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO artifact (tenant_id, id, org, kind, name, owner, deleted_at) \
+         VALUES ($1, $2, 'org', 'workflow', $3, 'u:1', CASE WHEN $4 THEN now() END)",
+    )
+    .bind(tenant)
+    .bind(id)
+    .bind(format!("gc-{id}"))
+    .bind(deleted)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+/// 決定キャッシュの行を 1 件置く（`created_days_ago` 日前に書き、`expires_in_secs` 秒後に期限が切れる）。
+async fn put_decision(
+    pool: &PgPool,
+    tenant: &str,
+    workflow: Uuid,
+    created_days_ago: i32,
+    expires_in_secs: f64,
+) -> Vec<u8> {
+    let key = Uuid::new_v4().as_bytes().repeat(2);
+    sqlx::query(
+        "INSERT INTO llm_decision_cache \
+           (tenant_id, org, workflow_id, cache_key, resolved_model, response, created_at, expires_at) \
+         VALUES ($1, 'org', $2, $3, 'stub-decider/v1', '{}'::jsonb, \
+                 now() - make_interval(days => $4), now() + make_interval(secs => $5))",
+    )
+    .bind(tenant)
+    .bind(workflow)
+    .bind(&key)
+    .bind(created_days_ago)
+    .bind(expires_in_secs)
+    .execute(pool)
+    .await
+    .unwrap();
+    key
+}
+
+async fn decision_keys(pool: &PgPool, tenant: &str) -> Vec<Vec<u8>> {
+    sqlx::query_scalar("SELECT cache_key FROM llm_decision_cache WHERE tenant_id = $1")
+        .bind(tenant)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// 判定の答え（決定キャッシュ）を実行履歴の保持期間を超えて残さない: 期限切れ・保持期間より前に書いた行
+/// （ノードの期限が保持期間より長くても）・ワークフローが無い行（論理削除・物理削除）を GC が消し、期限内の
+/// 生きたワークフローの行だけを残す。ワークフローを論理削除すると、その行はトリガが同じ TX で消す。
+#[tokio::test]
+async fn decision_cache_does_not_outlive_retention_or_its_workflow() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = create_tenant(&pool, 7).await;
+    let live = create_workflow_artifact(&pool, &tenant, false).await;
+    let deleted = create_workflow_artifact(&pool, &tenant, true).await;
+    let month = 30.0 * 86_400.0;
+
+    let keep = put_decision(&pool, &tenant, live, 0, month).await;
+    put_decision(&pool, &tenant, live, 0, -60.0).await; // 期限切れ
+    put_decision(&pool, &tenant, live, 8, month).await; // 保持期間（7 日）より前に書いた（期限は 30 日）
+    put_decision(&pool, &tenant, deleted, 0, month).await; // ワークフローを消した後に書かれた
+    put_decision(&pool, &tenant, Uuid::new_v4(), 0, month).await; // ワークフローが無い
+    assert_eq!(decision_keys(&pool, &tenant).await.len(), 5);
+
+    store.purge_tenant_history(&tenant).await.unwrap();
+    // report の件数ではなく DB の事実で見る（全テナント横断 GC を回す別テストと同時に走り得る）。
+    assert_eq!(decision_keys(&pool, &tenant).await, vec![keep]);
+
+    // 論理削除（ArtifactStore::delete と同じ UPDATE）で、そのワークフローの答えはトリガが消す。
+    sqlx::query(
+        "UPDATE artifact SET deleted_at = now(), updated_at = now() \
+          WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+    )
+    .bind(&tenant)
+    .bind(live)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(decision_keys(&pool, &tenant).await.is_empty());
+
+    for sql in [
+        "DELETE FROM llm_decision_cache WHERE tenant_id = $1",
+        "DELETE FROM artifact WHERE tenant_id = $1",
+        "DELETE FROM tenant WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(&tenant).execute(&pool).await.unwrap();
+    }
+}

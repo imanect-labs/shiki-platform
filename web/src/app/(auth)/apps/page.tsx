@@ -15,8 +15,12 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import { deleteArtifact, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
+import { checkMiniAppAccess, deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
+import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
+import { savedToast, UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
+import { useMe } from "@/hooks/use-me";
 
 type DialogState =
   | { kind: "closed" }
@@ -25,24 +29,32 @@ type DialogState =
   | { kind: "versions"; meta: ArtifactMeta }
   | { kind: "delete"; meta: ArtifactMeta };
 
+/// カードのバージョンの言い方（D-16）: 共有した人が使うのは公開したバージョン。下書きの番号は持ち主にだけ言う。
+function publishLabel(meta: ArtifactMeta, mine: boolean): string {
+  const published = meta.publishedVersion;
+  if (published == null) return "未公開";
+  if (mine && meta.currentVersion > published) return `公開中 v${published}・下書き v${meta.currentVersion}`;
+  return `公開中 v${published}`;
+}
+
 export default function AppsPage() {
-  const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
+  const list = useArtifactList("mini_app");
+  const { items, reload } = list;
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
-
-  const reload = React.useCallback(() => {
-    listArtifacts("mini_app")
-      .then(setItems)
-      .catch(() => setItems([]));
-  }, []);
-  React.useEffect(reload, [reload]);
+  // 一覧には共有されたアプリも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主（owner）だけができるので、
+  // 自分のアプリにだけ出す（共有を受けた人には一覧が空に見え、付与・削除が 403 になる・BUG-78）。
+  // 自分が分かるまでは出さない（実行画面の共有ボタンはサーバの答え `can_share` で出し分ける）。
+  const me = useMe();
+  const myId = me.data?.id;
 
   /// 削除は確認ダイアログから（失敗はダイアログ内に出す）。
   const remove = async (meta: ArtifactMeta) => {
     setPending(meta.id);
     try {
       await deleteArtifact(meta.id);
-      reload();
+      // 読み込んだ続きを捨てないよう、一覧から外すだけにする（読み直すと先頭のページに戻る）。
+      list.remove(meta.id);
       toast({ title: `「${meta.name}」を削除しました` });
     } finally {
       setPending(null);
@@ -59,7 +71,7 @@ export default function AppsPage() {
   return (
     <PageContainer
       title="アプリ"
-      description="スキル・UI・ワークフローを束ねたミニアプリを共有して実行できます。"
+      description="画面とワークフローを束ねたアプリを作り、公開して共有した人に使ってもらえます。"
       className="max-w-4xl"
       actions={createButton}
     >
@@ -68,6 +80,10 @@ export default function AppsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : list.error ? (
+        <ListLoadFailed what="アプリの一覧" onRetry={reload} />
+      ) : items.length === 0 && list.hasMore ? (
+        <ListMore noun="アプリ" found={false} list={list} />
       ) : items.length === 0 ? (
         <EmptyState
           icon={LayoutGrid}
@@ -81,7 +97,7 @@ export default function AppsPage() {
             <ArtifactCard
               key={meta.id}
               name={meta.name}
-              meta={`v${meta.currentVersion}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
+              meta={`${publishLabel(meta, meta.owner === myId)}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
               pending={pending === meta.id}
               primary={
                 <Button size="sm" asChild>
@@ -92,35 +108,47 @@ export default function AppsPage() {
                 </Button>
               }
               menu={[
-                { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
-                {
-                  key: "versions",
-                  label: "バージョン履歴",
-                  icon: History,
-                  onSelect: () => setDialog({ kind: "versions", meta }),
-                },
-                {
-                  key: "delete",
-                  label: "削除",
-                  icon: Trash2,
-                  destructive: true,
-                  separatorBefore: true,
-                  onSelect: () => setDialog({ kind: "delete", meta }),
-                },
+                ...(meta.owner === myId
+                  ? [
+                      { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                      // バージョン履歴は作る人のもの（使う人は公開したバージョンだけを使う・D-16）。共有で編集にした人は
+                      // アプリの画面の「バージョン」から開ける。
+                      {
+                        key: "versions",
+                        label: "バージョン履歴",
+                        icon: History,
+                        onSelect: () => setDialog({ kind: "versions", meta }),
+                      },
+                    ]
+                  : []),
+                ...(meta.owner === myId
+                  ? [
+                      {
+                        key: "delete",
+                        label: "削除",
+                        icon: Trash2,
+                        destructive: true,
+                        separatorBefore: true,
+                        onSelect: () => setDialog({ kind: "delete", meta }),
+                      },
+                    ]
+                  : []),
               ]}
             />
           ))}
         </ul>
       )}
+      {items && items.length > 0 ? <ListMore noun="アプリ" found list={list} /> : null}
 
       <InstalledAppsSection />
 
       <MiniAppEditorDialog
         open={dialog.kind === "create"}
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
-        onSaved={() => {
+        onSaved={(saved) => {
           reload();
-          toast({ title: "作成しました" });
+          // 次に起きること（公開すると使える・書き損じがあれば直すまで公開できない）はアプリの画面の保存と同じ文。
+          toast({ ...savedToast(saved), title: "作成しました" });
         }}
       />
       <ArtifactShareDialog
@@ -128,6 +156,12 @@ export default function AppsPage() {
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
         artifactId={dialog.kind === "share" ? dialog.meta.id : null}
         name={dialog.kind === "share" ? dialog.meta.name : ""}
+        note={dialog.kind === "share" && dialog.meta.publishedVersion == null ? UNPUBLISHED_SHARE_NOTE : undefined}
+        access={
+          dialog.kind === "share"
+            ? { load: () => checkMiniAppAccess(dialog.meta.id), subject: "app" }
+            : undefined
+        }
       />
       <VersionsDialog
         open={dialog.kind === "versions"}

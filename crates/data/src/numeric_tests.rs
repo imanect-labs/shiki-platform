@@ -187,3 +187,21 @@ fn spec_serde_shape() {
         json!({ "scale": 0, "on_excess_scale": "reject" })
     );
 }
+
+/// 「足す数」（GAP-16）の和は 10 進で正確（`0.1 + 0.2` は 0.3）。整数は整数のまま、桁あふれは `None`。
+#[test]
+fn add_numbers_is_exact_decimal() {
+    let n = |s: &str| -> serde_json::Number { serde_json::from_str(s).unwrap() };
+    assert_eq!(add_numbers(&n("0.1"), &n("0.2")), Some(json!(0.3)));
+    assert_eq!(add_numbers(&n("10"), &n("-1")), Some(json!(9)));
+    assert_eq!(add_numbers(&n("3"), &n("-5")), Some(json!(-2)));
+    assert_eq!(add_numbers(&n("1.5"), &n("1.5")), Some(json!(3)));
+    assert_eq!(
+        add_numbers(&n("1e40"), &n("1")),
+        None,
+        "38 桁を超える和は値にしない"
+    );
+    assert_eq!(number_key(&n("1")), number_key(&n("1.0")));
+    assert_eq!(number_key(&n("120")), number_key(&n("1.2e2")));
+    assert_ne!(number_key(&n("1")), number_key(&n("1.01")));
+}

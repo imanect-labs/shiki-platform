@@ -9,10 +9,16 @@
 //!
 //! いずれも **service identity（B2 client_credentials）** で実行する（ユーザー文脈なし・
 //! 所有テーブルの owner@miniapp ReBAC で能力が絞られる）。
+//!
+//! 自動実行の失敗（シークレット・トークン・実行の誤り・関数の失敗）は、作成者に見せてよい文で関数ごとに残し、
+//! 次に成功したら消す（[`app_platform::FunctionFailureStore`]・GAP-60 の残り）。内部の文はサーバーのログにだけ書く。
 
 use std::sync::Arc;
 
-use app_platform::{FunctionActor, FunctionInvocation, FunctionRunner};
+use app_platform::{
+    FunctionActor, FunctionFailure, FunctionFailureStore, FunctionInvocation, FunctionRunner,
+    FunctionTrigger,
+};
 use authz::{AuthContext, Principal, PrincipalKind};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -54,6 +60,15 @@ pub(crate) fn spawn_miniapp_triggers(deps: TriggerDeps) {
         }
     });
     tokio::spawn(async move {
+        // 曜日の読み方を揃える前に計算した次の実行の時刻を、今の読み方で計算し直す（BUG-129）。
+        match realign_schedules(&deps.db, chrono::Utc::now()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                realigned = n,
+                "miniapp cron の次の実行の時刻を計算し直しました"
+            ),
+            Err(e) => tracing::warn!(error = %e, "miniapp cron の次の実行の時刻の計算し直しに失敗"),
+        }
         loop {
             if let Err(e) = cron_tick(&deps).await {
                 tracing::warn!(error = %e, "miniapp cron トリガの処理に失敗");
@@ -127,10 +142,8 @@ async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     tx.commit().await?;
 
     for (sub, payload, event_type) in dispatches {
-        if let Err(e) = invoke_service(deps, &sub, payload).await {
-            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
-                event_type, "event 起動の関数実行に失敗");
-        }
+        tracing::debug!(app_id = %sub.app_id, function = %sub.function, event_type, "event で関数を起動");
+        run_service(deps, &sub, payload, FunctionTrigger::Event).await;
     }
     Ok(claimed)
 }
@@ -194,6 +207,45 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
     .await?;
     let mut to_run = Vec::new();
     for s in due {
+        // 読めない式（標準の読み方で写せない曜日など・BUG-129）は実行しない。以前は 1 時間後へ送り、毎時に実行して
+        // いた。式は再インストールまで変わらないので、確かめ直すのは 1 日後にする。
+        let next = match app_platform::next_cron_run_after(&s.expr, chrono::Utc::now()) {
+            Ok(next) => next,
+            Err(e) => {
+                tracing::warn!(error = %e, schedule = %s.id, app_id = %s.app_id,
+                    "cron の式を読めないため、関数を実行しません");
+                sqlx::query(
+                    "UPDATE app_function_schedule SET next_run_at = $2 WHERE tenant_id = $3 AND id = $1",
+                )
+                .bind(s.id)
+                .bind(chrono::Utc::now() + chrono::Duration::days(1))
+                .bind(&s.tenant_id)
+                .execute(&mut *tx)
+                    .await?;
+                continue;
+            }
+        };
+        // 期限の来た時刻が、今の読み方で式に当たる時刻かを確かめる（BUG-129）。曜日を標準の読み方にする前に計算した
+        // 時刻や、ローリング更新の間に古い版のリーダーが書き戻した時刻は当たらない（曜日が 1 日ずれる）ので、実行せず
+        // 次の時刻を計算し直すだけにする。
+        let hits = app_platform::next_cron_run_after(
+            &s.expr,
+            s.next_run_at - chrono::Duration::seconds(1),
+        )
+        .is_ok_and(|at| at == s.next_run_at);
+        if !hits {
+            tracing::info!(schedule = %s.id, app_id = %s.app_id, at = %s.next_run_at, %next,
+                "式に当たらない時刻のため実行せず、次の時刻を計算し直します");
+            sqlx::query(
+                "UPDATE app_function_schedule SET next_run_at = $2 WHERE tenant_id = $3 AND id = $1",
+            )
+            .bind(s.id)
+            .bind(next)
+            .bind(&s.tenant_id)
+            .execute(&mut *tx)
+            .await?;
+            continue;
+        }
         // (schedule_id, scheduled_at) 一意＝リーダー交代/再起動でも同一時刻の二重起動なし。
         let inserted = sqlx::query(
             "INSERT INTO app_function_run (tenant_id, schedule_id, scheduled_at) \
@@ -205,8 +257,6 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        let next = app_platform::next_cron_run_after(&s.expr, chrono::Utc::now())
-            .unwrap_or(s.next_run_at + chrono::Duration::hours(1));
         // tenant-sql: allow(全テナント横断の cron 次回時刻更新（id は直前の横断走査から）)
         sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
             .bind(s.id)
@@ -226,34 +276,157 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
             app_id: s.app_id,
             function: s.function,
         };
-        if let Err(e) = invoke_service(deps, &sub, serde_json::json!({ "trigger": "cron" })).await {
-            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
-                "cron 起動の関数実行に失敗");
-        }
+        run_service(
+            deps,
+            &sub,
+            serde_json::json!({ "trigger": "cron" }),
+            FunctionTrigger::Cron,
+        )
+        .await;
     }
     Ok(())
 }
 
+/// まだ来ていない実行の時刻（`next_run_at > now`）を、今の読み方で計算し直す（起動時・BUG-129）。
+///
+/// 曜日を標準の読み方（1 が月曜・0 と 7 が日曜）で読むようにする前に保存した時刻は、cron クレートの読み方
+/// （1 が日曜）で計算してあり、そのままだと次の 1 回だけ 1 日ずれた曜日に動く。期限の来た行は次の tick が、式に
+/// 当たる時刻かを確かめてから実行し（当たらなければ実行せずに計算し直す）、その後の時刻を今の読み方で求めるので
+/// 触らない。読めない式は tick に任せる（実行せずに送る）。同じ読み方なら
+/// 値は変わらないので、起動のたびに流してよい。tick と取り違えないよう、読んだ時刻のままの行だけを書き換える。
+/// 戻り値 = 書き換えた行の数。
+async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<u64> {
+    // tenant-sql: allow(起動時に全テナントの予定の時刻を今の読み方で計算し直す保守処理。書き戻しは行の tenant で絞る)
+    let rows: Vec<(Uuid, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT id, tenant_id, expr, next_run_at FROM app_function_schedule WHERE next_run_at > $1",
+    )
+    .bind(now)
+    .fetch_all(db)
+    .await?;
+    let mut changed = 0;
+    for (id, tenant_id, expr, at) in rows {
+        let Ok(next) = app_platform::next_cron_run_after(&expr, now) else {
+            continue;
+        };
+        if next == at {
+            continue;
+        }
+        changed += sqlx::query(
+            "UPDATE app_function_schedule SET next_run_at = $3 \
+             WHERE tenant_id = $4 AND id = $1 AND next_run_at = $2 AND next_run_at > now()",
+        )
+        .bind(id)
+        .bind(at)
+        .bind(next)
+        .bind(&tenant_id)
+        .execute(db)
+        .await?
+        .rows_affected();
+    }
+    Ok(changed)
+}
+
+/// 自動実行 1 回の結果（[`invoke_service`]）。
+#[derive(Debug)]
+enum ServiceRun {
+    /// インストールが無い・アンインストールした（記録しない）。
+    NotInstalled,
+    /// 関数が成功した。
+    Succeeded,
+    /// 失敗した（作成者に見せてよい理由と文。内部の文はログにだけ書いた）。
+    Failed(FunctionFailure),
+}
+
+/// 自動実行 1 回を動かし、結果を残す（失敗は関数ごとに直近の 1 件・成功したら消す・GAP-60）。
+///
+/// 記録の失敗は自動実行を止めない（ログに残す）。
+async fn run_service(
+    deps: &TriggerDeps,
+    sub: &Subscription,
+    payload: serde_json::Value,
+    trigger: FunctionTrigger,
+) {
+    let store = FunctionFailureStore::new(deps.db.clone());
+    let recorded = match invoke_service(deps, sub, payload).await {
+        Ok(ServiceRun::Succeeded) => {
+            store
+                .record_success(&sub.tenant_id, sub.app_id, &sub.function)
+                .await
+        }
+        Ok(ServiceRun::Failed(failure)) => {
+            tracing::warn!(app_id = %sub.app_id, function = %sub.function, trigger = trigger.as_str(),
+                code = %failure.code, message = %failure.message, "自動実行の関数が失敗");
+            store
+                .record_failure(
+                    &sub.tenant_id,
+                    &sub.org,
+                    sub.app_id,
+                    &sub.function,
+                    trigger,
+                    &failure,
+                )
+                .await
+        }
+        Ok(ServiceRun::NotInstalled) => {
+            tracing::info!(app_id = %sub.app_id, function = %sub.function,
+                "インストールが無いため、自動実行しません");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+                trigger = trigger.as_str(), "自動実行の準備に失敗");
+            Ok(())
+        }
+    };
+    if let Err(e) = recorded {
+        tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+            "自動実行の結果を残せません");
+    }
+}
+
+/// 自動実行の失敗（作成者に見せてよい文・やり直しても通らないものは `retryable` を立てない）。
+fn failed(code: &str, message: &str, retryable: bool) -> ServiceRun {
+    ServiceRun::Failed(FunctionFailure {
+        code: code.into(),
+        message: message.into(),
+        retryable,
+    })
+}
+
 /// service identity（B2 client_credentials）で関数を実行する。
+///
+/// `Err` はインストールを引けないとき（DB の失敗）だけ。そのほかの失敗は、作成者に見せてよい文の
+/// [`ServiceRun::Failed`] にし、内部の文はここでログに書く。
 async fn invoke_service(
     deps: &TriggerDeps,
     sub: &Subscription,
     payload: serde_json::Value,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ServiceRun> {
     // インストール時ピン（server_bundle/spec/client）を解決する（失効済みは起動しない）。
     let installation = deps
         .port
         .runner_installation(&sub.tenant_id, sub.app_id)
         .await?;
     let Some(installation) = installation else {
-        anyhow::bail!("インストールが失効しています");
+        return Ok(ServiceRun::NotInstalled);
     };
     let (Some(server_bundle), Some(client_id_b2)) = (
         installation.server_bundle.clone(),
         installation.client_id_b2.clone(),
     ) else {
-        anyhow::bail!("B2 構成（server_bundle/client）がありません");
+        return Ok(failed(
+            "not_configured",
+            "このアプリには、サーバーで動く処理の登録がないため、自動実行できませんでした。アプリを入れ直してください。",
+            false,
+        ));
     };
+    if deps.port.secrets.is_none() {
+        return Ok(failed(
+            "not_configured",
+            "この環境では、アプリを自動で動かすためのシークレットを保管していません。管理者に確かめてください。",
+            false,
+        ));
+    }
     // service ctx（監査 actor 用・org/tenant は購読行から。購読行の tenant_id も文字ポリシーを通す）。
     let tenant = authz::TenantId::parse(sub.tenant_id.as_str())
         .map_err(|e| anyhow::anyhow!("購読の tenant_id が不正です: {e}"))?;
@@ -269,17 +442,40 @@ async fn invoke_service(
         sub.org.clone(),
         tenant,
     );
-    let secret = deps
-        .port
-        .resolve_b2_secret(&ctx, sub.app_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("secret: {e}"))?;
+    let secret = match deps.port.resolve_b2_secret(&ctx, sub.app_id).await {
+        Ok(secret) => secret,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, "自動実行の B2 secret を読めない");
+            return Ok(failed(
+                "secret_unavailable",
+                "アプリが自動で動くためのシークレット（API キーなどの秘密の値）を読めませんでした。アプリを入れ直してください。",
+                false,
+            ));
+        }
+    };
     // 同意付与スコープを service token に明示要求する（optional client scope のため）。
-    let token = deps
+    let token = match deps
         .port
         .client_credentials_token(&client_id_b2, &secret, &installation.granted_scopes)
         .await
-        .map_err(|e| anyhow::anyhow!("token: {e}"))?;
+    {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, "自動実行のトークンを取れない");
+            return Ok(match e {
+                app_gateway::GatewayError::Forbidden(_) => failed(
+                    "token_rejected",
+                    "アプリの登録が止められているか見つからないため、自動実行できませんでした。管理者に確かめてください。",
+                    false,
+                ),
+                _ => failed(
+                    "token_unavailable",
+                    "ログインを確かめる仕組みにつながらないため、自動実行できませんでした。続くときは管理者に確かめてください。",
+                    true,
+                ),
+            });
+        }
+    };
     let egress = installation
         .server_spec
         .as_ref()
@@ -300,15 +496,42 @@ async fn invoke_service(
                 egress_allowlist: egress,
             },
         )
-        .await
-        .map_err(|e| anyhow::anyhow!("run: {e}"))?;
-    if !outcome.ok {
-        tracing::warn!(app_id = %sub.app_id, function = %sub.function,
-            value = %outcome.value, "関数がエラー終了");
-    }
-    Ok(())
+        .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+                "自動実行の関数を動かせない");
+            return Ok(match e {
+                app_platform::AppPlatformError::NotFound => failed(
+                    "code_missing",
+                    "アプリのサーバーで動く処理のコードが見つからないため、自動実行できませんでした。アプリを入れ直してください。",
+                    false,
+                ),
+                app_platform::AppPlatformError::Invalid(_) => failed(
+                    "code_invalid",
+                    "アプリのサーバーで動く処理のコードを読み込めないため、自動実行できませんでした。直した版を出して、入れ直してください。",
+                    false,
+                ),
+                _ => failed(
+                    "internal",
+                    "サーバーで問題が起きたため、自動実行できませんでした。続くときは管理者に確かめてください。",
+                    true,
+                ),
+            });
+        }
+    };
+    Ok(match outcome.error {
+        Some(error) if !outcome.ok => ServiceRun::Failed(error),
+        _ if !outcome.ok => failed("internal", "関数の実行中に問題が起きました。", false),
+        _ => ServiceRun::Succeeded,
+    })
 }
 
 #[cfg(test)]
 #[path = "miniapp_triggers_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "miniapp_b2_tests.rs"]
+mod b2_tests;

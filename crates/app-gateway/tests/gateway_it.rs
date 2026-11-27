@@ -9,9 +9,16 @@
 
 mod common;
 
-use app_gateway::{build_gateway_router, AiPin, AppInstallationStore, NewAppInstallation};
+use std::sync::Arc;
+
+use app_gateway::{
+    build_gateway_router, AiPin, AppInstallationStore, GatewayError, NewAppInstallation,
+};
 use axum::http::StatusCode;
-use common::{ctx, get, request_json, setup, state, token, token_without_tenant};
+use common::{
+    ctx, get, request_json, setup, signed, state, state_with, token, token_without_tenant,
+    StubAuthz, AUDIENCE, ISSUER,
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -344,4 +351,282 @@ async fn b2_function_invoke_delegates_and_hides_undeclared() {
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// 組織はトークンではなくインストールから決め、呼ぶ人がその組織のメンバー（organization#member）かを確かめる
+/// （D-130）。トークンに所属グループが載っていても読まない（前の版で登録したクライアントのトークン）。
+#[tokio::test]
+async fn org_comes_from_the_installation_and_requires_membership() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let client = format!("app-{}", Uuid::new_v4());
+    // ctx は組織 acme でインストールする。
+    AppInstallationStore::new(pool.clone())
+        .upsert(
+            &ctx(&tenant),
+            NewAppInstallation {
+                app_id,
+                app_name: "経費",
+                installed_version: "1.0.0",
+                granted_scopes: &["data.read".to_string()],
+                client_id_b1: Some(&client),
+                client_id_b2: None,
+                ai: AiPin::default(),
+                frontend_bundle: None,
+                server_bundle: None,
+                server_spec: None,
+            },
+        )
+        .await
+        .expect("install");
+    let body = async {
+        // acme のメンバーは alice だけ。
+        let authz = Arc::new(StubAuthz {
+            org_members: Some(vec![(
+                format!("user:{tenant}|alice"),
+                format!("organization:{tenant}|acme"),
+            )]),
+            ..StubAuthz::default()
+        });
+        let app = build_gateway_router(state_with(pool.clone(), &tenant, authz));
+        let with_groups = |sub: &str, group: &str| {
+            signed(&serde_json::json!({
+                "sub": sub, "azp": client, "tenant": tenant, "scope": "data.read",
+                "groups": [format!("/tenants/{tenant}/{group}")],
+                "aud": AUDIENCE, "iss": ISSUER, "exp": 9_999_999_999u64,
+            }))
+        };
+
+        // alice はトークンが別の組織のグループを名乗っても、インストールの組織（acme）のメンバーとして通る。
+        let (s, body) = get(&app, "/gw/whoami", Some(&with_groups("alice", "other"))).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let (s, body) = get(
+            &app,
+            "/gw/data/tables",
+            Some(&token(&client, "data.read", &tenant)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let orgs: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT org FROM audit_log \
+             WHERE tenant_id = $1 AND action = 'gateway.call' AND decision = 'allow'",
+        )
+        .bind(&tenant)
+        .fetch_all(&pool)
+        .await
+        .expect("audit");
+        assert_eq!(orgs, ["acme"], "能力の呼び出しはインストールの組織で動く");
+
+        // bob はメンバーでないので 403。トークンが acme のグループを名乗っても通らない。
+        for tok in [token_as_bob(&client, &tenant), with_groups("bob", "acme")] {
+            let (s, body) = get(&app, "/gw/whoami", Some(&tok)).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+            assert_eq!(
+                body["error"],
+                "権限がありません: このアプリを使えるのは、アプリをインストールした組織のメンバーだけです"
+            );
+        }
+        let denied: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND org = 'acme' \
+               AND action = 'gateway.call' AND decision = 'deny' AND actor = 'bob' \
+               AND metadata->>'security' = 'true'",
+        )
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .expect("audit deny");
+        assert_eq!(denied, 2, "メンバーでない呼び出しは監査に deny で残る");
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for sql in [
+        "DELETE FROM app_installation WHERE tenant_id = $1",
+        "DELETE FROM app_capability_usage WHERE tenant_id = $1",
+        "DELETE FROM audit_log WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect(sql);
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn token_as_bob(client: &str, tenant: &str) -> String {
+    common::token_as(client, "data.read", tenant, "bob")
+}
+
+/// インストールの一覧は、呼ぶ人の組織が入れたアプリだけを返す（同じテナントの別の組織のアプリの名前・スコープ・
+/// クライアントを見せない・PIT-45・BUG-197）。
+#[tokio::test]
+async fn installation_list_is_scoped_to_the_callers_org() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = AppInstallationStore::new(pool.clone());
+    let acme = ctx(&tenant);
+    let beta = authz::AuthContext::new(
+        acme.principal().clone(),
+        "beta".into(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+    );
+    let install = |c: authz::AuthContext, name: &'static str| {
+        let store = store.clone();
+        async move {
+            let client = format!("app-{}", Uuid::new_v4());
+            store
+                .upsert(
+                    &c,
+                    NewAppInstallation {
+                        app_id: Uuid::new_v4(),
+                        app_name: name,
+                        installed_version: "1.0.0",
+                        granted_scopes: &["data.read".to_string()],
+                        client_id_b1: Some(&client),
+                        client_id_b2: None,
+                        ai: AiPin::default(),
+                        frontend_bundle: None,
+                        server_bundle: None,
+                        server_spec: None,
+                    },
+                )
+                .await
+                .expect("install");
+        }
+    };
+    let body = async {
+        install(acme.clone(), "経費").await;
+        install(beta.clone(), "採用").await;
+        let names = |list: Vec<app_gateway::AppInstallation>| {
+            list.into_iter().map(|i| i.app_name).collect::<Vec<_>>()
+        };
+        assert_eq!(names(store.list(&acme).await.expect("acme")), ["経費"]);
+        assert_eq!(names(store.list(&beta).await.expect("beta")), ["採用"]);
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// インストールの書き込みとアンインストールは組織で絞る（PIT-45・BUG-212）。ほかの組織の有効なインストールは、この
+/// 組織の操作で書き換えない・外さない（理由を言って 409）。ほかの組織でアンインストール済みなら、この組織のインストール
+/// として入れ直せる（組織と入れた人も書き換わり、この組織の一覧に出る）。
+#[tokio::test]
+async fn installation_writes_are_scoped_to_the_callers_org() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = AppInstallationStore::new(pool.clone());
+    let acme = ctx(&tenant);
+    let beta = authz::AuthContext::new(
+        authz::Principal {
+            id: "carol".into(),
+            ..acme.principal().clone()
+        },
+        "beta".into(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+    );
+    let app_id = Uuid::new_v4();
+    let install = |c: authz::AuthContext, scope: &'static str| {
+        let store = store.clone();
+        async move {
+            let client = format!("app-{}", Uuid::new_v4());
+            store
+                .upsert(
+                    &c,
+                    NewAppInstallation {
+                        app_id,
+                        app_name: "経費",
+                        installed_version: "1.0.0",
+                        granted_scopes: &[scope.to_string()],
+                        client_id_b1: Some(&client),
+                        client_id_b2: None,
+                        ai: AiPin::default(),
+                        frontend_bundle: None,
+                        server_bundle: None,
+                        server_spec: None,
+                    },
+                )
+                .await
+        }
+    };
+    let row = || async {
+        sqlx::query_as::<_, (String, String, String, Vec<String>)>(
+            "SELECT org, status, installed_by, granted_scopes FROM app_installation \
+             WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(&tenant)
+        .bind(app_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row")
+    };
+    let body = async {
+        install(acme.clone(), "data.read").await.expect("acme");
+        // 1. ほかの組織からの入れ直しは、acme の同意（スコープ）を書き換えずに断る。前もっての確かめも同じ。
+        let refused = install(beta.clone(), "data.write").await.err();
+        assert!(
+            matches!(&refused, Some(GatewayError::Conflict(m)) if m.contains("ほかの組織でインストールされています")),
+            "{refused:?}"
+        );
+        assert!(store.ensure_not_in_other_org(&beta, app_id).await.is_err());
+        assert!(store.ensure_not_in_other_org(&acme, app_id).await.is_ok());
+        assert_eq!(
+            row().await,
+            (
+                "acme".into(),
+                "active".into(),
+                "admin".into(),
+                vec!["data.read".to_string()]
+            )
+        );
+        // 2. ほかの組織からのアンインストールも断る（acme のアプリは動き続ける）。
+        let refused = store.revoke(&beta, app_id).await.err();
+        assert!(
+            matches!(&refused, Some(GatewayError::Conflict(m)) if m.contains("インストールした組織で")),
+            "{refused:?}"
+        );
+        assert_eq!(row().await.1, "active");
+        // 3. 同じ組織の入れ直しは今までどおり（入れた人は最初の人のまま）。
+        install(acme.clone(), "data.write")
+            .await
+            .expect("acme again");
+        assert_eq!(row().await.3, ["data.write"]);
+        // 4. acme がアンインストールした後は、beta のインストールとして入れ直せる（beta の一覧に出る）。
+        store.revoke(&acme, app_id).await.expect("revoke");
+        assert!(store.ensure_not_in_other_org(&beta, app_id).await.is_ok());
+        install(beta.clone(), "data.read").await.expect("beta");
+        assert_eq!(
+            row().await,
+            (
+                "beta".into(),
+                "active".into(),
+                "carol".into(),
+                vec!["data.read".to_string()]
+            )
+        );
+        assert_eq!(store.list(&beta).await.expect("beta").len(), 1);
+        assert!(store.list(&acme).await.expect("acme").is_empty());
+        // どこにも無いアプリのアンインストールは 404 のまま。
+        assert!(matches!(
+            store.revoke(&acme, Uuid::new_v4()).await,
+            Err(GatewayError::NotFound)
+        ));
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }

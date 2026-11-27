@@ -19,8 +19,14 @@ type BaseProps = {
   /// 設定画面のセクション一覧など、区画の並びにだけ渡し、汎用ナビは無地のまま据え置く。
   seasonIndex?: number;
   trailing?: React.ReactNode;
+  /// 件数のバッジ（承認の受信箱など）。広げた表示では右端に数、レールではアイコンの右上に点を出す。
+  badge?: NavBadge | null;
   className?: string;
 };
+
+/// 件数のバッジ。`text` はピルに出す字、`spoken` は読み上げ・ツールチップの「ラベル（…）」の括弧の中に入れる語
+/// （例: `{ text: "3", spoken: "3 件" }`）。
+export type NavBadge = { text: string; spoken: string };
 
 type LinkProps = BaseProps & { href: string; onClick?: () => void };
 type ButtonProps = BaseProps & {
@@ -50,6 +56,7 @@ function Inner({
   collapsed,
   seasonIndex,
   trailing,
+  badge,
 }: {
   icon: LucideIcon;
   label: string;
@@ -57,6 +64,7 @@ function Inner({
   collapsed: boolean;
   seasonIndex?: number;
   trailing?: React.ReactNode;
+  badge?: NavBadge | null;
 }) {
   // アクティブかつ季節指定がある場合だけアイコンを季節色に。それ以外は無地。
   const seasonTint = active && seasonIndex != null;
@@ -80,13 +88,35 @@ function Inner({
         style={seasonTint ? { color: seasonVar(seasonIndex) } : undefined}
         strokeWidth={2}
       />
+      {collapsed && badge ? (
+        <span
+          aria-hidden
+          className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary ring-2 ring-sidebar"
+        />
+      ) : null}
       {!collapsed ? (
         <>
           <span className="flex-1 truncate text-left">{label}</span>
+          {badge ? <CountBadge value={badge.text} /> : null}
           {trailing}
         </>
       ) : null}
     </>
+  );
+}
+
+/// 件数のピル（広げた表示の右端）。
+export function CountBadge({ value, className }: { value: string; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold leading-none text-primary-foreground tabular-nums",
+        className,
+      )}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -100,8 +130,11 @@ export function NavItem(props: LinkProps | ButtonProps) {
     collapsed = false,
     seasonIndex,
     trailing,
+    badge,
     className,
   } = props;
+  // 件数は読み上げのラベルにも含める（点・数字は aria-hidden）。
+  const spoken = badge ? `${label}（${badge.spoken}）` : label;
 
   const node =
     "href" in props && props.href !== undefined ? (
@@ -109,20 +142,20 @@ export function NavItem(props: LinkProps | ButtonProps) {
         href={props.href}
         onClick={props.onClick}
         aria-current={active ? "page" : undefined}
-        aria-label={collapsed ? label : undefined}
+        aria-label={collapsed || badge ? spoken : undefined}
         className={cn(itemClasses(active, collapsed), className)}
       >
-        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} badge={badge} />
       </Link>
     ) : (
       <button
         type="button"
         onClick={props.onClick}
         aria-current={active ? "page" : undefined}
-        aria-label={collapsed ? label : undefined}
+        aria-label={collapsed || badge ? spoken : undefined}
         className={cn(itemClasses(active, collapsed), className)}
       >
-        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} />
+        <Inner icon={icon} label={label} active={active} collapsed={collapsed} seasonIndex={seasonIndex} trailing={trailing} badge={badge} />
       </button>
     );
 
@@ -131,7 +164,7 @@ export function NavItem(props: LinkProps | ButtonProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{node}</TooltipTrigger>
-      <TooltipContent side="right">{label}</TooltipContent>
+      <TooltipContent side="right">{spoken}</TooltipContent>
     </Tooltip>
   );
 }

@@ -3,13 +3,15 @@
 //! 外部の参照名（key）を内部 ID（`field_id`）へ解決し、型ごとに値を正規化した式 [`Expr`] を作る。
 //! ここを通らない条件はコンパイラに届かない（未宣言・未索引・型不整合・マスク列は実行前に拒否）。
 //!
-//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）
+//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）。列を書く位置ごとの規則は
+//!   [`super::field_use`]（ワークフローの保存時の照合と同じ関数・BUG-244）
 //! - マスク列は filter / sort / group_by / aggregate / search のいずれにも出せない（**403**・PIT-19）。
 //!   存在しない列も**同じ** 403 `field_unavailable`（列の存在オラクルを作らない・data-platform §16.1）
 //! - `contains` / `ends_with` / 横断検索は `searchable` 宣言済みの text 列のみ（trigram GIN を要する）。
 //!   `searchable` の列は `indexed` でなくてよい（検索索引で引ける）
 //! - `matches`（正規表現）は採用しない（400）
 //! - システム擬似列 `_owner` / `_created_at` / `_updated_at` は常に索引済みで、駆動になれる
+//! - 作成者の列（`created_by`・D-122）は擬似列 `_owner` と同じ索引で引く（列の参照名で出す）
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -431,12 +433,12 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// 束縛器の表のリンク列とその参照先（マスク・未宣言は同じ 403 `field_unavailable` → リンク列でない
-    /// 400 → 参照先が読めない 403 の順）。
-    pub(crate) fn link_target(
+    /// 束縛器の表のリンク列と、その参照先のテーブルの ID（マスク・未宣言は同じ 403 `field_unavailable` → リンク列でない
+    /// 400 の順）。ワークフローの保存時の照合（[`super::field_use::check_link_field`]）も、この関数で断る（GAP-129）。
+    pub(crate) fn link_field(
         &self,
         key: &str,
-    ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
+    ) -> Result<(&'a crate::model::FieldDef, Uuid), DataError> {
         let f = self.user_field(key)?;
         let (FieldType::RecordRef, Some(rt)) = (f.field_type, f.ref_table) else {
             return Err(DataError::input_detail(
@@ -445,6 +447,15 @@ impl<'a> Binder<'a> {
                 format!("フィールド '{key}' はリンク列（record_ref）ではありません"),
             ));
         };
+        Ok((f, rt))
+    }
+
+    /// 束縛器の表のリンク列とその参照先（[`Self::link_field`] の誤り → 参照先が読めない 403 の順）。
+    pub(crate) fn link_target(
+        &self,
+        key: &str,
+    ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
+        let (f, rt) = self.link_field(key)?;
         let ctx = self.ctx.ok_or_else(|| {
             DataError::input_detail(
                 crate::InvalidCode::InvalidInput,
@@ -520,6 +531,16 @@ impl<'a> Binder<'a> {
         self.resolve(key, Need::Searchable)
     }
 
+    /// 比較の列を解決する（部分一致〔`contains` / `ends_with`〕は検索索引で、ほかは値索引で引く）。演算子が列に
+    /// 合うかは [`super::field_use::op_fits`]（[`compare`] が確かめる）。
+    pub(crate) fn cmp_field(&mut self, key: &str, op: CondOp) -> Result<BField, DataError> {
+        if matches!(op, CondOp::Contains | CondOp::EndsWith) {
+            self.searchable(key)
+        } else {
+            self.queryable(key)
+        }
+    }
+
     fn resolve(&mut self, key: &str, need: Need) -> Result<BField, DataError> {
         if self.masked.contains(key) {
             return Err(DataError::FieldUnavailable);
@@ -529,6 +550,20 @@ impl<'a> Binder<'a> {
             return Ok(p);
         }
         let f = self.user_field(key)?;
+        if f.is_created_by() {
+            // 作成者の列は owner の擬似列（全レコードに 1 行・常に索引済み）で引く。出力の名前（集計のキーなど）は
+            // この列の参照名。同じクエリで `_owner` も使うと、先に束縛した名前になる（値は同じ）。
+            let b = BField {
+                id: SYSTEM_FIELD_OWNER,
+                key: f.key.clone(),
+                ty: None,
+                kind: FieldKind::Text,
+                searchable: false,
+                ref_table: None,
+                derived: false,
+            };
+            return Ok(self.fields.entry(b.id).or_insert(b).clone());
+        }
         if need == Need::Searchable
             && f.searchable
             && f.field_type.supports_search()
@@ -642,17 +677,14 @@ impl<'a> Binder<'a> {
                         format!("条件が多すぎます（最大 {MAX_CONDITION_LEAVES}）"),
                     ));
                 }
-                let f = if matches!(cmp.op, CondOp::Contains | CondOp::EndsWith) {
-                    self.searchable(&cmp.field)?
-                } else {
-                    self.queryable(&cmp.field)?
-                };
+                let f = self.cmp_field(&cmp.field, cmp.op)?;
                 compare(&f, cmp.op, cmp.value.as_ref())?
             }
         })
     }
 
-    /// 横断部分一致（`searchable` 列の `contains` の OR）。
+    /// 横断部分一致（`searchable` 列の `contains` の OR）。ワークフローの保存時の照合
+    /// （[`super::field_use::check_search`]）も、この関数で断る（GAP-129）。
     pub(crate) fn search(
         &mut self,
         text: &str,
@@ -754,6 +786,8 @@ fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
 }
 
 fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
+    // 演算子が列に合うか（値に依らない誤り・保存時の照合と同じ規則・BUG-244）。
+    super::field_use::op_fits(f, op)?;
     let key = &f.key;
     let need = || {
         DataError::input_detail(
@@ -798,13 +832,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             leaf(Leaf::In(vals))
         }
         CondOp::Lt | CondOp::Lte | CondOp::Gt | CondOp::Gte => {
-            if f.multi() {
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::FieldNotSortable,
-                    Some(key),
-                    format!("'{key}'（多値・リンク）に大小比較は使えません"),
-                ));
-            }
             let v = scalar(f, value.ok_or_else(need)?)?;
             let (lo, hi) = match op {
                 CondOp::Lt => (None, Some((v, false))),
@@ -815,13 +842,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             leaf(Leaf::Range { lo, hi })
         }
         CondOp::StartsWith | CondOp::Contains | CondOp::EndsWith => {
-            if !matches!(f.kind, FieldKind::Text | FieldKind::Multi) {
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::ValueTypeMismatch,
-                    Some(key),
-                    format!("'{key}' は文字列の部分一致に使えません"),
-                ));
-            }
             let s = value.and_then(Value::as_str).ok_or_else(|| {
                 DataError::input_detail(
                     crate::InvalidCode::ValueTypeMismatch,
@@ -838,11 +858,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             }
             match op {
                 CondOp::StartsWith => leaf(Leaf::StartsWith(s.to_string())),
-                _ if !f.searchable => Err(DataError::input_detail(
-                    crate::InvalidCode::FieldNotIndexed,
-                    Some(key),
-                    format!("'{key}' は部分一致検索の対象ではありません"),
-                )),
                 CondOp::Contains => leaf(Leaf::Contains(s.to_string())),
                 _ => leaf(Leaf::EndsWith(s.to_string())),
             }

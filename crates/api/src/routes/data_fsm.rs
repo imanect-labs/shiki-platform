@@ -244,6 +244,10 @@ pub(crate) fn data_fsm_route_decls() -> Vec<crate::server::RouteDecl> {
     let r = crate::server::RouteDecl::new;
     vec![
         r("/data/fsms", &["POST"], Session, || post(create_fsm)),
+        // テーブルの設定の「状態の進め方」（持ち主だけ・GAP-44）。
+        r("/data/tables/{id}/fsm", &["GET", "PUT"], Session, || {
+            get(super::data_table_fsm::get_table_fsm).put(super::data_table_fsm::save_table_fsm)
+        }),
         r("/data/fsms/{id}", &["GET", "PUT"], Session, || {
             get(get_fsm).put(update_fsm)
         }),

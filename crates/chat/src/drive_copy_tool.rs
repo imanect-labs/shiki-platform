@@ -218,6 +218,8 @@ impl Tool for DriveCopyTool {
                     .content_type
                     .as_deref()
                     .unwrap_or("application/octet-stream"),
+                // 同じ名前があれば番号を付けずに断り、別の new_name を頼む（copy_error の Conflict）。
+                storage::OnNameTaken::Fail,
                 &key,
                 &digest,
                 trace_id,

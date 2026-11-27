@@ -21,6 +21,9 @@ use crate::{
     state::AppState,
 };
 
+pub use super::artifact_list::OwnedNext;
+use super::artifact_list::{before_of, list_page, ListPageRequest};
+
 /// 作成リクエスト（body が version 1 になる）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateArtifactRequest {
@@ -62,12 +65,20 @@ pub struct ListArtifactsQuery {
     /// 前ページ末尾の id（updated_at と対で使う）。
     pub before_id: Option<Uuid>,
     pub limit: Option<i64>,
+    /// 共有された分の続き（前の応答の `shared_next_cursor`）。渡すと、共有された分の続きだけを返す（所有分は
+    /// 返さない・`before_*` と同時には使えない）。
+    pub shared_cursor: Option<String>,
 }
 
 /// 一覧レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ArtifactListResponse {
     pub items: Vec<Artifact>,
+    /// 自分のものに続きがあるときの位置（`before_updated_at`・`before_id` に渡す・無ければ `null`・BUG-186）。
+    pub owned_next: Option<OwnedNext>,
+    /// 共有された分に続きがあるときの位置（`shared_cursor` に渡す・無ければ `null`）。共有された分が多い人では、
+    /// 共有された分が `limit` より少ないか 0 件でも続きがあることがある（BUG-162）。
+    pub shared_next_cursor: Option<String>,
 }
 
 /// バージョン履歴レスポンス。
@@ -135,15 +146,21 @@ pub async fn create_artifact(
 
 /// 自分が使えるアーティファクト一覧（所有＋共有された・kind 絞り込み・更新日降順）。
 ///
+/// 共有されたミニアプリ（editor でないもの）は、公開した版だけを見せる（[`get_artifact`] と同じ・BUG-213）。並びと
+/// 続きの位置は、保存した時刻（下書きの保存を含む）で決まる。
+///
 /// 共有された分（ReBAC viewer の実効集合）が無いと、共有相手が skill/ミニアプリを
-/// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソルは
-/// 所有分にのみ適用し、共有分は初回ページに合流する（共有集合は小さい前提）。
+/// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソル（`before_*`）は
+/// 所有分にのみ適用し、共有分は初回ページに合流する。所有分の続きは `owned_next` を `before_*` に渡して読む
+/// （所有分だけが返る・BUG-186）。共有分の続きは `shared_next_cursor` を `shared_cursor` に渡して読む（共有分だけが
+/// 返る・BUG-162）。
 #[utoipa::path(
     get,
     path = "/artifacts",
     params(ListArtifactsQuery),
     responses(
         (status = 200, description = "一覧", body = ArtifactListResponse),
+        (status = 400, description = "shared_cursor が読めない（cursor_invalid）・before_* と同時に渡した"),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -153,28 +170,30 @@ pub async fn list_artifacts(
     AuthContextExt(ctx): AuthContextExt,
     Query(q): Query<ListArtifactsQuery>,
 ) -> Result<Json<ArtifactListResponse>, ApiError> {
-    let before = match (q.before_updated_at, q.before_id) {
-        (Some(at), Some(id)) => Some((at, id)),
-        _ => None,
-    };
-    let limit = q.limit.unwrap_or(50);
-    let mut items = state
-        .artifacts
-        .list_mine(&ctx, q.kind, before, limit)
-        .await?;
-    // 2 ページ目以降（カーソルあり）は所有分の続きだけを返す（共有分は初回に合流済み）。
-    if before.is_none() {
-        let shared = state
-            .artifacts
-            .list_shared_with_me(&ctx, q.kind, limit)
-            .await?;
-        items.extend(shared);
-        items.sort_by_key(|a| std::cmp::Reverse((a.updated_at, a.id)));
-    }
-    Ok(Json(ArtifactListResponse { items }))
+    let page = list_page(
+        &state.artifacts,
+        &state.data,
+        &ctx,
+        ListPageRequest {
+            kind: q.kind,
+            before: before_of(q.before_updated_at, q.before_id),
+            limit: q.limit.unwrap_or(50),
+            shared_cursor: q.shared_cursor.as_deref(),
+        },
+    )
+    .await?;
+    Ok(Json(ArtifactListResponse {
+        items: page.items,
+        owned_next: page.owned_next,
+        shared_next_cursor: page.shared_next_cursor,
+    }))
 }
 
 /// メタデータを取得する（viewer）。
+///
+/// 下書きと公開を分ける種類（ミニアプリ）で editor でない人には、公開した版だけを見せる（`current_version` は公開した
+/// 版・`previous_published_version` は `null`・`updated_at` は公開した時刻・BUG-213・`GET /mini-apps/{id}/resolved` と
+/// 同じ決まり）。
 #[utoipa::path(
     get,
     path = "/artifacts/{id}",
@@ -193,10 +212,17 @@ pub async fn get_artifact(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Artifact>, ApiError> {
-    Ok(Json(state.artifacts.get(&ctx, id, trace.as_deref()).await?))
+    Ok(Json(
+        state
+            .artifacts
+            .get_as_seen(&ctx, id, trace.as_deref())
+            .await?,
+    ))
 }
 
-/// 論理削除する（owner・バージョン履歴は保持）。
+/// 論理削除する（owner・バージョン履歴は保持）。ワークフローなら、自動実行と動いている実行も止める（BUG-128）。
+/// コードアプリ（mini_app_code）なら、有効なインストールが無いとき、Keycloak のクライアントと B2 の secret を消す
+/// （もう入れられないので・GAP-69a）。
 #[utoipa::path(
     delete,
     path = "/artifacts/{id}",
@@ -215,7 +241,24 @@ pub async fn delete_artifact(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    state.artifacts.delete(&ctx, id, trace.as_deref()).await?;
+    let kind = state.artifacts.delete(&ctx, id, trace.as_deref()).await?;
+    if kind == ArtifactKind::Workflow {
+        // 委譲（FGA のタプル）は削除の commit の後に外す（D-105）。
+        crate::routes::workflows::registration::after_workflow_deleted(
+            &state,
+            &ctx,
+            id,
+            trace.as_deref(),
+        )
+        .await;
+    }
+    if kind == ArtifactKind::MiniAppCode {
+        // 片付けは削除の commit の後（失敗しても削除は戻さない・起動時の照合がクライアントを消し直す）。
+        state
+            .installs
+            .after_app_deleted(&ctx, id, trace.as_deref())
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

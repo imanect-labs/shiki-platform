@@ -38,6 +38,7 @@ export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   computed: "計算",
   rollup: "ロールアップ",
   formula: "数式",
+  created_by: "作成者",
 };
 
 /// 表示する 1 列。
@@ -87,11 +88,21 @@ export function resolveColumns(
       system: !field,
     });
   };
-  for (const c of configs) push(c.field, c, false);
+  // 作成者の列（`created_by`）があるテーブルでは、同じ値の擬似列 `_owner`（作成者）を候補に出さない（同じ名前が
+  // 2 つ並ぶ）。前に表で出していた（ビューの設定で非表示でない）ときだけ残す。
+  const hasCreatedBy = fields.some((f) => f.type === "created_by");
+  const keepOwner = configs.some((c) => c.field === "_owner" && !c.hidden);
+  for (const c of configs) {
+    if (c.field === "_owner" && hasCreatedBy && !keepOwner) continue;
+    push(c.field, c, false);
+  }
   const ordered = [...fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const f of ordered) push(f.key, null, false);
   // 擬似列は設定に無ければ非表示で末尾に置く（列メニューから出せる）。
-  for (const s of SYSTEM_COLUMNS) push(s.key, null, true);
+  for (const s of SYSTEM_COLUMNS) {
+    if (s.key === "_owner" && hasCreatedBy) continue;
+    push(s.key, null, true);
+  }
   return out;
 }
 
@@ -126,6 +137,42 @@ export function isSortable(c: ColumnModel): boolean {
     return f.materialization === "invariant" && Boolean(f.indexed);
   }
   return true;
+}
+
+/// ワークフローの「データを検索」（`data.query`）の絞り込み・並べ替えに使える列か（BUG-244）。
+///
+/// グリッドは索引の無い列で並べたり絞ったりすると索引を作る（自動昇格）ので `isSortable` はそれを前提にするが、
+/// ワークフローの経路では索引を作らない（docs/data-platform.md §10）。そのため、実行で通るのは索引のある列
+/// （`indexed`）と重複を許さない列（`unique`）だけ。判定はサーバーの束縛と同じにする（`crates/data/src/query/bound.rs`
+/// の `Binder::resolve`・保存時の照合は `crates/data/src/query/field_use.rs` の `check_field_use`）: システムの列
+/// （作成日時・更新日時・作成者）と作成者の列は常に使え、計算の列は索引のある `invariant` のものだけ、対称列
+/// （逆向きのリンク）は使えない。列の種類で決まる制約（複数選択・リンクは並べ替えられないなど）は、ここでは見ないので
+/// `isSortable`・`isFilterable` と合わせて使う。
+export function isWorkflowQueryColumn(c: ColumnModel): boolean {
+  if (c.system) return true;
+  const f = c.field!;
+  if (f.type === "created_by") return true;
+  if (f.type === "lookup" || f.type === "rollup" || f.type === "formula" || f.type === "computed") {
+    return f.materialization === "invariant" && Boolean(f.indexed);
+  }
+  if (f.link?.reverse) return false;
+  return Boolean(f.indexed || f.unique);
+}
+
+/// 索引は無いが、ワークフローの「データを検索」の部分一致（「含む」「で終わる」）の条件には使える列か（「部分一致で
+/// 検索できる」文字・複数選択の列）。部分一致は検索の索引で引くので、値の索引が無くても通る（サーバーの束縛の
+/// `Need::Searchable`・保存時の照合の `check_field_use(Filter(Contains))` と同じ）。
+export function isWorkflowSearchOnlyColumn(c: ColumnModel): boolean {
+  if (c.system || isWorkflowQueryColumn(c)) return false;
+  const f = c.field!;
+  return Boolean(f.searchable) && (f.type === "text" || f.type === "multi_select");
+}
+
+/// ワークフローの「データを検索」の探す条件で、列 `c` を比べ方 `op` に使えるか（BUG-244）。索引のある列などはどの
+/// 比べ方にも使え（列の種類で決まる比べ方は画面が絞る）、部分一致で検索できるだけの列は「含む」「で終わる」だけに使える。
+export function isWorkflowFilterUse(c: ColumnModel, op: CondOp): boolean {
+  if (isWorkflowQueryColumn(c)) return true;
+  return (op === "contains" || op === "ends_with") && isWorkflowSearchOnlyColumn(c);
 }
 
 /// 絞り込みに使える列か（並べ替えできる列に加え、複数選択は要素ごとの索引で「含む」を引ける）。
@@ -247,15 +294,19 @@ export const SUPPRESSED_LABEL = "件数が少ないため非表示";
 
 /// 1 セルの表示（参照系の列は名前に置き換える・抑制したセルは理由を出す）。
 ///
-/// - `user_ref` 列・作成者列: ディレクトリの表示名（引けなければ id のまま）
+/// - `user_ref` 列・作成者の列（`created_by` と擬似列 `_owner`）: ディレクトリの表示名（引けなければ id のまま）
 /// - リンク列（逆向きの列を含む）: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に
 ///   載せる）。タイトルの無い参照先は {@link UNTITLED}
 /// - スモールセル抑制に掛かった派生列（`suppressed_fields`）: {@link SUPPRESSED_LABEL}
+/// - ファイルの列（`file_ref`）: `fileName` を渡したときは、ドライブのファイル名（閲覧者が開けるファイルだけ）。
+///   引いている間は {@link FILE_LOADING}、開けない（削除済み・権限なし）ファイルは {@link FILE_UNOPENABLE}。
+///   渡さなければ id のまま
 export function displayCell(
   r: DataRecord,
   c: Pick<ColumnModel, "key" | "field">,
   userName: (id: string) => string | null | undefined,
   roleName: (id: string) => string | null | undefined = () => null,
+  fileName?: (id: string) => string | null | undefined,
 ): { text: string; muted: boolean } {
   const v = cellValue(r, c.key);
   if ((v === null || v === undefined) && (r.suppressed_fields ?? []).includes(c.key)) {
@@ -264,11 +315,18 @@ export function displayCell(
   const type = c.field?.type;
   const ids = (x: unknown): string[] =>
     (Array.isArray(x) ? x : x == null ? [] : [x]).filter((e): e is string => typeof e === "string");
-  if (type === "user_ref" || c.key === "_owner") {
+  if (type === "user_ref" || type === "created_by" || c.key === "_owner") {
     return { text: ids(v).map((id) => userName(id) || id).join(", "), muted: false };
   }
   if (type === "role_ref") {
     return { text: ids(v).map((id) => roleName(id) || id).join(", "), muted: false };
+  }
+  if (type === "file_ref" && fileName) {
+    const names = ids(v).map((id) => fileName(id));
+    return {
+      text: names.map((n) => n || (n === null ? FILE_UNOPENABLE : FILE_LOADING)).join(", "),
+      muted: names.some((n) => !n),
+    };
   }
   if (type === "record_ref") {
     // 見出しはサーバが順方向の列にも逆向きの列（参照元）にも `link_labels` で返す。タイトルの無い参照先
@@ -281,6 +339,26 @@ export function displayCell(
 
 /// タイトルの無い参照先の表示。
 export const UNTITLED = "（タイトルなし）";
+
+/// ファイルの列で、ファイル名を引いている間の表示。
+export const FILE_LOADING = "…";
+
+/// ファイルの列で、閲覧者が開けない（削除済み・権限なし）ファイルの表示。
+export const FILE_UNOPENABLE = "（開けないファイル）";
+
+/// 名前を引く対象のファイル id（`file_ref` 列の値）。
+export function fileRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
+  const keys = cols.filter((c) => c.field?.type === "file_ref").map((c) => c.key);
+  const out = new Set<string>();
+  if (keys.length === 0) return [];
+  for (const r of rows) {
+    for (const k of keys) {
+      const v = cellValue(r, k);
+      for (const id of Array.isArray(v) ? v : [v]) if (typeof id === "string" && id) out.add(id);
+    }
+  }
+  return [...out];
+}
 
 /// 表示名を引く対象の部署 id（`role_ref` 列の値）。
 export function roleRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
@@ -297,7 +375,9 @@ export function roleRefIds(rows: readonly DataRecord[], cols: readonly ColumnMod
 
 /// 表示名を引く対象の id（`user_ref` 列・作成者列の値）。
 export function userRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
-  const keys = cols.filter((c) => c.field?.type === "user_ref" || c.key === "_owner").map((c) => c.key);
+  const keys = cols
+    .filter((c) => c.field?.type === "user_ref" || c.field?.type === "created_by" || c.key === "_owner")
+    .map((c) => c.key);
   const out = new Set<string>();
   for (const r of rows) {
     for (const k of keys) {
@@ -525,17 +605,39 @@ export const OP_LABELS: Partial<Record<string, string>> = {
 };
 
 /// 絞り込みの 1 条件（画面で編集する形・すべて AND で結ぶ）。
-export type FilterRow = { field: string; op: CondOp; value: string };
+///
+/// `expr` は比べる値を式（ワークフローの「探す条件」の `$from` など）で決める条件。式はそのまま持ち、`value` は
+/// 使わない。`null` は「入力や結果から選ぶ」にしたが、まだ選んでいない下書き（適用できない・BUG-98）。
+export type FilterRow = { field: string; op: CondOp; value: string; expr?: Record<string, unknown> | null };
 
 const NO_VALUE: string[] = ["exists", "is_null"];
 
+/// 比べる値が式（`$from`・`$template` のような項目のまとまり）か。データの値は文字・数・真偽・リストなので、
+/// 項目のまとまりの値は式に限る。
+export function isExprValue(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
 /// 保存された条件 → 画面の条件行（AND の比較の並びだけ編集できる。それ以外は「詳細な条件」として残す）。
-export function splitFilter(c: Condition | null | undefined): { rows: FilterRow[]; advanced: Condition | null } {
+///
+/// 比べる値が式の条件は、文字に直さない（`String()` で「[object Object]」になり、適用するとその文字の条件に
+/// 置き換わって参照が黙って消えていた・BUG-98）。式を扱える画面（`exprs`）は行の `expr` に持ち、ほかの画面は
+/// 編集できない条件として丸ごと残す。
+export function splitFilter(
+  c: Condition | null | undefined,
+  { exprs = false }: { exprs?: boolean } = {},
+): { rows: FilterRow[]; advanced: Condition | null } {
   if (!c) return { rows: [], advanced: null };
   const leaves = "all" in c ? c.all : [c];
   const rows: FilterRow[] = [];
   for (const l of leaves) {
     if (!("cmp" in l) || (l.cmp.op === "in") || Array.isArray(l.cmp.value)) return { rows: [], advanced: c };
+    const raw: unknown = l.cmp.value;
+    if (isExprValue(raw)) {
+      if (!exprs) return { rows: [], advanced: c };
+      rows.push({ field: l.cmp.field, op: l.cmp.op, value: "", expr: raw });
+      continue;
+    }
     rows.push({ field: l.cmp.field, op: l.cmp.op, value: l.cmp.value == null ? "" : String(l.cmp.value) });
     // 日時の値（UTC の ISO）は datetime-local の入力欄に合わせて手元の時刻へ直して見せる。
     const last = rows[rows.length - 1];
@@ -552,6 +654,11 @@ export function buildFilter(rows: FilterRow[], advanced: Condition | null, colum
     const col = columns.find((c) => c.key === r.field);
     if (NO_VALUE.includes(r.op)) {
       leaves.push({ cmp: { field: r.field, op: r.op } });
+      continue;
+    }
+    // 式の値はそのまま戻す（選んでいない下書きは送らない）。
+    if (r.expr !== undefined) {
+      if (r.expr !== null) leaves.push({ cmp: { field: r.field, op: r.op, value: r.expr } } as Condition);
       continue;
     }
     // 型に合わない値の条件は送らない（画面で弾いているが、保存ビューの古い条件も含めて守る）。

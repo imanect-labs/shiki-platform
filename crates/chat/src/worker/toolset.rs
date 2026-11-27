@@ -16,8 +16,30 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 
 impl ChatWorker {
-    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI・ワークフロー）。
-    /// 提示ツール一式（共通＋ドキュメント/Office/CSV）はここ（worker/toolset.rs）に集約する。
+    /// 全プロファイルで提示するツール一式（自律専用のものは含まない）。積む順が提示の順になる。
+    pub(super) async fn base_tools(
+        &self,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+        skills: &[crate::skill::AppliedSkill],
+        attachments: &[AttachmentRef],
+        user_urls: Vec<url::Url>,
+    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
+        let mut tools = self.core_tools(skills, attachments, run, user_urls).await?;
+        // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）と、ワークフローを探すツール。
+        self.push_workflow_tools(&mut tools, ctx, run).await;
+        // skill ツール（カタログ引き・#344 Task 10.11）。
+        self.push_skill_tool(&mut tools, ctx, run, skills).await;
+        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋Office 編集/CSV。
+        self.push_collab_tools(&mut tools);
+        self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
+        Ok(tools)
+    }
+
+    /// 全プロファイル共通のツール（検索・コード実行・web・generative UI）。ワークフローは
+    /// [`Self::push_workflow_tools`]（発話ユーザーのモデル一覧を引くため ctx が要る）。
     ///
     /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
     ///
@@ -105,11 +127,8 @@ impl ChatWorker {
             // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
             // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
             // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
-            let mut fetch = WebFetchTool::new();
-            if let Some(parser) = &self.parser {
-                fetch = fetch.with_parser(parser.clone());
-            }
-            tools.push(Arc::new(fetch));
+            // 外へ出るのに中継が要る環境では、運用者が設定した中継だけを通す（GAP-72）。
+            tools.push(Arc::new(web_fetch_tool(&self.config, self.parser.as_ref())));
         }
         // ブラウザ（読む操作・browser.md §6）。門の絞り込み（RESEARCH_TOOLS）は呼び出し側が後で掛ける。
         self.push_browser_tool(&mut tools, user_urls);
@@ -118,16 +137,63 @@ impl ChatWorker {
         if self.config.yui {
             tools.push(Arc::new(super::yui_reference::UiReferenceTool));
         }
-        // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
-        // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
+        Ok(tools)
+    }
+
+    /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）と、既存のワークフローを探す
+    /// list_workflows（GAP-31）・search_workflows（図のボタンに実在する名前を書く）。
+    ///
+    /// emit / read / list はストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
+    /// 説明文には発話ユーザーの組織で使えるモデルと判定用のモデルを載せる（保存時の照合と同じ集合）。引けなければ
+    /// run を落とさず、モデルを載せない説明文にする（候補は検証エラーで返る）。
+    ///
+    /// 作成の冪等（R1・T02）: 名前が重なったら、本人がこの run の作られた時刻（再試行しても変わらない）以降に作った
+    /// 同名と内容を比べる。引くストアは artifact の単一チョークポイント（skill と同じ `ArtifactStore`）。
+    pub(super) async fn push_workflow_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        ctx: &AuthContext,
+        run: &ClaimedRun,
+    ) {
         if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
-            tools.push(Arc::new(crate::workflow_tool::EmitWorkflowTool::new(
-                store.clone(),
-                catalog.clone(),
-            )));
+            let mut emit =
+                crate::workflow_tool::EmitWorkflowTool::new(store.clone(), catalog.clone());
+            if let Some(artifacts) = &self.skill_artifacts {
+                emit = emit.with_created_since(Arc::clone(artifacts), run.created_at);
+            }
+            match catalog.models(ctx).await {
+                Ok(models) => emit = emit.with_models(&models),
+                Err(e) => {
+                    tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
+                }
+            }
+            // 省いたときに動く既定がこのユーザーに使えなければ、省略を勧めずに model を書かせる（D-185）。
+            match catalog.default_model_unavailable(ctx).await {
+                Ok(model) => emit = emit.with_default_model_unavailable(model),
+                Err(e) => {
+                    tracing::warn!(error = %e, "組織の既定のモデルの確かめに失敗（emit_workflow の説明文に載せない）");
+                }
+            }
+            // 判定用のモデル（ai.decide）も id と表示名を載せる（保存時の誤りの候補で知る往復を減らす・D-79）。
+            match catalog.decision_models(ctx).await {
+                Ok(models) => emit = emit.with_decision_models(&models),
+                Err(e) => {
+                    tracing::warn!(error = %e, "判定用のモデルの一覧の取得に失敗（emit_workflow の説明文に載せない）");
+                }
+            }
+            tools.push(Arc::new(emit));
             tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
                 store.clone(),
             )));
+            // 既存のワークフローを名前で探す（新しい会話から直す・本人に見えるものだけ・GAP-31）。
+            // 持ち主のものでも、最新の版をほかの人が保存していれば表示名・説明を封筒に入れる（PIT-56・T01 の残り）。
+            tools.push(Arc::new(
+                crate::workflow_tool::ListWorkflowsTool::new(
+                    store.clone(),
+                    workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
+                )
+                .with_version_authors(self.db.clone()),
+            ));
         }
         // 本人に見えるワークフローを探す（search_workflows・読み取りのみ）。図のボタンに実在する
         // 名前を書かせる。認可は注入した実装が一覧 API と同じ所有∪共有の経路で行う。
@@ -136,28 +202,6 @@ impl ChatWorker {
                 crate::workflow_search_tool::SearchWorkflowsTool::new(directory.clone()),
             ));
         }
-        Ok(tools)
-    }
-
-    /// エージェントモードで提示するツール一式（自律プロファイル専用のものと門の絞り込みは呼び出し側）。
-    pub(super) async fn agent_tools(
-        &self,
-        ctx: &AuthContext,
-        run: &ClaimedRun,
-        skills: &[crate::skill::AppliedSkill],
-        attachments: &[AttachmentRef],
-        user_urls: Vec<url::Url>,
-    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
-        let mut tools = self.core_tools(skills, attachments, run, user_urls).await?;
-        // skill ツール（カタログ引き・#344 Task 10.11）。
-        self.push_skill_tool(&mut tools, ctx, run, skills).await;
-        // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
-        // Office 編集/CSV ツール（worker/toolset.rs に集約）。
-        self.push_collab_tools(&mut tools);
-        self.push_office_and_csv_tools(&mut tools);
-        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
-        self.push_data_tools(&mut tools, ctx).await;
-        Ok(tools)
     }
 
     /// エージェントブラウザの読む操作（`browser`・docs/agent/browser.md §6）を提示ツールに加える。
@@ -169,7 +213,10 @@ impl ChatWorker {
         if self.web_search.is_none() {
             return;
         }
-        tools.push(Arc::new(agent_core::BrowserTool::text(user_urls)));
+        tools.push(Arc::new(agent_core::BrowserTool::text(
+            user_urls,
+            self.config.egress_proxy.clone(),
+        )));
     }
 
     /// ページ翻訳（`web_translate`・docs/agent/web-translate.md）を提示ツールに加える。
@@ -188,13 +235,10 @@ impl ChatWorker {
         if self.web_search.is_none() || gate_stage != super::gate::GateStage::Execute {
             return;
         }
-        let mut fetch = WebFetchTool::new();
-        if let Some(parser) = &self.parser {
-            fetch = fetch.with_parser(parser.clone());
-        }
+        // 取得は web_fetch と同じ組み立て（中継・文書パーサ・BUG-274）。
         tools.push(Arc::new(
             agent_core::WebTranslateTool::new(
-                fetch,
+                web_fetch_tool(&self.config, self.parser.as_ref()),
                 self.gateway.clone(),
                 format!("{}:{}", run.run_id, run.fencing_token),
                 Arc::clone(cancel),
@@ -202,6 +246,46 @@ impl ChatWorker {
             .with_model(model)
             .with_session_id(Some(run.thread_id.to_string())),
         ));
+    }
+
+    /// 試運転（`try_workflow`・T04・D-197）を提示ツールに加える。
+    ///
+    /// ページ翻訳と同じく実行の段階（[`super::gate::GateStage::Execute`]）でだけ提示する（計画の承認の前の門は
+    /// 研究系以外を通すため・`base_tools` には入れない）。起動の入口・run の要約・ワークフローのストアのどれかが
+    /// 無ければ（`workflow.enabled=false` など）提示しない。委譲の子には渡らない（`CHILD_TOOLS` は閉じた一覧）。
+    pub(super) fn push_try_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        slot: &Arc<super::slot::RunSlot>,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
+        gate_stage: super::gate::GateStage,
+    ) {
+        if gate_stage != super::gate::GateStage::Execute {
+            return;
+        }
+        let (Some(launcher), Some(runs), Some(workflows)) =
+            (&self.try_launcher, &self.try_runs, &self.workflow_store)
+        else {
+            return;
+        };
+        tools.push(Arc::new(crate::workflow_try_tool::TryWorkflowTool::new(
+            crate::workflow_try_tool::TryWorkflowDeps {
+                workflows: Arc::clone(workflows),
+                launcher: Arc::clone(launcher),
+                runs: Arc::clone(runs),
+                chat: self.store.clone(),
+                db: self.db.clone(),
+            },
+            crate::workflow_try_tool::TryScope {
+                chat_run_id: run.run_id,
+                thread_id: run.thread_id,
+                chat_trace_id: run.trace_id.clone(),
+                slot: Arc::clone(slot),
+                cancel: Arc::clone(cancel),
+                wait: self.config.try_wait,
+            },
+        )));
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
@@ -312,7 +396,7 @@ impl ChatWorker {
     /// 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
     ///
     /// DataStore が配線され、**発話ユーザーに見えるテーブルが 1 つ以上ある**ときだけ提示する
-    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界）。一覧の取得失敗は run を
+    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界。一覧が上限で切れて 0 件のときも提示する）。一覧の取得失敗は run を
     /// 落とさない（warn してツールを出さない）。認可は各呼び出しで data が本人の権限で毎回判定する。
     pub(super) async fn push_data_tools(&self, tools: &mut Vec<Arc<dyn Tool>>, ctx: &AuthContext) {
         use crate::data_tool::{
@@ -496,3 +580,31 @@ impl ChatWorker {
         }
     }
 }
+
+/// `web_fetch` と `web_translate` が共有する取得の道具（運用者が設定した外への送信の中継・文書パーサ）。
+///
+/// 両方の道具が同じ組み立てを通る（片方だけ中継を付け忘れると、中継でしか外へ出られない環境では取得に失敗し、
+/// 直接出られる環境では監査の中継を迂回する・GAP-72・BUG-274）。
+pub(super) fn web_fetch_tool(
+    config: &super::WorkerConfig,
+    parser: Option<&Arc<dyn rag::DocumentParser>>,
+) -> WebFetchTool {
+    configure_fetch(WebFetchTool::new(), config, parser)
+}
+
+/// 取得の道具に、中継と文書パーサを付ける（[`web_fetch_tool`] の中身・テストは名前の引き方を差し替えて通す）。
+fn configure_fetch(
+    fetch: WebFetchTool,
+    config: &super::WorkerConfig,
+    parser: Option<&Arc<dyn rag::DocumentParser>>,
+) -> WebFetchTool {
+    let mut fetch = fetch.with_proxy(config.egress_proxy.clone());
+    if let Some(parser) = parser {
+        fetch = fetch.with_parser(parser.clone());
+    }
+    fetch
+}
+
+#[cfg(test)]
+#[path = "toolset_tests.rs"]
+mod tests;

@@ -17,6 +17,7 @@ pub mod host;
 pub mod prelude;
 mod runtime_io;
 pub mod server;
+mod uncaught;
 mod wasi_stub;
 
 /// tonic 生成コード（`ServerToRuntime` / `RuntimeToServer` / `ScriptRuntime` サービス）。
@@ -29,3 +30,4 @@ pub use compile::{compile, CompileError, CompiledScript};
 pub use engine::{EngineHandle, ExecOutcome, Limits, ScriptEngine, Termination};
 pub use frames::{validate_host_call, FrameError};
 pub use host::{HostCall, HostCallHandler, HostResponse};
+pub use uncaught::SCRIPT_ERROR;

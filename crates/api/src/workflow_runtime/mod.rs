@@ -2,13 +2,27 @@
 //!
 //! `workflow.enabled` の時、本番 executor を組んで ①run ワーカー（`FOR UPDATE SKIP LOCKED` で
 //! 多重起動安全）②スケジューラ（`LeaderLease` 単一リーダー・cron tick）③イベント relay
-//! （outbox 配送台帳 `claim_undelivered("workflow")` → `match_event`）を detach タスクで走らせる。
+//! （outbox 配送台帳 `claim_undelivered("workflow")` → トリガの照合・wait の起床・`relay.rs`）を
+//! detach タスクで走らせる。
 //! RAG の `spawn_pipeline` と同型（プロセス生存中 loop・エラーは小休止して再試行）。
 
+mod agent_port;
+mod agent_tools;
 mod auth;
 mod data_port;
+mod decide_port;
+mod document_read;
+mod http_egress;
+mod llm_error;
+mod llm_model;
+mod llm_port;
 mod ports;
+mod relay;
+mod relay_approval;
+mod relay_data;
+mod relay_origin;
 mod skill_port;
+mod text_file;
 
 use std::sync::Arc;
 
@@ -19,7 +33,12 @@ use workflow_engine::{
     SchedulerStore, TokenBucket, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
 };
 
+pub use http_egress::{check_internal_hosts, HttpEgress};
 pub use ports::ProdNodePorts;
+pub use relay::{relay_events, retry_event_firings, RelayDeps};
+pub use relay_approval::{
+    expire_due_approvals, expire_due_approvals_within, DueApprovalSweep, DueSweepLimits,
+};
 
 /// ワークフロー実行時の設定（既定は無効・compose/e2e で有効化）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,8 +65,19 @@ pub struct WorkflowConfig {
     #[serde(default = "default_lease_secs")]
     pub lease_secs: i64,
     /// http.request の egress allowlist（secret 宛先束縛と AND・空なら secret 必須）。
+    ///
+    /// ここに書いたホストも、名前解決の後のアドレスがすべて公開の IP のときだけ送る（内部の IP は
+    /// `http_internal_hosts` に書いたホストだけ・D-135）。
     #[serde(default)]
     pub http_allowlist: Vec<String>,
+    /// 内部のネットワーク（private・ループバックなど）の IP へ送ってよいホスト（`host` か `host:port`。ワイルドカードは
+    /// 書けない・オンプレの社内システムを呼ぶ使い方・D-135）。
+    ///
+    /// 送れる先は `http_allowlist` とシークレットの宛先束縛で決まり、ここは名前解決の後のアドレスの確かめだけを緩める。
+    /// 名前解決の結果をそのまま信じるので、DNS を管理者が管理するホストだけを書く。リンクローカルとクラウドの
+    /// メタデータのアドレスは、書いても送らない。
+    #[serde(default)]
+    pub http_internal_hosts: Vec<String>,
     /// http.request のタイムアウト（ミリ秒）。
     #[serde(default = "default_http_timeout_ms")]
     pub http_timeout_ms: u64,
@@ -56,6 +86,81 @@ pub struct WorkflowConfig {
     pub rate_capacity: u32,
     #[serde(default = "default_rate_refill")]
     pub rate_refill_per_sec: f64,
+    /// AI エージェント（agent.invoke）の上限と web の天井（BUG-6・D-29）。
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// AI エージェント（agent.invoke）の設定。ノードの設定はこれを天井に縮めるだけ。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// プロセス内で同時に走らせる agent.invoke の数（未設定は run ワーカーの並行数の半分・最低 1）。
+    /// 長く走る step がワーカーを占有して、ほかのテナントの step まで止めないようにする。
+    #[serde(default)]
+    pub max_concurrent: Option<usize>,
+    /// web.fetch が読んでよいサイトの天井（ホスト名か `*.example.com`）。未設定・空なら web.fetch は
+    /// 提示しない（ノードの `egress_allowlist` はこの部分集合に限る）。`http_allowlist`（http.request の
+    /// 宛先）には戻さない: 広い宛先を http.request に許した環境で、AI の web.fetch まで同じ宛先を継いで
+    /// 間接プロンプトインジェクションの出口を広げないため（D-59・PIT-80）。
+    #[serde(default)]
+    pub web_allowlist: Option<Vec<String>>,
+    /// ノードで手順の上限を省略したときの値（既定 8・最大 24）。
+    #[serde(default)]
+    pub default_max_steps: Option<u32>,
+    /// 1 回の実行の合計トークンの天井（既定 200,000）。
+    #[serde(default)]
+    pub max_total_tokens: Option<u64>,
+    /// 1 回の実行の費用の天井（マイクロ USD・既定 500,000 = $0.5）。
+    #[serde(default)]
+    pub max_cost_usd_micros: Option<i64>,
+}
+
+impl WorkflowConfig {
+    /// run ワーカーの設定。外部 API 呼び出しの時間の上限の既定を、応答を待つ時間（`http_timeout_ms`）より短くしない。
+    #[must_use]
+    pub fn worker_config(&self) -> WorkerConfig {
+        WorkerConfig {
+            lease_secs: self.lease_secs,
+            http_timeout_ms: Some(self.http_timeout_ms),
+            ..WorkerConfig::default()
+        }
+    }
+
+    /// web.fetch が読んでよいサイトの天井（`agent.web_allowlist` だけ・未設定は空＝web.fetch を提示しない）。
+    ///
+    /// 保存時の照合（V3）・実行時の宛先・`GET /workflows/agent-settings`（エディタ）・AI 作成の照合は、
+    /// すべてこの値を使う（D-59。`http_allowlist` には戻さない）。
+    #[must_use]
+    pub fn agent_web_ceiling(&self) -> Vec<String> {
+        self.agent
+            .web_allowlist
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| workflow_engine::valid_host_pattern(h))
+            .collect()
+    }
+
+    /// エンジンに渡す agent.invoke の上限。
+    #[must_use]
+    pub fn agent_limits(&self) -> workflow_engine::AgentLimits {
+        let d = workflow_engine::AgentLimits::default();
+        workflow_engine::AgentLimits {
+            max_concurrent: self
+                .agent
+                .max_concurrent
+                .unwrap_or(self.worker_concurrency / 2)
+                .max(1),
+            default_max_steps: self.agent.default_max_steps.unwrap_or(d.default_max_steps),
+            max_total_tokens: self.agent.max_total_tokens.unwrap_or(d.max_total_tokens),
+            max_cost_usd_micros: self
+                .agent
+                .max_cost_usd_micros
+                .unwrap_or(d.max_cost_usd_micros),
+            web_ceiling: self.agent_web_ceiling(),
+        }
+    }
 }
 
 impl Default for WorkflowConfig {
@@ -69,9 +174,11 @@ impl Default for WorkflowConfig {
             node_kind_step_limit: default_node_kind_steps(),
             lease_secs: default_lease_secs(),
             http_allowlist: Vec::new(),
+            http_internal_hosts: Vec::new(),
             http_timeout_ms: default_http_timeout_ms(),
             rate_capacity: default_rate_capacity(),
             rate_refill_per_sec: default_rate_refill(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -184,20 +291,25 @@ pub struct RuntimeDeps {
     pub search: Option<Arc<rag::SearchService>>,
     pub gateway: Arc<llm_gateway::LlmGateway>,
     pub sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
-    /// コード実行系（agent_invoke ノード）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
+    /// コード実行系（agent.invoke の code.run）の隔離ティア（admin ポリシー・chat と同一の単一ソース）。
     pub sandbox_backend: sandbox_client::SandboxBackend,
     pub secrets: Option<Arc<secrets::SecretStore>>,
     /// CSV 表データ（csv.query/patch/write ノード・Task 11P.9）。
     pub tabular: Option<Arc<tabular::TabularService>>,
     /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
-    pub http: reqwest::Client,
     pub redis_url: Option<String>,
     pub config: WorkflowConfig,
     /// 構造化データ（data ノード・`Shiki.data.*`・Task 15.7）。
     pub data: Arc<data::DataStore>,
     /// data.transition の FSM 定義の解決。
     pub fsms: Arc<data::FsmStore>,
+    /// 公開 web の検索（agent.invoke の web.search・チャットと同じ設定）。
+    pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// 消したワークフローに残る委譲の掃除（scheduler の tick・BUG-128）。
+    pub registration: workflow_engine::RegistrationService,
+    /// 運用者が設定した外への送信の中継（http.request・`Shiki.http.request`・web.fetch・GAP-72）。無ければ直接つなぐ。
+    pub egress_proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -215,20 +327,26 @@ async fn build_prod_executor(
         tabular: deps.tabular.clone(),
         skill_artifacts: deps.skill_artifacts.clone(),
         launcher: launcher.clone(),
-        http: deps.http.clone(),
+        // 内部の IP へ送れるのは、管理者が内部の送り先として書いたホストだけ（送れる先の許可とは分ける・D-135）。
+        // 外へ出るのに中継が要る環境では、運用者が設定した中継だけを通す（社内の送り先は直接つなぐ・GAP-72）。
+        http: HttpEgress::new(&deps.config.http_internal_hosts)
+            .with_proxy(deps.egress_proxy.clone()),
         db: deps.db.clone(),
         data: Some(Arc::clone(&deps.data)),
         fsms: Some(Arc::clone(&deps.fsms)),
+        web_search: deps.web_search.clone(),
     });
     let journal = EffectJournal::new(deps.db.clone());
     let audit = Arc::new(RunAudit {
         db: deps.db.clone(),
         recorder: storage::audit::AuditRecorder::new(deps.db.clone()),
     });
-    let mut executor = CapabilityNodeExecutor::new(ports, journal, audit).with_http_allowlist(
-        deps.config.http_allowlist.clone(),
-        deps.config.http_timeout_ms,
-    );
+    let mut executor = CapabilityNodeExecutor::new(ports, journal, audit)
+        .with_http_allowlist(
+            deps.config.http_allowlist.clone(),
+            deps.config.http_timeout_ms,
+        )
+        .with_agent_limits(deps.config.agent_limits());
 
     // レート制御（Redis があれば・無ければ制限なしで続行）。
     if deps.config.rate_capacity > 0 {
@@ -260,6 +378,28 @@ async fn build_prod_executor(
     executor
 }
 
+/// run ワーカーのタスクを見張る（`JoinHandle` を捨てない・BUG-215）。
+///
+/// ワーカーのタスクは step の処理の panic を捕まえて戻らない（`WorkflowWorker::spawn`）。それでも 1 つが終わったら、
+/// 黙って並行数が減らないよう、誤りとして記録する（プロセスの終わりの取り消しは記録しない）。
+async fn watch_workers(mut workers: Vec<tokio::task::JoinHandle<()>>) {
+    while !workers.is_empty() {
+        let (done, _, rest) = futures::future::select_all(workers).await;
+        workers = rest;
+        match done {
+            Err(e) if e.is_cancelled() => {}
+            Err(e) => tracing::error!(
+                error = %e, left = workers.len(),
+                "ワークフローの run ワーカーのタスクが止まりました"
+            ),
+            Ok(()) => tracing::error!(
+                left = workers.len(),
+                "ワークフローの run ワーカーのタスクが終わりました"
+            ),
+        }
+    }
+}
+
 /// worker/scheduler/event-relay を起動する（`enabled=false` なら何もしない）。
 pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     if !deps.config.enabled {
@@ -274,41 +414,47 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
 
     // ① run ワーカー（多重起動安全・detach）。3 階層並行制御を結線（10.5・順番待ち）。
     let concurrency_store = workflow_engine::ConcurrencyStore::new(deps.db.clone());
-    let worker = WorkflowWorker::new(
-        runs.clone(),
-        executor,
-        WorkerConfig {
-            lease_secs: deps.config.lease_secs,
-            ..WorkerConfig::default()
-        },
-    )
-    .with_concurrency(
-        concurrency_store.clone(),
-        workflow_engine::ConcurrencyLimits {
-            tenant_steps: deps.config.tenant_step_limit,
-            workflow_steps: deps.config.workflow_step_limit,
-            node_kind_steps: deps.config.node_kind_step_limit,
-        },
-    );
+    let worker = WorkflowWorker::new(runs.clone(), executor, deps.config.worker_config())
+        .with_concurrency(
+            concurrency_store.clone(),
+            workflow_engine::ConcurrencyLimits {
+                tenant_steps: deps.config.tenant_step_limit,
+                workflow_steps: deps.config.workflow_step_limit,
+                node_kind_steps: deps.config.node_kind_step_limit,
+            },
+        );
     let worker_id = format!("wf-worker-{}", std::process::id());
-    worker.spawn(deps.config.worker_concurrency, &worker_id);
+    let workers = worker.spawn(deps.config.worker_concurrency, &worker_id);
     tracing::info!(
         concurrency = deps.config.worker_concurrency,
         "ワークフロー run ワーカーを起動しました"
     );
+    tokio::spawn(watch_workers(workers));
 
     // 実行履歴 GC（engine.md §12.2）はここでは起動しない。`workflow.enabled` と独立した保守
     // ランタイムとして `wiring::wire_workflow` が enabled ゲートの外で起動する（#448）。
 
-    // ② スケジューラ ③ イベント relay（単一リーダー・tick ループ・detach）。
+    // ② スケジューラ ③ イベント relay（単一リーダー・それぞれのループ・detach）。
     let leader_id = format!("wf-sched-{}", std::process::id());
     let lease = LeaderLease::new(deps.db.clone(), leader_id, deps.config.lease_secs);
     let sched = SchedulerStore::new(deps.db.clone());
     let launcher_dyn = workflow_engine::run::launcher::into_dyn(launcher);
     let tick = std::time::Duration::from_secs(deps.config.tick_secs.max(1));
     let relay_db = deps.db.clone();
+    let relay_storage = Arc::clone(&deps.storage);
+    let relay_data = Arc::clone(&deps.data);
+    let relay_fsms = Arc::clone(&deps.fsms);
+    let relay_runs = deps.runs.clone();
+    let relay_sched = sched.clone();
+    let relay_launcher = Arc::clone(&launcher_dyn);
+    let relay_lease = lease.clone();
     let tick_runs = deps.runs.clone();
+    let tick_db = deps.db.clone();
+    let tick_data = Arc::clone(&deps.data);
+    let tick_fsms = Arc::clone(&deps.fsms);
     let tick_concurrency = concurrency_store;
+    let tick_registration = deps.registration.clone();
+    let mut retire_due = std::time::Instant::now();
     // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
     let claim_hints = storage::event::ClaimHints::default();
 
@@ -320,6 +466,33 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         tracing::error!(error = %e, "workflow consumer 登録に失敗");
     }
 
+    // ③ イベント relay は tick（cron・timer・timeout）とは別のループで回す（データ変更の照合が重くても
+    // スケジュールの発火や期限の回収を遅らせない・GAP-07）。リーダーは同じリース（同じ保持者）。
+    tokio::spawn(async move {
+        loop {
+            match relay_lease.acquire_or_renew().await {
+                Ok(true) => {
+                    let relay = RelayDeps {
+                        db: &relay_db,
+                        hints: &claim_hints,
+                        sched: &relay_sched,
+                        runs: &relay_runs,
+                        launcher: relay_launcher.as_ref(),
+                        storage: &relay_storage,
+                        data: &relay_data,
+                        fsms: &relay_fsms,
+                    };
+                    if let Err(e) = relay_events(&relay).await {
+                        tracing::warn!(error = %e, "イベント relay でエラー");
+                    }
+                }
+                Ok(false) => {} // 別インスタンスがリーダー。
+                Err(e) => tracing::warn!(error = %e, "リーダーリース取得に失敗"),
+            }
+            tokio::time::sleep(tick).await;
+        }
+    });
+
     tokio::spawn(async move {
         loop {
             match lease.acquire_or_renew().await {
@@ -328,21 +501,28 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = sched.tick_schedules(now, None, launcher_dyn.as_ref()).await {
                         tracing::warn!(error = %e, "スケジューラ tick でエラー");
                     }
-                    if let Err(e) = relay_events(
-                        &relay_db,
-                        &claim_hints,
-                        &sched,
-                        &tick_runs,
-                        launcher_dyn.as_ref(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "イベント relay でエラー");
-                    }
                     // wait(timer) 起床・wait(event/timer) の timeout 回収（engine.md §5.1）。
                     if let Err(e) = tick_runs.wake_due_timers(now, None).await {
                         tracing::warn!(error = %e, "waiting_timer 起床でエラー");
                     }
+                    // 承認の期限切れ（決着の監査を残す・GAP-08）。実行主体が失権した承認は期限の出口へ進めずに
+                    // run を失敗させる（D-62）。確かめが一時障害で終わった承認だけを次の tick に残し、ほかの
+                    // 承認（ほかのテナントの分を含む）は止めない。
+                    match expire_due_approvals(
+                        &tick_db, &tick_runs, &tick_data, &tick_fsms, now, None,
+                    )
+                    .await
+                    {
+                        Ok(s) if s.deferred > 0 || s.more => tracing::warn!(
+                            resolved = s.resolved,
+                            deferred = s.deferred,
+                            more = s.more,
+                            "承認の期限切れの回収で決めずに残した承認があります（次の tick で続ける）"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "承認の期限切れの回収でエラー"),
+                    }
+                    // wait(event) の timeout の回収（承認は扱わない・上の回収が滞っても毎回進める）。
                     if let Err(e) = tick_runs.expire_due_waits(now, None).await {
                         tracing::warn!(error = %e, "wait timeout 回収でエラー");
                     }
@@ -351,9 +531,7 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                         tracing::warn!(error = %e, "cancel ドレインでエラー");
                     }
                     // run 多重度の promote・run timeout・並行カウンタ突合（10.5）。
-                    if let Err(e) = tick_runs.promote_queued_runs(None).await {
-                        tracing::warn!(error = %e, "queued promote でエラー");
-                    }
+                    promote_queued(&tick_runs).await;
                     if let Err(e) = tick_runs.expire_run_timeouts(now, None).await {
                         tracing::warn!(error = %e, "run timeout 回収でエラー");
                     }
@@ -368,6 +546,11 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = tick_concurrency.reconcile().await {
                         tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");
                     }
+                    // 消したワークフローに残る委譲の掃除（削除の後の取り消しが失敗した分・1 分ごと・BUG-128）。
+                    if retire_due.elapsed() >= RETIRE_SWEEP_EVERY {
+                        retire_due = std::time::Instant::now();
+                        retire_deleted_workflows(&tick_db, &tick_registration).await;
+                    }
                 }
                 Ok(false) => {} // 別インスタンスがリーダー。
                 Err(e) => tracing::warn!(error = %e, "リーダーリース取得に失敗"),
@@ -378,93 +561,127 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     tracing::info!("ワークフロースケジューラ/イベント relay を起動しました");
 }
 
-/// outbox の workflow 未配送イベントを 1 バッチ処理する（storage.write のみ・at-least-once）。
+/// 消したワークフローの掃除の間隔（委譲の行を走査するので tick ごとには回さない）。
+const RETIRE_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_mins(1);
+/// 掃除の 1 回で取り消すワークフローの数の上限。
+const RETIRE_SWEEP_LIMIT: i64 = 20;
+
+/// 論理削除したワークフローに残る委譲と、取り消しの印の無い動いている run を取り消す（scheduler tick・BUG-128）。
 ///
-/// 各イベントを ①トリガマッチ（run 起動）②wait(event) 起床、の両方へ配る（engine.md §5.5 同一マッチャ）。
-/// いずれも祖先束縛 scope（イベント発生フォルダ id）＋filter で照合する。
-async fn relay_events(
+/// ふつうは削除の API が commit の後に取り消す（[`crate::routes::workflows::registration::after_workflow_deleted`]）。
+/// そこで OpenFGA に届かなかった分や、削除と重なって作られた run を、ここが同じ経路（「権限も取り消す」）で取り消す。
+/// 監査は system の主体で、削除の API の後始末と同じ行を残す（[`retire_audit`]）。
+async fn retire_deleted_workflows(
     db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-) -> Result<(), anyhow::Error> {
-    // 溜まっていれば 1 tick の中で続けて捌く（構造化データのレコード変更も outbox に乗るので、一括取込の
-    // 直後は件数が多い。1 tick 1 バッチだと他の consumer と GC を長く止める・Task 15.6）。
-    for _ in 0..RELAY_BATCHES_PER_TICK {
-        if relay_events_batch(db, hints, sched, runs, launcher).await? < RELAY_BATCH {
-            break;
+    registration: &workflow_engine::RegistrationService,
+) {
+    let retired = match registration.retire_deleted(RETIRE_SWEEP_LIMIT).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = ?e, "消したワークフローの委譲の掃除でエラー");
+            return;
+        }
+    };
+    for w in retired {
+        let (tenant, workflow_id, r) = (&w.tenant_id, w.workflow_id, &w.revocation);
+        registration.notify_revoked(tenant, workflow_id, r).await;
+        tracing::info!(
+            tenant = %tenant,
+            %workflow_id,
+            revoked = r.delegations.len(),
+            cancelled_runs = r.cancelled_runs.len(),
+            "消したワークフローに残っていた委譲・実行を取り消しました"
+        );
+        // 監査の actor を組めない（tenant_id が不正）なら監査だけを書かない（取り消しは済んでいる）。
+        let Ok(tenant_id) = authz::TenantId::parse(tenant.as_str()) else {
+            tracing::warn!(%workflow_id, "消したワークフローの後始末の監査を書けない（tenant_id が不正）");
+            continue;
+        };
+        let ctx = authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "system:workflow-retire".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            w.org.clone(),
+            tenant_id,
+        );
+        let object_id = workflow_id.to_string();
+        for (action, metadata) in retire_audit(r) {
+            let entry = storage::audit::AuditEntry {
+                action,
+                object_type: "workflow",
+                object_id: &object_id,
+                decision: storage::audit::Decision::Allow,
+                trace_id: None,
+                metadata,
+            };
+            if let Err(e) = storage::audit::AuditRecorder::new(db.clone())
+                .record(&ctx, entry)
+                .await
+            {
+                tracing::warn!(error = %e, %workflow_id, "消したワークフローの掃除の監査に失敗");
+            }
         }
     }
-    Ok(())
 }
 
-/// 1 tick で捌く outbox の最大バッチ数と、1 バッチの件数（claim は配送済みの行を走査するので、1 回の件数を
-/// 大きくして回数を減らす・一括取込の 10 万件で 64 件ずつだと追いつくまで 15〜20 分かかった・検証 D-14）。
-const RELAY_BATCHES_PER_TICK: usize = 32;
-const RELAY_BATCH: usize = 500;
+/// 掃除で止めたワークフロー 1 件の監査の行（削除の API の後始末と同じ形・理由 `workflow_deleted`）。
+///
+/// - 自動実行の登録があったか、run を取り消したなら `workflow.disable`（削除の API が後始末に失敗したときも、自動
+///   実行のオフと run の取り消しが監査に残る）。
+/// - 委譲を取り消したなら `workflow.delegation.revoke`（取り消したものが無ければ残さない）。
+fn retire_audit(
+    r: &workflow_engine::Revocation,
+) -> Vec<(storage::audit::AuditAction, serde_json::Value)> {
+    use storage::audit::AuditAction;
+    let mut out = Vec::new();
+    if r.registered || !r.cancelled_runs.is_empty() {
+        out.push((
+            AuditAction::WorkflowDisable,
+            serde_json::json!({
+                "reason": "workflow_deleted",
+                "revoke_delegations": true,
+                "cancelled_runs": r.cancelled_runs.len(),
+            }),
+        ));
+    }
+    if !r.delegations.is_empty() {
+        out.push((
+            AuditAction::WorkflowDelegationRevoke,
+            serde_json::json!({
+                "reason": "workflow_deleted",
+                "revoked": r.delegations.len(),
+                "delegations": r.delegations,
+                "cancelled_runs": r.cancelled_runs.len(),
+            }),
+        ));
+    }
+    out
+}
 
-async fn relay_events_batch(
-    db: &sqlx::PgPool,
-    hints: &storage::event::ClaimHints,
-    sched: &SchedulerStore,
-    runs: &RunStore,
-    launcher: &dyn workflow_engine::RunLauncher,
-) -> Result<usize, anyhow::Error> {
-    let mut tx = db.begin().await?;
-    let events = storage::event::claim_undelivered_hinted(
-        &mut tx,
-        hints,
-        "workflow",
-        "workflow",
-        RELAY_BATCH as i64,
-    )
-    .await?;
-    if events.is_empty() {
-        return Ok(0);
-    }
-    let mut ids = Vec::with_capacity(events.len());
-    for ev in &events {
-        // data サービス由来イベント（FSM 遷移等・payload.event_type 付き）は storage.write では
-        // ない。Phase 10.3 の data トリガが消費するまでは配送済みにしてスキップする
-        // （storage.write として誤発火させない・Task 9.10）。
-        if ev
-            .payload
-            .get("event_type")
-            .and_then(|v| v.as_str())
-            .is_some()
-        {
-            ids.push(ev.id);
-            continue;
+/// queued run の昇格（scheduler tick・全テナント）。
+///
+/// promote はワークフローごとに誤りを閉じ込める（1 つの誤りでほかのテナントの昇格を止めない・ピンした IR を
+/// 知っている版で読めない run は failed で外し、新しい版の IR は新しい版のリーダーに任せる・D-65）。個々の
+/// 理由は engine が warn に残すので、ここでは進められなかった数を残す。
+async fn promote_queued(runs: &RunStore) {
+    match runs.promote_queued_runs(None).await {
+        Ok(r) if r.failed > 0 || r.skipped_workflows > 0 || r.deferred_newer_ir > 0 => {
+            tracing::warn!(
+                promoted = r.promoted,
+                failed = r.failed,
+                skipped_workflows = r.skipped_workflows,
+                deferred_newer_ir = r.deferred_newer_ir,
+                "queued promote で進められない run・ワークフローがありました"
+            );
         }
-        // Stage A: 全 WriteOp を storage.write source に写像。祖先束縛はイベント発生フォルダ id で照合。
-        let event_folder = ev
-            .payload
-            .get("parent_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| uuid::Uuid::parse_str(s).ok());
-        // match_event / wake_event_waits は自 tx（trigger_firing UNIQUE・wait_subscription fired）で冪等。
-        sched
-            .match_event(
-                &ev.tenant_id,
-                "storage.write",
-                ev.id,
-                event_folder,
-                &ev.payload,
-                launcher,
-            )
-            .await?;
-        runs.wake_event_waits(&ev.tenant_id, "storage.write", event_folder, &ev.payload)
-            .await?;
-        ids.push(ev.id);
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "queued promote でエラー"),
     }
-    storage::event::mark_delivered(&mut tx, "workflow", &ids).await?;
-    tx.commit().await?;
-    tracing::debug!(
-        count = ids.len(),
-        "outbox → workflow event matcher / wait へ relay"
-    );
-    Ok(events.len())
 }
 
 async fn build_bucket(redis_url: &str) -> Result<TokenBucket, anyhow::Error> {
@@ -549,5 +766,102 @@ mod audit_tests {
         assert_eq!(row.4["workflow_version"], 3);
         assert_eq!(row.4["step"], "n1");
         assert_eq!(row.4["principal_kind"], "workflow");
+    }
+}
+
+#[cfg(test)]
+mod retire_audit_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use storage::audit::AuditAction;
+
+    /// 掃除で止めたものは、削除の API の後始末と同じ行で監査に残る（自動実行のオフと run の取り消し・委譲の取り消し）。
+    #[test]
+    fn the_sweep_records_what_it_stopped() {
+        let delegation = workflow_engine::RevokedDelegation {
+            delegator: "alice".into(),
+            scope: "data.write".into(),
+            object_ref: "data_table:t|1".into(),
+            relation: "editor".into(),
+        };
+        let run = uuid::Uuid::nil();
+        // 削除と重なって作られた run だけを止めた（委譲は API がもう外した）。
+        let only_run = workflow_engine::Revocation {
+            delegations: vec![],
+            cancelled_runs: vec![run],
+            registered: false,
+        };
+        let rows = retire_audit(&only_run);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, AuditAction::WorkflowDisable);
+        assert_eq!(rows[0].1["reason"], "workflow_deleted");
+        assert_eq!(rows[0].1["cancelled_runs"], 1);
+        // 削除の API が委譲を外せなかった。
+        let both = workflow_engine::Revocation {
+            delegations: vec![delegation],
+            cancelled_runs: vec![],
+            registered: true,
+        };
+        let actions: Vec<AuditAction> = retire_audit(&both).into_iter().map(|(a, _)| a).collect();
+        assert_eq!(
+            actions,
+            [
+                AuditAction::WorkflowDisable,
+                AuditAction::WorkflowDelegationRevoke
+            ]
+        );
+        assert_eq!(
+            retire_audit(&both)[1].1["delegations"][0]["relation"],
+            "editor"
+        );
+        // 何も止めていなければ何も残さない。
+        assert!(retire_audit(&workflow_engine::Revocation::default()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod agent_config_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use figment::providers::{Format, Toml};
+
+    fn load(toml: &str) -> WorkflowConfig {
+        figment::Figment::from(Toml::string(toml))
+            .extract()
+            .expect("toml")
+    }
+
+    /// `agent.web_allowlist` が未設定なら、http.request の許可（`http_allowlist`）を継がず、web.fetch を
+    /// 提示しない（保存時の照合・実行時の宛先・エディタへ返す天井が同じ空になる・D-59）。
+    #[test]
+    fn web_ceiling_does_not_fall_back_to_the_http_allowlist() {
+        let cfg = load(r#"http_allowlist = ["api.example.com", "*.example.org"]"#);
+        assert!(cfg.agent.web_allowlist.is_none());
+        assert!(cfg.agent_web_ceiling().is_empty());
+        assert!(cfg.agent_limits().web_ceiling.is_empty());
+        // 空で設定したときも同じ（http_allowlist には戻らない）。
+        let cfg = load(
+            r#"
+            http_allowlist = ["api.example.com"]
+            [agent]
+            web_allowlist = []
+            "#,
+        );
+        assert!(cfg.agent_web_ceiling().is_empty());
+    }
+
+    /// 天井は `agent.web_allowlist` だけから作る（小文字にそろえ、書き方の誤ったものは外す）。
+    #[test]
+    fn web_ceiling_comes_only_from_the_agent_web_allowlist() {
+        let cfg = load(
+            r#"
+            http_allowlist = ["api.example.com"]
+            [agent]
+            web_allowlist = ["Docs.Example.com", " *.example.net ", "bad host", "https://x.example.com"]
+            "#,
+        );
+        let expected = vec!["docs.example.com".to_string(), "*.example.net".to_string()];
+        assert_eq!(cfg.agent_web_ceiling(), expected);
+        assert_eq!(cfg.agent_limits().web_ceiling, expected);
     }
 }

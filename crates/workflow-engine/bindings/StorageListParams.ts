@@ -8,4 +8,9 @@ export type StorageListParams = {
 /**
  * 一覧するフォルダ id（省略時はルート）。
  */
-folder?: ValueExpr, };
+folder?: ValueExpr, 
+/**
+ * 続きの位置（前の「フォルダ一覧」の結果の `next_cursor`・同じフォルダーのもの）。省略・null・空の文字は先頭から
+ * 読む（この項目が無かったころの定義の挙動・D-131）。
+ */
+cursor?: ValueExpr, };

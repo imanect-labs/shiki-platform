@@ -84,15 +84,23 @@ export type PlusMenuProps = {
 };
 
 /// 閉じきってから走らせる操作の予約（ドライブ・スキル一覧を開く）。
-function useAfterClose() {
+///
+/// 走らせる前に「+」（`trigger`）へフォーカスを置く。開いた面（ドライブから選ぶなど）は、閉じたときに開いたときの
+/// 要素へフォーカスを戻すので、キーボードで操作する人が「+」の位置に戻れる（BUG-261）。面はこの後に開くので、
+/// このフォーカスは面の外側の操作と見なされない。
+function useAfterClose(trigger: React.RefObject<HTMLButtonElement | null>) {
   const pending = React.useRef<(() => void) | null>(null);
-  const onCloseAutoFocus = React.useCallback((e: Event) => {
-    const run = pending.current;
-    if (!run) return;
-    pending.current = null;
-    e.preventDefault();
-    run();
-  }, []);
+  const onCloseAutoFocus = React.useCallback(
+    (e: Event) => {
+      const run = pending.current;
+      if (!run) return;
+      pending.current = null;
+      e.preventDefault();
+      trigger.current?.focus({ preventScroll: true });
+      run();
+    },
+    [trigger],
+  );
   return { pending, onCloseAutoFocus };
 }
 
@@ -107,8 +115,10 @@ export function PlusMenu(props: PlusMenuProps) {
     [onPickSkill],
   );
 
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
   const button = (
     <button
+      ref={triggerRef}
       type="button"
       aria-label="追加メニューを開く"
       title="追加（添付・作成・ツール・スキル）"
@@ -127,7 +137,7 @@ export function PlusMenu(props: PlusMenuProps) {
     </button>
   );
 
-  const shared = { ...props, pickSkill };
+  const shared = { ...props, pickSkill, triggerRef };
 
   return (
     <>
@@ -145,6 +155,8 @@ export function PlusMenu(props: PlusMenuProps) {
 
 type SharedProps = PlusMenuProps & {
   pickSkill: (s: SlashSuggestion) => void;
+  /// 「+」のボタン（閉じてから別の面を開くとき、先にフォーカスを置く）。
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
 };
 
 // ── PC: ドロップダウン ─────────────────────────────────────────────
@@ -160,13 +172,14 @@ function DesktopPlusMenu({
   pickSkill,
   modelScope,
   onSearchSkills,
+  triggerRef,
   button,
 }: SharedProps & {
   button: React.ReactElement;
 }) {
   // 作成ロジックはドライブの「新規作成」と共通（use-create-content・重複実装しない）。
   const create = useCreateContent({ parentId: createParentId });
-  const after = useAfterClose();
+  const after = useAfterClose(triggerRef);
   const ranked = useRankedSkills(skills, open);
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -354,10 +367,11 @@ function PlusSheet({
   modelScope,
   onSearchSkills,
   onOpenModel,
+  triggerRef,
 }: SharedProps) {
   const create = useCreateContent({ parentId: createParentId });
   const modelSummary = useModelSummary(modelScope);
-  const after = useAfterClose();
+  const after = useAfterClose(triggerRef);
   const ranked = useRankedSkills(skills, open);
   const hits = ranked.slice(0, SHEET_SKILLS);
 

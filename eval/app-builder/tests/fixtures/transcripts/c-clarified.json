@@ -1,0 +1,88 @@
+{
+ "task": "basic-summary-file",
+ "page": {
+  "context_usage": {
+   "categories": [
+    {
+     "category": "system",
+     "tokens": 4
+    },
+    {
+     "category": "tools",
+     "tokens": 2
+    },
+    {
+     "category": "messages",
+     "tokens": 0
+    },
+    {
+     "category": "documents",
+     "tokens": 0
+    },
+    {
+     "category": "tool_results",
+     "tokens": 0
+    }
+   ],
+   "measured": true,
+   "model": "default",
+   "reserved_output_tokens": 8192,
+   "used_tokens": 6
+  },
+  "messages": [
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "保存先のフォルダーはどれにしますか？",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:44.446017Z",
+    "id": "8b156679-1093-4f9a-95b4-f790645a9560",
+    "parent_id": null,
+    "role": "user"
+   },
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "回答: 保存先のフォルダーはどれにしますか？",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:44.446017Z",
+    "id": "43713399-c538-439e-a43b-91963c94962b",
+    "parent_id": "8b156679-1093-4f9a-95b4-f790645a9560",
+    "role": "assistant"
+   },
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "保存先は「要約」フォルダです。ファイル名は「要約-YYYY-MM-DD.md」（実行した日付）で、同じ名前のファイルがあれば番号を付けて保存してください。要約は 3 行程度で、件名はファイルの先頭に見出しとして書いてください。",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:44.531317Z",
+    "id": "14f8a6c6-c895-42a9-976e-f3d076db3acb",
+    "parent_id": null,
+    "role": "user"
+   },
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "回答: 保存先は「要約」フォルダです。ファイル名は「要約-YYYY-MM-DD.md」（実行した日付）で、同じ名前のファイルがあれば番号を付けて保存してください。要約は 3 行程度で、件名はファイルの先頭に見出しとして書いてください。",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:44.531317Z",
+    "id": "a456252a-870c-4b53-890d-b73e65a21409",
+    "parent_id": "14f8a6c6-c895-42a9-976e-f3d076db3acb",
+    "role": "assistant"
+   }
+  ]
+ },
+ "approvals": []
+}

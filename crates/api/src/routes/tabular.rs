@@ -73,7 +73,11 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
         TE::Forbidden | TE::Authz(_) => ApiError::Forbidden,
         TE::NotFound(_) => ApiError::NotFound,
         TE::Storage(e) => ApiError::from(e),
-        TE::SqlRejected(m) | TE::InvalidPatch(m) | TE::InvalidTables(m) => ApiError::BadRequest(m),
+        // SQL の誤りと、追加のテーブルの指定の誤り（JOIN・#1059）は、文言をそのまま返す 400。
+        TE::SqlRejected(m) | TE::InvalidTables(m) => ApiError::BadRequest(m),
+        // 編集の誤り（元の文字コードで書けない文字など）と、文字コードを決められない・文章でない CSV、読めない Excel、
+        // CSV の編集・保存に渡した Excel は、文言つきの構造化 400（画面がそのまま出す・GAP-45・D-17）。
+        TE::InvalidPatch(m) | TE::NotText(m) | TE::Unsupported(m) => ApiError::invalid_input(&m),
         TE::QuotaExceeded(m) => ApiError::BadRequest(format!("クォータ超過: {m}")),
         TE::RevConflict { base, current } => ApiError::ConflictJson(serde_json::json!({
             "status": 409,
@@ -89,6 +93,21 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
             "title": m,
         })),
         TE::Internal(m) => ApiError::Internal(m),
+    }
+}
+
+/// 新規保存の誤りを HTTP へ写す。
+///
+/// 新規保存の名前の衝突（[`storage::StorageError::Conflict`]）は、編集の重なり（`rev` の衝突）と分けて
+/// `name_taken` の構造化 409 にする。画面は「同じ名前のファイルがある」と言い、番号を付けて保存する道を出す
+/// （BUG-150）。新規作成なので、版の衝突はここでは起きない。
+fn save_error(err: tabular::TabularError) -> ApiError {
+    use crate::error_body::{to_body, ConflictBody, ConflictCode};
+    match err {
+        tabular::TabularError::Storage(storage::StorageError::Conflict) => {
+            ApiError::ConflictJson(to_body(&ConflictBody::new(ConflictCode::NameTaken)))
+        }
+        other => to_api_error(other),
     }
 }
 
@@ -118,13 +137,42 @@ impl TableResponse {
     }
 }
 
-/// スキーマ（列名・総行数）。
+/// スキーマ（列名・総行数）。Excel はシートの一覧と、表題の行を飛ばしたときの見出しの行も返す。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SchemaResponse {
     pub columns: Vec<String>,
     pub column_types: Vec<String>,
     #[schema(value_type = Option<u64>)]
     pub total_rows: Option<u64>,
+    /// Excel のシート（表のシートだけ・ブックの順・CSV は空・GAP-84）。`data` のシートが列の案内の表。
+    pub sheets: Vec<SheetResponse>,
+    /// 列の名前にした行（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ（GAP-83）。
+    #[schema(value_type = Option<u32>)]
+    pub header_row: Option<u32>,
+}
+
+/// Excel のシート（[`tabular::SheetInfo`]）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SheetResponse {
+    /// シートの名前。
+    pub name: String,
+    /// 隠したシート。
+    pub hidden: bool,
+    /// SQL の `data` として読むシート（表示している左端のシート）。
+    pub data: bool,
+    /// SQL に `FROM "シート名"` と書いて読めるか（`data` と同じ名前のほかのシートなどは読めない）。
+    pub usable: bool,
+}
+
+impl From<tabular::SheetInfo> for SheetResponse {
+    fn from(s: tabular::SheetInfo) -> Self {
+        SheetResponse {
+            name: s.name,
+            hidden: s.hidden,
+            data: s.data,
+            usable: s.usable,
+        }
+    }
 }
 
 /// CSV スキーマを返す（viewer 認可）。
@@ -149,6 +197,8 @@ pub async fn get_schema(
         columns: resp.columns,
         column_types: resp.column_types,
         total_rows: resp.total_rows,
+        sheets: resp.sheets.into_iter().map(SheetResponse::from).collect(),
+        header_row: resp.header_row,
     }))
 }
 
@@ -293,6 +343,10 @@ pub struct SaveRequest {
     pub name: String,
     /// CSV 本文（そのまま保存）。
     pub csv: String,
+    /// 同じ名前のファイルがあるとき（省略は失敗にする＝`name_taken` の 409）。`add_number` は `名前 (2).csv` から
+    /// 空いている名前で保存する（ドライブの新規作成・ノートと同じ規則・D-112）。
+    #[serde(default)]
+    pub on_name_taken: storage::OnNameTaken,
 }
 
 /// 保存結果。
@@ -306,7 +360,12 @@ pub struct SaveResponse {
 /// 新規 CSV を保存する（保存先フォルダの作成権限）。
 #[utoipa::path(
     post, path = "/tabular/save", request_body = SaveRequest,
-    responses((status = 200, body = SaveResponse), (status = 400), (status = 403)),
+    responses(
+        (status = 200, body = SaveResponse),
+        (status = 400),
+        (status = 403),
+        (status = 409, description = "保存先に同じ名前のファイルがある（code=name_taken・番号を付けるときは (50) まで埋まっている）", body = crate::error_body::ConflictBody),
+    ),
     security(("session" = [])),
 )]
 pub async fn post_save(
@@ -326,10 +385,11 @@ pub async fn post_save(
             req.parent_id,
             name,
             req.csv.as_bytes(),
+            req.on_name_taken,
             trace.0.as_deref(),
         )
         .await
-        .map_err(to_api_error)?;
+        .map_err(save_error)?;
     Ok(Json(SaveResponse {
         node_id: saved.node_id,
         version: saved.version,

@@ -15,8 +15,11 @@ import { ArtifactCard } from "@/components/artifacts/artifact-card";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import { deleteArtifact, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
+import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
+import { useArtifactList } from "@/hooks/use-artifact-list";
 import { createThread } from "@/lib/chat-api";
+import { useMe } from "@/hooks/use-me";
 import { publishSkill } from "@/lib/skill-registry-api";
 import { SkillStoreSection } from "@/components/artifacts/skill-store-section";
 
@@ -28,16 +31,15 @@ type DialogState =
 
 export default function SkillsPage() {
   const router = useRouter();
-  const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
+  const list = useArtifactList("skill");
+  const { items, reload } = list;
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
-
-  const reload = React.useCallback(() => {
-    listArtifacts("skill")
-      .then(setItems)
-      .catch(() => setItems([]));
-  }, []);
-  React.useEffect(reload, [reload]);
+  // 一覧には共有されたスキルも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主だけができるので、自分のスキルに
+  // だけ出す（共有を受けた人には相手の一覧が空に見え、付与・削除が断られる・BUG-120。アプリの一覧と同じ）。
+  // 自分が分かるまでは出さない。
+  const me = useMe();
+  const myId = me.data?.id;
 
   const startChat = async (meta: ArtifactMeta) => {
     setPending(meta.id);
@@ -80,7 +82,8 @@ export default function SkillsPage() {
     setPending(meta.id);
     try {
       await deleteArtifact(meta.id);
-      reload();
+      // 読み込んだ続きを捨てないよう、一覧から外すだけにする（読み直すと先頭のページに戻る）。
+      list.remove(meta.id);
       toast({ title: `「${meta.name}」を削除しました` });
     } finally {
       setPending(null);
@@ -110,6 +113,10 @@ export default function SkillsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : list.error ? (
+        <ListLoadFailed what="スキルの一覧" onRetry={reload} />
+      ) : items.length === 0 && list.hasMore ? (
+        <ListMore noun="スキル" found={false} list={list} />
       ) : items.length === 0 ? (
         <EmptyState
           icon={Sparkles}
@@ -152,7 +159,9 @@ export default function SkillsPage() {
                     onSelect: () => router.push(`/skills/${meta.id}`),
                     disabled: busy,
                   },
-                  { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                  ...(meta.owner === myId
+                    ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) }]
+                    : []),
                   {
                     key: "publish",
                     label: "ストアへ公開",
@@ -166,20 +175,25 @@ export default function SkillsPage() {
                     icon: History,
                     onSelect: () => setDialog({ kind: "versions", meta }),
                   },
-                  {
-                    key: "delete",
-                    label: "削除",
-                    icon: Trash2,
-                    destructive: true,
-                    separatorBefore: true,
-                    onSelect: () => setDialog({ kind: "delete", meta }),
-                  },
+                  ...(meta.owner === myId
+                    ? [
+                        {
+                          key: "delete",
+                          label: "削除",
+                          icon: Trash2,
+                          destructive: true,
+                          separatorBefore: true,
+                          onSelect: () => setDialog({ kind: "delete", meta }),
+                        },
+                      ]
+                    : []),
                 ]}
               />
             );
           })}
         </ul>
       )}
+      {items && items.length > 0 ? <ListMore noun="スキル" found list={list} /> : null}
 
       <SkillStoreSection />
 

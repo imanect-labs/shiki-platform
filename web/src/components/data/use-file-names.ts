@@ -1,0 +1,47 @@
+"use client";
+
+/// 表・カードのファイルの列（`file_ref`）の値（ドライブのファイルの id）を、ファイル名で見せるために引く。
+///
+/// 名前は `@/lib/node-name-cache` が 1 件ずつ本人の権限で引き（開けないファイルは「開けない」と覚える）、覚えた
+/// 名前は 60 秒で切れる（共有を外された後に名前を出し続けない）。表を開いている間は、切れる前に見えているときだけ
+/// 引き直す。描く側は `cachedNodeName` で同期に読む（canvas のセルはフックを使えない。切れた名前は描けないので、
+/// 引用のカードのように開いている間は引き直さない、にはしない）。
+///
+/// 1 件 1 リクエストなので、渡す `ids` は画面に出ている分だけにする（表は見えている範囲とその前後の行・カードは
+/// カードに出す列）。読み込んだ全部の行を渡すと、行の多い表を開いている間ずっと、その数だけ引き直す（GAP-150）。
+/// `ids` は同じ顔ぶれなら同じ配列を渡す（描くたびに作り直さない）。
+
+import * as React from "react";
+
+import { resolveNodeNames } from "@/lib/node-name-cache";
+
+/// 引き直しを確かめる間隔（引き直すのは期限の近い id だけ）。
+const REFRESH_EVERY_MS = 20_000;
+
+/// `ids` の名前を引き、新しく分かったら進む版の番号を返す（描き直しの依存に使う）。
+export function useFileNames(ids: readonly string[]): number {
+  const key = React.useMemo(() => [...new Set(ids)].sort().join(","), [ids]);
+  const [version, bump] = React.useReducer((n: number) => n + 1, 0);
+  React.useEffect(() => {
+    if (!key) return;
+    const list = key.split(",");
+    let active = true;
+    const refresh = () => {
+      void resolveNodeNames(list).then((done) => {
+        if (active && done) bump();
+      });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    refresh();
+    const timer = window.setInterval(onVisible, REFRESH_EVERY_MS);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [key]);
+  return version;
+}

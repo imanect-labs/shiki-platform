@@ -4,6 +4,8 @@
 //! 「他人の引用をそのまま見せない」「認可の再評価ができない本文は出さない」の 2 つを、
 //! 線形取得（[`super::threads`] の `get_messages`）の後段でまとめて掛ける。
 //! 生成中の SSE 再送（[`ChatStore::viewer_event_stream`]）にも同じ 2 つを掛ける（#513）。
+//! 生成中の配信では、run の実行主体でない閲覧者の会話の閲覧権限も問い直し、共有を外された相手への
+//! 配信を止める（PIT-84・D-214）。
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -11,8 +13,10 @@ use storage::audit::AuditAction;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use authz::{AuthContext, CheckTuple, Consistency, Relation};
+use futures::channel::mpsc;
 use futures::stream::{BoxStream, StreamExt};
 use uuid::Uuid;
 
@@ -26,6 +30,35 @@ const MAX_REDACT_BATCH: usize = 1000;
 const CHECK_CHUNK: usize = 50;
 /// BatchCheck の往復を並行させる本数。
 const CHECK_CONCURRENCY: usize = 8;
+/// run の実行主体でない閲覧者の配信で、会話の閲覧権限を問い直す間隔（PIT-84・D-214）。
+///
+/// 開いた配信 1 本あたり、HigherConsistency の check と会話の生存の SELECT が毎秒 1 回まで増える。
+/// 共有を外してから、この間隔の中に届いた分は流れうる（既知の限界）。ストアごとの値は
+/// [`ChatStore::with_viewer_recheck`] で差し替えられる（試験用・既定はこの値）。
+pub(super) const VIEWER_RECHECK: Duration = Duration::from_secs(1);
+/// 問い直しで断られた閲覧者に、配信の最後に 1 件だけ流す文（中身を含まない固定の文）。
+///
+/// 画面は `error` を受けると購読を閉じる（`web/src/lib/chat-api.ts` の `dispatch`）。読み込み直すと、
+/// 会話の取得（`get_thread`）が断るので、もう開けない。
+const VIEWER_REVOKED_MESSAGE: &str =
+    "表示を続けられなくなりました。ページを読み込み直してください。";
+
+/// [`ChatStore::viewer_event_stream`] の、イベントをまたいで持ち回す状態。
+struct ViewerStreamState {
+    rx: mpsc::UnboundedReceiver<StreamEvent>,
+    store: ChatStore,
+    ctx: AuthContext,
+    /// 「読めない」と答えが出た引用のファイル（拒否だけを覚える）。
+    denied: HashSet<String>,
+    /// 見直し済みで、まだ流していない分（落とすものは `None`）。
+    pending: VecDeque<Option<StreamEvent>>,
+    /// 最後に会話の閲覧権限を確かめた時刻（開くときの認可の直後から数える）。
+    checked_at: Instant,
+    /// 打ち切りの文を積んだ（流し終えたら閉じる）。
+    ended: bool,
+    /// 問い直しの監査に残す trace_id（開いたときのもの）。
+    trace: Option<String>,
+}
 
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
@@ -154,6 +187,14 @@ impl ChatStore {
     ///
     /// スレッドの viewer 認可と「run がそのスレッドのものか」もここで確かめる（呼び出し側の
     /// 事前確認に頼らない。run_id だけで読めると同じテナントの他スレッドの run を覗ける）。
+    ///
+    /// **実行主体でない閲覧者には、開いた後も会話の閲覧権限を問い直す**（PIT-84・D-214）。
+    /// 開くときの認可だけだと、共有を外しても（`unshare_thread` はストリームを閉じない）run が終わるまで
+    /// 本文・思考・ツールの行が流れ続ける。共有の取り消しを、引用だけでなくこれらにも効かせるため、
+    /// 届いた分を流す前に、前の確認から [`VIEWER_RECHECK`]（ストアの間隔）以上たっていれば `require_thread`（Viewer・
+    /// HigherConsistency・拒否は監査に残る）を問う。断られたか確かめられなければ、その分は流さず、
+    /// 固定の文の `Error` を 1 件だけ流して閉じる（fail-closed）。間隔の中に届いた分は流れうる。
+    /// 実行主体の配信は問い直さない（流れるのは本人の生成だけで、読み手を増やさないため）。
     pub async fn viewer_event_stream(
         &self,
         ctx: &AuthContext,
@@ -170,6 +211,7 @@ impl ChatStore {
             trace_id,
         )
         .await?;
+        let checked_at = Instant::now();
         let actor: Option<String> = sqlx::query_scalar(
             "SELECT actor FROM generation_run \
              WHERE run_id = $1 AND thread_id = $2 AND tenant_id = $3",
@@ -184,13 +226,17 @@ impl ChatStore {
             return Err(ChatError::NotFound);
         };
         let is_actor = actor == ctx.principal().id;
-        let state = (
-            self.event_stream(ctx.tenant_id(), run_id, from_seq),
-            self.clone(),
-            ctx.clone(),
-            HashSet::<String>::new(),
-            VecDeque::<Option<StreamEvent>>::new(),
-        );
+        let recheck = self.viewer_recheck;
+        let state = ViewerStreamState {
+            rx: self.event_stream(ctx.tenant_id(), run_id, from_seq),
+            store: self.clone(),
+            ctx: ctx.clone(),
+            denied: HashSet::new(),
+            pending: VecDeque::new(),
+            checked_at,
+            ended: false,
+            trace: trace_id.map(str::to_string),
+        };
         // 順序を保って見直す（引用の判定は非同期なので then ではなく unfold で状態を持ち回す）。
         //
         // **届いている分はまとめて見直す。** 再訪・再接続では run の最初からのイベントが一度に届く。
@@ -198,26 +244,61 @@ impl ChatStore {
         // 最後の操作までリプレイのように少しずつ進む（#1152）。溜まっている分を一度に取り出し、含まれる
         // 引用の可否を 1 回の BatchCheck で判定してから順に流す。ライブで 1 件ずつ届く間は従来どおり
         // 都度確かめる（剥奪を直後の引用から反映する性質は変わらない）。
-        let stream = futures::stream::unfold(
-            state,
-            move |(mut rx, store, ctx, mut denied, mut pending)| async move {
-                if pending.is_empty() {
-                    let mut batch = vec![rx.next().await?];
-                    while batch.len() < MAX_REDACT_BATCH {
-                        match rx.try_recv() {
-                            Ok(ev) => batch.push(ev),
-                            Err(_) => break, // 空（ライブの合間）か、送り手が閉じた
+        let stream = futures::stream::unfold(state, move |mut st| async move {
+            if st.pending.is_empty() {
+                // 打ち切りの文を流し終えた。次の分を待たずに閉じる（受け手を落として読み出しも止める）。
+                if st.ended {
+                    return None;
+                }
+                let mut batch = vec![st.rx.next().await?];
+                while batch.len() < MAX_REDACT_BATCH {
+                    match st.rx.try_recv() {
+                        Ok(ev) => batch.push(ev),
+                        Err(_) => break, // 空（ライブの合間）か、送り手が閉じた
+                    }
+                }
+                if !is_actor && st.checked_at.elapsed() >= recheck {
+                    match st
+                        .store
+                        .require_thread(
+                            &st.ctx,
+                            thread_id,
+                            Relation::Viewer,
+                            AuditAction::ThreadStream,
+                            st.trace.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(_) => st.checked_at = Instant::now(),
+                        Err(e) => {
+                            tracing::info!(
+                                error = %e,
+                                thread_id = %thread_id,
+                                run_id = %run_id,
+                                "会話を見られなくなった閲覧者の配信を打ち切る"
+                            );
+                            // 届いた分（batch）は流さず、見直しにも回さない。seq は 0 にする
+                            // （画面は 0 を「処理し終えた seq」に数えない・run の seq と重ならない）。
+                            st.ended = true;
+                            let cut = StreamEvent {
+                                seq: 0,
+                                event: StreamEventKind::Error {
+                                    message: VIEWER_REVOKED_MESSAGE.to_string(),
+                                },
+                            };
+                            return Some((Some(cut), st));
                         }
                     }
-                    pending = store
-                        .redact_events_for_viewer(&ctx, is_actor, &mut denied, batch)
-                        .await
-                        .into();
                 }
-                let ev = pending.pop_front()?;
-                Some((ev, (rx, store, ctx, denied, pending)))
-            },
-        )
+                st.pending = st
+                    .store
+                    .redact_events_for_viewer(&st.ctx, is_actor, &mut st.denied, batch)
+                    .await
+                    .into();
+            }
+            let ev = st.pending.pop_front()?;
+            Some((ev, st))
+        })
         .filter_map(futures::future::ready);
         Ok(stream.boxed())
     }

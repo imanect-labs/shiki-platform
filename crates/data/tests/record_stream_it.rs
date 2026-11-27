@@ -1219,6 +1219,67 @@ async fn bulk_import_summary_skips_per_row_checks_and_reveals_no_count() {
     );
 }
 
+/// 一括 upsert の更新行は、一括の目印（ワークフローのトリガを発火させない・GAP-07）が付いても、1 件の更新と
+/// 同じく行ごとに判定して配る（要約 `records.bulk_applied` にまとめるのは取込の作成行だけ）。
+#[tokio::test]
+async fn bulk_upsert_update_rows_are_still_delivered_per_row() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz, manual()).await;
+    let rec = fx
+        .store
+        .create_record(
+            &fx.alice,
+            fx.table,
+            json!({"applicant": "bob", "title": "before"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut sb = fx
+        .store
+        .subscribe_records(&fx.bob, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cb = Client::default();
+    tick(&fx).await;
+    drain(&mut sb, &mut cb).await;
+    let import = fx
+        .store
+        .start_bulk_upsert(
+            &fx.alice,
+            fx.table,
+            vec![data::BulkUpsertRow {
+                key: None,
+                record_id: Some(rec.id),
+                expected_rev: None,
+                data: json!({"title": "after"}),
+            }],
+            BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    fx.store
+        .run_bulk_import(fx.alice.tenant_id(), fx.table, import)
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (mb, _) = drain(&mut sb, &mut cb).await;
+    assert!(
+        !mb.iter()
+            .any(|m| matches!(m.event, StreamEvent::BulkApplied(_))),
+        "更新行は要約にしない: {mb:?}"
+    );
+    let ups = upserts(&mb);
+    assert!(
+        ups.iter()
+            .any(|(id, data)| *id == rec.id && data["title"] == "after"),
+        "{ups:?}"
+    );
+}
+
 #[tokio::test]
 async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers() {
     let Some((pool, authz)) = setup().await else {
@@ -1966,4 +2027,88 @@ async fn new_subscriber_receives_current_awareness_without_leaking_invisible_row
         "離脱済み・マスク列のカーソルは送らない: {:?}",
         cb2.raw
     );
+}
+
+/// 「追加だけ」（submitter・D-113）の購読者には、ほかの人のカーソルの離脱（record_id = null）を送らない（離脱は
+/// どの行から離れたかを持たないので、見えない行で作業していたことを明かす）。自分の行を指すカーソルは届く。
+#[tokio::test]
+async fn add_only_subscribers_get_no_departures_of_others() {
+    let Some((pool, authz)) = setup().await else {
+        return;
+    };
+    let fx = fixture(pool, authz, manual()).await;
+    let dave = ctx(fx.alice.tenant_id(), "dave");
+    fx.authz
+        .write_tuple(
+            &dave.subject(),
+            Relation::Submitter,
+            &dave.ns().data_table(&fx.table.to_string()),
+        )
+        .await
+        .unwrap();
+    let own = fx
+        .store
+        .create_record(
+            &dave,
+            fx.table,
+            json!({"applicant": "dave", "title": "自分の申請"}),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut sd = fx
+        .store
+        .subscribe_records(&dave, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cd = Client::default();
+    tick(&fx).await;
+    drain(&mut sd, &mut cd).await;
+    // 経理（alice）が dave の申請を指す → dave に届く。
+    fx.store
+        .post_awareness(
+            &fx.alice,
+            fx.table,
+            Some(own.id),
+            Some("title".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sd, &mut cd).await;
+    let pointed = awareness_of(&ms);
+    // alice が離れる → dave には届かない（既存の閲覧者の carol には届く）。
+    let mut sc = fx
+        .store
+        .subscribe_records(&fx.carol, fx.table, None, None)
+        .await
+        .unwrap();
+    let mut cc = Client::default();
+    tick(&fx).await;
+    drain(&mut sc, &mut cc).await;
+    fx.store
+        .post_awareness(&fx.alice, fx.table, None, None, None)
+        .await
+        .unwrap();
+    tick(&fx).await;
+    let (ms, _) = drain(&mut sd, &mut cd).await;
+    let left_to_dave = awareness_of(&ms);
+    let (ms, _) = drain(&mut sc, &mut cc).await;
+    let left_to_carol = awareness_of(&ms);
+
+    assert_eq!(
+        pointed.len(),
+        1,
+        "自分の行を指すカーソルは届く: {:?}",
+        cd.raw
+    );
+    assert_eq!(pointed[0]["record_id"], json!(own.id));
+    assert!(
+        left_to_dave.is_empty(),
+        "追加だけの人には、ほかの人の離脱を送らない: {:?}",
+        cd.raw
+    );
+    assert_eq!(left_to_carol.len(), 1, "閲覧者には離脱が届く: {:?}", cc.raw);
+    assert!(left_to_carol[0]["record_id"].is_null());
 }

@@ -5,6 +5,7 @@
 //! shiki-admin secrets-reencrypt [--execute] [--batch <n>]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
 //! shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]
+//! shiki-admin trash-retention --tenant <t> --days <n|off> [--actor <id>]
 //! shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]
 //! shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]
 //! shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]
@@ -21,6 +22,8 @@
 //! `shiki_admin/secrets_reencrypt.rs`）。
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
 //! `audit-retention`: 監査ログの保持期間（90〜3650 日・既定 365・#831）を設定する（即時実行）。
+//! `trash-retention`: ゴミ箱の保持期間（1〜3650 日・`off`・既定は無効・GAP-108c）を設定する（即時実行・
+//! `shiki_admin/trash_retention.rs`）。
 //!
 //! `migrate-org-groups` はテナント無修飾の旧 org group（`/acme`）を `/tenants/<tenant>/...` へ
 //! 移す（#811・`shiki_admin/org_groups.rs`）。以下は `retenant` の説明。
@@ -67,6 +70,8 @@ mod keys;
 mod org_groups;
 #[path = "shiki_admin/secrets_reencrypt.rs"]
 mod secrets_reencrypt;
+#[path = "shiki_admin/trash_retention.rs"]
+mod trash_retention;
 #[path = "shiki_admin/workflow_conditions.rs"]
 mod workflow_conditions;
 use keys::{pre_migration_object_key, renamespace_object_key};
@@ -84,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         Some("secrets-reencrypt") => secrets_reencrypt::run(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
         Some("audit-retention") => audit_retention::run(&args[1..]).await,
+        Some("trash-retention") => trash_retention::run(&args[1..]).await,
         Some("workflow-conditions") => workflow_conditions::run(&args[1..]).await,
         Some("data-table-shape") => data_shape::run(&args[1..]).await,
         Some("migrate-org-groups") => org_groups::run(&args[1..]).await,
@@ -93,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
                  shiki-admin secrets-reencrypt [--execute] [--batch <n>]\n       \
                  shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       \
                  shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]\n       \
+                 shiki-admin trash-retention --tenant <t> --days <n|off> [--actor <id>]\n       \
                  shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]\n       \
                  shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]\n       \
                  shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]"

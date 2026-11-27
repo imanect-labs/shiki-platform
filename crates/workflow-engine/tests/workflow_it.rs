@@ -172,7 +172,7 @@ async fn save_rejects_invalid_ir_before_persist() {
     // 未知ノード種＋未知スコープ → 保存前に検証エラー（全件）。
     let bad = json!({
         "ir_version": 1, "name": "bad",
-        "declared_scopes": ["notify.send"],
+        "declared_scopes": ["sheet.read"],
         "nodes": [{ "id": "q", "type": "notify.send", "params": {} }],
         "edges": []
     });

@@ -21,6 +21,8 @@ pub struct WorkflowSummary {
     /// enabled / disabled / suspended_reconsent / none（未登録）。
     pub enabled_status: String,
     pub enabled_version: Option<i64>,
+    /// 自動実行の起動を見送り続けているか（登録の API の `launch_skip` と同じ条件・GAP-67）。
+    pub launch_skipped: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -110,7 +112,7 @@ impl WorkflowSummaryStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        sqlx::query_as(
+        sqlx::query_as(&format!(
             "SELECT a.id, a.name, \
                     v.body->>'display_name' AS display_name, \
                     v.body->>'description' AS description, \
@@ -118,9 +120,12 @@ impl WorkflowSummaryStore {
                     COALESCE( \
                       (SELECT array_agg(t->>'kind') \
                        FROM jsonb_array_elements(v.body->'triggers') AS t), \
-                      '{}') AS trigger_kinds, \
+                      '{{}}') AS trigger_kinds, \
                     COALESCE(r.status, 'none') AS enabled_status, \
                     r.enabled_version, \
+                    EXISTS (SELECT 1 FROM workflow_launch_skip s \
+                            WHERE s.tenant_id = a.tenant_id AND s.workflow_id = a.id \
+                              AND {current_skip}) AS launch_skipped, \
                     a.updated_at \
              FROM artifact a \
              JOIN artifact_version v \
@@ -130,13 +135,104 @@ impl WorkflowSummaryStore {
                ON r.tenant_id = a.tenant_id AND r.workflow_id = a.id \
              WHERE a.tenant_id = $1 AND a.id = ANY($2) AND a.deleted_at IS NULL \
              ORDER BY a.updated_at DESC, a.id DESC",
-        )
+            current_skip = crate::run::launch_skip::CURRENT_SKIP,
+        ))
         .bind(tenant_id)
         .bind(ids)
         .fetch_all(&self.db)
         .await
     }
 
+    /// id 集合の実行の入力の項目（現行版の `input_schema` の `properties` のキーと `required`・id は認可済み前提）。
+    ///
+    /// 本文全体は運ばない（キーの配列だけを SQL で取り出す）。キーの並びは `x-order`（画面に並べる順）にあるものを
+    /// その順に先に、残りを名前の順に後ろに置く。
+    pub async fn inputs(
+        &self,
+        tenant_id: &str,
+        ids: &[Uuid],
+    ) -> Result<Vec<WorkflowInputs>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<InputsRow> = sqlx::query_as(
+            "SELECT a.id, \
+                    COALESCE((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys( \
+                        CASE WHEN jsonb_typeof(v.body->'input_schema'->'properties') = 'object' \
+                             THEN v.body->'input_schema'->'properties' ELSE '{}'::jsonb END) AS k), \
+                      '{}') AS keys, \
+                    COALESCE((SELECT array_agg(o) FROM jsonb_array_elements_text( \
+                        CASE WHEN jsonb_typeof(v.body->'input_schema'->'x-order') = 'array' \
+                             THEN v.body->'input_schema'->'x-order' ELSE '[]'::jsonb END) AS o), \
+                      '{}') AS ordered, \
+                    COALESCE((SELECT array_agg(r) FROM jsonb_array_elements_text( \
+                        CASE WHEN jsonb_typeof(v.body->'input_schema'->'required') = 'array' \
+                             THEN v.body->'input_schema'->'required' ELSE '[]'::jsonb END) AS r), \
+                      '{}') AS required \
+             FROM artifact a \
+             JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id \
+              AND v.version = a.current_version \
+             WHERE a.tenant_id = $1 AND a.id = ANY($2) AND a.deleted_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows.into_iter().map(InputsRow::into_inputs).collect())
+    }
+}
+
+/// 実行の入力の項目（[`WorkflowSummaryStore::inputs`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInputs {
+    pub id: Uuid,
+    /// `properties` のキー（`x-order` の順に先に、残りを名前の順に）。
+    pub keys: Vec<String>,
+    /// `required` のキー（`properties` にあるものだけ）。
+    pub required: Vec<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct InputsRow {
+    id: Uuid,
+    keys: Vec<String>,
+    ordered: Vec<String>,
+    required: Vec<String>,
+}
+
+impl InputsRow {
+    fn into_inputs(self) -> WorkflowInputs {
+        let mut keys: Vec<String> =
+            self.ordered
+                .iter()
+                .filter(|k| self.keys.contains(k))
+                .fold(Vec::new(), |mut acc, k| {
+                    if !acc.contains(k) {
+                        acc.push(k.clone());
+                    }
+                    acc
+                });
+        keys.extend(
+            self.keys
+                .iter()
+                .filter(|k| !self.ordered.contains(k))
+                .cloned(),
+        );
+        let required = self
+            .required
+            .into_iter()
+            .filter(|r| keys.contains(r))
+            .collect();
+        WorkflowInputs {
+            id: self.id,
+            keys,
+            required,
+        }
+    }
+}
+
+impl WorkflowSummaryStore {
     /// 認可済み id 集合を名前・表示名・説明で絞り、本人の所有を先に・更新日降順で `limit` 件返す。
     ///
     /// 絞り込み（語ごとの部分一致の AND・大文字小文字を区別しない）と件数の上限は SQL で効かせる
@@ -277,7 +373,26 @@ impl WorkflowSummaryStore {
 
 #[cfg(test)]
 mod tests {
-    use super::like_patterns;
+    use super::*;
+
+    /// 入力の項目は x-order の順に先に、残りを名前の順に。x-order の重複と properties に無いキーは落とす。
+    #[test]
+    fn input_keys_follow_x_order_then_name() {
+        let got = InputsRow {
+            id: Uuid::nil(),
+            keys: vec!["amount".into(), "memo".into(), "title".into()],
+            ordered: vec![
+                "title".into(),
+                "ghost".into(),
+                "title".into(),
+                "amount".into(),
+            ],
+            required: vec!["amount".into(), "ghost".into()],
+        }
+        .into_inputs();
+        assert_eq!(got.keys, ["title", "amount", "memo"]);
+        assert_eq!(got.required, ["amount"]);
+    }
 
     #[test]
     fn like_patterns_split_terms_and_escape_wildcards() {

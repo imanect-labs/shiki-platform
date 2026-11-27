@@ -26,6 +26,20 @@ use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChang
 use crate::validate::validate_record_data;
 use crate::{map_db, DataError};
 
+/// [`DataStore::filter_visible_states`] の 1 行（見える行の今の状態）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordState {
+    /// 状態の列の値（状態の列が無い・閲覧者に読めない・値が文字でないときは `None`）。
+    pub status: Option<String>,
+}
+
+/// [`DataStore::filter_visible_records`] の結果（開いたテーブルと、候補と同じ順の見える行）。
+#[derive(Debug, Clone)]
+pub struct FilteredRecords {
+    pub table: crate::model::DataTable,
+    pub records: Vec<Option<DataRecord>>,
+}
+
 /// data_record 行。
 #[derive(Clone, sqlx::FromRow)]
 pub(crate) struct RecordRow {
@@ -90,7 +104,10 @@ impl DataStore {
         }
     }
 
-    /// レコードを作成する（editor・サーバ検証・rev=1・リビジョン同時記録）。
+    /// レコードを作成する（追加だけ以上＝submitter・editor が含意する・サーバ検証・rev=1・リビジョン同時記録）。
+    ///
+    /// 追加だけの人（D-113）も作れる。作ったレコードの作成者（owner）は呼び出した本人で、追加だけの人が
+    /// 後から読めるのはこの作成者が本人のレコードだけ（[`crate::table_access`]）。
     pub async fn create_record(
         &self,
         ctx: &AuthContext,
@@ -103,7 +120,7 @@ impl DataStore {
             &az,
             ctx,
             table_id,
-            Relation::Editor,
+            Relation::Submitter,
             AuditAction::DataRecordCreate,
             trace_id,
         )
@@ -206,10 +223,14 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_record(&table.schema))
+        let mut out = [row.into_record(&table.schema)];
+        // 作成者の列は作った本人で埋めて返す（保存しない・読取の出口と同じ・D-122）。
+        crate::created_by::fill(&table.schema, &mut out);
+        let [record] = out;
+        Ok(record)
     }
 
-    /// レコードを取得する（viewer・行述語つき）。
+    /// レコードを取得する（viewer・行述語つき。追加だけの人は自分が作ったレコードだけ・D-113）。
     ///
     /// 行述語で不可視の行は存在しない行と**同一応答**（404・存在オラクルなし・PIT-21）。
     pub async fn get_record(
@@ -223,7 +244,7 @@ impl DataStore {
         // 認可の問いはリクエストのメモに束ねる（Task 15.9）。
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
         let row = self
             .select_visible_by_id(ctx, &az, &table, id)
@@ -235,6 +256,146 @@ impl DataStore {
         self.project_read(ctx, &az, &table, &masked, &mut records)
             .await?;
         Ok(records.remove(0))
+    }
+
+    /// 同じテーブルのレコードをまとめて取得する（`ids` と同じ順・不可視・不在は `None`）。
+    ///
+    /// [`Self::get_record`] と同じ判定（テーブルの viewer・行述語・派生値は閲覧者本人の権限・マスク）を、
+    /// テーブルの読込・認可の問い（リクエストのメモ）・マスクの判定を 1 回にまとめて行い、行は候補の id を
+    /// 1 本のクエリで引く（承認の受信箱が担当の行を承認者本人の権限で読み直す・GAP-08・BUG-43）。テーブルが
+    /// 見えなければ `Err(NotFound / Forbidden)`（Deny の監査を残す）。
+    pub async fn get_records(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+        trace_id: Option<&str>,
+    ) -> Result<Vec<Option<DataRecord>>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let az = self.authz_memo();
+        let table = self
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .await?;
+        self.visible_records_in(ctx, &az, &table, ids).await
+    }
+
+    /// 他人が書いた候補（承認の受信箱の台帳など）を、閲覧者に見える行だけに絞る（`ids` と同じ順・不可視・
+    /// 不在は `None`）。判定と読み方は [`Self::get_records`] と同じ（二段: テーブルの viewer・行述語）。
+    ///
+    /// テーブルが見えない（viewer でない・無い・削除済み）なら `Ok(None)` で、**Deny の監査を残さない**。
+    /// 閲覧者が求めた読取ではなく、候補を見える分へ絞るだけなので（受信箱の件数を読み直すたびに、見えない
+    /// テーブルの Deny が増えないように・BUG-43）。閲覧者が開いた 1 件は [`Self::get_records`] で読む。
+    pub async fn filter_visible_records(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Option<FilteredRecords>, DataError> {
+        let az = self.authz_memo();
+        let Some(table) = self.open_for_filter(ctx, &az, table_id).await? else {
+            return Ok(None);
+        };
+        let records = self.visible_records_in(ctx, &az, &table, ids).await?;
+        Ok(Some(FilteredRecords { table, records }))
+    }
+
+    /// 他人が書いた候補を、閲覧者に見える行と、その行の今の状態（状態の列の値）だけにする（`ids` と同じ順・
+    /// 不可視・不在は `None`）。承認の受信箱の件数が使う（BUG-43）。
+    ///
+    /// 見え方は [`Self::filter_visible_records`] と同じ（テーブルの viewer・追加だけの人は自分の行・行述語・
+    /// 個別共有・見えないテーブルは `Ok(None)` で Deny の監査を残さない）。違うのは、行の中身を運ばず、派生値・
+    /// リンクの表示名を計算しないこと（状態の列だけを 1 本のクエリで引く）。状態の列が閲覧者に読めない（マスク）・
+    /// テーブルに状態の列が無い・値が文字でないときは、見える行でも [`RecordState::status`] は `None`。
+    pub async fn filter_visible_states(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Option<Vec<Option<RecordState>>>, DataError> {
+        let az = self.authz_memo();
+        let Some(table) = self.open_for_filter(ctx, &az, table_id).await? else {
+            return Ok(None);
+        };
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let status = table
+            .schema
+            .status_field
+            .as_deref()
+            .and_then(|k| table.schema.field(k));
+        // 状態の列が保存したそのままの値で読めない（派生・作成者の列・保存形のキーが読めない）ときは、読取と同じ
+        // 投影で値を決める（状態の列は選択肢の列なので、ふつうは通らない）。
+        if status.is_some_and(|f| {
+            f.field_type.is_derived()
+                || f.is_created_by()
+                || !crate::field_key::is_json_key(&f.json_key())
+        }) {
+            let records = self.visible_records_in(ctx, &az, &table, ids).await?;
+            let key = table.schema.status_field.clone().unwrap_or_default();
+            return Ok(Some(
+                records
+                    .into_iter()
+                    .map(|r| {
+                        r.map(|r| RecordState {
+                            status: r.data.get(&key).and_then(Value::as_str).map(str::to_string),
+                        })
+                    })
+                    .collect(),
+            ));
+        }
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        let stored = status
+            .filter(|f| !masked.contains(&f.key))
+            .map(crate::model::FieldDef::json_key);
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        let keys: Vec<String> = stored.iter().cloned().collect();
+        let rows = self
+            .select_visible_projection(ctx, &az, &table, &unique, &keys)
+            .await?;
+        let by_id: std::collections::HashMap<Uuid, RecordState> = rows
+            .into_iter()
+            .map(|(id, _, values)| {
+                let status = stored
+                    .as_deref()
+                    .and_then(|k| values.0.get(k))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                (id, RecordState { status })
+            })
+            .collect();
+        Ok(Some(ids.iter().map(|id| by_id.get(id).cloned()).collect()))
+    }
+
+    /// 開いたテーブルの候補の行を 1 本のクエリで引き、閲覧者の見え方（派生値・マスク）にして `ids` の順に並べる。
+    async fn visible_records_in(
+        &self,
+        ctx: &AuthContext,
+        az: &AuthzMemo<'_>,
+        table: &crate::model::DataTable,
+        ids: &[Uuid],
+    ) -> Result<Vec<Option<DataRecord>>, DataError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        let rows = self.select_visible_by_ids(ctx, az, table, &unique).await?;
+        let mut records: Vec<DataRecord> = rows
+            .into_iter()
+            .map(|row| row.into_record(&table.schema))
+            .collect();
+        let masked = self.masked_fields(ctx, az, table).await?;
+        self.project_read(ctx, az, table, &masked, &mut records)
+            .await?;
+        let by_id: std::collections::HashMap<Uuid, DataRecord> =
+            records.into_iter().map(|r| (r.id, r)).collect();
+        Ok(ids.iter().map(|id| by_id.get(id).cloned()).collect())
     }
 
     /// レコードを削除する（editor・楽観ロック・削除リビジョン記録）。
@@ -358,31 +519,13 @@ impl DataStore {
         Ok(())
     }
 
-    /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。
+    /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。規則は
+    /// [`crate::fsm_rules::reject_status_write`]（ワークフローの保存時の照合も同じ関数を使う・BUG-251）。
     pub(crate) fn reject_fsm_status_write<'a>(
         table: &crate::model::DataTable,
         fields: impl Iterator<Item = &'a String>,
     ) -> Result<(), DataError> {
-        let (Some(_), Some(status)) = (&table.schema.fsm_ref, &table.schema.status_field) else {
-            return Ok(());
-        };
-        for f in fields {
-            if f == status {
-                // 利用者向けの文言（列は書き手が名指ししたもの・表示名で示す・検証 2-C-P2-4）。
-                let label = table
-                    .schema
-                    .field(status)
-                    .map(|d| d.display_name.as_str())
-                    .filter(|n| !n.trim().is_empty())
-                    .unwrap_or(status);
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::FsmInvalid,
-                    Some(status),
-                    format!("「{label}」は状態の遷移でだけ変えられます（遷移できる先から選んでください）"),
-                ));
-            }
-        }
-        Ok(())
+        crate::fsm_rules::reject_status_write(&table.schema, fields)
     }
 
     /// record_ref 値の存在検証（参照先テーブル・同一テナント内）。

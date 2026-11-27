@@ -87,14 +87,20 @@ pub(crate) fn capability_router() -> Router<GatewayState> {
 
 /// アプリ所有テーブル束縛（data.\* の第5のリソースゲート）。
 ///
-/// 呼出ユーザーの viewer ReBAC（`get_table` 内・不可視は 404＝存在オラクルなし）を通した上で、
-/// `app_id` がインストール中アプリと一致しないテーブルは**スコープが付与されていても 403**。
+/// 呼出ユーザーの viewer か追加だけ（submitter・D-113）の ReBAC（`get_table_for_viewer` 内・不可視は 404＝
+/// 存在オラクルなし）を通した上で、`app_id` がインストール中アプリと一致しないテーブルは**スコープが付与
+/// されていても 403**。返すテーブルは呼出ユーザー向けに絞った定義（読める列だけ）。追加だけの人の読み書きの
+/// 範囲（自分の行だけ・追加だけ）は、この後の各操作の中で data が改めて決める。
 pub(crate) async fn require_app_table(
     state: &GatewayState,
     ctx: &GatewayCtx,
     table_id: Uuid,
 ) -> Result<data_crate::DataTable, GatewayError> {
-    let table = state.caps.data.get_table(&ctx.auth, table_id, None).await?;
+    let table = state
+        .caps
+        .data
+        .get_table_for_viewer(&ctx.auth, table_id, None)
+        .await?;
     if table.app_id != Some(ctx.installation.app_id) {
         return Err(GatewayError::Forbidden(
             "このアプリが所有していないテーブルです".into(),

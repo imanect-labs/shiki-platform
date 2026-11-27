@@ -25,7 +25,7 @@ pub struct SearchRequest {
     pub top_k: Option<u32>,
     /// 検索モード（既定 hybrid）。
     pub mode: Option<SearchMode>,
-    /// デバッグ情報（各段の件数・所要時間）を含めるか。
+    /// デバッグ情報（各段の件数・所要時間）を含めるか。組織の管理者のときだけ効く（ほかの人は無視される・D-80）。
     #[serde(default)]
     pub debug: bool,
 }
@@ -180,7 +180,7 @@ pub struct StageTimings {
 /// デバッグ情報: どの段で何件に絞られたか（Task 2.10 受入条件「権限で絞られた件数」）。
 ///
 /// 注: `authz_denied_files` は「読めない一致文書の存在」を示すオラクルになり得るため、
-/// デバッグ表示は社内基盤前提。公開 API 化時は管理者ロール限定にする（docs/design.md §4.3）。
+/// `POST /search` は組織の管理者にだけ返す（ほかの人の `debug` は無視する・D-80・docs/design.md §4.3）。
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct SearchDebug {
     /// `tags`（authz_tags pre-filter）か `tenant_only`（可読集合の上限超過で縮退）か。
@@ -209,7 +209,7 @@ pub struct SearchDebug {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct SearchResponse {
     pub results: Vec<SearchResult>,
-    /// `debug: true` のリクエスト時のみ。
+    /// `debug: true` のリクエストで、検索した人が組織の管理者のときのみ（D-80）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<SearchDebug>,
 }

@@ -1,4 +1,4 @@
-//! エージェントブラウザの cookie jar（docs/agent/browser.md §5・PIT-80）。
+//! エージェントブラウザの cookie jar（docs/agent/browser.md §5・PIT-88）。
 //!
 //! jar はエンジンではなく `BrowserSession`（run 単位）が持つ。エンジンを切り替えても jar は 1 つで、
 //! 値はモデル・ツール結果・ログに出さない（[`CookieJar::host_summary`] は件数だけを返す）。
@@ -284,7 +284,7 @@ impl CookieJar {
         self.cookies.clone()
     }
 
-    /// 全量で置き換える（エンジン切替で戻るとき。部分の差分は取らない・PIT-80）。
+    /// 全量で置き換える（エンジン切替で戻るとき。部分の差分は取らない・PIT-88）。
     pub fn replace_all(&mut self, cookies: Vec<StoredCookie>) {
         self.seq = cookies.iter().map(|c| c.creation).max().unwrap_or(0);
         self.cookies = cookies;

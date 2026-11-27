@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// ノートの「選択→AI 依頼」で document.edit（要確認・破壊系）が human-in-the-loop の
 /// 承認カードを出し、承認すると本物のパイプライン（CollabHub::apply_ai_edit・Yjs）で本文が

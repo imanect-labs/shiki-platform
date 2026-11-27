@@ -13,6 +13,7 @@
 use super::*;
 use crate::audit::AuditAction;
 
+use super::upload::BlobBody;
 use crate::content_address::sha256_hex;
 
 impl StorageService {
@@ -79,6 +80,8 @@ impl StorageService {
         .fetch_optional(&mut *tx)
         .await?;
         let (current,) = node_version.ok_or(StorageError::NotFound)?;
+        // node を押さえた後に blob（ロックの順 node → blob → 監査のチェーン）。上の put はロックの外なので、
+        // 行を新しく作ったときはロックの中で本体を確かめ直す。
         self.bump_blob(
             &mut tx,
             ctx.tenant_id(),
@@ -87,6 +90,7 @@ impl StorageService {
             size,
             content_type,
             &final_key,
+            BlobBody::Bytes(bytes),
         )
         .await?;
         let row: VersionRow = sqlx::query_as(
@@ -176,6 +180,7 @@ impl StorageService {
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 新しい通常版が同じ blob を参照する（refcount +1・実体コピーなし。restore と同型）。
+        // 提案の版の行が blob を参照しているので、行は必ずある（Existing・無ければ内部の誤り）。
         let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         self.bump_blob(
             &mut tx,
@@ -185,6 +190,7 @@ impl StorageService {
             size,
             &content_type,
             &final_key,
+            BlobBody::Existing,
         )
         .await?;
         let sql = format!(
@@ -242,11 +248,13 @@ impl StorageService {
                 node_id: node.id,
                 version: node.version,
                 op: WriteOp::Update,
+                // 親フォルダはファイル保存トリガ・wait(event) の祖先束縛の照合に使う（作成と同じ・BUG-28）。
                 payload: json!({
                     "kind": "file",
                     "blob_sha256": sha,
                     "size": size,
                     "adopted_from_version": version,
+                    "parent_id": node.parent_id.map(|p| p.to_string()),
                 }),
             },
             trace_id,

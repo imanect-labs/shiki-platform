@@ -2,22 +2,26 @@
 //!
 //! - ボタン（id・文言・実行先）を取り出し、ホストが束縛（ワークフローの版の固定など）を宣言する材料にする。
 //! - ボタンが送る値を、画面（TS 版の `validateActionValues`）と同じ規則で検証し直す（画面の検証は信用しない）。
+//! - 画面の部品とボタンの実行先のワークフローの入力を、画面のエディタ（TS 版の `checkApp`）と同じ規則で突き合わせる
+//!   （[`check_inputs`]・保存のときのサーバーの検証に使う）。
 //!
 //! 表示だけの種類（bar など）はここでは読まない（本文と一緒に文字のまま保存・再送する）。
 //! TS 版と同じ結果になることを `tests/fixtures/app.json`（y-ui の `spec-tests/app.json`）で確かめる。
 
 mod app;
 mod ask;
+mod inputs;
 mod ir;
 mod shown;
 mod text;
 mod values;
 
+pub use inputs::{check_inputs, InputHint, InputProblem, WorkflowInputs};
 pub use ir::{
     ActionTarget, AppAction, AppField, AppSection, AskOption, AskQuestion, Base, ChoiceOption,
     FieldKind, Figure, Kind, Step,
 };
-pub use shown::{error_text, find_action, summary, valid_idempotency_key, ShownValue};
+pub use shown::{error_text, field_label, find_action, summary, valid_idempotency_key, ShownValue};
 pub use text::Diagnostic;
 pub use values::{display_value, figure_actions, validate_action_values, Check};
 
@@ -187,14 +191,20 @@ fn info_kind(info: &str) -> (bool, Option<Kind>) {
     (true, kind)
 }
 
-/// Markdown から、閉じた ```ui ブロックのうち操作を持つ種類（app・ask・plan）を取り出す。
+/// 本文の中の ```ui ブロック 1 つ（閉じているか・解析の結果・本文の何行目からか）。
+struct ScannedBlock {
+    source: String,
+    parsed: Parsed,
+    closed: bool,
+    /// 中身の 1 行目が本文の何行目か（1 始まり）。
+    first_line: usize,
+}
+
+/// Markdown のトップレベルの ```ui ブロックを、閉じていないものも含めて読む（[`extract_action_blocks`]・
+/// [`broken_action_blocks`] の共通の段）。
 /// CommonMark のフェンス規則（3 文字以上の ``` か ~~~、行頭の空白 3 つまで、閉じは同じ文字で同じ長さ以上、
 /// 本文は開きの字下げの分だけ外す）に従い、他の言語のコードブロックの中は見ない。
-/// 閉じていないブロック（生成の途中）・エラーのある図は読まない。
-///
-/// 引用（`>`）や箇条書きの中のブロックは読まない（**操作を持つ図はトップレベルだけ**）。画面も
-/// 同じ規則で、入れ子の中の操作を持つ図はボタンを出さない（表示だけ）。
-pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
+fn scan_ui_blocks(markdown: &str) -> Vec<ScannedBlock> {
     let lines: Vec<&str> = markdown
         .split('\n')
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
@@ -229,7 +239,7 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
         }
         let closed = j < lines.len();
         let (is_ui, hint) = info_kind(&info);
-        if is_ui && closed {
+        if is_ui {
             // 開きのフェンスの字下げ（0〜3）の分だけ、本文の各行の先頭の空白を外す
             // （CommonMark の規則。画面のレンダラーが渡すソースと同じにし、識別子を揃える）。
             let indent = cap(&open, 1).len();
@@ -247,25 +257,322 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
                 format!("{body}\n")
             };
             let parsed = parse_block(&source, hint);
-            // エラーのある図は画面でボタンを出さない（コードとして見せる）ので、操作も持たせない。
-            let broken = parsed.diagnostics.iter().any(|d| d.severity == "error");
-            if let Some(figure) = parsed.figure.filter(|_| !broken) {
-                out.push(ActionBlock {
-                    hash: block_hash(&source),
-                    source,
-                    figure,
-                    diagnostics: parsed.diagnostics,
-                });
-            }
+            out.push(ScannedBlock {
+                source,
+                parsed,
+                closed,
+                first_line: i + 2,
+            });
         }
         i = if closed { j + 1 } else { j };
     }
     out
 }
 
+/// Markdown から、閉じた ```ui ブロックのうち操作を持つ種類（app・ask・plan）を取り出す。
+/// フェンスの読み方は [`scan_ui_blocks`] と同じ。
+/// 閉じていないブロック（生成の途中）・エラーのある図は読まない（書き損じた図は [`broken_action_blocks`]）。
+///
+/// 引用（`>`）や箇条書きの中のブロックは読まない（**操作を持つ図はトップレベルだけ**）。画面も
+/// 同じ規則で、入れ子の中の操作を持つ図はボタンを出さない（表示だけ）。
+pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
+    scan_ui_blocks(markdown)
+        .into_iter()
+        .filter(|b| b.closed)
+        .filter_map(|b| {
+            // エラーのある図は画面でボタンを出さない（コードとして見せる）ので、操作も持たせない。
+            let broken = b.parsed.diagnostics.iter().any(|d| d.severity == "error");
+            let figure = b.parsed.figure.filter(|_| !broken)?;
+            Some(ActionBlock {
+                hash: block_hash(&b.source),
+                source: b.source,
+                figure,
+                diagnostics: b.parsed.diagnostics,
+            })
+        })
+        .collect()
+}
+
+/// 書き損じた、操作を持つ図（app・ask・plan）1 つ（D-16 の (c)）。
+///
+/// 書き損じは 2 通りある。エラーのある図と閉じていない図は、画面がボタンを出さずにコードとして見せる
+/// （[`extract_action_blocks`] も読まない）。警告のある図はボタンを出すが、読めない行・上限を超えた入力を
+/// 黙って落とし、長すぎる文を切る（書いたものと画面が違う）。
+#[derive(Debug, Clone)]
+pub struct BrokenBlock {
+    pub kind: Kind,
+    /// 図の見出し（無ければ空）。
+    pub title: String,
+    /// 中身の 1 行目が本文の何行目か（1 始まり）。診断の `line` は中身の中の行（0 は行を持たない診断）なので、
+    /// 本文の行は `first_line + line - 1`。
+    pub first_line: usize,
+    /// 閉じの ``` があるか（閉じていないブロックは、本文の終わりまでを飲み込む）。
+    pub closed: bool,
+    /// 画面がこの図のボタンを出すか（閉じていて、エラーが無い）。
+    pub actionable: bool,
+    /// 診断（エラーと警告）。閉じていないだけのブロックでは空のことがある。
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Markdown のトップレベルの、書き損じた操作を持つ図（閉じていない図と、診断のある図）を取り出す。
+/// ホストが保存のときに知らせ、公開の前に止めるために使う。種類の分からないブロック（表示だけの図）は含めない。
+pub fn broken_action_blocks(markdown: &str) -> Vec<BrokenBlock> {
+    scan_ui_blocks(markdown)
+        .into_iter()
+        .filter_map(|b| {
+            let figure = b.parsed.figure?;
+            let diagnostics = b.parsed.diagnostics;
+            if b.closed && diagnostics.is_empty() {
+                return None;
+            }
+            let (kind, base) = match &figure {
+                Figure::App { base, .. } => (Kind::App, base),
+                Figure::Ask { base, .. } => (Kind::Ask, base),
+                Figure::Plan { base, .. } => (Kind::Plan, base),
+            };
+            let actionable = b.closed && !diagnostics.iter().any(|d| d.severity == "error");
+            Some(BrokenBlock {
+                kind,
+                title: base.title.clone(),
+                first_line: b.first_line,
+                closed: b.closed,
+                actionable,
+                diagnostics,
+            })
+        })
+        .collect()
+}
+
+/// 表示だけにする Markdown（外から来た文章）の中の図・表のフェンス（` ```ui `・` ```yui `・` ```data_grid `）を、
+/// すべて ` ```text ` に書き換える（ワークフローが画面に返した結果など・GAP-09）。
+///
+/// 閉じているか・入れ子（引用・箇条書きの中）か・エラーのある図かを問わず書き換える（操作を持つ図を偽のボタン
+/// として見せない・束ねていない表を描かない）。他の言語のコードブロックの中の行も書き換えるが、文字のまま
+/// 見せる場所なので害は無い（安全側）。正規表現に頼らず行頭を読む（失敗しても素通りさせない）。
+///
+/// 行は CommonMark と同じく `\r\n`・`\r`・`\n` のどれでも区切り（区切りはそのまま残す）、情報文字列は
+/// 文字参照とバックスラッシュエスケープを解いてから言語を読む（[`fence_language_is_figure`]）。
+pub fn neutralize_fences(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut rest = markdown;
+    loop {
+        let (line, eol, next) = match rest.find(['\r', '\n']) {
+            None => (rest, "", None),
+            Some(k) => {
+                let len = if rest[k..].starts_with("\r\n") { 2 } else { 1 };
+                (&rest[..k], &rest[k..k + len], Some(&rest[k + len..]))
+            }
+        };
+        match fence_to_neutralize(line) {
+            Some(end) => {
+                out.push_str(&line[..end]);
+                out.push_str("text");
+            }
+            None => out.push_str(line),
+        }
+        out.push_str(eol);
+        match next {
+            Some(n) => rest = n,
+            None => return out,
+        }
+    }
+}
+
+/// 書き換えるフェンスの開きなら、フェンスの文字の終わりの位置（その後ろの情報文字列を `text` にする）。
+fn fence_to_neutralize(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    // 行頭の空白・引用の印（>）・箇条書きの印（- * + / 1. 1)）を飛ばす。
+    loop {
+        while i < b.len() && matches!(b[i], b' ' | b'\t' | b'>') {
+            i += 1;
+        }
+        if i + 1 < b.len() && matches!(b[i], b'-' | b'*' | b'+') && matches!(b[i + 1], b' ' | b'\t')
+        {
+            i += 1;
+            continue;
+        }
+        let digits = b[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if (1..=9).contains(&digits)
+            && i + digits + 1 < b.len()
+            && matches!(b[i + digits], b'.' | b')')
+            && matches!(b[i + digits + 1], b' ' | b'\t')
+        {
+            i += digits + 1;
+            continue;
+        }
+        break;
+    }
+    let ch = *b.get(i)?;
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let run = b[i..].iter().take_while(|c| **c == ch).count();
+    if run < 3 {
+        return None;
+    }
+    let end = i + run;
+    fence_language_is_figure(&line[end..]).then_some(end)
+}
+
+/// フェンスの情報文字列（フェンスの文字の後ろ）が、図・表の言語（`ui`・`yui`・`data_grid`・`data-grid`）か。
+///
+/// 画面（micromark）と同じく、最初の語（空白・タブまで）の文字参照（`&#105;`・`&#x69;`）とバックスラッシュ
+/// エスケープ（`\_`）を解いてから、`language-<語>` のクラス名として読む。解いた語に空白が入ると、クラス名の
+/// 後ろの組（`x&#32;language-ui`）も画面では言語として読まれるので、組ごとに見る。名前の文字参照（`&colon;`
+/// など）は表を持たないので、含むなら図として扱う（失敗しても素通りさせない・安全側）。大文字小文字は問わない。
+fn fence_language_is_figure(info: &str) -> bool {
+    let word = info
+        .trim_start_matches([' ', '\t'])
+        .split([' ', '\t'])
+        .next()
+        .unwrap_or_default();
+    let Some(lang) = decode_info_word(word) else {
+        return true;
+    };
+    let class = format!("language-{lang}").to_lowercase();
+    class
+        .split(|c: char| c.is_whitespace() || c == '\u{feff}')
+        .filter_map(|t| t.strip_prefix("language-"))
+        .any(|t| {
+            let head: String = t
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            matches!(head.as_str(), "ui" | "yui" | "data_grid" | "data-grid")
+        })
+}
+
+/// 情報文字列の語の文字参照（数値）とバックスラッシュエスケープを CommonMark と同じく解く。名前の文字参照を
+/// 含むなら `None`（解けない・呼び出し側は図として扱う）。
+fn decode_info_word(word: &str) -> Option<String> {
+    let mut out = String::with_capacity(word.len());
+    let mut rest = word;
+    while let Some(c) = rest.chars().next() {
+        let after = &rest[c.len_utf8()..];
+        if c == '\\' {
+            // ASCII の句読点だけがエスケープになる（ほかはバックスラッシュのまま）。
+            if let Some(n) = after.chars().next().filter(char::is_ascii_punctuation) {
+                out.push(n);
+                rest = &after[1..];
+                continue;
+            }
+        } else if c == '&' {
+            let semi = after.find(';').filter(|k| *k <= 32);
+            let body = semi.map(|k| &after[..k]);
+            if let Some(ch) = body.and_then(numeric_reference) {
+                out.push(ch);
+                rest = &after[semi.unwrap_or_default() + 1..];
+                continue;
+            }
+            let named = body.is_some_and(|b| {
+                b.starts_with(|c: char| c.is_ascii_alphabetic())
+                    && b.chars().all(|c| c.is_ascii_alphanumeric())
+            });
+            if named {
+                return None;
+            }
+        }
+        out.push(c);
+        rest = after;
+    }
+    Some(out)
+}
+
+/// 数値の文字参照の本体（`#105`・`#x69`）を解く（桁数の上限・0 と不正な値は U+FFFD・CommonMark と同じ）。
+fn numeric_reference(body: &str) -> Option<char> {
+    let num = body.strip_prefix('#')?;
+    let (digits, radix, max) = match num.strip_prefix(['x', 'X']) {
+        Some(hex) => (hex, 16, 6),
+        None => (num, 10, 7),
+    };
+    if digits.is_empty() || digits.len() > max || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    let v = u32::from_str_radix(digits, radix).ok()?;
+    Some(char::from_u32(v).filter(|_| v != 0).unwrap_or('\u{fffd}'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neutralizes_every_figure_and_grid_fence() {
+        let md = "前置き\n```ui\napp 申請\nbutton 承認 -> workflow 経費\n```\n\n> ```yui:ask\n> ? q\n\n- ```data_grid\n  申請一覧\n\n1. ~~~~UI app\n```ui\nplan 書きかけ\n````DATA-GRID\n```text\nそのまま\n```";
+        let out = neutralize_fences(md);
+        assert_eq!(
+            out,
+            "前置き\n```text\napp 申請\nbutton 承認 -> workflow 経費\n```\n\n> ```text\n> ? q\n\n- ```text\n  申請一覧\n\n1. ~~~~text\n```text\nplan 書きかけ\n````text\n```text\nそのまま\n```"
+        );
+        // 書き換えた後は、操作を持つ図として読まれない。
+        assert!(extract_action_blocks(&out).is_empty());
+        // 図でないフェンス・2 文字のバッククォートは変えない。
+        assert_eq!(
+            neutralize_fences("``ui``\n```rust\nfn a() {}\n```"),
+            "``ui``\n```rust\nfn a() {}\n```"
+        );
+        assert_eq!(neutralize_fences("```uix\nx\n```"), "```uix\nx\n```");
+    }
+
+    /// 行末は \r\n・\r・\n のどれでも（CommonMark と同じ）。区切りはそのまま残す。
+    #[test]
+    fn every_line_ending_is_a_line_ending() {
+        let figure = "button 承認する -> workflow 経費";
+        for eol in ["\r", "\r\n", "\n"] {
+            let md = format!("結果{eol}```ui:app{eol}app 申請{eol}{figure}{eol}```{eol}");
+            assert_eq!(
+                neutralize_fences(&md),
+                format!("結果{eol}```text{eol}app 申請{eol}{figure}{eol}```{eol}"),
+                "{eol:?}"
+            );
+        }
+        // 開きのフェンスの前だけが \r の混在の形も書き換える。
+        assert_eq!(
+            neutralize_fences("結果\r```ui:app\napp 申請\n```"),
+            "結果\r```text\napp 申請\n```"
+        );
+    }
+
+    /// 情報文字列は文字参照・バックスラッシュエスケープを解いてから読む（画面の言語名と同じ）。
+    #[test]
+    fn info_strings_are_decoded_before_the_language_is_read() {
+        for info in [
+            "u&#105;:app",
+            "&#x75;&#X69;",
+            "&#121;ui",
+            "data\\_grid",
+            "data&#95;grid",
+            "d&#97;ta\\-grid",
+            "UI",
+            "x&#32;language-ui",
+            "x&#160;language-yui:ask",
+            "u&#105;&colon;app",
+            "&ThinSpace;language-ui",
+        ] {
+            assert_eq!(
+                neutralize_fences(&format!("```{info}\napp 申請\n```")),
+                "```text\napp 申請\n```",
+                "{info}"
+            );
+        }
+        for info in [
+            "u\\i",
+            "&#117;ix",
+            "rust",
+            "&#32;ui",
+            "u&#1234567;",
+            "&#x;ui",
+            "&#;ui",
+            "ui-x",
+        ] {
+            let md = format!("```{info}\nx\n```");
+            assert_eq!(neutralize_fences(&md), md, "{info}");
+        }
+        assert_eq!(numeric_reference("#0"), Some('\u{fffd}'));
+        assert_eq!(numeric_reference("#xD800"), Some('\u{fffd}'));
+        assert_eq!(numeric_reference("#12345678"), None);
+    }
 
     #[test]
     fn extracts_only_closed_action_blocks() {
@@ -293,6 +600,35 @@ mod tests {
             blocks[0].hash,
             block_hash("app 申請\n  件名 = text\nbutton 送る -> chat")
         );
+    }
+
+    /// 書き損じた図（エラーのある図・閉じていない図）は、ボタンを持たない代わりに一覧で分かる（D-16 の (c)）。
+    #[test]
+    fn broken_action_blocks_lists_what_extract_skips() {
+        let md = "前置き\n\n```ui\nbar x\na | 1\n```\n\n```ui:app\napp 申請\n件名 = text\nbutton 送る -> workflow 申請\n```\n\n```ui\nplan 計画\n```\n\n> ```ui\n> plan 引用の中\n> ```\n\n```ui:app\napp 書きかけ\n件名 = text\n";
+        let broken = broken_action_blocks(md);
+        assert_eq!(broken.len(), 2, "{broken:?}");
+        // 手順の無い plan（エラー）。行は本文の行で数える（中身の 1 行目が 15 行目）。
+        assert_eq!(broken[0].kind, Kind::Plan);
+        assert_eq!(broken[0].title, "計画");
+        assert_eq!(broken[0].first_line, 15);
+        assert!(broken[0].closed && !broken[0].actionable);
+        assert!(broken[0].diagnostics.iter().any(|d| d.code == "empty"));
+        // 閉じていない app は、誤りが無くても書き損じとして挙がる。
+        assert_eq!(broken[1].kind, Kind::App);
+        assert_eq!(broken[1].title, "書きかけ");
+        assert!(!broken[1].closed && !broken[1].actionable);
+        // 正しい app・表示だけの図・引用の中の図は挙がらず、正しい app だけがボタンを持つ。
+        assert_eq!(extract_action_blocks(md).len(), 1);
+        assert!(broken_action_blocks("```ui:app\napp 申請\n件名 = text\n```").is_empty());
+        // 読めない行（種類の誤り）は、ボタンは出るが黙って落ちるので、書き損じとして挙がる。
+        let typo = broken_action_blocks(
+            "```ui:app\napp 申請\n金額 = numbr\nbutton 送る -> workflow 申請\n```",
+        );
+        assert_eq!(typo.len(), 1);
+        assert!(typo[0].actionable);
+        assert_eq!(typo[0].diagnostics[0].code, "unrecognized_line");
+        assert_eq!(typo[0].diagnostics[0].line, 2);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 
 use super::bound::{
     pseudo, pseudo_updated_at, BField, BHaving, BSort, Binder, BoundJoin, BoundQuery, ColRef, Expr,
-    FieldKind, GroupKey, LinkCtx, LinkExpr,
+    GroupKey, LinkCtx, LinkExpr,
 };
 use super::ir::{
     CondOp, DataQuery, HavingCond, Metric, MetricSpec, DEFAULT_LIMIT, MAX_GROUP_LIMIT, MAX_LIMIT,
@@ -140,23 +140,8 @@ pub(crate) fn bind_query_scoped(
     let mut precision = SortPrecision::Exact;
     let mut seen = HashSet::new();
     for k in &q.sort {
-        if k.field.contains('.') {
-            return Err(DataError::input_detail(crate::InvalidCode::InvalidInput, None, format!(
-                "ソートキー '{}': 結合先の列では並べ替えられません（FROM の表の列を指定してください）",
-                k.field
-            )));
-        }
-        let f = b.queryable(&k.field)?;
-        if f.multi() {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::FieldNotSortable,
-                Some(&k.field),
-                format!(
-                    "フィールド '{}' はソートに使えません（多値・リンク）",
-                    k.field
-                ),
-            ));
-        }
+        // 列の規則は保存時の照合と同じ（[`super::field_use`]・BUG-244）。
+        let f = super::field_use::sort_field(&mut b, &k.field)?;
         if !seen.insert(f.id) {
             return Err(DataError::input_detail(
                 crate::InvalidCode::InvalidInput,
@@ -168,16 +153,7 @@ pub(crate) fn bind_query_scoped(
             precision = SortPrecision::Prefix;
         }
         // 材料化した派生列は複数ソートの複合索引を持たない（第 1 キーか単独のソートだけ）。
-        if f.derived && q.sort.len() > 1 {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::FieldNotSortable,
-                Some(&k.field),
-                format!(
-                    "派生フィールド '{}' は複数キーのソートに使えません",
-                    k.field
-                ),
-            ));
-        }
+        super::field_use::sort_derived_fits(&f, &k.field, q.sort.len())?;
         sort.push(BSort {
             field: f.id,
             desc: k.descending,
@@ -266,14 +242,7 @@ pub(crate) fn bind_query_scoped(
     let mut group_by = Vec::new();
     for g in &q.group_by {
         let c = col_ref(&mut b, &mut joins, g)?;
-        let f = col_field(&b, &joins, c);
-        if f.multi() || f.is_pseudo() {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::FieldNotSortable,
-                None,
-                format!("フィールド '{g}' は集計/グループ化に使えません"),
-            ));
-        }
+        super::field_use::group_key_fits(col_field(&b, &joins, c), g)?;
         group_by.push(c);
     }
     if !group_by.is_empty() && q.aggregate.is_empty() {
@@ -540,13 +509,7 @@ fn bind_metric(
         )
     })?;
     let c = col_ref(b, joins, name)?;
-    if col_field(b, joins, c).kind != FieldKind::Num {
-        return Err(DataError::input_detail(
-            crate::InvalidCode::ValueTypeMismatch,
-            None,
-            format!("集計対象 '{name}' は number である必要があります"),
-        ));
-    }
+    super::field_use::metric_fits(col_field(b, joins, c), name)?;
     Ok((m.metric, Some(c)))
 }
 

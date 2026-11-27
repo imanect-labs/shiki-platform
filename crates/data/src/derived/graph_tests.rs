@@ -138,6 +138,15 @@ fn invariant_requires_all_four_layers() {
         Materialization::PerViewer,
         "数式は推移的に per_viewer"
     );
+    // 書き込みの決まりだけ（読む決まりは全員）の表は、見え方を絞らない（状態の進め方の既定の書き込みの決まり・D-115）。
+    cat.tables.get_mut(&b).unwrap().schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Public,
+        write: Some(PolicyExpr::IsOwner),
+    });
+    assert_eq!(
+        cat.materialization(a, "total", &contained),
+        Materialization::Invariant
+    );
     cat.tables.get_mut(&b).unwrap().schema.row_policy = None;
     // ③ 対象列のマスク（count は対象列を読まないので影響しない）。
     cat.tables.get_mut(&b).unwrap().schema.field_policy = vec![FieldPolicy {

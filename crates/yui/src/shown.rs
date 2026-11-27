@@ -93,30 +93,35 @@ pub fn summary(figure: &Figure, action_id: &str, values: &Map<String, Value>) ->
     }
 }
 
+/// 値のキー（app の部品の `as` 名・ask の質問の id）に当たる、図の中の表示名（無ければ `None`）。
+///
+/// 値の検証の誤り（[`error_text`]）と、起動したワークフローの入力の誤りを部品の名前で言うとき（gui）の 1 つの決まり。
+#[must_use]
+pub fn field_label(figure: &Figure, key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+    match figure {
+        Figure::App { sections, .. } => sections
+            .iter()
+            .flat_map(|s| s.fields.iter())
+            .find(|f| f.key == key)
+            .map(|f| f.label.clone()),
+        Figure::Ask { questions, .. } => questions
+            .iter()
+            .find(|q| q.id == key)
+            .map(|q| q.text.clone()),
+        Figure::Plan { .. } => Some("修正の内容".into()),
+    }
+}
+
 /// 値の検証の誤りを、部品の表示名つきの文にする（400 の本文）。
 pub fn error_text(figure: &Figure, errors: &Map<String, Value>) -> String {
-    let label = |key: &str| -> Option<String> {
-        if key.is_empty() {
-            return None;
-        }
-        match figure {
-            Figure::App { sections, .. } => sections
-                .iter()
-                .flat_map(|s| s.fields.iter())
-                .find(|f| f.key == key)
-                .map(|f| f.label.clone()),
-            Figure::Ask { questions, .. } => questions
-                .iter()
-                .find(|q| q.id == key)
-                .map(|q| q.text.clone()),
-            Figure::Plan { .. } => Some("修正の内容".into()),
-        }
-    };
     errors
         .iter()
         .map(|(k, v)| {
             let msg = v.as_str().unwrap_or("値が正しくありません");
-            match label(k) {
+            match field_label(figure, k) {
                 Some(l) => format!("{l}: {msg}"),
                 None => msg.to_string(),
             }

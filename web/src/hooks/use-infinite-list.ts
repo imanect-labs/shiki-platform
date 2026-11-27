@@ -12,6 +12,9 @@ export type InfiniteList<T> = {
   loadingMore: boolean;
   error: string | null;
   hasMore: boolean;
+  /// 直前に成功した取得で足した件数（先頭の読み込みはその件数）。0 件の取得が続く一覧で、自動で読み続けるのを
+  /// 止めるのに使う（「共有されたもの」）。
+  lastAdded: number;
   /// 次ページを取得する（無限スクロールの sentinel から呼ぶ）。
   loadMore: () => void;
   /// 先頭から取り直す（作成/削除/リネーム後の反映）。
@@ -20,10 +23,11 @@ export type InfiniteList<T> = {
 
 /// `next_cursor` を消費する汎用の無限スクロールフック。
 ///
-/// `fetchPage(cursor)` は 1 ページを返す。`deps` が変わると先頭から読み直す
-/// （フォルダ移動・ソート変更・検索語変更など）。全件取得はしない。
+/// `fetchPage(cursor, signal)` は 1 ページを返す。`deps` が変わると先頭から読み直す
+/// （フォルダ移動・ソート変更・検索語変更など）。全件取得はしない。読み直すときと画面を離れるときは、前の読み込みの
+/// `signal` を止める（1 回の読み込みで続きを何回かたどる取得が、捨てる結果のために往復を続けない・BUG-187）。
 export function useInfiniteList<T>(
-  fetchPage: (cursor?: string) => Promise<Page<T>>,
+  fetchPage: (cursor?: string, signal?: AbortSignal) => Promise<Page<T>>,
   deps: React.DependencyList,
 ): InfiniteList<T> {
   const [items, setItems] = React.useState<T[]>([]);
@@ -33,11 +37,14 @@ export function useInfiniteList<T>(
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [reloadKey, setReloadKey] = React.useState(0);
+  const [lastAdded, setLastAdded] = React.useState(0);
 
   // 競合防止: 最新リクエストのみ反映する世代カウンタ。
   const generation = React.useRef(0);
   // 進行中フラグ（同一 sentinel の多重発火を抑止）。
   const fetching = React.useRef(false);
+  // いまの世代の読み込みを止める合図（読み直す・画面を離れると止める）。
+  const abort = React.useRef<AbortController | null>(null);
 
   const fetchPageRef = React.useRef(fetchPage);
   fetchPageRef.current = fetchPage;
@@ -45,6 +52,8 @@ export function useInfiniteList<T>(
   // 先頭ロード（deps / reload で発火）。
   React.useEffect(() => {
     const gen = ++generation.current;
+    const controller = new AbortController();
+    abort.current = controller;
     setItems([]);
     setCursor(undefined);
     setHasMore(true);
@@ -52,12 +61,13 @@ export function useInfiniteList<T>(
     setError(null);
     fetching.current = true;
     fetchPageRef
-      .current(undefined)
+      .current(undefined, controller.signal)
       .then((page) => {
         if (gen !== generation.current) return;
         setItems(page.items);
         setCursor(page.next_cursor ?? undefined);
         setHasMore(Boolean(page.next_cursor));
+        setLastAdded(page.items.length);
       })
       .catch((e: unknown) => {
         if (gen !== generation.current) return;
@@ -69,6 +79,7 @@ export function useInfiniteList<T>(
         setLoading(false);
         fetching.current = false;
       });
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, reloadKey]);
 
@@ -78,12 +89,13 @@ export function useInfiniteList<T>(
     fetching.current = true;
     setLoadingMore(true);
     fetchPageRef
-      .current(cursor)
+      .current(cursor, abort.current?.signal)
       .then((page) => {
         if (gen !== generation.current) return;
         setItems((prev) => [...prev, ...page.items]);
         setCursor(page.next_cursor ?? undefined);
         setHasMore(Boolean(page.next_cursor));
+        setLastAdded(page.items.length);
       })
       .catch((e: unknown) => {
         if (gen !== generation.current) return;
@@ -99,7 +111,7 @@ export function useInfiniteList<T>(
 
   const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
 
-  return { items, loading, loadingMore, error, hasMore, loadMore, reload };
+  return { items, loading, loadingMore, error, hasMore, lastAdded, loadMore, reload };
 }
 
 /// 無限スクロールの sentinel を監視し、可視になったら `onVisible` を呼ぶ。

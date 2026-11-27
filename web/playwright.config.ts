@@ -12,6 +12,8 @@ const BASE_URL = process.env.E2E_BASE_URL ?? "http://localhost:3000";
 
 export default defineConfig({
   testDir: "./e2e",
+  // 組織の既定（おまかせで使うモデル）が stub で動くことを、テストを始める前に確かめる（外れていれば止める・BUG-115）。
+  globalSetup: "./e2e/global-setup.ts",
   // OIDC ラウンドトリップを跨ぐためテスト間の状態混線を避け直列実行する。
   fullyParallel: false,
   workers: 1,

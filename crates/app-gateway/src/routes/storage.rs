@@ -68,29 +68,46 @@ pub(crate) struct GwChildPage {
 }
 
 /// フォルダ直下の一覧（権限フィルタ済み・keyset カーソル）。
+///
+/// 1 ページが `limit` より少ないか空のまま `next_cursor` だけが付くことがある（OpenFGA に問う数の上限・BUG-187）。
+/// `next_cursor` はテナント・フォルダー・並びに束縛した不透明な文字列（見えないものの名前を含む位置を外へ出さない）。
 pub(crate) async fn list_children(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
     Path(node_id): Path<Uuid>,
     Query(q): Query<ListChildrenQuery>,
 ) -> Result<Json<GwChildPage>, GatewayError> {
+    let sort = ChildSort::default();
+    let kind = data::ListCursorKind::DriveFolder;
+    let scope = sort.cursor_scope(&node_id.to_string());
+    let tenant = ctx.auth.tenant_id();
+    let cursor = q
+        .cursor
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| state.caps.data.open_list_cursor(kind, tenant, &scope, c))
+        .transpose()?;
     let page = state
         .caps
         .storage
         .list_children(
             &ctx.auth,
             Some(node_id),
-            ChildSort::default(),
-            q.cursor.as_deref(),
+            sort,
+            cursor.as_deref(),
             q.limit.unwrap_or(50).min(200),
             // ミニアプリへもシステム領域は見せない（#392）。
             false,
             None,
         )
         .await?;
+    let next_cursor = page
+        .next_cursor
+        .map(|c| state.caps.data.seal_list_cursor(kind, tenant, &scope, &c))
+        .transpose()?;
     Ok(Json(GwChildPage {
         items: page.items.into_iter().map(to_gw_node).collect(),
-        next_cursor: page.next_cursor,
+        next_cursor,
     }))
 }
 

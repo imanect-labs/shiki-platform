@@ -1,0 +1,832 @@
+"use client";
+
+/// ファイル（storage.* / csv.*）ノードのフォーム（BUG-5）。
+///
+/// 対象のファイル・フォルダはドライブから選ぶ（固定値の UUID）。固定値で選ぶと、有効化のときに渡す権限
+/// （ファイルの viewer / editor・フォルダの editor）の対象がそれに決まる。前の結果から渡す指定も残す。
+/// 選んだものの名前は ID から引き直して出す（開き直しても UUID だけにならない）。
+
+import * as React from "react";
+import { File as FileIcon, X } from "lucide-react";
+
+import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { DrivePicker } from "@/components/chat/drive-picker";
+import { NodeIcon } from "@/components/drive/primitives";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  STORAGE_READ_INDEX_WAIT_MAX_MINUTES,
+  STORAGE_LIST_MAX_ITEMS,
+  STORAGE_READ_MAX_DOCUMENT_CHARS,
+  type NodeParamsByType,
+} from "@/generated/workflow-catalog";
+import type { CsvEncoding, NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
+import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
+import { cn } from "@/lib/utils";
+import { nodeErrorView } from "../validation";
+import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
+import type { FormProps } from "./forms-basic";
+import { paramsOf, patchParams } from "./params";
+import { typeLabel as blockTypeLabel } from "../regions";
+import { ValueExprInput, type RefCandidate } from "./value-expr-input";
+import { valueAtParamsPath } from "./value-refs";
+
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/// 名前の表示に要る分だけ（ピッカーの応答・`GET /files/{id}`・フォルダーのパンくずのどれからでも作れる）。
+type DriveItem = Pick<NodeResponse, "id" | "name" | "kind"> & Partial<Pick<NodeResponse, "content_type">>;
+
+/// ID → ドライブの項目（名前の表示用・ページを開いている間だけ持つ）。選んだときの応答もここへ入れる。
+const driveItems = new Map<string, DriveItem>();
+
+/// ピッカーで選んだものを覚える（引き直さずに名前を出す）。
+export function rememberDriveItem(n: DriveItem): void {
+  driveItems.set(n.id, n);
+}
+
+/// ID のファイル・フォルダを引く（名前の表示用）。見つからない・読めないときは `missing`。
+export function useDriveItem(id: string | null): { item: DriveItem | null; missing: boolean; loading: boolean } {
+  const [loaded, setLoaded] = React.useState<{ id: string; item: DriveItem | null } | null>(null);
+  const valid = id !== null && UUID_RE.test(id);
+  React.useEffect(() => {
+    if (!valid || !id || driveItems.has(id)) return;
+    let active = true;
+    // `GET /files/{id}` はファイルだけを引く（フォルダーは見つからない扱いになる）。引けなければパンくず
+    // （読める祖先と自身・最後が自身）から名前を引く。保存した定義のフォルダーが「見つかりません」と出ていた。
+    getNode(id)
+      .catch(async (): Promise<DriveItem> => {
+        const self = (await breadcrumb(id)).at(-1);
+        if (!self || self.id !== id) throw new Error("not found");
+        return { id: self.id, name: self.name, kind: self.kind };
+      })
+      .then((n) => {
+        driveItems.set(id, n);
+        if (active) setLoaded({ id, item: n });
+      })
+      .catch(() => active && setLoaded({ id, item: null }));
+    return () => {
+      active = false;
+    };
+  }, [id, valid]);
+  if (!id) return { item: null, missing: false, loading: false };
+  if (!valid) return { item: null, missing: true, loading: false };
+  const cached = driveItems.get(id);
+  if (cached) return { item: cached, missing: false, loading: false };
+  if (loaded?.id === id) return { item: loaded.item, missing: loaded.item === null, loading: false };
+  return { item: null, missing: false, loading: true };
+}
+
+/// ID の名前（有効化の画面など、表示だけに使う）。引けないときは `fallback`。
+export function DriveItemName({ id, fallback }: { id: string; fallback: string }) {
+  const { item } = useDriveItem(id);
+  return <>{item?.name ?? fallback}</>;
+}
+
+export function isCsvFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
+  return n.name.toLowerCase().endsWith(".csv") || (n.content_type ?? "").startsWith("text/csv");
+}
+
+/// Excel のブック（.xlsx・マクロ付きの .xlsm）。「CSV を集計」だけが読める（D-17）。
+export function isExcelFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
+  const name = n.name.toLowerCase();
+  const type = (n.content_type ?? "").toLowerCase();
+  return (
+    name.endsWith(".xlsx") ||
+    name.endsWith(".xlsm") ||
+    type.startsWith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+    type.startsWith("application/vnd.ms-excel.sheet.macroenabled.12")
+  );
+}
+
+/// 「CSV を集計」が読めるファイル（CSV と Excel）。CSV を編集・CSV を保存は CSV だけ（D-17）。
+export function isQueryableFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
+  return isCsvFile(n) || isExcelFile(n);
+}
+
+/// 「一覧から選ぶ ／ 前の結果から指定する」の切り替え（forms-data の TableField と同じ見た目）。
+function ModeToggle({ expr, onToggle, pickLabel }: { expr: boolean; onToggle: () => void; pickLabel: string }) {
+  return (
+    <button
+      type="button"
+      className="text-[11px] text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={onToggle}
+    >
+      {expr ? pickLabel : "前の結果から指定する"}
+    </button>
+  );
+}
+
+/// 選んだもの（アイコン・名前）と「選ぶ」ボタンの行。
+function PickedRow({
+  label,
+  kind,
+  item,
+  text,
+  muted,
+  danger,
+  verb,
+  onPick,
+  onClear,
+}: {
+  label: string;
+  kind: "file" | "folder";
+  item: DriveItem | null;
+  text: string;
+  muted?: boolean;
+  danger?: boolean;
+  verb: string;
+  onPick: () => void;
+  onClear?: () => void;
+}) {
+  // 読み上げ・操作の名前（「保存先フォルダ（省略可）」→「保存先フォルダを選ぶ」）。
+  const name = label.replace(/（[^）]*）$/, "");
+  return (
+    <div className={cn("flex min-w-0 items-center gap-2 rounded-md border px-2 py-1.5", danger && "border-destructive")}>
+      {item ? (
+        <NodeIcon kind={item.kind} name={item.name} contentType={item.content_type} className="size-5 shrink-0" />
+      ) : kind === "folder" ? (
+        <NodeIcon kind="folder" className="size-5 shrink-0 opacity-60" />
+      ) : (
+        <FileIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      )}
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-[13px]",
+          muted && "text-muted-foreground",
+          danger && "text-destructive",
+        )}
+        title={text}
+      >
+        {text}
+      </span>
+      {onClear ? (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 shrink-0"
+          aria-label={`${name}の指定を外す`}
+          onClick={onClear}
+        >
+          <X className="size-3.5" aria-hidden />
+        </Button>
+      ) : null}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7 shrink-0 px-2.5 text-xs"
+        aria-label={`${name}を${verb}`}
+        onClick={onPick}
+      >
+        {verb}
+      </Button>
+    </div>
+  );
+}
+
+/// 前の結果から指定している値を「選ぶ」の表示に切り替えたとき（選ぶと置き換わる）。
+const DYNAMIC_TEXT = "前の結果から指定しています（選ぶと置き換えます）";
+
+/// 選んだファイル・フォルダーを引けないときの、行の呼び名と欄の下の理由（GAP-91）。行は呼び名だけを言い、理由と
+/// 直し方は欄の下で 1 回だけ言う。言い方は保存の誤り（ir.unknown_file・ir.unknown_folder の「選んだ…が見つかりません。
+/// 削除されたか、見る権限がありません。…を選び直してください。」）とそろえる。開いたばかりの定義は保存の誤りをまだ
+/// 受けていないので、理由は行を引けなかったことから言う。きっかけの「対象フォルダ」も同じ言い方を使う。
+export const MISSING = {
+  file: { row: "見つからないファイル", hint: "削除されたか、見る権限がありません。ファイルを選び直してください。" },
+  folder: { row: "見つからないフォルダー", hint: "削除されたか、見る権限がありません。フォルダーを選び直してください。" },
+} as const;
+
+/// ドライブから選ぶ欄の下に出す誤り。行が見つからないと言っているときは、同じ値を指す欄そのものの保存の誤り
+/// （ir.unknown_file・ir.unknown_folder）を重ねず、理由と直し方を 1 回だけ言う（BUG-82 と同じ型）。どの値を確かめた
+/// 誤りかは、検証した時点の値で見る（選び直した後の古い誤りを、今の値の誤りとして消さない）。ほかの誤りはそのまま出す。
+///
+/// `param` は欄の誤りを引く名前（`file`・入れ子なら `tables/0`）、`path` は値の位置（params の中・既定は `param`・
+/// 入れ子なら `tables/0/file`）。
+function pickFieldError({
+  fieldErrors,
+  serverCheck,
+  param,
+  path = param,
+  literal,
+  missing,
+  kind,
+}: Pick<FormProps, "fieldErrors" | "serverCheck"> & {
+  param: string;
+  path?: string;
+  literal: string | null;
+  missing: boolean;
+  kind: keyof typeof MISSING;
+}): string | undefined {
+  if (!missing || literal === null) return fieldErrors.get(param);
+  const pointer = `/params/${path}`;
+  const checked = valueAtParamsPath(serverCheck.node?.params, pointer);
+  const others = serverCheck.errors.filter((e) => !(e.path === pointer && checked === literal));
+  return nodeErrorView(others).fields.get(param) ?? MISSING[kind].hint;
+}
+
+type PickFieldProps = FormProps & {
+  /// params の項目名（既定 `file` / `folder`）。
+  param?: string;
+  label: string;
+  hint?: string;
+};
+
+/// ファイルの選び方（ドライブから選ぶとき）。
+type FilePickerProps = {
+  accept?: (n: NodeResponse) => boolean;
+  pickerTitle?: string;
+  pickerDescription?: string;
+};
+
+/// 対象のファイル（ドライブから選ぶ ／ 前の結果から）。`exprHint` は「入力や結果から選ぶ」ときの注記（ドライブで選んだ
+/// ファイルにだけ当てはまる注記〔有効化で渡す権限〕を出さずに、ブロックの性質だけを言う）。
+export function FileField({
+  node,
+  dispatch,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  serverCheck,
+  param = "file",
+  label,
+  hint,
+  exprHint,
+  accept,
+  pickerTitle,
+  pickerDescription,
+}: PickFieldProps & FilePickerProps & { exprHint?: string }) {
+  return (
+    <FilePick
+      value={paramsOf<Record<string, ValueExpr>>(node)[param]}
+      onChange={(v) => patchParams(dispatch, node, { [param]: v })}
+      refCandidates={refCandidates}
+      inMapRegion={inMapRegion}
+      fieldErrors={fieldErrors}
+      serverCheck={serverCheck}
+      param={param}
+      label={label}
+      hint={hint}
+      exprHint={exprHint}
+      accept={accept}
+      pickerTitle={pickerTitle}
+      pickerDescription={pickerDescription}
+    />
+  );
+}
+
+/// ファイルを選ぶ欄の本体（値と書き戻しを受け取る・params の項目そのものでない値〔CSV を集計のつなぐ CSV の
+/// 各ファイル〕にも使う）。`param` は欄の誤りを引く名前、`path` は値の位置（[`pickFieldError`]）。`bare` なら見出しを
+/// 出さない（行の中に置くとき・見出しは `label` を読み上げとボタンの名前にだけ使う）。
+export function FilePick({
+  value,
+  onChange,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  serverCheck,
+  param,
+  path,
+  label,
+  hint,
+  bare,
+  accept,
+  pickerTitle = "ファイルを選ぶ",
+  pickerDescription = "使うファイルを選んでください。",
+  exprHint,
+}: Pick<FormProps, "fieldErrors" | "serverCheck"> &
+  FilePickerProps & {
+    value: ValueExpr | undefined;
+    onChange: (next: ValueExpr) => void;
+    refCandidates: RefCandidate[];
+    inMapRegion: boolean;
+    param: string;
+    path?: string;
+    label: string;
+    hint?: string;
+    bare?: boolean;
+    exprHint?: string;
+  }) {
+  const literal = typeof value === "string" && value !== "" ? value : null;
+  const dynamic = value !== undefined && typeof value !== "string";
+  const [mode, setMode] = React.useState<"pick" | "expr">(dynamic ? "expr" : "pick");
+  const [open, setOpen] = React.useState(false);
+  const { item, missing, loading } = useDriveItem(literal);
+  const error = fieldErrors.get(param);
+  const pickError = pickFieldError({ fieldErrors, serverCheck, param, path, literal, missing, kind: "file" });
+  const text = dynamic
+    ? DYNAMIC_TEXT
+    : loading
+      ? "読み込み中…"
+      : missing
+        ? MISSING.file.row
+        : (item?.name ?? "ファイルが選ばれていません");
+  const row = (
+    <PickedRow
+      label={label}
+      kind="file"
+      item={item}
+      text={text}
+      muted={!item}
+      danger={missing}
+      verb={literal ? "変更" : "選ぶ"}
+      onPick={() => setOpen(true)}
+    />
+  );
+  return (
+    <div className="space-y-1.5">
+      {mode === "pick" ? (
+        bare ? (
+          <>
+            {row}
+            {pickError ? <p className="text-[11px] text-destructive">{pickError}</p> : null}
+          </>
+        ) : (
+          <Field label={label} error={pickError} hint={hint}>
+            {row}
+          </Field>
+        )
+      ) : (
+        <ValueExprInput
+          label={label}
+          value={value}
+          onChange={onChange}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          placeholder="ファイル ID"
+          error={error}
+          hint={exprHint}
+        />
+      )}
+      <ModeToggle expr={mode === "expr"} pickLabel="ドライブから選ぶ" onToggle={() => setMode(mode === "pick" ? "expr" : "pick")} />
+      <DrivePicker
+        open={open}
+        onOpenChange={setOpen}
+        title={pickerTitle}
+        description={pickerDescription}
+        accept={accept}
+        onSelect={(n) => {
+          driveItems.set(n.id, n);
+          onChange(n.id);
+        }}
+      />
+    </div>
+  );
+}
+
+/// 対象のフォルダ（ドライブから選ぶ ／ 前の結果から）。`optional` なら外せる（外すとマイドライブ）。
+export function FolderField({
+  node,
+  dispatch,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  serverCheck,
+  param = "folder",
+  label,
+  hint,
+  optional,
+}: PickFieldProps & { optional?: boolean }) {
+  const value = paramsOf<Record<string, ValueExpr>>(node)[param];
+  const literal = typeof value === "string" && value !== "" ? value : null;
+  const dynamic = value !== undefined && typeof value !== "string";
+  const [mode, setMode] = React.useState<"pick" | "expr">(dynamic ? "expr" : "pick");
+  const [open, setOpen] = React.useState(false);
+  const { item, missing, loading } = useDriveItem(literal);
+  const error = fieldErrors.get(param);
+  const pickError = pickFieldError({ fieldErrors, serverCheck, param, literal, missing, kind: "folder" });
+  const text = dynamic
+    ? DYNAMIC_TEXT
+    : loading
+      ? "読み込み中…"
+      : missing
+        ? MISSING.folder.row
+        : (item?.name ?? (optional ? "マイドライブ（指定なし）" : "フォルダが選ばれていません"));
+  return (
+    <div className="space-y-1.5">
+      {mode === "pick" ? (
+        <Field label={label} error={pickError} hint={hint}>
+          <PickedRow
+            label={label}
+            kind="folder"
+            item={item}
+            text={text}
+            muted={!item}
+            danger={missing}
+            verb={literal ? "変更" : "選ぶ"}
+            onPick={() => setOpen(true)}
+            onClear={optional && value !== undefined ? () => patchParams(dispatch, node, { [param]: undefined }) : undefined}
+          />
+        </Field>
+      ) : (
+        <ValueExprInput
+          label={label}
+          value={value}
+          onChange={(v) => patchParams(dispatch, node, { [param]: v })}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          placeholder="フォルダ ID"
+          error={error}
+        />
+      )}
+      <ModeToggle expr={mode === "expr"} pickLabel="ドライブから選ぶ" onToggle={() => setMode(mode === "pick" ? "expr" : "pick")} />
+      <FolderPicker
+        open={open}
+        onOpenChange={setOpen}
+        onSelect={(choice) => {
+          driveItems.set(choice.id, { id: choice.id, name: choice.name, kind: "folder" });
+          patchParams(dispatch, node, { [param]: choice.id });
+        }}
+      />
+    </div>
+  );
+}
+
+// ── ファイル（storage.*）────────────────────────────────────────────────
+
+/// 保存先フォルダの説明。スケジュール・できごとの実行はワークフローとして動くので、省略（ルートへの保存）だと
+/// 保存できない。有効化はその理由で止まる（D-40・`ir.write_folder_required`）。
+const UNATTENDED_FOLDER_HINT =
+  "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
+
+/// 「ファイルを読む」が読むもの（付録 D の N3.5.1）。テキストのファイルは中身を読み（BUG-101）、PDF・Office は社内文書の
+/// 検索に取り込まれた本文を読む（D-111）。取り込みが終わる前は、試す回数を使わずに終わるまで待って読む（待つ上限は
+/// Rust の定数から生成した値・D-125）。取り込めない種類（画像など）は実行で失敗する。
+const READ_FILE_HINT = `テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word の取り込みが終わっていなければ、終わるまで最大 ${STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待ちます。`;
+
+export function StorageReadForm(props: FormProps) {
+  return (
+    <div className="space-y-1.5">
+      <FileField
+        {...props}
+        label="読むファイル"
+        hint={`${READ_FILE_HINT}自動実行をオンにするとき、このファイルを読めるようにします。`}
+        exprHint={READ_FILE_HINT}
+      />
+      <StorageReadMore />
+    </div>
+  );
+}
+
+/// 「読むファイル」の「詳しく」: 読める文字コード（GAP-45）・PDF や Word の本文の形と字数の上限（D-111・上限の数は
+/// Rust の定数から生成した値）・取り込みを待つこと（試す回数を使わない・待つ上限も生成した値・D-125）・読める種類。
+/// やり直しの欄は、いま画面に出ている見出し（「リトライ回数」）で指す（付録 D の N2.4 で「試す回数」に直すときに、ここも直す）。
+function StorageReadMore() {
+  const max = STORAGE_READ_MAX_DOCUMENT_CHARS.toLocaleString("ja-JP");
+  return (
+    <MoreInfo testId="storage-read-more">
+      <p>テキストのファイルは、UTF-8 か Shift_JIS で保存したものを読みます。</p>
+      <p>
+        PDF や Word の本文は、先頭から {max} 字までを読みます。それより長いときは残りを読みません。切ったかどうかは、結果の
+        「途中で切ったか」（truncated）が「はい」か「いいえ」かで分かります。
+      </p>
+      <p>本文には、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入ります。</p>
+      <p>
+        取り込みが終わる前に読むと、取り込みを待ってから読み直します。待つ間の読み直しは「リトライ回数」に数えません。
+        {STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待っても終わらなければ、このブロックは失敗します。
+      </p>
+      <p>読める文書は PDF、Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）です。画像や古い形式（.doc、.xls）は読めません。</p>
+    </MoreInfo>
+  );
+}
+
+/// 同じ名前のファイルがあるときの扱い（BUG-97・D-97）。省略は「保存しない」（この欄が無かったころの定義の
+/// 挙動）。新しく置くブロックは「番号を付けて保存」で置く（ir-state の defaultParams）。
+function NameTakenField({ node, dispatch, fieldErrors, example }: FormProps & { example: string }) {
+  const p = paramsOf<{ on_name_taken?: NameTakenPolicy }>(node);
+  const current: NameTakenPolicy = p.on_name_taken ?? "fail";
+  const hint =
+    current === "add_number"
+      ? `「${example}」のように、番号を付けた空いている名前で保存します。番号は 50 まで付けます。`
+      : "保存せずに、このブロックを失敗にします。毎回同じ名前で保存するなら、「番号を付けて保存」を選んでください。";
+  return (
+    <Field label="同じ名前があるとき" hint={hint} error={fieldErrors.get("on_name_taken")}>
+      <Select
+        value={current}
+        onValueChange={(v) => patchParams(dispatch, node, { on_name_taken: v as NameTakenPolicy })}
+      >
+        <FieldSelectTrigger className="h-8 text-[13px]" data-testid="name-taken-select">
+          <SelectValue />
+        </FieldSelectTrigger>
+        <SelectContent>
+          <SelectItem value="add_number">番号を付けて保存</SelectItem>
+          <SelectItem value="fail">保存しない</SelectItem>
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+/// 新しく保存する CSV の文字コード（GAP-47・D-120）。省略は「UTF-8」（BOM なし・この欄が無かったころの定義の
+/// 挙動）。新しく置くブロックは「UTF-8（BOM 付き）」で置く（ir-state の defaultParams）。日本語の Windows の Excel は、
+/// BOM の無い UTF-8 の CSV を文字化けして開く。
+const CSV_ENCODINGS: [CsvEncoding, string, string][] = [
+  ["utf8_bom", "UTF-8（BOM 付き）", "日本語の Windows の Excel でも、文字化けせずに開けます。"],
+  ["utf8", "UTF-8", "日本語の Windows の Excel で開くと文字化けします。Excel で開くなら「UTF-8（BOM 付き）」を選んでください。"],
+  ["shift_jis", "Shift_JIS", "Shift_JIS にない文字（絵文字など）が内容にあると、保存できずに失敗します。"],
+];
+
+function CsvEncodingField({ node, dispatch, fieldErrors, note }: FormProps & { note?: string }) {
+  const p = paramsOf<{ encoding?: CsvEncoding }>(node);
+  const current: CsvEncoding = p.encoding ?? "utf8";
+  const hint = CSV_ENCODINGS.find(([value]) => value === current)?.[2] ?? "";
+  return (
+    <Field label="文字コード" hint={note ? `${note}${hint}` : hint} error={fieldErrors.get("encoding")}>
+      <Select value={current} onValueChange={(v) => patchParams(dispatch, node, { encoding: v as CsvEncoding })}>
+        <FieldSelectTrigger className="h-8 text-[13px]" data-testid="csv-encoding-select">
+          <SelectValue />
+        </FieldSelectTrigger>
+        <SelectContent>
+          {CSV_ENCODINGS.map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+/// 「新しいファイルを保存」が CSV として保存するか（文字コードの欄を出すか）。種類を選んでいればそれで、選んで
+/// いなければファイル名の拡張子で決める（実行と同じ・D-97）。名前や種類を前の結果から渡すときは分からない（`null`）。
+function savesAsCsv(p: Partial<NodeParamsByType["storage.write"]>): boolean | null {
+  const type = p.content_type as ValueExpr | undefined;
+  if (typeof type === "string" && type !== "") return type.split(";")[0].trim().toLowerCase() === "text/csv";
+  if (type !== undefined && type !== "") return null;
+  const name = p.name as ValueExpr | undefined;
+  const text =
+    typeof name === "string"
+      ? name
+      : name && typeof name === "object" && "$template" in name && typeof name.$template === "string"
+        ? name.$template
+        : null;
+  return text === null ? null : text.trim().toLowerCase().endsWith(".csv");
+}
+
+/// ファイル名の注記（同じ名前を避ける差し込みの案内・D-97）。
+const DATE_NAME_HINT = "毎回実行するなら、「差し込む」で「実行した日」を入れると、日ごとに違う名前になります。";
+
+/// 保存するファイルの種類（Content-Type）。選ばなければファイル名の拡張子から決める（D-97・決まらなければ
+/// application/octet-stream で、社内文書の検索の対象にならない）。
+const CONTENT_TYPES: [string, string][] = [
+  ["text/plain", "テキスト（.txt）"],
+  ["text/markdown", "Markdown（.md）"],
+  ["text/csv", "CSV（.csv）"],
+  ["application/json", "JSON（.json）"],
+  ["text/html", "HTML（.html）"],
+];
+const NO_TYPE = "__none__";
+
+function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+  const p = paramsOf<NodeParamsByType["storage.write"]>(node);
+  const value = p.content_type as ValueExpr | undefined;
+  if (value !== undefined && typeof value !== "string") {
+    return (
+      <ValueExprInput
+        label="ファイルの種類（省略可）"
+        text
+        value={value}
+        onChange={(v) => patchParams(dispatch, node, { content_type: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        placeholder="例: text/markdown"
+        error={fieldErrors.get("content_type")}
+      />
+    );
+  }
+  const current = value || NO_TYPE;
+  const known = CONTENT_TYPES.some(([t]) => t === current);
+  return (
+    <Field
+      label="ファイルの種類（省略可）"
+      hint="選ばなければ、ファイル名の拡張子（.md など）から決めます。決まらないと種類の分からないファイルになり、社内文書の検索で見つかりません。"
+      error={fieldErrors.get("content_type")}
+    >
+      <Select
+        value={current}
+        onValueChange={(v) => patchParams(dispatch, node, { content_type: v === NO_TYPE ? undefined : v })}
+      >
+        <SelectTrigger aria-label="ファイルの種類" className="h-8 text-[13px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NO_TYPE}>拡張子から決める</SelectItem>
+          {CONTENT_TYPES.map(([t, label]) => (
+            <SelectItem key={t} value={t}>
+              {label}
+            </SelectItem>
+          ))}
+          {!known && current !== NO_TYPE ? <SelectItem value={current}>{current}</SelectItem> : null}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+/// 表や項目のまとまりのリストを CSV に直して保存すること（BUG-178）。式に見える値の打ち消しなどの決まりは
+/// ir.md §7（csv.write）。
+const CSV_FROM_RESULTS_HINT = "「CSV を集計」の結果（表）や、項目のまとまりのリストを入れると、CSV に直して保存します。";
+
+export function StorageWriteForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const p = paramsOf<NodeParamsByType["storage.write"]>(node);
+  const csv = savesAsCsv(p);
+  return (
+    <div className="space-y-4">
+      <ValueExprInput
+        label="ファイル名"
+        text
+        value={p.name as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { name: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        placeholder="例: report.md"
+        hint={DATE_NAME_HINT}
+        error={fieldErrors.get("name")}
+      />
+      <NameTakenField {...props} example="report (2).md" />
+      <ValueExprInput
+        label="内容"
+        text
+        value={p.content as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { content: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        multiline
+        hint={csv === true ? CSV_FROM_RESULTS_HINT : csv === null ? `CSV として保存するとき、${CSV_FROM_RESULTS_HINT}` : undefined}
+        error={fieldErrors.get("content")}
+      />
+      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
+      <ContentTypeField {...props} />
+      {csv === false ? null : (
+        <CsvEncodingField {...props} note={csv === null ? "CSV として保存するときだけ使います。" : undefined} />
+      )}
+    </div>
+  );
+}
+
+export function StorageListForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const p = paramsOf<NodeParamsByType["storage.list"]>(node);
+  // 数はカタログの単一定義から出す。続きがあることと続きの位置は結果で分かる（黙って切らない・BUG-180・D-131）。
+  const hint = `有効化のとき、このフォルダの閲覧権限を渡します。名前の順に最大 ${STORAGE_LIST_MAX_ITEMS} 件を一覧にします。`;
+  const name = blockTypeLabel("storage.list");
+  return (
+    <div className="space-y-4">
+      <FolderField {...props} label="一覧するフォルダ（省略可）" optional hint={hint} />
+      <div className="space-y-1.5" data-testid="storage-list-cursor">
+        <ValueExprInput
+          label="続きの位置（省略可）"
+          value={p.cursor as ValueExpr | undefined}
+          onChange={(v) => patchParams(dispatch, node, { cursor: v })}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          preferFrom
+          hint={`前の「${name}」の結果の続きの位置（next_cursor）を選ぶと、その続きを一覧にします。空欄なら先頭から一覧にします。`}
+          error={fieldErrors.get("cursor")}
+        />
+        <MoreInfo testId="storage-list-cursor-more">
+          <p>続きの位置は、同じフォルダーを一覧にした結果のものだけを使えます。別のフォルダーの続きの位置を選ぶと、実行が失敗します。</p>
+          <p>続きが無いときは、結果の続きの位置は空（null）で、続きがあるか（truncated）は false です。</p>
+        </MoreInfo>
+      </div>
+    </div>
+  );
+}
+
+// ── CSV（csv.*）─────────────────────────────────────────────────────────
+
+const CSV_PICKER = {
+  accept: (n: NodeResponse) => isCsvFile(n),
+  pickerTitle: "CSV ファイルを選ぶ",
+  pickerDescription: "使う CSV ファイルを選んでください（.csv のファイルだけを表示しています）。",
+};
+
+/// 編集前の版（数で指定 ／ 前の結果から）。数のときは選んだファイルの今の版を入れられる。
+function BaseRevField({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+  const p = paramsOf<NodeParamsByType["csv.patch"]>(node);
+  const value = p.base_rev as ValueExpr | undefined;
+  const literal = typeof value === "number" ? value : null;
+  const [mode, setMode] = React.useState<"number" | "expr">(value !== undefined && literal === null ? "expr" : "number");
+  const fileId = typeof p.file === "string" && UUID_RE.test(p.file) ? p.file : null;
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const fillCurrent = async () => {
+    if (!fileId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const n = await getNode(fileId);
+      driveItems.set(n.id, n);
+      patchParams(dispatch, node, { base_rev: n.version });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <div className="space-y-1.5">
+      {mode === "number" ? (
+        <Field
+          label="編集前の版"
+          error={fieldErrors.get("base_rev") ?? error}
+          hint="ほかの編集で版が進んでいると、競合として失敗します（固定の版は 1 回編集すると古くなります）"
+        >
+          <div className="flex items-center gap-1.5">
+            <NumberInput
+              value={literal}
+              min={0}
+              placeholder="例: 3"
+              onChange={(n) => patchParams(dispatch, node, { base_rev: n ?? undefined })}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0 text-xs"
+              disabled={!fileId || loading}
+              loading={loading}
+              onClick={() => void fillCurrent()}
+            >
+              今の版を入れる
+            </Button>
+          </div>
+        </Field>
+      ) : (
+        <ValueExprInput
+          label="編集前の版"
+          value={value}
+          onChange={(v) => patchParams(dispatch, node, { base_rev: v })}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          error={fieldErrors.get("base_rev")}
+        />
+      )}
+      <ModeToggle expr={mode === "expr"} pickLabel="数で指定する" onToggle={() => setMode(mode === "number" ? "expr" : "number")} />
+    </div>
+  );
+}
+
+export function CsvPatchForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const p = paramsOf<NodeParamsByType["csv.patch"]>(node);
+  return (
+    <div className="space-y-4">
+      <FileField {...props} {...CSV_PICKER} label="編集する CSV ファイル" hint="有効化のとき、このファイルの編集権限を渡します" />
+      <BaseRevField {...props} />
+      <ValueExprInput
+        label="編集の内容（操作の並び）"
+        value={p.ops as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { ops: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        multiline
+        json="array"
+        placeholder='例: [{"op": "row_insert", "at": 0, "values": ["2026-10-25", "交通費", "1200"]}]'
+        error={fieldErrors.get("ops")}
+      />
+      <div className="space-y-0.5 text-[11px] leading-relaxed text-muted-foreground">
+        <p>行・列の番号は 0 から数えます（見出しの行は数えません）。使える操作:</p>
+        <ul className="list-disc pl-4 font-mono">
+          <li>cell_update（row, col, value）</li>
+          <li>row_insert（at, values）／ row_delete（row）</li>
+          <li>column_add（name）／ column_delete（col）／ column_rename（col, name）</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function CsvWriteForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const p = paramsOf<NodeParamsByType["csv.write"]>(node);
+  return (
+    <div className="space-y-4">
+      <ValueExprInput
+        label="ファイル名"
+        text
+        value={p.name as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { name: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        placeholder="例: summary.csv"
+        hint={`名前が .csv で終わらなければ、.csv を付けて保存します。${DATE_NAME_HINT}`}
+        error={fieldErrors.get("name")}
+      />
+      <NameTakenField {...props} example="summary (2).csv" />
+      <ValueExprInput
+        label="CSV の内容"
+        text
+        value={p.content as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { content: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        multiline
+        placeholder={"例: 品目,金額\n交通費,1200"}
+        hint={`1 行目に列名、2 行目から値を、カンマで区切って書きます。${CSV_FROM_RESULTS_HINT}`}
+        error={fieldErrors.get("content")}
+      />
+      <CsvEncodingField {...props} />
+      <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
+    </div>
+  );
+}

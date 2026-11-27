@@ -1,0 +1,615 @@
+# AI によるワークフロー作成の評価基盤（GAP-30）
+
+AI（チャットの `emit_workflow`）が作るワークフロー（アプリ）が、保存できるか・実行して期待どおりになるかを測る。
+設計は台帳 `docs/workflow/quality-campaign.md` の付録 A「GAP-30 … 設計 — 反証レビュー後の改訂版」（§0〜§14）。
+
+**製品の経路を書き直さない。** 説明文と system は製品が Anthropic へ送った要求から取り込み、保存できるかは
+その版のサーバーの `POST /workflows/validate` で、厳格な採点は HEAD の検証器そのもの
+（`crates/workflow-engine/examples/ir_lint.rs`）で判定する。製品の規則を Python に写さない。
+
+## 前提
+
+- `uv`（Python 3.12）。venv は `eval/app-builder/.venv`（.gitignore 済み）。
+- 実 LLM を使うときは、手元の中継（`~/.config/shiki-dev/anthropic-relay.py`・`127.0.0.1:8787`・台帳 §9.2）が
+  動いていること。**本物の鍵を読むのは手元の中継だけ**で、ここ（`abeval`）は鍵を読まない・持たない・設定に
+  置かせない（`eval.toml` に鍵の形の項目があると読み込みで止まる）。
+- ir_lint: `cargo build -p shiki-workflow-engine --example ir_lint`（`target/debug/examples/ir_lint`）。採点は、
+  バイナリが作業ツリーのソース（cargo がバイナリの隣に書く依存の記録 `ir_lint.d` に載るもの。workflow-engine と、
+  検証が使う data・script-runtime などのクレート。`target/` の生成物は除く）より古ければ、止めて作り直しの命令を出す
+  （出力の形の版が同じでも、検証の規則だけが変わった古い ir_lint で S2s を数えない・BUG-254）。cargo が読まない
+  ファイル（テストだけの `*_tests.rs`・docs）の変更では止めない。
+
+## 手順
+
+```bash
+cd eval/app-builder
+uv sync --frozen
+uv run ruff check .
+uv run pytest -m "not server" -q      # サーバーも LLM も要らないテスト
+uv run python -m abeval.proxy         # 記録・上限つきの中継（127.0.0.1:18200 → 手元の中継）
+```
+
+ir_lint の使い方（標準入力の JSONL → 標準出力の JSONL・誤りがあっても終了コード 0）。1 行の欄は `errors`・
+`ignored_by_env`・`warnings`・`run_blockers`・`enable_blockers`・`output_paths`（出力の path の検査・GAP-112）・
+`node_ports`・`declared_scopes`（形の版は最後の行の `schema`・いまは 3。採点は形の版が違う出力を読まずに止める。
+workflow-engine を変えたのに example を作り直していないときに、無い欄を空として読んで S2s を甘くしないため）:
+
+```bash
+echo '{"id":"t1","ir":{...}}' | target/debug/examples/ir_lint
+target/debug/examples/ir_lint --catalog   # ノードのカタログ（出力の形）と警告のコードの表
+```
+
+## 中継（`abeval.proxy`）
+
+製品（評価の版のサーバー）と Mode A の生成は、Anthropic への要求をすべて `127.0.0.1:18200` に送る。中継は
+上流（既定は手元の中継 `http://127.0.0.1:8787`。`--upstream` か `eval.toml` で変える）へ転送し、台帳に記録して
+上限で止める。ループバックにだけ bind する（0.0.0.0 などは起動の前に拒む）。
+
+- 鍵は扱わない。上流へ送るヘッダーは `anthropic-version`・`anthropic-beta`・`content-type`・`accept` だけで、
+  `x-api-key` はダミー（`abeval-dummy`）に置き換える。クライアントの `x-api-key`・`authorization`・会話 ID の
+  ヘッダー（`x-abeval-session`）は送らない。本物の鍵は手元の中継が付ける。
+- 送る前に拒む（上流を呼ばずに Anthropic 形式の 400 `invalid_request_error`・「abeval: …」）:
+  許可リストに無いモデル・`temperature`／`top_p`／`top_k` を含む本文・登録した実行（run）に割り当たらない要求
+  （会話 ID で引き、無ければ active の実行）・評価の累計の上限・実行の上限。
+- 上限の判定は「台帳の累計＋処理中の予約＋この要求の最悪」。最悪は、入力を本文のバイト数、出力を
+  `max_tokens` で見積もる（本文が 100K バイトを超えたら高い段の単価）。並列に送っても予約で数えるので越えない。
+- 応答は状態コードを含めてそのまま返し（429・403・5xx も）、SSE はチャンクごとに中身を変えずに流す（バッファ
+  しない）。応答は HTTP/1.0 の close 区切り（手元の中継と同じ）。usage は `message_start` と `message_delta` の
+  フィールドごとの大きい方（製品の `providers/usage.rs` と同じ）。
+- 終わったら実際の費用を台帳に 1 行書いて予約を戻す。最後の usage（`message_delta`）が取れなければ（途中で
+  切れた・呼び出し側が切った）予約の額で数え、`usage_missing` の印を付ける。誤りの応答（4xx・5xx）を読み切った
+  ものは 0。上流に繋がらなければ 502 で、台帳に書かない。
+- `POST /v1/messages/count_tokens` は台帳に載せない（許可モデルと実行の割り当ては見る）。
+- 制御の口（ヘッダー `x-abeval-control` に合言葉が要る。無ければ 403。合言葉は起動時に
+  `~/.local/share/shiki-eval/proxy.token`（権限 600）に書く）:
+
+  | 口 | 中身 |
+  | --- | --- |
+  | `POST /abeval/runs` | `{run_id, exp, cap_usd, capture_only?}`。実行の上限は `min(cap_usd, run_cap_usd)` |
+  | `DELETE /abeval/runs/{id}` | 登録を消す（その実行の会話 ID と active も外す） |
+  | `POST /abeval/sessions` | `{session, trial, run_id}`。会話 ID（チャットの thread_id）を試行に割り当てる |
+  | `PUT /abeval/active` | `{run_id, trial}`（`run_id: null` で外す）。会話 ID の無い要求（ワークフローの llm.invoke）の行き先 |
+  | `GET /abeval/spend` | 評価の累計・予約・実行ごとの累計と上限 |
+
+- `capture_only` の実行では、要求の本文を `data/cache/requests/<run>/` に保存し、上流へ送らずに最小の SSE
+  （テキスト「abeval capture」で `end_turn`）を返す（説明文の取り込みを $0 で行う）。`--capture` を付けると、
+  転送した要求の本文も同じ場所に保存する（鍵はヘッダーにあり、本文には入らない）。
+- 手元の中継の台帳で用途を分けられるよう、`x-campaign-tag: abeval/<exp>/<run>/<trial>` を付ける。
+
+## 版（ビルドと起動・§4.1・§4.2）
+
+版は「きれいな commit から別の worktree でビルドしたバイナリ」（H1 (a)・D-54）。ビルドは 1 版 7 分程度（sccache）・
+ピークのメモリが大きいので、ほかのビルド・E2E・スタックの起動と重ねない（台帳 §9.4）。CSV の集計の隔離ランナー
+（workspace の外・bundled の DuckDB）も同じ commit でビルドするので、cold なら DuckDB の C++ の分だけ長くかかる。
+
+```bash
+# 版をビルドして退避する（~/orca/workspaces/shiki-platform/abeval-<label> に worktree を作り、終わったら消す）
+eval/app-builder/scripts/build-version.sh --dry-run v0 81a9899b   # 手順だけを表示
+eval/app-builder/scripts/build-version.sh v0 81a9899b
+#  → ~/.local/share/shiki-eval/bin/shiki-server-v0・shiki-tabular-runner-v0 と
+#    data/versions/v0.json（commit・tree_clean・binary_sha256・runner_sha256・built_at・rustc）
+```
+
+- label は英小文字で始まり英小文字か数字で終わる 21 文字まで（DB・store・バケットの名前に使う）。
+- worktree・バイナリ・版の記録が既にあれば拒む。`git status --porcelain` が空でない（汚れた）worktree と、
+  ビルドが作業ツリーを書き換えた場合は止める（素性を確かめられない版は測らない）。worktree は失敗しても消す。
+- `--runner-lock-update`: その commit のランナーの Cargo.lock が古く、`--locked` でビルドできない版に付ける。
+  V0（81a9899b）がそうで、ランナーが path で参照する shiki-tabular の依存が増えたのに lock を更新していない。
+  ランナーだけを `--offline` でビルドし、lock の今ある版（DuckDB など）は残して足りない分だけを足させる
+  （使われなくなった古い重複の版は cargo が刈る。V0 では 5 個を足し、hyper 0.14 などの使われない古い版を刈った。
+  残った依存の版は 1 つも変わらず、DuckDB は 1.10504.0 のまま）。
+  書き換わってよいのはランナーの Cargo.lock だけで、差分を `data/versions/<label>.runner-lock.diff` に残し、
+  版の記録に `runner_lock_updated` と差分の sha256 を書く。付けずに断られたときは、その旨を出して止まる。
+
+版のサーバーは、dev-up.sh の版のサーバー向けの引数（H3 (a)）で、API だけを専用の DB・store・バケット・Redis の
+番号・ポートで起動する（Web とゲートウェイの外部の起動はしない）。
+
+```bash
+# LLM の設定（鍵は入れない。base_url は abeval.proxy・api_key はダミー・session_header は x-abeval-session）
+install -m 600 eval/app-builder/config/llm-eval.example.toml ~/.config/shiki-dev/llm-eval.toml
+
+cd eval/app-builder
+uv run python -m abeval serve --label v0 --dry-run      # dev-up.sh の呼び出しを表示するだけ
+uv run python -m abeval serve --label v0 [--max-steps 12] [--budget-micros 150000]
+uv run python -m abeval serve --label v0 --record-behavior   # 起動せず、振る舞いの指紋だけを残し直す
+uv run python -m abeval serve --label v0 --down
+```
+
+| 分けるもの | 値 |
+| --- | --- |
+| DB | `shiki_eval_<label の - を _ に>`（無ければ dev-up が作る。migration と dev seed はサーバーが流す） |
+| OpenFGA の store・S3 のバケット | `shiki-eval-<label>`（サーバーが作る） |
+| Redis の DB 番号 | label から決まる 4〜15 |
+| API・ゲートウェイ | `:10067`（Keycloak が許すリダイレクト先）・`18190`/`18191` |
+| PID ファイル・ログ | dev-up の `--run-label abeval-<label>` の置き場（同じバイナリで動く別のサーバーを pgrep で止めない） |
+| LLM の設定 | `SHIKI_CONFIG=~/.config/shiki-dev/llm-eval.toml`（権限 600 でなければ起動しない） |
+| CSV の集計の隔離ランナー | `SHIKI__TABULAR__RUNNER_PATH=~/.local/share/shiki-eval/bin/shiki-tabular-runner-<label>`（版と同じ commit。作業ツリーの HEAD のランナーを使わない） |
+
+- 起動の前に、版の記録の `tree_clean` と、バイナリとランナーの sha256 が記録と同じことを確かめる（違えば・
+  ランナーの記録が無ければ起動しない）。
+- 起動した直後に、:10067 を握るプロセスが版のバイナリ（下の「版のサーバーの点検」と同じ確かめ）であることを確かめ、
+  **振る舞いの指紋**（§4.1 の 5・`abeval/behavior.py`）を版の記録の `behavior_check` に残す。決まった IR の組を
+  `/workflows/validate` に送り、誤りと警告のコードを残す（費用 0）。組は V0（81a9899b）と HEAD のコードを読んで、
+  版で結果が変わるものを選んだ: `from_port: "next"` の線（V0 は通る・V1 以降は `ir.unknown_port`）、vars に無い
+  `{name}` の `$template`（V0 は通る・V1 以降は `ir.bad_template`）、無いフォルダーの storage.list（V0・V1 は通る・
+  HEAD は `ir.unknown_folder`）。版のサーバーと確かめられなければ指紋を残さずに 1 で終わる。組を変えたときや、
+  指紋の無い記録のときは、起動したまま `--record-behavior` で残し直す。
+- `run` は、版のサーバーの `/workflows/validate` で使えるノードの種類を確かめ（未知の種類に返る
+  `ir.unknown_node_type` で見る・費用 0）、版の記録の `node_types` と結果の `versions.<label>.node_types` に残す。
+  課題の `requires` の `node:*` はこれで判定する（HEAD の ir_lint のカタログで判定すると、V0 に無いノードの課題が
+  対象外にならない）。
+- **版で課題が成り立つか（D-167）**: 課題の `requires` はノードの種類と API の口しか見ないので、後から入った設定の
+  項目（保存の `on_name_taken`・「AI に聞く」の `output_schema`・足す数の `add`・照合の `match_on` など）や実行時の値の
+  取り出し方の差を拾えない。そこで `run` は（stub でないとき）、版のサーバーで正解の IR を本番の採点と同じ道具
+  （stub の配管・出口は ir_lint で補う）で流し、成り立たない課題をその版の対象外にする（費用 0・20 課題で数分。
+  結果の `out_of_scope` に「成り立たない: 理由」が残る）。正解からは入力の並びの注記 `x-order`（2026-10-26）を外す
+  （V0・V1 は知らないキーワードで起動を断るが、課題の成り立ちには関わらない）。結果は版の記録の `feasible` に採点器の
+  版と課題集の sha と一緒に残し、どちらかが変わったら確かめ直す。時間切れなど基盤の失敗では対象外にせず、流すのを
+  止める。版の比べは、版の間で共通の課題だけで行う。2026-11-09 に正解を最小の機能で書き直した後（GAP-120）、
+  20 課題のうち成り立つのは V0（81a9899b）が 8・V1（71e9b79a）が 9・vn・vm・vf が 20（理由は版の記録の
+  `feasible`）。V0・V1 の残りは、版に無いノードか口（`requires`）が要る 7 課題と、実行した日（`$from run /date`）が
+  要る 4 課題。V0 はさらに app06-stock-move（script.run に 2 つの値を渡す）が成り立たない。
+- 古い版で正解の結合テストを流すとき（fixture と正解がその版で通るかを確かめる）は、`ABEVAL_DROP_X_ORDER=1` を
+  付けて、正解から `x-order` を外す。テストは、版に無い機能の要る課題（`requires`・`run` が対象外にするもの）を理由を
+  出して飛ばし、V0 の検証が返さない出口（`node_ports`）を記録した ir_lint の出口で補う（`run` の stub の配管と同じ。
+  補わないと、どの線も dead edge に数える）。版で成り立たない課題（版の記録の `feasible`）は飛ばさずに落ちる（どこで
+  落ちるかを見るため）。
+- 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
+  `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
+  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。Mode B の `run` は、同じ値を
+  `run --max-steps`・`--budget-micros` に渡さないと流さない（版のサーバーの環境を /proc から読んで比べる）。
+- dev-up.sh の引数は `dev-up.sh --help` を参照（`--server-bin`・`--db-name`・`--store-name`・`--bucket`・
+  `--redis-db`・`--port`・`--gateway-ports`・`--api-only`・`--run-label`）。引数を省いた起動は前と同じ
+  （`tests/test_dev_up_args.py` が、引数を足す前の dev-up.sh で作った記録と比べて確かめる）。ラベルのサーバーの
+  停止は、TERM で 20 秒止まらなければ KILL し、それでも空かなければ止める。
+- 引数を省いた dev-up.sh（:8080 のスタック）は、起動のときに `pgrep -f ^<repo>/target/debug/shiki-server$` で
+  残りのサーバーを止める（前からの動き）。版のサーバーを `--server-bin <repo>/target/debug/shiki-server` で
+  動かしている間に既定のスタックを起動すると、版のサーバーも止まる。版のサーバーは退避したバイナリ
+  （`~/.local/share/shiki-eval/bin/`）で動かす。
+
+## shiki のクライアント・fixture・点検（§4.4・§4.7）
+
+**クライアント（`abeval/shiki.py` の `ShikiClient`）**: 利用者ごとに 1 つ（Cookie の入れ物を分ける）。BFF を通さず、
+API（stub のスタックは `:8080`、版のサーバーは `:10067`）を製品の公開の口で叩く。
+
+- ログインは `deploy/compose/smoke-bff.sh` と同じ OIDC の手順。Keycloak の画面の `kc-form-login` の action
+  （`&amp;` を戻す）に username と password を POST し、戻り先（dev-up の既定は `:3000/auth/callback`）の scheme・
+  host・port を API の基底に置き換えて `/auth/callback` を呼ぶ（302 は追わない）。
+- Keycloak は http でも `Secure` の Cookie を出す。Python の cookiejar は https でないと送り返さないので、Keycloak の
+  Cookie はログインの往復の間だけ自分で持ち、authorize と同じ宛先にだけ付ける。
+- 状態を変える要求（POST・PUT・PATCH・DELETE）にだけ `x-csrf-token`（Cookie `shiki_csrf` の値）を付ける。
+  401 なら 1 回だけログインし直す。版の機能は `capabilities()`（OpenAPI の `node_ports`・`trigger`・
+  `scheduled_at`・`/me/custom-instructions`・`fsm`〔fixture で状態の進め方を作る口: `POST /data/fsms`・
+  `PUT /data/tables/{id}/schema`・`POST …/records/{record_id}/transition`〕）で判定する。チャットの道具の有無
+  （`list_workflows`）は OpenAPI に載らないので、取り込んだ tools で決める。
+- `stub_only=True`（stub のスタック）では、model が `default`・`decide-stub` 以外の IR と発話、model を省いた
+  llm.invoke・ai.decide・agent.invoke、実モデルの名前を含む値を、送る前に止める（`assert_stub_only`）。
+  手元の llm-stub.toml の anthropic は本物の中継（8787）を指しているため。保存済みのワークフローを動かす前にも、
+  その IR を読んで確かめる。
+
+**fixture（`abeval/fixtures.py`）**: 課題の `fixtures`（`folders`・`tables`（`records`・`fsm` つき）・`csv`）を、
+フォルダー → テーブル（→ 状態の進め方）→ 行 → CSV の順に作り、作った id を順に `FixtureRecord` に残す（途中で
+落ちても、そこまでの分を片付けられる）。
+
+- `@rel:-6d` は基準の時刻（Asia/Tokyo）からの相対の日付（`YYYY-MM-DD`）。`@rel:-6dT09:00` はその日の日本時間の
+  時刻、`@rel:+2h`・`@rel:-30m` は時刻（どちらも RFC 3339・+09:00）。
+- `@id:<ref>` は先に作った fixture の id、`@record:<テーブルの ref>:<番号>` はその行の id。
+- `tables[].fsm`（`{"field": "status", "transitions": [{"from": "申請中", "to": "承認済"}]}`）はテーブルの状態の進め方
+  （GAP-113）。状態は `field`（選択肢の列）の選択肢で、先頭が最初の状態。進められる人（`actor`）は省けば `public`。
+  状態の列を付けてテーブルを作り、`POST /data/fsms` で定義を作って `PUT /data/tables/{id}/schema` で付ける
+  （V0〔81a9899b〕からある口。`PUT /data/tables/{id}/fsm` は後から入ったので使わない）。足した行の状態は最初の
+  状態に決まるので、ほかの状態の行は最初の状態で足してから進め方の最短の道で進める（入れ直しも同じ）。定義は
+  テーブルを消しても残る（stub のスタックで確かめた）ので、記録して片付けで消す。- 片付けで消すのは、記録した id（新しい順・行はテーブルごと消える）と、試行の開始の後に作られた `abeval-` の印の
+  付いたもの（ルート直下のノード・テーブル・ワークフロー）だけ。本人の全資源は消さない。フォルダーとファイルは
+  ゴミ箱に入る（製品にゴミ箱を空にする口は無い）。
+- 番兵（alice のルート直下のフォルダー `abeval-sentinel`）が無いサーバーでは、作るのも片付けるのも拒む。
+
+**点検（`python -m abeval.doctor`）**
+
+```bash
+uv run python -m abeval.doctor --mode stub --api-url http://localhost:8080   # stub のスタック
+uv run python -m abeval.doctor --mode eval                                    # 版のサーバー（:10067・--go の前）
+uv run python -m abeval.doctor --mode eval --init-sentinel                    # 評価用のサーバーに番兵を作る
+```
+
+| 項目 | 合格 |
+| --- | --- |
+| `/healthz` | 200 |
+| alice・bob・charlie のログインと `/me` の org | alice と bob は a-corp、charlie は b-corp |
+| `/llm/models` | eval は claude-haiku-5-5 と default、stub は default がある |
+| 番兵 | ある（無ければ `--init-sentinel`） |
+| alice のカスタム指示 | 空（about・style が空白で tone が default）。404 は「口が無い版」で空とみなす |
+| OpenAPI の機能 | 表示だけ |
+| ポート（eval） | 10067。:8080 の組が動いていれば警告（重ねない） |
+| llm-eval.toml（eval） | 権限 600・anthropic の base_url が abeval.proxy・api_key がダミー（値は出さない）・session_header・モデルが claude-haiku-5-5 と default だけ・anthropic のモデルが中継の許可リストの中 |
+| abeval.proxy（eval） | 合言葉つきの `GET /abeval/spend` が 200 |
+| 手元の中継の台帳（eval） | 累計が $95 未満（読むだけ。8787 へは繋がない。無ければ警告） |
+| 評価の台帳（eval） | 残りがある |
+| 評価の台帳の置き場（eval） | 前の置き場（`results/spend.jsonl`）に行が無く、手元の中継の台帳の評価の分（tag `abeval/`）が評価の台帳より大きくない |
+
+api.anthropic.com へ 401 を確かめることはしない（鍵を持たないので要らない）。
+
+**版のサーバーの点検**（`doctor.version_guard`・BUG-246）: stub でない `run`（Mode A・Mode B・取り込み・
+`--regrade-from`・計画だけのときも）と `capture` の前に必ず通す（`--skip-doctor` でも飛ばさない）。どれかが NG なら、
+サーバーにも abeval.proxy にも何も送らずに 1 で終わる。
+
+| 確かめること | 読むところ |
+| --- | --- |
+| API のポートが 10067（ループバック）・llm-eval.toml（上の表の eval の項目） | 引数・設定 |
+| ポートを握るプロセスがただ 1 つ | `ss -ltnpH` |
+| そのプロセスの実行ファイルが serve の渡す退避したバイナリ（`~/.local/share/shiki-eval/bin/shiki-server-<label>`）で、動いている実行ファイルそのものの sha256 が版の記録と同じ（消されて置き換えられたものは NG） | `/proc/<pid>/exe` |
+| CSV の集計のランナーが版のランナーで、sha が記録と同じ | `/proc/<pid>/environ` の `SHIKI__TABULAR__RUNNER_PATH` |
+| `SHIKI_CONFIG` の anthropic が abeval.proxy を指し鍵がダミー・既定のプロバイダ（モデル `default`。AI が組んだ IR の llm.invoke や製品の中の呼び出しが使う）が stub（環境の `SHIKI__LLM__BACKEND` が serve の渡す `stub`、環境に無ければ TOML の `[llm] backend` が `stub`）・`[llm]` の `base_url`・`api_key` が空・anthropic のほかのプロバイダと `[llm.chatgpt]` が無い・llm の表を環境で上書きする名前（`SHIKI__LLM__BACKEND` を除く。製品の figment と同じく大文字・小文字を区別せず、`shiki__llm__providers` や表をまるごと上書きする `SHIKI__LLM` も見る）が無い・設定のファイルがサーバーの起動の後に書き換えられていない | `/proc/<pid>/environ`・`/proc/<pid>/stat` |
+| Mode B だけ: `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）・`SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ（環境の名前は大文字・小文字を区別しない。同じ設定を指す名前が複数・chat の表をまるごと上書き・`SHIKI_CONFIG` の `[chat]` に `max_steps` か `budget_max_cost_usd_micros` がある、のどれも NG。serve は環境でしか渡さないので、TOML の値があると `--max-steps` を省いたときに記録の条件と食い違う） | `/proc/<pid>/environ`・`SHIKI_CONFIG` |
+| 振る舞いの指紋が serve で記録したものと同じ（無ければ・組が変わっていれば NG） | `/workflows/validate` |
+
+取り込みは実モデルの名前（`claude-haiku-5-5`）で発話を送るので、送り先のサーバーの anthropic が abeval.proxy を
+指していないと、評価の台帳を通らずに手元の中継へ届いて課金される。前の版のサーバーを止め忘れて流すと、別の版の
+結果がその版の名前で残り、流し直してもキャッシュから返る（キャッシュのキーは版の記録の sha で作る）。確かめた
+プロセス（pid と起動の時刻。起動の時刻は /proc/<pid>/stat の starttime の生の値で比べ、時計の調整で動く btime から出したエポック秒では比べない）は、取り込みの前・Mode B の各試行の発話の前と採点した試行をキャッシュに置く前・
+結果を書く前に、替わっていないか（と LLM の行き先・条件）を確かめ直す。替わっていれば、その試行は採点も
+キャッシュもせず errors（kind `server`）に入れて残りを打ち切り、結果は書かない。読めないもの（`ss` が無い・別の
+利用者のプロセス）は確かめられないので NG にする。
+
+**サーバーの要るテスト**（stub のスタックに対して流す。実 LLM は呼ばない）:
+
+```bash
+ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server -q -s
+```
+
+ログインと org・モデル・カスタム指示・番兵（無ければ作り、終わったら消す）・fixture の作成と片付け（テーブル・
+ルート直下のノード・ワークフローの一覧が前と同じに戻る）・IR の検証・stub の IR の保存と実行・stub のチャットの
+1 往復・charlie（別テナント）から alice の id が無い id と同じ応答（ワークフローは 403、テーブルは 404）になることを
+確かめる。名前には毎回ちがう印を付ける（ほかの確かめと DB を共有しても重ならない）。
+
+## 課題集（`data/tasks/core.json`・§3）
+
+中核の 20 課題（§3.2）を、それぞれ 3 つの言い方（`flow`・`app`・`auto`）で書く。形の正は `abeval/tasks.py` の
+docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_cases[].stub_ok`・`trigger`・`scheduled_at`・
+`sequence`・`requires` を足したもの）。名前と組織はすべて架空。
+
+- 正解の IR（`reference.ir`・2 つで 1 組の課題は `reference.irs`）は、テーブル・フォルダー・ファイルを
+  `@table:<ref>`・`@folder:<ref>`・`@file:<ref>` で書き、保存の前に fixture の id に置き換える（GAP-35 の実在の
+  検査を通すため）。オフラインの検査（ir_lint）では ref ごとに決まったダミーの UUID にする。正解は llm.invoke の
+  model を書かない（組織の既定で動く）。stub で流すときだけ `default` にする（`run_cases.prepare_ir`）。
+- 正解は、課題が求める最小の機能で書く（GAP-120）。課題に要らない後の版の設定（「AI に聞く」の `output_schema`・
+  データを更新の `add`・CSV を集計の `items` など）を使うと、その設定の無い版で課題が成り立たなくなり、版の比べに
+  使える課題が減る（D-167）。LLM の答えから分類や点数を取り出すときは、文章で答えさせて script.run で取り出す。
+  V0（81a9899b）は script.run の input に書いた object の中の `$from` を展開しない（object のまま script に渡る・
+  V1 から展開する）ので、1 つのノードの出力だけを渡すときは `{"$from": "nodes.<id>.output"}` で渡す。課題の文が
+  求める設定（同じ名前のときに番号を付ける・BOM 付きの CSV・同じ品番を 2 行にしない）と、実行した日
+  （`$from run /date`・V0・V1 には無い）は残す。
+- 相対の日付は使わず、日付で結果が決まる課題（先週・今日）は run_case の `scheduled_at` で予定の日時を決める
+  （GAP-88・`requires` に `cap:scheduled_at`）。
+- 実行の日に決まる値を持つ課題（run_case が `scheduled_at` か、期待の `$run_date`・`@run_date` を使う課題。課題の印
+  `date_dependent` で明示してもよい）は、IR の設定の中の日付の文字（`2026-11-07`・`2026/11/07`・`2026年11月7日`・
+  `11月7日`・`20261107` など）を日付の決め打ちとして S2s に数える（`date_literal`・Mode A と Mode B で同じ・BUG-247）。
+- fixture のテーブルは、絞り込み・集計・並べ替えに使う列を `indexed: true` にする（索引の無い列は実行で失敗する）。
+  担当者ごとの合計を見る課題は `aggregate_min_rows: 1`、APP-08 だけは既定の K（5）のままにして、件数の少ない
+  地域が伏せられることを期待値に入れる（PIT-17）。
+- 設計（付録 B の改訂版 §3.2）で状態を進める 6 課題（app01-posting-batch・app02-triage・app05-screening-text・
+  app11-checkout・app11-return・app12-faq-table）は、fixture のテーブルに状態の進め方（`fsm`）を付け、正解は
+  data.transition で状態を進める（GAP-113。状態の列は record の書き換えでは変えられず、足した行は最初の状態に
+  なる）。参考情報には状態の列・追加したときの状態・進め方を載せる（どのブロックで進めるかは書かない）。
+  `requires` に `node:data.transition`・`cap:fsm` を書く（どちらも V0 からあるので、V0 でも対象外にならない）。
+- 対象外（このマシンで動かない・評価の設定に判定用のモデルが無い）: ai.decide・RAG・agent.invoke・Office。
+  APP-09（きっかけがファイルの保存）は、有効化を使わずに、手動の起動にきっかけの内容（`trigger`）を渡して流す
+  （`requires: trigger:event・cap:trigger`）。
+- 分類を照合する課題（APP-02・APP-05・APP-12）の run_case は `llm_dependent`。stub では照合せず、3 回中 3 回の
+  確かめは実モデルで測る段（T10）で行う。
+- 何も変えないのが正解の run_case（在庫が足りない・貸出中）は `expect.flow_through: false`（入力が届かない検査を
+  しない）。中身の無い IR はこの run_case を通り得るので、null の確かめは課題の単位（S4 は全 run_case が通ること）。
+
+## 採点（`abeval/grade/`・§5）
+
+| 置き場 | 中身 |
+| --- | --- |
+| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、`enable_blockers`〔自動実行をオンにする前に止める理由・保存先のフォルダの省略など〕はきっかけが schedule・event の課題だけ S2s、ほかの警告は S2w、`ignored_by_env`〔登録した secret・入れた skill に依存するコード。`ir.unknown_version` は環境に依存しないので errors〕は数えない、`output_paths`〔`$from nodes.<id>.output` の path の先頭がそのノードの出力の項目に無い・ir_lint が製品のカタログの `output_fields` と `present_if` で決める・Python では判定しない〕は S2s）。2 層目は課題の検査（入力の参照・`flow_through`）と S5（トリガ・ノードの種類・診断用） |
+| `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない（stub の run だけ。実モデルの出力は入力の全文を含まない）・想定外の状態（stub で流した `llm_dependent` でない run_case の状態が期待と違う）・想定外の skipped（成功した run で、分岐でも error の出口でもない線の先が飛ばされた。元の 1 つだけを数える）・成功した run の中の失敗（`failed_in_success`。stub で流した、期待が succeeded の run_case で、run は成功したのに失敗した step がある。map の `on_item_error: collect` の項目・`on_error: continue`。ノードごとに 1 つ数える・BUG-267）。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限り、「入力が届かない」は打ち切った run で見えない入力（LLM の後ろか出力の形を決めた LLM でだけ使い、手前で動いた出力の形の無い LLM・書き込みの設定では使わない入力。手前の script.run・data.query・分岐や、通らなかった分岐の書き込みで使っても見えるに数えない・BUG-268）を外して見る |
+| `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する。実行の日に決まる値（貸出日・ファイル名の日付）は `{"$run_date": {}}`・name_regex の `@run_date` で、run を始めた日（日本時間・`$from run /date` と同じ）と照合する（形の正規表現にしない） |
+| `grade/dates.py` | 日付の決め打ちの検査（設定の中の日付の文字・NFKC でそろえ、月 1〜12・日 1〜31 のものだけ）と、予定の週（`scheduled_at` の週・日本時間）。製品の規則ではなく、課題の期待から見る |
+| `grade/mutate.py` | 採点器の自己テストの 10 通りの壊し方（設計の 8 通りと、自動で動く課題の保存先のフォルダを省く `drop_folder`、実行の日に決まる値の参照を日付の文字にする `fixed_date`）と、期待する検査。中身の無い IR（null） |
+| `gen_checks.py` | 課題の検査 G1〜G9 のうちオフラインのもの（G2・G4・G5・G7・G8・G9）。G8 の拒否リストは `~/.config/shiki-dev/abeval-denylist.txt`（リポジトリの外・1 行 1 語）。無ければ理由を出して飛ばす。理由には場所と語の長さだけを書く |
+| `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
+| `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
+
+採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。`ir_lint_build` には、
+ir_lint を作った commit（確かめた時点の HEAD。バイナリが依存のソースとビルドのファイルより新しいので、その commit の
+中身から作ったとみなせる）・それらに commit していない変更があったか（`dirty`）・バイナリの時刻を残す。ビルドのファイルは、
+cargo の依存の記録に載らない作業ツリーの根の Cargo.toml・Cargo.lock・ツールチェーンの指定と、依存のソースのクレートの
+Cargo.toml（依存の版・feature の変更で古くなる）。それらだけが新しいときは cargo が作り直さないことがあるので、example の
+ソースの時刻を進めてから作り直す命令を出す（`grade/lint_build.py`）。結果を重ねる・まとめに
+並べる・Mode B のキャッシュのキーに入れるときに比べるのは、同一性（`static.grader_identity`: 採点の規則の版・出力の形の
+版・ir_lint の sha）だけで、作った commit は比べない（中身の同じ ir_lint を関係の無い commit のたびに別の採点器と
+数えない）。
+
+## 取り込み・Mode A・Mode B・計画・レポート（§4.5〜§4.7・§6・§8）
+
+```bash
+uv run python -m abeval plan --mode a --label v0 --exp e1a                 # 計画と見積もりだけ（費用 0）
+uv run python -m abeval run  --mode a --label v0 --exp e1a                 # 同じ（--go が無ければ計画だけ）
+uv run python -m abeval run  --mode a --label v0 --exp e1a --go            # 点検 → 登録 → 取り込み → 試行 → 結果
+uv run python -m abeval run  --mode a --label v1 --exp e1a-v1 --regrade-from v0   # V1: 生成せず採点し直す（$0）
+uv run python -m abeval run  --mode b --label vn --exp e1b-vn --trials 3 --go
+uv run python -m abeval run  --mode b --label stub --exp stub-b --stub --api-url http://localhost:8080  # stub の配管だけ
+uv run python -m abeval capture --label v0 --exp e1a                       # 取り込みだけ（$0）
+uv run python -m abeval grade  --exp e1a                                   # 結果の IR を ir_lint で採点し直す
+uv run python -m abeval grade  --exp e1a-vf --stub-runs                    # S2d も版のサーバーの stub の配管で出し直す（$0）
+uv run python -m abeval report                                             # results/summary.md
+uv run python -m abeval budget                                             # 評価の累計・実行ごと・総額の残り
+uv run python -m abeval budget --reconcile [--yes]                         # 中継が落ちた後の差を足す（BUG-250）
+```
+
+共通の引数: `--tasks a,b`（既定は全部）・`--phrasings flow,app,auto`・`--trials 3`・`--effort low|medium|high|auto`
+（重ねて指定できる）・`--max-steps N`・`--budget-micros N`（既定 150000。Mode B は、版のサーバーを
+`serve --max-steps N --budget-micros N` の同じ値で起動していないと流さない）。
+版に無い機能の要る課題（`requires`）は「対象外」として外し、結果の `out_of_scope` に残す。
+
+| 置き場 | 中身 |
+| --- | --- |
+| `abeval/capture.py` | 取り込み。abeval.proxy に `capture_only` の実行を登録し、新しいスレッドに短い発話（`claude-haiku-5-5`・effort あり）を送って、保存された要求のうち emit_workflow を含む最初のものから system・tools・max_tokens を `data/captures/<label>/<exp>/` に書く。「今日の日付」の一文（製品の `opts.rs` の書式）は `[capture] fixed_date` に置き換え、tools の説明文の fixture のテーブルの id は印（`@table:<ref>`）に戻す。指紋（llm-eval.toml の sha・カスタム指示・workflow と decision のモデル・fixture の名前・OpenAPI の機能・tools と system の sha）を meta.json に残し、前の取り込みと違う項目を `changed_from_previous` に出す。llm-eval.toml の鍵の形の項目がダミーでなければ止める |
+| `abeval/anthropic_client.py` | httpx で Messages を stream で送る（SDK なし）。temperature・top_p・top_k と prefill は送る前に止める。再試行は 429・5xx（529）・接続の誤り・流れの途中の overloaded だけ（400・403 は再試行しない）。全幅のジッタ・`retry-after` を守る・回数を記録する |
+| `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型・状態の進め方、フォルダー・ファイルの id・`trial.reference_info`）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管（流せなかったら errors の `stub_plumbing`） |
+| `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求と終わりのイベントを拾うために使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。製品には run の状態を読む口が無いので、run が終わったのに終わりのイベントを読めていない（SSE が空で終わった・切れた）ときは SSE を `last_event_id` から読み直し（製品は終わった run の残りを流して閉じる）、それでも読めず最後の発話に返事が無ければ errors（kind `no_reply`）に入れる。返事があれば採点するが、キャッシュには置かない（`not_cached`・次に流すときに測り直す・BUG-248）。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・no_reply・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。結果が予定の日時で決まる課題（`requires` の `cap:scheduled_at`）は、測る日（日本時間）が予定の週に入れば、対象外と同じく計画の前に外し（登録の予約と $10 の判定に入れない・表示は `[日付]`）、試行ごとに errors（kind `date_window`）に理由を入れる（stub の配管では見ない・BUG-247）。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
+| `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
+| `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
+| `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定）・失敗の内訳（検証エラー・ir_lint・課題の検査・動的な検査と、run_case の実行で落ちた step の誤りを製品のコードごと〔`steps_<流し方>`〕と「ノードの種類/コード」ごと〔`steps_by_node_<流し方>`〕に数える。流し方は stub の配管〔`stub`〕と Mode B の実モデルの run_case〔`runs`〕で分ける。Mode B は 1 試行で両方を流すので、同じ誤りを 1 つの欄に 2 回数えない・GAP-111） |
+| `abeval/report.py` | `results/<exp>.json`（同じ実験は試行をキーで置き換えて足す）・`errors-<exp>.jsonl`・`summary.md`（6 節。見出しの表には、条件ごとの課題の数と、外した課題〔版に無い機能の対象外と、`errors-<exp>.jsonl` の種類ごとの採点しなかった試行。`date_window` など。stub の配管の確かめと片付けの問題は数えない〕を出す。モードや条件で課題の集合が違うまま見出しを並べて読まないため。比べ方の表には、同じモードの 1 つ目の条件〔名前の順〕との差と、版を `eval.toml` の `[report] version_order` の順に並べた直前の版〔同じモード・effort・手数で測った版のうち、いちばん近いもの〕との差〔「（直前の版）」の行・例: vm − vn〕を出し、同じ組は 1 行にする。版を足したら `version_order` の最後に足す。順は git の先祖の順ではなく直しを積んだ順で書き〔載せ直した v1 は vn の先祖ではない〕、版の記録の版がすべて載っていることと、先祖の順に逆らわないことは `tests/test_version_order.py` が確かめる）。書く前に、会話の全文と本文の項目・鍵の形の値・拒否リスト（G8）の語を検査し、見つかれば何も書かない |
+
+- 採点し直し（`abeval grade`・`abeval/regrade.py`）: 既定は静的な層（S2s・S2w・S5）だけを、結果の IR で採点し直す
+  （サーバー不要）。結果の採点の規則の版（`grader.grader`）が今の `GRADER_VERSION` と違えば止める（動的な検査の規則も
+  変わり得るので、S2d が前の規則のまま新しい版の印だけが付く）。`--stub-runs` を付けると、試行の版のサーバー
+  （`serve --label <版>`。実験の試行の版が 1 つのときだけ）で、結果の IR（保存された最後の IR・キャッシュの最後の IR と
+  同じもの）を stub の配管に流し直して S2d も出し直す。Mode A は S2d・S3 を出し直し、S1 は残す。Mode B は S2d を
+  「実モデルの run_case の S2d（残す）∨ stub の配管の S2d」にし、S3・S4 と実モデルの run_case の記録（`runs`）は会話を
+  流し直さないと出せないので前の値を残す。残したものは試行の `regraded`（`redone`・`kept`・`from_grader`）と結果の
+  `regrades` に書き、まとめ（summary.md）にも「採点し直した実験」として出す。流す前に版のサーバーの点検
+  （`doctor.version_guard`・振る舞いの指紋・番兵）を通す。abeval.proxy に実行を登録しないので、要求が届いても上流へは
+  送らない（止めていれば繋がらない）。基盤の失敗で流せなかった試行が 1 つでもあれば、何も書かない。見出しが変わった
+  試行は、新しく見つかった動的な検査のコードと一緒に表示する。
+  `run --go` の採点し直し（Mode A の生成のキャッシュ）と違い、取り込み（abeval.proxy の capture_only）も生成の
+  キャッシュも使わないので、結果をコミットした別の checkout でも流せる。
+- 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
+  結果には保存された IR（fixture の id は印に戻したもの）と採点だけを入れる。
+- キャッシュのキーは、依頼文（参考情報の id は印のまま）・fixture・試行の番号・条件・llm-eval.toml の sha・
+  取り込みの sha・バイナリの sha。Mode A は送る model も入れる。Mode B は採点した結果を置くので、採点器の版
+  （GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の sha、会話と採点を左右する条件
+  （課題の `clarifications`・`ask_terms`、`[mode_b] approve_tools` と副作用のあるツールの組、`--budget-micros`
+  〔版のサーバーの 1 発話の予算〕、`--no-stub-plumbing`、採点の後の hook）も入れる（どれかを直したら流し直す・
+  BUG-249。Mode A は生成だけを置き、採点は毎回やり直す。生成の結果の分け方〔聞き返し〕も、キャッシュの応答から
+  今の課題の `ask_terms` で分け直す）。同じ条件で流し直すと生成も会話もしない（台帳に費用の行が増えない。取り込みの
+  $0 の行だけが足される）。
+- 費用の割り当て: Mode A は会話 ID のヘッダーに試行の id を載せる。Mode B は会話 ID（thread_id）を試行に、
+  run_case の llm.invoke（会話 ID が無い）は active を試行にする。突き合わせは `/org-admin/ai/usage` の前後の差
+  （1% 以内・SQL は使わない）。
+- 失敗の分け方: モデルの結果（保存できない・壊れている・聞き返し・拒否・承認の要求）は結果に、基盤の失敗
+  （再試行切れ・timeout・fixture の作成・予算切れ・会話の誤り・流せなかった run_case と stub の配管・片付けの残り）
+  は `errors-<exp>.jsonl` に入れる（採点しない）。費用の上限で拒まれたら、その実行の残りを打ち切る。送る前に
+  拒んだ要求と上流に繋がらない要求は台帳に載らないので、abeval.proxy が実行ごとに数える（`GET /abeval/spend` の
+  `rejected`・`unreachable`）。
+
+## E0（試走）と E1 を流す手順（親が行う）
+
+上限: 評価の累計 $35（abeval.proxy が評価の台帳で送る前に強制）・1 回の実行 $10（plan が拒み、abeval.proxy が
+登録の額で止める）・総額 $95（手元の中継が強制・ここでは plan と budget が表示と判定に使う）。実 LLM は
+Claude Haiku 5.5 だけ（abeval.proxy の許可リスト）。
+
+1. 版をビルドする（別の worktree・1 版 7 分程度・ほかのビルドや E2E やスタックと重ねない）。
+
+   ```bash
+   eval/app-builder/scripts/build-version.sh --runner-lock-update v0 81a9899b   # 修正前（D-54 の 1・ランナーの lock が古い）
+   eval/app-builder/scripts/build-version.sh v1 71e9b79a       # Mode B だけ測る・Mode A は採点し直し
+   eval/app-builder/scripts/build-version.sh vn <BUG-3 と GAP-29 が着地したきれいな commit>
+   ```
+
+   新しい版は `eval.toml` の `[report] version_order` の最後に足す（まとめが直前の版と比べる）。
+
+2. 設定と中継を用意する。
+
+   ```bash
+   install -m 600 eval/app-builder/config/llm-eval.example.toml ~/.config/shiki-dev/llm-eval.toml
+   ss -ltn 'sport = :8787'                       # 手元の中継が動いているか（繋がない）
+   cd eval/app-builder && uv run python -m abeval budget   # 評価と総額の残り（台帳を読むだけ）
+   uv run python -m abeval.proxy                  # 別の端末で（127.0.0.1:18200 → 127.0.0.1:8787）
+   ```
+
+3. 版のサーバーを起動して点検する（キャンペーンの :8080 の組と重ねない）。
+
+   ```bash
+   uv run python -m abeval serve --label vn
+   uv run python -m abeval.doctor --mode eval --init-sentinel    # 初めての DB だけ
+   uv run python -m abeval.doctor --mode eval                    # すべて合格を確かめる
+   ```
+
+4. E0（試走・A 12・B 12・最悪 $0.7 前後）。計画を見てから `--go` を付ける。
+
+   ```bash
+   T=basic-summary-file,app01-claim-submit,app03-weekly-summary,app11-checkout
+   uv run python -m abeval run --mode a --label vn --exp e0a --tasks $T --trials 1
+   uv run python -m abeval run --mode a --label vn --exp e0a --tasks $T --trials 1 --go
+   uv run python -m abeval run --mode b --label vn --exp e0b --tasks $T --trials 3 --go
+   uv run python -m abeval budget
+   ```
+
+   results/e0a.json・e0b.json の `aggregates[].cost_usd` を試行の数で割った額で `eval.toml` の `[estimates]` を
+   置き換える（推測の見積もりを実測にする）。abeval.proxy の台帳と `/org-admin/ai/usage` の突き合わせ
+   （Mode B の `cost.reconcile.ok`）も見る。
+
+5. E1（版の軸）。1 回 $10 を超えないよう、実行を分ける（plan が超える実行を拒み、分け方を示す）。
+
+   ```bash
+   uv run python -m abeval serve --label v0 && uv run python -m abeval.doctor --mode eval
+   uv run python -m abeval run --mode a --label v0 --exp e1a-v0 --go       # A 180（最悪 $2.2 前後）
+   uv run python -m abeval run --mode b --label v0 --exp e1b-v0 --go       # B 60（最悪 $3 前後）
+   uv run python -m abeval serve --label v0 --down
+   uv run python -m abeval serve --label v1 && uv run python -m abeval.doctor --mode eval
+   uv run python -m abeval run --mode a --label v1 --exp e1a-v1 --regrade-from v0   # 生成しない・$0
+   uv run python -m abeval run --mode b --label v1 --exp e1b-v1 --go
+   uv run python -m abeval serve --label v1 --down
+   uv run python -m abeval serve --label vn && uv run python -m abeval.doctor --mode eval
+   uv run python -m abeval run --mode a --label vn --exp e1a-vn --go
+   uv run python -m abeval run --mode b --label vn --exp e1b-vn --go
+   uv run python -m abeval report && uv run python -m abeval budget
+   ```
+
+   - `--regrade-from v0` は、V1 の取り込みの sha が V0 と同じとき（説明文が同じとき）だけ採点し直す。違えば止める。
+   - 取り込みの指紋が前と違えば（設定・モデル・カスタム指示・fixture・機能・説明文）、実行の始めに表示し、
+     結果の `versions.<label>.capture_changed` に残る。
+   - 使った額は `python -m abeval budget` で読み、台帳 §10 に実験名と合計を記録する（human への提案）。
+   - コミットするのは results/<exp>.json・errors-<exp>.jsonl・summary.md・data/captures/・data/versions/ だけ。
+
+## 上限と台帳
+
+| 項目 | 既定 | 強制する場所 |
+| --- | --- | --- |
+| モデルの許可リスト | `claude-haiku-5-5` | abeval.proxy（送る前） |
+| 1 回の実行（`run_cap_usd`） | $10（登録した額と小さい方） | abeval.proxy（送る前・実際の消費と予約で） |
+| 評価の累計（`eval_cap_usd`） | $35（月で区切らない） | abeval.proxy（送る前） |
+| 外側の歯止め（`global_cap_usd`） | $95（2026-10-25 からの累計） | 手元の中継（ここでは表示だけ） |
+
+- 評価の台帳は `~/.local/share/shiki-eval/ledger.jsonl`（作業ツリーの外・権限 600・1 行 = 1 回の要求・
+  `cost_micros` はマイクロ USD の整数）。上限の正本なので**消さない**。壊れた行があれば読み込みで止まる。
+  作業ツリーを作り直しても、別の checkout から流しても同じ台帳で数える。
+- 消えた・別の台帳になったときの守り（`budget.ledger_guard`）: 手元の中継の台帳のうち tag が `abeval/` で始まる
+  行の累計が評価の台帳より大きければ（$0.01 か 1% を超えて）、abeval.proxy は起動を拒み、doctor は NG、plan は
+  大きい方で数える。
+- abeval.proxy が SIGKILL・OOM で落ちたときの戻し方（BUG-250）: 処理中だった要求は、手元の中継では課金されたのに
+  評価の台帳に載らない（予約の額で書くのは SIGTERM と Ctrl-C で止めたときだけ）。そのままだと上の守りで
+  abeval.proxy を起動し直せない。abeval.proxy を止めたまま、差を確かめてから足す。
+
+  ```bash
+  uv run python -m abeval budget --reconcile         # 足す行を表示するだけ（書かない）
+  uv run python -m abeval budget --reconcile --yes   # 評価の台帳に足す
+  ```
+
+  - 手元の中継の台帳の評価の分を tag（`abeval/<exp>/<run>/<trial>`）ごとに評価の台帳と比べ、手元の中継の方が
+    多い tag だけ、その差（切り上げ）を `kind: "reconciled"` の行として足す（exp・run_id・trial は tag から。
+    実行ごとの累計にも入る）。評価の台帳の方が多い tag は足さない（少なく数えない側に寄せる）。
+  - 手元の中継の台帳は読むだけ。書くのは、abeval.proxy が止まっている（`ss` で 18200 に待ち受けが無い）ときだけで、
+    評価の台帳の排他の錠（flock）を取ったまま読み直して決める。もう一度流しても足す行は増えない。
+  - 評価の台帳そのものが消えた（作業ツリーの中の台帳を消した・別の機械の台帳を使った）ときも同じ命令で戻せるが、
+    足す額を見て、消えた理由を確かめてから `--yes` を付ける。
+- 前の既定（作業ツリーの `results/spend.jsonl`）に行が残っていると、abeval.proxy は起動を拒む。移し方:
+
+  ```bash
+  mkdir -p -m 700 ~/.local/share/shiki-eval
+  cat eval/app-builder/results/spend.jsonl >> ~/.local/share/shiki-eval/ledger.jsonl
+  chmod 600 ~/.local/share/shiki-eval/ledger.jsonl
+  rm eval/app-builder/results/spend.jsonl   # 足したことを確かめてから
+  ```
+- 手元の中継の台帳（`~/.local/state/shiki-campaign/anthropic-spend.jsonl`）は読むだけ（8787 へは繋がない）。
+- 単価は `eval.toml` の `[pricing]`（台帳 §6.1）。段の境は「入力＋キャッシュの読み＋キャッシュの書き」が 100,000
+  トークンを超えたら高い段（手元の中継の `cost_of` と同じ）。1 回分は切り上げの整数で数える。
+
+## 要求の形
+
+- `temperature`・`top_p`・`top_k` は送らない（Haiku 5.5 は 400 を返す。製品の Anthropic アダプタも送らない）。
+  中継も、これらを含む本文を拒む（ハーネスの誤りを止める）。assistant の prefill もしない。
+- Mode A は httpx で Anthropic の形式を直接組む（SDK は入れない。自動の再試行と勝手に付くヘッダーを避ける）。
+
+## 承認の方針（D-162・H8 (a)）
+
+Mode B で承認待ち（`approval_requested`）が来たら、既定で却下する。承認するのは `eval.toml` の
+`[mode_b] approve_tools`（いまは空。D-10 の試運転のツールが入ったら足す）に載ったツールだけ。ハーネスはテスト用の
+利用者（dev seed の alice など）で動き、製品の認可は変えない。承認の要求とその決定はすべて記録する（S9）。
+
+## コミットの範囲（H7 (a)）
+
+| 置き場 | コミット |
+| --- | --- |
+| `results/<exp>.json`・`results/errors-<exp>.jsonl`・`results/summary.md` | する |
+| `data/tasks/`・`data/versions/`・`data/captures/` | する（製品の文面はコードと同じ文字列・IR は架空のデータ・版の記録は commit と sha だけ） |
+| `data/cache/`（会話の全文・要求の本文・試行の記録） | しない（.gitignore） |
+| 評価の台帳（`~/.local/share/shiki-eval/ledger.jsonl`・作業ツリーの外）・`results/spend.jsonl`（前の置き場）・`results/*.tmp` | しない（.gitignore） |
+
+課題・fixture・レポートには、実在の組織・個人の名前を書かない（public リポジトリ）。
+
+## テスト
+
+- `tests/conftest.py` は、置き場（台帳・キャッシュ・`ABEVAL_HOME`・結果 `ABEVAL_RESULTS_DIR`・取り込み
+  `ABEVAL_CAPTURES_DIR`）をテストごとの一時の場所に向け、socket の接続を見張る。手元の中継（`127.0.0.1:8787`）とループバック以外への接続は例外になる（実 LLM を呼ばない）。
+- 印: `server`（stub のスタックか版のサーバーが要る・`ABEVAL_API_URL`）・`lint_bin`（ir_lint のバイナリが要る）・`shell`（bash と git が要る）。
+- `shell` のテストは docker・cargo・curl などを shim（`tests/shellkit.py`）にして流す（本物は動かさない）。
+  `test_dev_up_args.py` は、引数を省いた dev-up.sh（と `--status`・`--down`）が、引数を足す前の版（0a0567a1）で
+  作った記録（`tests/fixtures/dev_up/`）と同じ run-server.sh を作り、同じ shim を同じ順に呼ぶことを確かめる
+  （既定の経路を意図して変えたときだけ `ABEVAL_REGEN_DEV_UP=1` で作り直す）。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。
+- 一時の置き場は `.pytest_tmp/`（/tmp は tmpfs なので使わない）。
+- 採点器のオフラインのテストは、記録（`tests/fixtures/ir_lint/`・`tests/fixtures/runs/`）を読む。課題を変えたら
+  記録し直す（記録の入力の sha が違うとテストが止まる）。記録と実物の一致は `pytest -m lint_bin` が見る。
+
+  ```bash
+  uv run python scripts/record_fixtures.py --lint                                   # ir_lint の出力
+  uv run python scripts/record_fixtures.py --runs --api-url http://localhost:8080   # stub のスタックで run を記録
+  uv run python scripts/record_fixtures.py --runs --tasks app11-checkout             # 変えた課題の run だけ記録し直す
+  ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server tests/test_reference_it.py -q   # 正解と null
+  ```
+
+- Mode A・取り込み・計画のオフラインのテストは、偽の shiki（`tests/fake_chat.py`・製品の要求のまねを中継へ送る）・
+  テストの中で動かす abeval.proxy（`tests/inproc.py`・一時のポート）・偽の上流（Anthropic の SSE・
+  `tests/fake_anthropic.py`）で、CLI（`run --go`・キャッシュ・`--regrade-from`）まで通す。Mode B は台本どおりに
+  動く偽のチャット（承認の要求・終わらない run・空の SSE・途中で切れる SSE・聞き返し。SSE は製品と同じく最新の run の
+  残りを流す）と偽の時計で流す。
+- Mode B の記録の読み取りは、stub のスタックで記録した会話（`tests/fixtures/transcripts/`・stub の応答だけ）を
+  読む。作り直すときは次のとおり。
+
+  ```bash
+  ABEVAL_RECORD_TRANSCRIPTS=tests/fixtures/transcripts ABEVAL_API_URL=http://localhost:8080 \
+    uv run pytest -m server tests/test_mode_b_it.py -q
+  ```
+
+- サーバーの要る Mode A・Mode B の確かめ（`test_mode_a_it.py`・`test_mode_b_it.py`）は stub のスタックで流す
+  （発話の model は `default`・依頼文を `calltool:` に差し替えた試験用の課題）。取り込みの確かめ
+  （`test_capture_it.py`）は、API のポートを握るサーバーの `SHIKI_CONFIG` の anthropic が `127.0.0.1:18200`
+  （abeval.proxy）を指し、鍵がダミーのときだけ流す（テストの中で capture_only の abeval.proxy を 18200 で動かす・
+  上流は繋がらない宛先）。それ以外のスタックでは理由を出して飛ばす。
+- 版のサーバーの点検（`test_server_guard.py`・`test_run_guard.py`・`test_serve_behavior.py`）は、偽の /proc
+  （`tests/fake_proc.py`・pid の下の exe・environ・stat）と偽の `ss` の出力で流し、本物の `ss` と /proc はテストの
+  中で起こした子プロセス（ループバックで待ち受けるだけ）で確かめる（`ss` が無ければ飛ばす）。振る舞いの指紋の組が
+  HEAD で版の差を表すことは `test_behavior.py` の `lint_bin`（ir_lint）と `server`（stub のスタック）で見る。
+- 採点器の自己テスト（`tests/test_mutate.py`・`tests/test_dates.py`）は、10 通りの壊し方が期待した検査で捕まることと、検査を何もしない
+  ように差し替えるとそのテストが落ちることを確かめる。`from_port: next` は HEAD の検証では保存できないので、
+  正解の記録から V0 の動き（その線の先が動かない）を組んで dead edge を見る。
+
+## 限界
+
+- 本文のバイト数による予約は大きめなので、上限の間際では最後の数件を拒むことがある（安全側）。Anthropic が
+  ツールの定義に足す system の分（数百トークン）は本文に無いが、JSON の記号のバイトがそれより大きい。
+- 評価の台帳はこの機械の 1 つ（作業ツリーの外）。別の機械から流すと別の台帳になる（手元の中継の台帳との
+  突き合わせは、同じ機械の中継だけを見る）。
+- 取り込みの capture_only の要求も、評価の台帳に $0 の行として残る（キャッシュで生成を飛ばした実行でも、取り込みの
+  行だけは増える）。
+- Mode B の聞き返しの判定は単純な規則（「？」で終わる・課題の `ask_terms`）なので、実モデルでは取りこぼしがある。
+  S8 の `unknown`（保存も聞き返しもしないで終えた）に残す。
+- 製品のチャットには、Drive のフォルダーやファイルの id を調べる道具が無い（fs_* はスレッドの作業フォルダーの中
+  だけ）。そのため Mode B にも Mode A と同じ参考情報（id と入力の key）を添えて測る。製品の経路だけで id を知れる
+  かは、この評価では測らない。
+- 製品の `/org-admin/ai/usage` は日の単位なので、突き合わせは試行の前後の差で見る（並列度 1・同じ日のうちの差）。
+  ほかの利用が同じサーバーにあると合わない。
+- Mode B のモデルが見る「今日」は、測った日の実際の日付になる（製品の `today_note` は run の作成時刻から作る。
+  取り込みの固定の日付 `[capture] fixed_date` は Mode A にしか効かない・付録 B の「7j で実装に合わせて変えたところ」）。
+  そのため Mode B では、貸出日などに今日の日付を決め打ちした IR も、同じ日に流す run_case の `$run_date` と一致して
+  通り得る。日付の文字の決め打ちは静的な検査（`date_literal`）で両方のモードで同じに捕まえる。結果が予定の日時で
+  決まる課題（`requires` の `cap:scheduled_at`。予定の run_case の期待に日付があれば必ず書く）は、測る日（日本時間）が
+  予定の週に入る日には Mode B で流さない（errors の `date_window`・2026-11-09 の予定なら 2026-11-09〜15 の間は
+  流さない）。予定で起動しても結果に日付の出ない課題（app01-posting-batch・app06-reorder-check）は止めない。
+  予定の週の前の週は止めない: その週の「今日」から「次の月曜の実行」を見越して先週の範囲を決め打ちする書き方は、
+  Mode A の取り込みの今日（2026-11-04）にも同じに当たるので、Mode B だけを止めると二つのモードの扱いがずれる。
+  この書き方と、文字の形にならない決め打ち（script の中で `new Date(2026, 10, 7)` のように組み立てる・今日からの
+  差を数で書くなど）は、どちらのモードでも見つけられない。
+- 日付の文字の検査（`grade/dates.py`）は、年の無い斜線の形（`11/9`・`11/2〜11/8`）を見ない（script の割り算や
+  「1/2」のような分数を日付と取り違えるため）。そのため LLM の指示に「11/2〜11/8 の集計です」と決め打ちした IR は
+  捕まらない。逆に、script の注釈（`// "2026-11-05" < "2026-11-09"`）や llm.invoke の指示の例示（「例: 2026-11-09」）
+  の日付は、実行に効かなくても S2s に数える（文の意味は読まない）。和暦や 2 桁の年の後ろの月日（「令和8年11月9日」の
+  「11月9日」）は数える。
+- 索引の無い列で絞り込んで実行で落ちた step は、製品の step の誤りのコードが `invalid`（ほかの入力の誤りと同じ。
+  data の `field_not_indexed` は step の誤りに残らない・`crates/api/src/workflow_runtime/data_port.rs` の
+  `map_data`）なので、失敗の内訳からは分けられない。`steps_by_node_*` の `data.query/invalid` には、索引の誤りと、
+  ほかの入力の誤り（列の型の取り違え・無い列・状態の進め方など）が混ざる。製品のすき間なのかモデルの失敗なのかは、
+  内訳では見分けられない（文では判定しない。製品が step の誤りに data のコードを残すまでの限界）。
+- 出力の path の検査（ir_lint の `output_paths`）の `present_if` の「値がある」の判定は、製品の Rust に判定する関数が
+  無いので、右パネルの `hasParamAt`（`web/.../config-panel/value-refs.ts`）を ir_lint に写している（写しの置き場が
+  Python から ir_lint に移っただけで、判定は前と同じ）。製品が決め方（数の 0 の扱いなど）を変えても、`lint_bin` の
+  突き合わせでは気づけない（GAP-112）。
+- 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）
+  のある llm.invoke では stub が形に合う最小の値を返すので、その prompt の差し込みの残りは動的には見えない
+  （静的な `ir.template_escaped_var` で捕まえる）。

@@ -88,9 +88,18 @@ impl TextEngine {
                 max_bytes: limits.max_bytes,
                 max_redirects: limits.max_redirects,
                 user_agent: USER_AGENT.into(),
+                proxy: None,
             },
             limits,
         }
+    }
+
+    /// 運用者の外への通信の中継（`egress.proxy_url`・GAP-72）を通す。web_fetch と同じく、検証済みの IP への
+    /// トンネルを開いてつなぐ（中継を設定した構成で、ブラウザだけが中継を素通りしない）。
+    #[must_use]
+    pub fn with_proxy(mut self, proxy: Option<sandbox_client::egress_proxy::EgressProxy>) -> Self {
+        self.fetcher.proxy = proxy;
+        self
     }
 }
 

@@ -57,12 +57,15 @@ fn crumb(id: Uuid, kind: NodeKind, name: &str) -> Crumb {
 /// 1 回分の update 呼び出し（種別・対象・新しい名前・移動先）。
 type UpdateCall = (NodeKind, Uuid, Option<String>, Option<Option<Uuid>>);
 
-/// 1 回分の find 呼び出し（問い合わせ・種別・件数）。
-type FindQuery = (String, Option<NodeKind>, usize);
+/// 1 回分の find 呼び出し（問い合わせ・種別・続きの位置・件数）。
+type FindQuery = (String, Option<NodeKind>, Option<String>, usize);
 
 #[derive(Default)]
 struct FakeDrive {
     found: Vec<Node>,
+    /// 決めたページを順に返す（空でなければ `found` を使わない）。`(このページの結果, 続きがあるか)`。
+    /// 続きの位置はページの番号（storage の打ち切り＝`limit` より少ないページに続きが付く・BUG-187 を真似る）。
+    pages: Vec<(Vec<Node>, bool)>,
     /// node_id → パンくず。無い id は NotFound。
     paths: Vec<(Uuid, Vec<Crumb>)>,
     update_err: Option<fn() -> StorageError>,
@@ -86,21 +89,33 @@ impl DriveOps for FakeDrive {
         _ctx: &AuthContext,
         query: &str,
         kind: Option<NodeKind>,
+        cursor: Option<&str>,
         limit: usize,
         _trace_id: Option<&str>,
-    ) -> Result<Vec<Node>, StorageError> {
+    ) -> Result<ChildPage, StorageError> {
         self.find_queries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((query.to_string(), kind, limit));
+            .push((query.to_string(), kind, cursor.map(str::to_string), limit));
+        if !self.pages.is_empty() {
+            let at: usize = cursor.map_or(0, |c| c.parse().unwrap());
+            let (items, more) = &self.pages[at];
+            return Ok(ChildPage {
+                items: items.iter().take(limit).cloned().collect(),
+                next_cursor: more.then(|| (at + 1).to_string()),
+            });
+        }
         // 本体（SQL）と同じく、種別と件数は検索側で絞る。
-        Ok(self
-            .found
-            .iter()
-            .filter(|n| kind.is_none_or(|k| n.kind == k))
-            .take(limit)
-            .cloned()
-            .collect())
+        Ok(ChildPage {
+            items: self
+                .found
+                .iter()
+                .filter(|n| kind.is_none_or(|k| n.kind == k))
+                .take(limit)
+                .cloned()
+                .collect(),
+            next_cursor: None,
+        })
     }
 
     async fn path(
@@ -171,7 +186,7 @@ async fn find_lists_matches_with_place_and_filters_by_kind() {
     assert!(!out.content.contains("経理メモ.md"));
     assert_eq!(
         drive.find_queries.lock().unwrap().as_slice(),
-        &[("経理".to_string(), Some(NodeKind::Folder), 10)]
+        &[("経理".to_string(), Some(NodeKind::Folder), None, 10)]
     );
     assert!(tool.is_read_only());
     assert!(!tool.requires_confirmation());
@@ -206,6 +221,75 @@ async fn find_reports_no_match_and_omits_unreadable_place() {
         none.content,
         "「無い」に一致するフォルダは見つかりませんでした。"
     );
+}
+
+/// 打ち切られて短い（空の）ページに続きが付いたら、続きをたどって集める（1 ページ目で「無い」と言わない）。
+#[tokio::test]
+async fn find_follows_cursor_past_short_pages() {
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let drive = Arc::new(FakeDrive {
+        pages: vec![
+            (vec![], true),
+            (vec![node(a, NodeKind::File, "予算_2025.xlsx")], true),
+            (vec![node(b, NodeKind::File, "予算_2026.xlsx")], false),
+        ],
+        ..FakeDrive::default()
+    });
+    let out = DriveFindTool::new(drive.clone())
+        .call(&ctx(), serde_json::json!({ "query": "予算" }), None)
+        .await
+        .unwrap();
+    assert!(out.content.starts_with("「予算」の検索結果（2 件）:\n"));
+    assert!(out.content.contains(&format!("予算_2026.xlsx (id: {b})")));
+    assert!(!out.content.contains("探しきれていません"));
+    // 続きの位置を渡し、残りの件数だけを頼む。
+    let queries = drive.find_queries.lock().unwrap().clone();
+    let asked: Vec<_> = queries.iter().map(|q| (q.2.clone(), q.3)).collect();
+    assert_eq!(
+        asked,
+        [(None, 10), (Some("1".into()), 10), (Some("2".into()), 9)]
+    );
+}
+
+/// ページの上限までたどっても続きが残ったら、「見つかりませんでした」と言い切らず、探しきれなかったと伝える。
+#[tokio::test]
+async fn find_reports_not_exhausted_when_pages_run_out() {
+    let drive = Arc::new(FakeDrive {
+        pages: vec![(vec![], true); MAX_FIND_PAGES + 1],
+        ..FakeDrive::default()
+    });
+    let out = DriveFindTool::new(drive.clone())
+        .call(&ctx(), serde_json::json!({ "query": "予算" }), None)
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    assert!(out.content.starts_with(
+        "「予算」に一致するファイル・フォルダは、探した範囲では見つかりませんでした。"
+    ));
+    assert!(out.content.contains("無いとは限りません"));
+    assert!(out.content.contains("kind で種別を絞って"));
+    // 続きの位置（見えないノードの名前を含みうる）はモデルへ出さない。
+    assert!(!out.content.contains("cursor"));
+    assert_eq!(drive.find_queries.lock().unwrap().len(), MAX_FIND_PAGES);
+
+    // 見つかった分があっても、探しきれていなければそう添える（種別を絞っていれば種別は勧めない）。
+    let file = Uuid::new_v4();
+    let mut pages = vec![(vec![node(file, NodeKind::File, "予算.xlsx")], true)];
+    pages.extend(vec![(vec![], true); MAX_FIND_PAGES]);
+    let out = DriveFindTool::new(Arc::new(FakeDrive {
+        pages,
+        ..FakeDrive::default()
+    }))
+    .call(
+        &ctx(),
+        serde_json::json!({ "query": "予算", "kind": "file" }),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(out.content.contains(&format!("予算.xlsx (id: {file})")));
+    assert!(out.content.contains("目的のものが無ければ"));
+    assert!(!out.content.contains("kind で種別を絞って"));
 }
 
 #[tokio::test]

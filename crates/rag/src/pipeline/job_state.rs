@@ -7,6 +7,9 @@ use super::IngestMessage;
 use crate::error::RagError;
 
 /// 冪等判定つきジョブ開始。既に成功/スキップ済みなら `true`（再処理不要）。
+///
+/// 取り込み直し（`reindex`・D-126）を飛ばしたもの（中身が見つからないなど）は、もう一度頼まれたら試し直す
+/// （取り込みの状態は失敗として言い、利用者が取り込み直せる・`index_state`）。
 pub(super) async fn begin_job(
     pool: &PgPool,
     message: &IngestMessage,
@@ -19,7 +22,8 @@ pub(super) async fn begin_job(
          on conflict (tenant_id, node_id, version, op) do update set \
              attempts = rag_ingest_job.attempts + 1, \
              updated_at = now(), \
-             status = case when rag_ingest_job.status in ('succeeded', 'skipped') \
+             status = case when rag_ingest_job.status = 'succeeded' \
+                             or (rag_ingest_job.status = 'skipped' and rag_ingest_job.op <> 'reindex') \
                            then rag_ingest_job.status else 'running' end \
          returning status",
     )

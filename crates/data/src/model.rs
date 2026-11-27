@@ -37,6 +37,11 @@ pub enum FieldType {
     Rollup,
     /// 数式（閉じた AST・`numeric` 精度・書込不可・Task 15.4）。
     Formula,
+    /// レコードの作成者（principal id・D-122・BUG-148）。サーバーがレコードの作成者（`data_record.owner`）で
+    /// 埋め、だれも書き換えられない（作成・更新・取込のどの入口でも値を書くと 400）。値は保存せず、読むときに
+    /// 作成者から出す（[`crate::created_by`]）ので、列を足す前のレコードも作成者で埋まって見える。条件・並べ替え・
+    /// 行の決まりの比べ（`field_cmp`）は owner の擬似列（`field_id = 0`）で評価する。
+    CreatedBy,
 }
 
 impl FieldType {
@@ -270,6 +275,11 @@ impl FieldDef {
         }
     }
 
+    /// 作成者の列（値はレコードの作成者・保存しない・だれも書けない・[`crate::created_by`]）か。
+    pub fn is_created_by(&self) -> bool {
+        self.field_type == FieldType::CreatedBy
+    }
+
     /// 対称列（参照先から見た逆方向のリンク・読取専用）か。
     pub fn is_reverse_link(&self) -> bool {
         self.link.as_ref().is_some_and(|l| l.reverse)
@@ -357,6 +367,13 @@ pub struct DataTable {
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 呼び出した人には「追加だけ」で共有されている（レコードを追加でき、自分が追加したレコードだけ
+    /// 見られる・D-113）。閲覧者向けの一覧と取得（[`crate::DataStore::get_table_for_viewer`]）でだけ立つ。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub add_only: bool,
+    /// 追加だけの閲覧者向けに行述語を絞った版なら、絞る前の行述語（[`crate::table_access`]）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) narrowed: Option<crate::table_access::Narrowed>,
     /// 内部整数キー（`tenant_int` / `table_int`）。**外へ出さない**（serde・OpenAPI から除外）。
     #[serde(skip)]
     pub(crate) keys: TableKeys,
@@ -495,6 +512,8 @@ mod tests {
             created_by: "u".into(),
             created_at: ts,
             updated_at: ts,
+            add_only: false,
+            narrowed: None,
             keys: TableKeys {
                 tenant_int: 424_242,
                 table_int: 7_777_777,

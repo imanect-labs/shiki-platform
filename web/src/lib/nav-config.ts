@@ -1,4 +1,5 @@
 import {
+  ClipboardCheck,
   Clock,
   Database,
   File as FileIcon,
@@ -59,6 +60,14 @@ export const WORKFLOWS_NAV: NavLeaf = {
 /// 業務データ（Phase 15・構造化データのテーブル・ビュー）。
 export const DATA_NAV: NavLeaf = { key: "data", label: "データ", href: "/data", icon: Database };
 
+/// 承認の受信箱（ワークフローの承認待ち・GAP-08）。件数バッジを添える。
+export const APPROVALS_NAV: NavLeaf = {
+  key: "approvals",
+  label: "承認",
+  href: "/approvals",
+  icon: ClipboardCheck,
+};
+
 /// あるパスがナビ項目のアクティブ対象かを判定する。
 /// 完全一致、またはルート（"/" を除く）配下のサブパスを active とみなす。
 export function isActivePath(href: string, pathname: string): boolean {
@@ -87,6 +96,7 @@ export function resolvePageTitle(pathname: string): string {
   if (isActivePath(APPS_NAV.href, pathname)) return "アプリ";
   if (isActivePath(WORKFLOWS_NAV.href, pathname)) return "ワークフロー";
   if (isActivePath(DATA_NAV.href, pathname)) return "データ";
+  if (isActivePath(APPROVALS_NAV.href, pathname)) return "承認";
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   // ドライブのルート（home child）は単に「ドライブ」。下位ページのみ親付きで示す。
   if (child) return child.key === "home" ? "ドライブ" : `ドライブ・${child.label}`;
@@ -106,6 +116,7 @@ export function resolvePageIcon(pathname: string): LucideIcon {
   if (isActivePath(APPS_NAV.href, pathname)) return APPS_NAV.icon;
   if (isActivePath(WORKFLOWS_NAV.href, pathname)) return WORKFLOWS_NAV.icon;
   if (isActivePath(DATA_NAV.href, pathname)) return DATA_NAV.icon;
+  if (isActivePath(APPROVALS_NAV.href, pathname)) return APPROVALS_NAV.icon;
   const child = DRIVE_CHILDREN.find((c) => c.href === pathname);
   if (child) return child.icon;
   return DRIVE_ICON;

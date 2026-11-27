@@ -30,12 +30,15 @@
   の `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`/`workflow_start`
   （`WorkflowRunLauncher::start_interactive` → `WorkflowStore::get_latest` が `ArtifactStore` で認可）、
   および `data_*` が使う `workflow_runtime/data_port.rs` の `DataPort::actor`。`AuthContext` の
-  組み立ては `workflow_runtime/auth.rs` の `auth_ctx`）。`llm.invoke`/`agent.invoke`/`http.request`
+  組み立ては `workflow_runtime/auth.rs` の `auth_ctx`）。`llm.invoke`/`http.request`
   は OpenFGA を経由せず、`scope_ceiling`・レート制限・宛先束縛（secret 経由の allowlist）・
-  sandbox 制約でそれぞれ守られる（同ファイルの `agent_invoke`/`http_send` は `auth_ctx` を呼ばない。
+  sandbox 制約でそれぞれ守られる（同ファイルの `http_send` は `auth_ctx` を呼ばない。
   `llm_invoke` は `auth_ctx` で組んだ `AuthContext` を `LlmGateway` に渡すが、これはテナント単位の
-  制限・利用量の記録のためで、OpenFGA check は行わない）。図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は
-  一様ではない点に注意。
+  制限・利用量の記録のためで、OpenFGA check は行わない）。
+  `agent.invoke`（BUG-6）はループ（`workflow_runtime/agent_port.rs`）自体は権限を判断せず、道具の
+  呼び出しをエンジンの `AgentToolGateway`（`nodes/agent_gateway.rs`・提示した道具か・scope 天井・
+  宛先・監査）へ中継し、そこから `auth_ctx` でチョークポイント（storage・rag の OpenFGA）へ届く。
+  図はこれらチョークポイントをまとめて描いているが、認可の掛かり方は一様ではない点に注意。
 - **ピンク（script-runtime）**: QuickJS on wasmtime のエンジン自体は `crates/script-runtime` に
   gRPC over UDS サーバ実装（`server.rs`）を持つが、**Stage A の本番配線はこれを使っていない**。
   `spawn_workflow_runtime` から呼ばれる `build_prod_executor`（`crates/api/src/workflow_runtime/mod.rs:204`、
@@ -202,7 +205,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | script-runtime | `crates/script-runtime`（`ScriptEngine::run`、`engine.rs:247-277`）。能力呼び出しの gRPC 双方向ストリームは `server.rs:66`（`execute`）/`142-217`（`drive_stream`）。 |
 | WorkflowRunLauncher | `run/launcher.rs`（`WorkflowRunLauncher`・`LauncherError`）。interactive API・スケジューラ・イベント relay が共有するrun作成の唯一の入口。 |
 | WorkflowWorker | `run/worker.rs`（`WorkerConfig`・`WorkflowWorker`）。 |
-| LeaderLease / SchedulerStore | `scheduler/leader.rs:10-51` / `scheduler/store.rs`, `scheduler/cron.rs`。 |
+| LeaderLease / SchedulerStore | `scheduler/leader.rs:10-51` / `scheduler/store.rs`, `scheduler/cron.rs`（cron の読み方は `crates/cron5` の公開し直し・BUG-129）。 |
 | outbox fan-out | `crates/storage/src/event/`（`delivery.rs` の `claim_undelivered`/`mark_delivered`/`register_consumer`、`gc.rs` の `gc_delivered`）＋ `outbox_delivery` テーブル（`0021`）。 |
 | `crates/durable` | `crates/durable/src/`（`claim.rs`/`events.rs`/`pubsub.rs`/`spec.rs`）。claim/リース/fencing/`append_event`/`RedisPubSub` をテーブル非依存プリミティブとして提供。chat の `generation_run` 実装（Task 3.11・#82）の抽出。 |
 
@@ -213,6 +216,8 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | `crates/workflow-engine` | IR 検証・run/step 状態機械・能力ゲートウェイ・スケジューラ・委譲検証 | `ir/`（IR型・検証）・`run/`（launcher/worker/store/model/graph/readiness）・`nodes/`（exec/ports/capability/http/script/resolver）・`scheduler/`（leader/store/cron）・`capability/`（journal）・`control/`（branch/switch純関数）・`delegation.rs`・`vocab/`・`concurrency.rs`・`ratelimit.rs`・`retry.rs` |
 | `crates/api`（`workflow_runtime` サブモジュール） | shiki-server 起動時の結線（`spawn_workflow_runtime`）・`NodePorts` の本番実装・run 起動/履歴 API | `workflow_runtime/mod.rs`（`spawn_workflow_runtime:264`・`relay_events:385-400`/`relay_events_batch:407-468`・`WorkflowConfig`）・`workflow_runtime/ports.rs`（`ProdNodePorts`）・`workflow_runtime/auth.rs`（`auth_ctx`）・`routes/workflows/runs.rs`（`start_workflow_run:53`・`get_workflow_run:249`） |
 | `crates/durable` | claim/リース/fencing/追記イベントログの共有プリミティブ（chat と workflow で共有・キュー/状態機械は共有しない） | `claim.rs`・`events.rs`・`pubsub.rs`・`spec.rs` |
+| `crates/cron5` | 5 つの欄の cron を標準の読み方（曜日は 0 と 7 が日曜）で解く写像の単一定義。ワークフローのスケジュールとミニアプリの B2 関数のスケジュールが共有する（BUG-95・BUG-129） | `lib.rs` |
+| `crates/textenc` | 文章のバイト列の文字コードの判定（BOM → UTF-8 → 日本の文字コードの推定・確からしさが低ければ断る）と、元の文字コードでの書き戻しの単一定義。「ファイルを読む」・AI エージェントの窓読み・`csv.*`（tabular）・データの取り込み・web_fetch・社内文書の検索の取り込み（GAP-46）・チャットの AI のワークスペースのファイル（BUG-142）・ドライブのテキストの表示と編集（D-119）・`csv.write` の文字コード（D-120）が共有する（GAP-45） | `lib.rs`（`decode_text`・`encode_like`・`guess_any`） |
 | `crates/script-runtime` | shiki script の非特権実行環境（QuickJS on wasmtime）・gRPC over UDS | `engine.rs`・`compile.rs`・`frames.rs`・`host.rs`・`server.rs`・`guest/` |
 | `crates/storage` | outbox・オブジェクト/構造化データ・StorageService（チョークポイント） | `event/`（outbox fan-out 関数群。`delivery.rs`・`gc.rs`） |
 | `crates/authz` | AuthContext・PrincipalKind・OpenFGA クライアント | `context.rs` |
@@ -245,8 +250,9 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
    `storage_*`/`rag_search`/`resolve_secret`/`skill_resolve`/`csv_*`/`workflow_start`/`data_*`（`DataPort::actor` 経由）が
    これをチョークポイントへ渡す。チョークポイント内部で通常どおり OpenFGA check が走る（ワークフロー専用の
    認可経路はない）。`llm_invoke` も `AuthContext` を `LlmGateway` に渡すが、テナント単位の制限・利用量の
-   記録のためで OpenFGA check はない。**`agent_invoke`/`http_send` は `auth_ctx` を呼ばない**。
-   この 3 つは §1 の注記のとおり scope_ceiling・レート制限・宛先束縛・sandbox 制約で守る。
+   記録のためで OpenFGA check はない。**`http_send` は `auth_ctx` を呼ばない**（§1 の注記のとおり
+   scope_ceiling・レート制限・宛先束縛で守る）。`agent_invoke` の道具は `AgentToolGateway` を通ってから
+   `auth_ctx` でチョークポイントへ届く（BUG-6）。
 7. **checkpoint**: 結果（`output`/`taken_ports`）を `step_execution` に単一 TX で書き込み、
    `readiness.rs` の純関数が後続 step の ready/skip を判定する。
 

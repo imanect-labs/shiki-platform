@@ -37,7 +37,7 @@ fn check(c: &Condition, schema: &TableSchema) -> Result<(), DataError> {
                 return Ok(());
             };
             let (is_id, what): (fn(&str) -> bool, &str) = match f.field_type {
-                FieldType::UserRef => (is_user_id, "ユーザー"),
+                FieldType::UserRef | FieldType::CreatedBy => (is_user_id, "ユーザー"),
                 FieldType::RoleRef => (is_role_id, "部署（ロール）"),
                 _ => return Ok(()),
             };

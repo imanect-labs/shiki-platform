@@ -41,9 +41,10 @@ fn workflow_evaluator_matches_the_shared_semantics_table() {
             op,
             right: c.get("operand").cloned().map(ValueExpr::Literal),
         });
-        let got = eval_condition(&cond, &Row(record));
-        if got != c["expect"].as_bool().unwrap() {
-            failures.push(format!("{c} → {got}"));
+        // 表は型の合う組だけを載せる（評価エラーになる行があれば食い違い）。
+        match eval_condition(&cond, &Row(record)) {
+            Ok(got) if got == c["expect"].as_bool().unwrap() => {}
+            other => failures.push(format!("{c} → {other:?}")),
         }
     }
     assert!(
@@ -74,10 +75,10 @@ fn negation_is_the_complement_for_every_case() {
             })
         };
         let r = Row(record);
-        let not = eval_condition(&Condition::Not(Box::new(leaf(op))), &r);
-        assert_eq!(not, !eval_condition(&leaf(op), &r), "{c}");
+        let not = eval_condition(&Condition::Not(Box::new(leaf(op))), &r).unwrap();
+        assert_eq!(not, !eval_condition(&leaf(op), &r).unwrap(), "{c}");
         if op == CmpOp::Eq {
-            assert_eq!(not, eval_condition(&leaf(CmpOp::Neq), &r), "{c}");
+            assert_eq!(not, eval_condition(&leaf(CmpOp::Neq), &r).unwrap(), "{c}");
         }
     }
 }

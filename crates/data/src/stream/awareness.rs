@@ -20,7 +20,8 @@ use crate::{map_db, DataError};
 const MAX_FIELD_KEY_LEN: usize = 128;
 
 impl DataStore {
-    /// 自分のカーソル位置を知らせる（viewer・データを含まない）。`record_id = None` は離脱。
+    /// 自分のカーソル位置を知らせる（viewer か追加だけ・データを含まない）。`record_id = None` は離脱。
+    /// 追加だけの人が指せるのは自分が作ったレコードだけ（D-113）。
     pub async fn post_awareness(
         &self,
         ctx: &AuthContext,
@@ -31,7 +32,7 @@ impl DataStore {
     ) -> Result<(), DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(
+            .open_for_reader(
                 ctx,
                 &az,
                 table_id,

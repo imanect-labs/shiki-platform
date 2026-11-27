@@ -489,6 +489,45 @@ async fn cache_tokens_are_recorded_and_priced_separately() {
     assert_eq!(report.totals.cost_usd_micros, 1_250_000 + 1_190_000);
 }
 
+/// アプリの AI の利用量（GET /apps/{id}/usage）は、呼ぶ人の組織の行だけを数える（同じテナントの別の組織の行を
+/// 混ぜない・PIT-45・BUG-197）。
+#[tokio::test]
+async fn app_llm_usage_is_scoped_to_the_callers_org() {
+    let Some(pool) = pool().await else { return };
+    let recorder = llm_gateway::accounting::UsageRecorder::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let app_id = uuid::Uuid::new_v4();
+    let rec = |model: &str| llm_gateway::accounting::UsageRecord {
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+        provider: "stub".into(),
+        provider_id: "default".into(),
+        model: model.into(),
+        usage: Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        },
+        cost_usd_micros: 7,
+        trace_id: None,
+        app_id: Some(app_id),
+        source: UsageSource::MiniApp,
+    };
+    let (acme, beta) = (ctx(&tenant, "acme", "alice"), ctx(&tenant, "beta", "bob"));
+    recorder.record(&acme, &rec("a")).await.expect("acme");
+    recorder.record(&beta, &rec("b")).await.expect("beta");
+    let seen = recorder.app_llm_usage(&acme, app_id).await;
+    sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    let seen = seen.expect("usage");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].user_sub, "alice");
+    assert_eq!(seen[0].model, "a");
+}
+
 #[tokio::test]
 async fn user_provider_rules_intersect_org_settings_and_constrain_auto() {
     let Some(pool) = pool().await else {
@@ -579,4 +618,114 @@ async fn user_provider_rules_intersect_org_settings_and_constrain_auto() {
             .unwrap(),
         Err(ChoiceError::NoModel)
     ));
+}
+
+/// 試運転の費用（`trace_usage`）は、呼ぶ人のテナント・組織・トレースの、`since` から `until` までの行だけを数える
+/// （設計 §4.3 R13・PIT-45）。`until` が無ければ今まで。
+#[tokio::test]
+async fn trace_usage_counts_only_the_callers_trace_since() {
+    use llm_gateway::accounting::{TraceUsage, UsageRecord, UsageRecorder};
+    let Some(pool) = pool().await else { return };
+    let recorder = UsageRecorder::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let other_tenant = format!("t-{}", uuid::Uuid::new_v4());
+    // ワークフローの run の trace_id は run_id の 32 桁の 16 進。
+    let trace = uuid::Uuid::new_v4().simple().to_string();
+    let rec = |key: &str, trace: Option<&str>, tokens: (u64, u64), cost: i64| UsageRecord {
+        idempotency_key: key.to_string(),
+        provider: "stub".into(),
+        provider_id: "default".into(),
+        model: "a".into(),
+        usage: Usage {
+            prompt_tokens: tokens.0,
+            completion_tokens: tokens.1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        },
+        cost_usd_micros: cost,
+        trace_id: trace.map(str::to_string),
+        app_id: None,
+        source: UsageSource::Workflow,
+    };
+    let acme = ctx(&tenant, "acme", "alice");
+    let beta = ctx(&tenant, "beta", "bob");
+    let other = ctx(&other_tenant, "acme", "alice");
+    let since = Utc::now() - Duration::minutes(5);
+    let rows = [
+        (&acme, rec("a1", Some(trace.as_str()), (10, 5), 7)),
+        (&acme, rec("a2", Some(trace.as_str()), (1, 2), 3)),
+        // 数えない: 別の組織・別のテナント・別のトレース・トレース無し・since より前。
+        (&beta, rec("b1", Some(trace.as_str()), (100, 100), 100)),
+        (&other, rec("o1", Some(trace.as_str()), (100, 100), 100)),
+        (
+            &acme,
+            rec(
+                "a3",
+                Some("0123456789abcdef0123456789abcdef"),
+                (100, 100),
+                100,
+            ),
+        ),
+        (&acme, rec("a4", None, (100, 100), 100)),
+        (&acme, rec("old", Some(trace.as_str()), (100, 100), 100)),
+        // `until` を渡したときだけ数えない: 終わった後の行。
+        (&acme, rec("late", Some(trace.as_str()), (1000, 0), 1000)),
+    ];
+    for (ctx, r) in &rows {
+        recorder.record(ctx, r).await.expect("record");
+    }
+    sqlx::query(
+        "UPDATE llm_usage SET created_at = now() - interval '1 hour' \
+         WHERE tenant_id = $1 AND idempotency_key = 'old'",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .expect("age");
+    sqlx::query(
+        "UPDATE llm_usage SET created_at = now() + interval '1 hour' \
+         WHERE tenant_id = $1 AND idempotency_key = 'late'",
+    )
+    .bind(&tenant)
+    .execute(&pool)
+    .await
+    .expect("late");
+    let until = Some(Utc::now() + Duration::minutes(5));
+    let got = recorder.trace_usage(&acme, &trace, since, until).await;
+    let open = recorder.trace_usage(&acme, &trace, since, None).await;
+    let none = recorder
+        .trace_usage(
+            &acme,
+            &uuid::Uuid::new_v4().simple().to_string(),
+            since,
+            None,
+        )
+        .await;
+    for t in [&tenant, &other_tenant] {
+        sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
+            .bind(t)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+    assert_eq!(
+        got.expect("usage"),
+        TraceUsage {
+            calls: 2,
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            cost_usd_micros: 10,
+        }
+    );
+    assert_eq!(
+        open.expect("usage"),
+        TraceUsage {
+            calls: 3,
+            prompt_tokens: 1011,
+            completion_tokens: 7,
+            cost_usd_micros: 1010,
+        },
+        "until が無ければ終わった後の行も数える"
+    );
+    assert_eq!(none.expect("usage"), TraceUsage::default());
 }

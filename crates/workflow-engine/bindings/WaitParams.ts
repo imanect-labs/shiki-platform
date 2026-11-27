@@ -29,7 +29,8 @@ until?: ValueExpr,
  */
 source?: EventSource | null, 
 /**
- * kind=event: scope 束縛（`{ "folder": "<uuid>" }`・祖先束縛で照合）。
+ * kind=event: scope 束縛（storage.write は `{ "folder": "<uuid>" }`・祖先束縛で照合。データ変更は
+ * `{ "table": "<uuid>", "record"?: 値式 }`・record は停止時に解決する）。
  */
 scope?: unknown, 
 /**

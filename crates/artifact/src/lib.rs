@@ -12,14 +12,25 @@
 //! - **kind は閉じた集合**（[`ArtifactKind`]）: Task 6.7/6.10/10.1/10.11 が同じテーブル・
 //!   同じ共有 API・同じ監査経路に乗る。
 
+mod bundle;
 mod by_ref;
+mod drafts;
 mod model;
+mod publish;
+mod search;
 mod share;
+mod shared;
 mod store;
 mod versions;
+mod visible;
 
-pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
-pub use store::{ArtifactStore, NewArtifact, SkillSummary};
+pub use bundle::MAX_BUNDLE_COMPONENTS;
+pub use model::{
+    Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, ConflictReason, VersionMeta,
+};
+pub use publish::Publication;
+pub use search::{SearchPage, SearchRequest, MAX_SEARCH_QUERY_CHARS};
+pub use store::{ArtifactPage, ArtifactPosition, ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。
 #[derive(Debug, thiserror::Error)]
@@ -30,9 +41,14 @@ pub enum ArtifactError {
     Forbidden,
     #[error("不正な入力: {0}")]
     Invalid(String),
-    /// 名前重複・バージョン競合（楽観ロック不一致）。
+    /// 名前重複・バージョン競合（楽観ロック不一致）。種類は [`ConflictReason`] で分ける（API は `code` と利用者向けの
+    /// 文言を持つ 409 にする・GAP-41）。
     #[error("競合しています: {0}")]
-    Conflict(String),
+    Conflict(ConflictReason),
+    /// 下書きと公開を分ける種類（[`ArtifactKind::has_drafts`]）で、editor でない人が公開した版のほかを読もうとした
+    /// （D-16）。`published` は今の公開した版（まだ公開していなければ `None`）。その版が実在するかは区別しない。
+    #[error("公開していないバージョンです")]
+    NotPublished { published: Option<i64> },
     #[error("内部エラー: {0}")]
     Internal(String),
 }

@@ -135,3 +135,27 @@ fn derived_key_is_deterministic_and_domain_separated() {
     let raw = CursorCodec::new(&CursorKey::from_bytes(master));
     assert!(raw.open(&s, &tok).is_err());
 }
+
+#[test]
+fn table_list_tokens_are_bound_to_the_tenant_and_kept_apart_from_record_cursors() {
+    let c = codec();
+    let plain = b"1761400000123456.6f1c1d9e-0000-4000-8000-000000000001";
+    let tok = c.seal_table_list("t-a", plain).unwrap();
+    assert_eq!(c.open_table_list("t-a", &tok).unwrap(), plain.to_vec());
+    // 中身（見えないテーブルの id）は読めない。
+    assert!(!tok.contains("6f1c1d9e"));
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&tok)
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&raw).contains("6f1c1d9e"));
+    // 別テナントでは開けない（同じ文言の cursor_invalid）。
+    let other = c.open_table_list("t-b", &tok);
+    assert!(
+        matches!(&other, Err(DataError::InvalidInput(e)) if e.code() == crate::InvalidCode::CursorInvalid),
+        "{other:?}"
+    );
+    // レコードのカーソルとは取り違えない（どちら向きにも開けない）。
+    assert!(is_rejected(&c.open(&scope(1, 100), &tok)));
+    let record = c.seal(&scope(1, 100), &payload()).unwrap();
+    assert!(c.open_table_list("t-a", &record).is_err());
+}

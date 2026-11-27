@@ -49,6 +49,11 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
       .then(setViews)
       .catch(() => undefined);
   }, [id]);
+  // 追加だけの共有（自分が追加したレコードだけ見られる）では保存ビューを使わない（サーバも一覧を返さない）。
+  const loadViews = React.useCallback(
+    (v: TableViewerContext): Promise<DataViewSummary[]> => (v.add_only ? Promise.resolve([]) : listViews(id)),
+    [id],
+  );
 
   /// スキーマの改訂を受けたとき・読取が 404 になったとき: 列（追加・削除・読めない列）と閲覧者の文脈を取り直す。
   /// テーブルが見えなくなっていれば（共有の解除・削除＝404）ページを「開けません」に切り替え、それ以外の
@@ -71,8 +76,9 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
   React.useEffect(() => {
     let active = true;
     setError(null);
-    Promise.all([getTable(id), getViewerContext(id), listViews(id)])
-      .then(([t, v, vs]) => {
+    Promise.all([getTable(id), getViewerContext(id)])
+      .then(async ([t, v]) => {
+        const vs = await loadViews(v);
         if (!active) return;
         setTable(t);
         setViewer(v);
@@ -88,7 +94,7 @@ export default function DataTablePage({ params }: { params: Promise<{ id: string
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, loadViews]);
 
   if (!table || !viewer) return <Pending error={error} />;
   return (

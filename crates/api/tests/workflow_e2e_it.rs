@@ -217,10 +217,11 @@ async fn interactive_run_completes_through_production_executor() {
         tabular: None,
         skill_artifacts: None,
         launcher: launcher.clone(),
-        http: reqwest::Client::new(),
+        http: api::workflow_runtime::HttpEgress::default(),
         db: env.pool.clone(),
         data: None,
         fsms: None,
+        web_search: None,
     });
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let executor: Arc<dyn workflow_engine::NodeExecutor> = Arc::new(

@@ -1,0 +1,175 @@
+{
+ "task": "basic-summary-file",
+ "page": {
+  "context_usage": {
+   "categories": [
+    {
+     "category": "system",
+     "tokens": 43
+    },
+    {
+     "category": "tools",
+     "tokens": 35
+    },
+    {
+     "category": "messages",
+     "tokens": 20
+    },
+    {
+     "category": "documents",
+     "tokens": 0
+    },
+    {
+     "category": "tool_results",
+     "tokens": 2
+    }
+   ],
+   "measured": true,
+   "model": "default",
+   "reserved_output_tokens": 8192,
+   "used_tokens": 100
+  },
+  "messages": [
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "text": "calltool:emit_workflow {\"ir\": {\"ir_version\": 1, \"name\": \"abeval-b-af295a0b\", \"display_name\": \"本文を要約して保存\", \"triggers\": [{\"kind\": \"interactive\"}], \"input_schema\": {\"type\": \"object\", \"properties\": {\"title\": {\"type\": \"string\"}, \"body\": {\"type\": \"string\"}}, \"required\": [\"title\", \"body\"], \"x-order\": [\"title\", \"body\"]}, \"nodes\": [{\"id\": \"summarize\", \"type\": \"llm.invoke\", \"label\": \"要約する\", \"params\": {\"prompt\": {\"$template\": \"次の本文を 3 行で要約してください。\\n件名: {title}\\n本文: {body}\", \"vars\": {\"title\": {\"$from\": \"input\", \"path\": \"/title\"}, \"body\": {\"$from\": \"input\", \"path\": \"/body\"}}}, \"model\": \"default\"}}, {\"id\": \"save\", \"type\": \"storage.write\", \"label\": \"要約を保存\", \"params\": {\"folder\": \"34bb203c-3dcb-4e29-9caf-f051d0f0c2bd\", \"name\": {\"$template\": \"要約-{date}.md\", \"vars\": {\"date\": {\"$from\": \"run\", \"path\": \"/date\"}}}, \"content\": {\"$template\": \"# {title}\\n\\n{summary}\", \"vars\": {\"title\": {\"$from\": \"input\", \"path\": \"/title\"}, \"summary\": {\"$from\": \"nodes.summarize.output\", \"path\": \"/text\"}}}, \"content_type\": \"text/markdown\", \"on_name_taken\": \"add_number\"}}], \"edges\": [{\"from\": \"summarize\", \"to\": \"save\"}]}}",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:39.054005Z",
+    "id": "134e23f7-06e9-4b15-a916-8daab2cfb510",
+    "parent_id": null,
+    "role": "user"
+   },
+   {
+    "agent_mode": false,
+    "content": [
+     {
+      "id": "stubtool_1",
+      "input": {
+       "ir": {
+        "display_name": "本文を要約して保存",
+        "edges": [
+         {
+          "from": "summarize",
+          "to": "save"
+         }
+        ],
+        "input_schema": {
+         "properties": {
+          "body": {
+           "type": "string"
+          },
+          "title": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "title",
+          "body"
+         ],
+         "type": "object",
+         "x-order": [
+          "title",
+          "body"
+         ]
+        },
+        "ir_version": 1,
+        "name": "abeval-b-af295a0b",
+        "nodes": [
+         {
+          "id": "summarize",
+          "label": "要約する",
+          "params": {
+           "model": "default",
+           "prompt": {
+            "$template": "次の本文を 3 行で要約してください。\n件名: {title}\n本文: {body}",
+            "vars": {
+             "body": {
+              "$from": "input",
+              "path": "/body"
+             },
+             "title": {
+              "$from": "input",
+              "path": "/title"
+             }
+            }
+           }
+          },
+          "type": "llm.invoke"
+         },
+         {
+          "id": "save",
+          "label": "要約を保存",
+          "params": {
+           "content": {
+            "$template": "# {title}\n\n{summary}",
+            "vars": {
+             "summary": {
+              "$from": "nodes.summarize.output",
+              "path": "/text"
+             },
+             "title": {
+              "$from": "input",
+              "path": "/title"
+             }
+            }
+           },
+           "content_type": "text/markdown",
+           "folder": "34bb203c-3dcb-4e29-9caf-f051d0f0c2bd",
+           "name": {
+            "$template": "要約-{date}.md",
+            "vars": {
+             "date": {
+              "$from": "run",
+              "path": "/date"
+             }
+            }
+           },
+           "on_name_taken": "add_number"
+          },
+          "type": "storage.write"
+         }
+        ],
+        "triggers": [
+         {
+          "kind": "interactive"
+         }
+        ]
+       }
+      },
+      "name": "emit_workflow",
+      "step": 0,
+      "type": "tool_call"
+     },
+     {
+      "content": "ワークフロー「本文を要約して保存」を保存しました（id: 34f7af63-dd7d-418f-8620-e27ef3cf4b31, v1）。ユーザーにはカードが表示され、エディタで開けます。",
+      "ok": true,
+      "tool_call_id": "stubtool_1",
+      "type": "tool_result"
+     },
+     {
+      "type": "workflow_ref",
+      "workflow": {
+       "display_name": "本文を要約して保存",
+       "id": "34f7af63-dd7d-418f-8620-e27ef3cf4b31",
+       "name": "abeval-b-af295a0b",
+       "version": 1
+      }
+     },
+     {
+      "text": "回答: calltool:emit_workflow {\"ir\": {\"ir_version\": 1, \"name\": \"abeval-b-af295a0b\", \"display_name\": \"本文を要約して保存\", \"triggers\": [{\"kind\": \"interactive\"}], \"input_schema\": {\"type\": \"object\", \"properties\": {\"title\": {\"type\": \"string\"}, \"body\": {\"type\": \"string\"}}, \"required\": [\"title\", \"body\"], \"x-order\": [\"title\", \"body\"]}, \"nodes\": [{\"id\": \"summarize\", \"type\": \"llm.invoke\", \"label\": \"要約する\", \"params\": {\"prompt\": {\"$template\": \"次の本文を 3 行で要約してください。\\n件名: {title}\\n本文: {body}\", \"vars\": {\"title\": {\"$from\": \"input\", \"path\": \"/title\"}, \"body\": {\"$from\": \"input\", \"path\": \"/body\"}}}, \"model\": \"default\"}}, {\"id\": \"save\", \"type\": \"storage.write\", \"label\": \"要約を保存\", \"params\": {\"folder\": \"34bb203c-3dcb-4e29-9caf-f051d0f0c2bd\", \"name\": {\"$template\": \"要約-{date}.md\", \"vars\": {\"date\": {\"$from\": \"run\", \"path\": \"/date\"}}}, \"content\": {\"$template\": \"# {title}\\n\\n{summary}\", \"vars\": {\"title\": {\"$from\": \"input\", \"path\": \"/title\"}, \"summary\": {\"$from\": \"nodes.summarize.output\", \"path\": \"/text\"}}}, \"content_type\": \"text/markdown\", \"on_name_taken\": \"add_number\"}}], \"edges\": [{\"from\": \"summarize\", \"to\": \"save\"}]}}",
+      "type": "text"
+     }
+    ],
+    "created_at": "2026-11-06T20:42:39.054005Z",
+    "id": "1e3f1867-1e80-4ac4-a362-f3b33efa05d5",
+    "parent_id": "134e23f7-06e9-4b15-a916-8daab2cfb510",
+    "role": "assistant"
+   }
+  ]
+ },
+ "approvals": []
+}

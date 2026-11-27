@@ -34,8 +34,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use authz::{
     AuthContext, AuthzClient, CheckTuple, Consistency, FgaObject, ObjectType, PrincipalKind,
-    ReadTupleKey, Relation,
+    ReadTupleKey, Relation, Subject,
 };
+use uuid::Uuid;
 
 use crate::policy::ast::PolicyExpr;
 use crate::policy::material::PolicyMaterial;
@@ -105,6 +106,8 @@ struct State {
     lists: HashMap<(PrincipalKey, ListKey), Arc<Vec<String>>>,
     tuples: HashMap<TupleKey, Arc<Vec<ReadTupleKey>>>,
     materials: HashMap<MaterialKey, Arc<PolicyMaterial>>,
+    /// 個別共有の集合（id・切り詰めたか）。式に依らないので主体だけがキー（[`crate::policy::material`]）。
+    shared: HashMap<PrincipalKey, (Vec<Uuid>, bool)>,
 }
 
 /// SSE 購読が TTL の間だけ持ち越す答え（Task 15.6・data-platform §9.4・PIT-70）。
@@ -295,6 +298,27 @@ impl<'r> AuthzMemo<'r> {
         object_type: ObjectType,
     ) -> Result<Arc<Vec<String>>, DataError> {
         self.list(ctx, ListKey::Direct(object_type)).await
+    }
+
+    /// `subjects` それぞれの直接タプルを持つ object（入力順・覚えない）。上限に届いた実効集合を直接タプルから
+    /// 組み直すときだけ使う（[`crate::policy::material`]・結果は呼び出し側が [`Self::put_shared_records`] で覚える）。
+    pub(crate) async fn read_direct_objects(
+        &self,
+        subjects: &[Subject],
+        object_type: ObjectType,
+    ) -> Result<Vec<Vec<String>>, DataError> {
+        authz::visible::read_direct_objects(self.authz, subjects, object_type)
+            .await
+            .map_err(authz_err)
+    }
+
+    /// 覚えている個別共有の集合（[`crate::policy::material`]）。
+    pub(crate) fn shared_records(&self, ctx: &AuthContext) -> Option<(Vec<Uuid>, bool)> {
+        self.lock().shared.get(&PrincipalKey::of(ctx)).cloned()
+    }
+
+    pub(crate) fn put_shared_records(&self, ctx: &AuthContext, got: (Vec<Uuid>, bool)) {
+        self.lock().shared.insert(PrincipalKey::of(ctx), got);
     }
 
     /// object の直接タプル（主体に依存しない）。

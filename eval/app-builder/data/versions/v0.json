@@ -1,0 +1,74 @@
+{
+  "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-09T13:45:52+00:00",
+    "results": {
+      "port_next": {
+        "errors": [],
+        "warnings": []
+      },
+      "template_var": {
+        "errors": [],
+        "warnings": []
+      },
+      "unknown_folder": {
+        "errors": [],
+        "warnings": []
+      }
+    }
+  },
+  "binary_sha256": "bfb4f4ca2672bf1457fcc12eaf6b4de02e86ce31ce62c18d00aca1f8a839421e",
+  "built_at": "2026-11-07T03:36:10Z",
+  "commit": "81a9899b5f386add09e608887c0a08e142193967",
+  "feasible": {
+    "grader": 11,
+    "result": {
+      "app01-claim-submit": null,
+      "app02-triage": null,
+      "app05-screening-text": null,
+      "app06-reorder-check": "正解がこの版で保存できない: CaseError: app06-reorder-check/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'match_on' は使えません\", 'node_id': 'save_drafts', 'path': '/params/match_on'}, {'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'encoding' は使えません\", 'node_id': 'write_csv', 'path': '/p",
+      "app06-stock-move": "正解がこの版で通らない: enough: 照合 rows:match stock: {'qty': 25} に合う行が無い（[{'code': 'P-100', 'name': 'コピー用紙 A4', 'reorder_point': 20, 'reorder_qty': 100}]）／exact: 照合 rows:match stock: {'qty': 0} に合う行が無い（[{'code': 'P-200', 'name': 'ボールペン（黒）', 'reorder_point': 10, 'reorder_qty': 50}]）",
+      "app10-survey-csv": null,
+      "app11-checkout": "正解がこの版で通らない: available: unexpected_status run の状態が failed（期待 succeeded）／available: 照合 status 状態 ['failed']（期待 succeeded）／available: 照合 rows:count loans {}: 0 行（期待 1）／available: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）／available: 落ちた step log: 値式（$from）が解決できません",
+      "app11-return": "正解がこの版で通らない: back: unexpected_status run の状態が failed（期待 succeeded）／back: 照合 status 状態 ['failed']（期待 succeeded）／back: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code'／back: 落ちた step close: 値式（$from）が解決できません",
+      "app12-faq-table": null,
+      "basic-branch-amount": null,
+      "basic-map-rows": null,
+      "basic-summary-file": "正解がこの版で保存できない: CaseError: basic-summary-file/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'on_name_taken' は使えません\", 'node_id': 'save', 'path': '/params/on_name_taken'}]",
+      "basic-switch-category": null
+    },
+    "tasks_sha": "2f89229aa999108a3faf7d145ce5b069fa4549dda12cbebaa4d9fc360237f777"
+  },
+  "label": "v0",
+  "node_types": [
+    "agent.invoke",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.transition",
+    "http.request",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "workflow.start"
+  ],
+  "runner_lock_diff_sha256": "a9012c9ddf9d7fb2e1cd198b9ff73f71797c490b55f734a3398541acda6585c7",
+  "runner_lock_updated": true,
+  "runner_sha256": "746a66d2a811599f7c71253f9c9891f3f4e873aa96ef8ec8b07070fea641c0ba",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "tree_clean": true
+}

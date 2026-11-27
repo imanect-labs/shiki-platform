@@ -153,7 +153,7 @@ struct TestCatalogSource;
 impl chat::WorkflowCatalogSource for TestCatalogSource {
     async fn catalog(&self, _ctx: &AuthContext) -> Result<Catalog, String> {
         Ok(Catalog {
-            models: vec!["m".into()],
+            models: Some(vec!["m".into()]),
             ..Catalog::default()
         })
     }
@@ -338,4 +338,102 @@ async fn valid_ir_is_saved_and_invalid_ir_is_rejected() {
             .any(|b| matches!(b, ContentBlock::Text { .. })),
         "テキストのフォールバック応答が残ること"
     );
+}
+
+/// emit_workflow は JSON の文字列の ir も、オブジェクトで来たときと同じ検証を通して保存する。検証の誤りも同じに返り、
+/// 読めない文字列・配列の文字列は保存せずに、オブジェクトのまま渡すよう言って断る（GAP-119）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_json_string_ir_is_saved_like_an_object() {
+    use agent_core::{Tool, ToolError};
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant);
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
+    let workflows = Arc::new(WorkflowStore::new(artifacts));
+    let tool = chat::EmitWorkflowTool::new(Arc::clone(&workflows), Arc::new(TestCatalogSource));
+    let ir = |name: &str, node_type: &str| {
+        serde_json::json!({
+            "ir_version": 1, "name": name, "display_name": "文字列で受けたフロー",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "compute", "type": node_type,
+                        "params": { "source": { "inline": "function main(i){ return { ok: true }; }" } } }],
+            "edges": []
+        })
+    };
+    let saved_count = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM artifact WHERE tenant_id = $1")
+            .bind(&tenant)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    // オブジェクトと JSON の文字列（1 行・字下げつき）のどちらも保存され、同じ IR として読める。
+    for (label, as_text) in [
+        ("オブジェクト", None),
+        ("1 行", Some(false)),
+        ("字下げ", Some(true)),
+    ] {
+        let name = format!("emitwf-str-{}", Uuid::new_v4().simple());
+        let value = ir(&name, "script.run");
+        let sent = match as_text {
+            None => value.clone(),
+            Some(false) => serde_json::Value::String(value.to_string()),
+            Some(true) => serde_json::Value::String(serde_json::to_string_pretty(&value).unwrap()),
+        };
+        let out = tool
+            .call(&c, serde_json::json!({ "ir": sent }), None)
+            .await
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert!(!out.is_error, "{label}: {}", out.content);
+        let id = Uuid::parse_str(out.workflow_refs[0]["id"].as_str().unwrap()).unwrap();
+        let (version, saved) = workflows.get_latest(&c, id, None).await.unwrap();
+        assert_eq!(
+            (version, saved.name.as_str()),
+            (1, name.as_str()),
+            "{label}"
+        );
+        assert_eq!(saved.nodes.len(), 1, "{label}");
+    }
+    assert_eq!(saved_count().await, 3);
+
+    // 文字列の IR の検証の誤りは、オブジェクトのときと同じ観測（コードつき・保存しない）。
+    let bad = ir(
+        &format!("emitwf-bad-{}", Uuid::new_v4().simple()),
+        "bogus.node",
+    );
+    let as_object = tool
+        .call(&c, serde_json::json!({ "ir": bad }), None)
+        .await
+        .unwrap();
+    let as_string = tool
+        .call(&c, serde_json::json!({ "ir": bad.to_string() }), None)
+        .await
+        .unwrap();
+    assert!(
+        as_object.is_error && as_object.content.contains("ir."),
+        "{}",
+        as_object.content
+    );
+    assert_eq!(as_string.is_error, as_object.is_error);
+    assert_eq!(as_string.content, as_object.content);
+
+    // 読めない文字列（途中で切れた）・配列の文字列は、保存せずに直し方を言って断る。
+    let whole = ir("emitwf-cut", "script.run").to_string();
+    let cut: String = whole.chars().take(whole.chars().count() / 2).collect();
+    for raw in [cut, format!("[{whole}]")] {
+        let Err(ToolError::Invalid(msg)) =
+            tool.call(&c, serde_json::json!({ "ir": raw }), None).await
+        else {
+            panic!("{raw} は断る");
+        };
+        assert!(
+            msg.contains("ir は JSON の文字列にせず、オブジェクトのまま渡してください"),
+            "{msg}"
+        );
+    }
+    assert_eq!(saved_count().await, 3, "断った IR は保存しない");
 }

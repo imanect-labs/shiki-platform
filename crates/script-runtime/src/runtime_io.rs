@@ -4,7 +4,29 @@
 use serde_json::Value;
 use wasmtime::{Caller, Instance, Memory, Store};
 
-use crate::engine::{ExecOutcome, HostState, Termination};
+use crate::engine::{ExecOutcome, HostState, Termination, MAX_RESULT_BYTES};
+
+/// ゲストの戻り値が上限を超えた（ゲストが返した結果の大きさ・バイト）。読まずに捨て、[`classify_trap`] が
+/// [`Termination::ResultTooLarge`] にする。
+#[derive(Debug)]
+pub(crate) struct ResultTooLarge(pub(crate) u32);
+
+impl std::fmt::Display for ResultTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "result too large: {} bytes > {MAX_RESULT_BYTES}", self.0)
+    }
+}
+
+impl std::error::Error for ResultTooLarge {}
+
+/// 戻り値が大きすぎるときの文（作成者に何が駄目でどう直すかを言う・大きさは KB に切り上げる・BUG-264）。
+pub(crate) fn result_too_large_message(bytes: u32) -> String {
+    format!(
+        "スクリプトの戻り値が大きすぎます（{} KB。{} KB まで）。返す項目を必要なものだけにするか、行を分けて返してください。",
+        bytes.div_ceil(1024),
+        MAX_RESULT_BYTES / 1024
+    )
+}
 
 // --- 線形メモリ ヘルパ（Store 版と Caller 版） ---
 
@@ -104,6 +126,10 @@ pub(crate) fn classify_trap(store: &mut Store<HostState>, e: &wasmtime::Error) -
     if let Some(v) = store.data().frame_violation.clone() {
         return ExecOutcome::terminated(Termination::FrameViolation(v), store);
     }
+    // 戻り値が大きすぎる（作成者の誤り・トラップの文で分けない）。
+    if let Some(ResultTooLarge(bytes)) = e.downcast_ref::<ResultTooLarge>() {
+        return ExecOutcome::terminated(Termination::ResultTooLarge(*bytes), store);
+    }
     let msg = format!("{e}");
     let termination = if let Some(trap) = e.downcast_ref::<wasmtime::Trap>() {
         match trap {
@@ -142,6 +168,7 @@ impl ExecOutcome {
             Termination::Epoch => ("time limit exceeded".to_string(), "resource"),
             Termination::Memory => ("memory limit exceeded".to_string(), "resource"),
             Termination::FrameViolation(v) => (format!("frame violation: {v}"), "frame_violation"),
+            Termination::ResultTooLarge(bytes) => (result_too_large_message(*bytes), "invalid"),
             Termination::Cancelled => ("cancelled".to_string(), "cancelled"),
             Termination::Trap(m) => (m.clone(), "internal"),
             Termination::Completed => ("completed".to_string(), "internal"),
@@ -172,7 +199,16 @@ impl ExecOutcome {
                 logs,
             };
         }
-        let parsed: Value = serde_json::from_str(envelope).unwrap_or(Value::Null);
+        let Some(parsed) = crate::uncaught::parse_envelope(envelope) else {
+            // ゲストの封筒が読めない（ゲストの不具合）。作成者の誤りとは言えない。
+            return ExecOutcome {
+                ok: false,
+                value: None,
+                error: Some(("script failed".to_string(), "internal".to_string(), false)),
+                termination: Termination::Completed,
+                logs,
+            };
+        };
         let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
         if ok {
             ExecOutcome {
@@ -183,25 +219,18 @@ impl ExecOutcome {
                 logs,
             }
         } else {
-            let err = parsed.get("error");
-            let message = err
+            // 封筒の code と retryable はゲストが決めた値（いまは常に internal・false）なので使わない。投げ返された
+            // 例外の文から、ホストが返した誤りか作成者の誤りかを決める（D-121・[`crate::uncaught`]）。
+            let message = parsed
+                .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str)
-                .unwrap_or("script failed")
-                .to_string();
-            let code = err
-                .and_then(|e| e.get("code"))
-                .and_then(Value::as_str)
-                .unwrap_or("internal")
-                .to_string();
-            let retryable = err
-                .and_then(|e| e.get("retryable"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+                .unwrap_or("script failed");
+            let error = crate::uncaught::classify(message, &store.data().host_errors);
             ExecOutcome {
                 ok: false,
                 value: None,
-                error: Some((message, code, retryable)),
+                error: Some(error),
                 termination: Termination::Completed,
                 logs,
             }
