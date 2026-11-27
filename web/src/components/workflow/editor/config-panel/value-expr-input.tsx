@@ -121,7 +121,9 @@ export function ValueExprInput({
       <div className="flex items-center justify-between gap-2">
         <label className="text-xs font-medium text-foreground">{label}</label>
         <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
-          <SelectTrigger className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none">
+          {/* 押せると分かるように枠・ホバー・「入れ方:」の前置きを付ける（#1337）。 */}
+          <SelectTrigger className="h-6 w-auto gap-1 border-input bg-background px-2 text-[11px] text-foreground shadow-none hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-accent [&>svg]:size-3.5">
+            <span className="text-muted-foreground">入れ方:</span>
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="end">
