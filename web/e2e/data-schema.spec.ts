@@ -101,6 +101,61 @@ test("列の編集: リンク・数式の追加、選択肢の追加、足した
   expect((await schemaOf(page, id)).find((f) => f.key === "name")?.display_name).toBe("件名");
 });
 
+/// 日本語の変換を確定する Enter の keydown を送る。どちらも「変換の確定」で、列や選択肢の追加ではない。
+/// 2 つの判定をそれぞれ単独で確かめるため、片方の印だけを付ける:
+/// - `safari=false`: isComposing=true だけ（keyCode は Enter の 13）。
+/// - `safari=true`: isComposing=false で keyCode 229 だけ（Safari の送り方）。
+async function pressImeEnter(page: Page, label: string, safari: boolean) {
+  await page.getByLabel(label).evaluate((el, safari) => {
+    const ev = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true, isComposing: !safari });
+    Object.defineProperty(ev, "keyCode", { get: () => (safari ? 229 : 13) });
+    el.dispatchEvent(ev);
+  }, safari);
+}
+
+test("列の追加: 日本語の変換を確定する Enter では列も選択肢も追加せず、変換していない Enter で追加する（#1134）", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const id = await createTable(page, uniqueName("e2e-変換"), [{ key: "name", display_name: "件名", type: "text", indexed: true }]);
+  await page.goto(`/data/${id}`);
+  await expect(page.getByTestId("data-grid")).toBeVisible();
+  await page.getByTestId("schema-editor-open").click();
+  const editor = page.getByTestId("schema-editor");
+  await page.getByTestId("schema-add-field").click();
+  const form = editor.getByTestId("schema-add-form");
+
+  // 表示名: 変換の確定（Chromium・Safari の両方の形）では列を足さず、フォームと入力を残す。
+  await page.getByLabel("新しい列の表示名").fill("区分");
+  for (const safari of [false, true]) {
+    await pressImeEnter(page, "新しい列の表示名", safari);
+    await expect(form).toBeVisible();
+    await expect(page.getByLabel("新しい列の表示名")).toHaveValue("区分");
+  }
+  await expect(editor.getByRole("button", { name: "「区分」の追加を取り消す" })).toHaveCount(0);
+
+  // 選択肢: 変換の確定では選択肢を足さず、入力を残す。変換していない Enter で足す。
+  await form.getByLabel("新しい列の型").click();
+  await page.getByRole("option", { name: "単一選択", exact: true }).click();
+  await form.getByLabel("選択肢を追加").fill("至急");
+  for (const safari of [false, true]) {
+    await pressImeEnter(page, "選択肢を追加", safari);
+    await expect(form.getByLabel("選択肢を追加")).toHaveValue("至急");
+  }
+  await expect(form.getByRole("button", { name: "選択肢「至急」を外す" })).toHaveCount(0);
+  await form.getByLabel("選択肢を追加").press("Enter");
+  await expect(form.getByRole("button", { name: "選択肢「至急」を外す" })).toBeVisible();
+  await expect(form.getByLabel("選択肢を追加")).toHaveValue("");
+
+  // 変換していない Enter では従来どおり列を足す。
+  await page.getByLabel("新しい列の表示名").press("Enter");
+  await expect(form).toBeHidden();
+  await expect(editor.getByRole("button", { name: "「区分」の追加を取り消す" })).toBeVisible();
+  await page.getByTestId("schema-save").click();
+  await expect(editor).toBeHidden();
+  const added = (await schemaOf(page, id)).find((f) => f.display_name === "区分");
+  expect(added?.type).toBe("select");
+  expect(added?.options).toEqual(["至急"]);
+});
+
 test("参照の値: レコードの追加でユーザーとリンクを候補から選び、グリッドでリンクを選び直す（A-6）", async ({ page }) => {
   await loginViaKeycloak(page);
   const ref = await createTable(page, uniqueName("e2e-果物"), [{ key: "title", display_name: "題名", type: "text", indexed: true }], [
