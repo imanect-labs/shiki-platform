@@ -10,22 +10,47 @@ import type { Map as MlMap, Marker } from "maplibre-gl";
 
 /// 札の高さ。
 const TAG_H = 28;
-/// ピンの幅と高さ（先端が地点）と、ピンの頭（丸い所）の中心の高さ。
-const PIN_W = 22;
-const PIN_H = 29;
-const PIN_HEAD = PIN_H - PIN_W / 2;
-/// ピンから札までの間隔。
+/// ピンの幅と高さ（先端が地点）と、ピンの頭（丸い所）の中心の高さ。地点が多い図は小さくして札の置き場を空ける。
+type PinSize = { w: number; h: number; head: number };
+const pinSize = (w: number, h: number): PinSize => ({ w, h, head: h - w / 2 });
+const PIN = pinSize(22, 29);
+const PIN_SMALL = pinSize(16, 21);
+/// これより地点の多い図は小さいピンにする。
+const SMALL_PIN_OVER = 10;
+/// ピンから札までの間隔と、地点から下の札までの間隔。
 const GAP = 4;
+const BELOW = 6;
 
 type Placement = "above" | "right" | "left" | "below" | "none";
 
-/// 札の置き場所ごとの位置（地点が原点。上はピンの上、左右はピンの頭の横、下は地点の下）。
-const PLACE_CLASS: Record<Exclude<Placement, "none">, string> = {
-  above: "bottom-[33px] left-1/2 -translate-x-1/2",
-  right: "left-[15px] top-[-18px] -translate-y-1/2",
-  left: "right-[15px] top-[-18px] -translate-y-1/2",
-  below: "top-[6px] left-1/2 -translate-x-1/2",
-};
+/// 札を置き場所に置く（地点が原点。上はピンの上、左右はピンの頭の横、下は地点の下）。
+/// 位置は translate で決め、指しているときの拡大（scale）とは別のプロパティにする。
+function placeTag(el: HTMLElement, placement: Exclude<Placement, "none">, pin: PinSize) {
+  const st = el.style;
+  st.left = st.right = st.top = st.bottom = "";
+  switch (placement) {
+    case "above":
+      st.left = "0";
+      st.bottom = `${pin.h + GAP}px`;
+      st.translate = "-50% 0";
+      break;
+    case "below":
+      st.left = "0";
+      st.top = `${BELOW}px`;
+      st.translate = "-50% 0";
+      break;
+    case "right":
+      st.left = `${pin.w / 2 + GAP}px`;
+      st.top = `${-pin.head}px`;
+      st.translate = "0 -50%";
+      break;
+    case "left":
+      st.right = `${pin.w / 2 + GAP}px`;
+      st.top = `${-pin.head}px`;
+      st.translate = "0 -50%";
+      break;
+  }
+}
 
 const TAG_BASE =
   "absolute flex h-[28px] max-w-[180px] items-center whitespace-nowrap rounded-full px-3 text-[12.5px] font-semibold tracking-tight " +
@@ -35,11 +60,11 @@ const TAG_IDLE = "bg-background text-foreground ring-black/5 hover:scale-[1.04] 
 const TAG_ACTIVE = "scale-[1.06] bg-foreground text-background ring-foreground";
 /// ピン（先端を地点に合わせる。指しているときは先端を軸に大きくする）。
 const PIN_BASE =
-  "absolute left-0 top-0 block h-[29px] w-[22px] -translate-x-1/2 -translate-y-full origin-bottom cursor-pointer " +
+  "absolute left-0 top-0 block -translate-x-1/2 -translate-y-full origin-bottom cursor-pointer " +
   "transition-transform duration-150 [filter:drop-shadow(0_2px_3px_rgba(0,0,0,0.35))]";
 /// ピンの形（しずく形に白い縁と白い丸。中身は固定の図形だけで、地点の文字は入れない）。
 const PIN_SVG =
-  '<svg viewBox="0 0 26 34" width="22" height="29" aria-hidden="true">' +
+  '<svg viewBox="0 0 26 34" width="100%" height="100%" aria-hidden="true">' +
   '<path d="M13 33.2c-.5 0-1-.3-1.3-.7C9 28.4 1.2 20.6 1.2 13 1.2 6.5 6.5 1.2 13 1.2S24.8 6.5 24.8 13c0 7.6-7.8 15.4-10.5 19.5-.3.4-.8.7-1.3.7z" ' +
   'fill="#e5484d" stroke="#ffffff" stroke-width="1.6"/><circle cx="13" cy="13" r="4.6" fill="#ffffff"/></svg>';
 
@@ -83,16 +108,16 @@ export type Insets = { left: number; bottom: number };
 /// 角に重なる部品の幅と高さ（[幅, 高さ]）。
 export type Corners = { topLeft: [number, number]; topRight: [number, number] };
 
-function tagBox(placement: Exclude<Placement, "none">, x: number, y: number, w: number): Box {
+function tagBox(placement: Exclude<Placement, "none">, x: number, y: number, w: number, pin: PinSize): Box {
   switch (placement) {
     case "above":
-      return { x0: x - w / 2, x1: x + w / 2, y0: y - PIN_H - GAP - TAG_H, y1: y - PIN_H - GAP };
+      return { x0: x - w / 2, x1: x + w / 2, y0: y - pin.h - GAP - TAG_H, y1: y - pin.h - GAP };
     case "below":
-      return { x0: x - w / 2, x1: x + w / 2, y0: y + 6, y1: y + 6 + TAG_H };
+      return { x0: x - w / 2, x1: x + w / 2, y0: y + BELOW, y1: y + BELOW + TAG_H };
     case "right":
-      return { x0: x + PIN_W / 2 + GAP, x1: x + PIN_W / 2 + GAP + w, y0: y - PIN_HEAD - TAG_H / 2, y1: y - PIN_HEAD + TAG_H / 2 };
+      return { x0: x + pin.w / 2 + GAP, x1: x + pin.w / 2 + GAP + w, y0: y - pin.head - TAG_H / 2, y1: y - pin.head + TAG_H / 2 };
     case "left":
-      return { x0: x - PIN_W / 2 - GAP - w, x1: x - PIN_W / 2 - GAP, y0: y - PIN_HEAD - TAG_H / 2, y1: y - PIN_HEAD + TAG_H / 2 };
+      return { x0: x - pin.w / 2 - GAP - w, x1: x - pin.w / 2 - GAP, y0: y - pin.head - TAG_H / 2, y1: y - pin.head + TAG_H / 2 };
   }
 }
 
@@ -106,6 +131,7 @@ export function createFigureMarkers(
   handlers: MarkerHandlers,
 ): FigureMarkers {
   let active: number | null = null;
+  const pinDim = figure.markers.length > SMALL_PIN_OVER ? PIN_SMALL : PIN;
   const entries: Entry[] = figure.markers.map((mk, i) => {
     // MapLibre に渡す要素（大きさ 0 の点）。位置は MapLibre が class と transform で決めるので触らない。
     const root = document.createElement("div");
@@ -114,6 +140,8 @@ export function createFigureMarkers(
     const pin = document.createElement("span");
     pin.setAttribute("aria-hidden", "true");
     pin.innerHTML = PIN_SVG;
+    pin.style.width = `${pinDim.w}px`;
+    pin.style.height = `${pinDim.h}px`;
     const tag = document.createElement("button");
     tag.type = "button";
     tag.dataset.testid = "basemap-tag";
@@ -144,7 +172,8 @@ export function createFigureMarkers(
     // 札を出せない地点も、指している間はピンの上に出す。
     const placement: Placement = e.placement === "none" && on ? "above" : e.placement;
     e.tag.className =
-      placement === "none" ? "hidden" : `${TAG_BASE} ${PLACE_CLASS[placement]} ${on ? TAG_ACTIVE : TAG_IDLE}`;
+      placement === "none" ? "hidden" : `${TAG_BASE} ${on ? TAG_ACTIVE : TAG_IDLE}`;
+    if (placement !== "none") placeTag(e.tag, placement, pinDim);
     e.pin.className = `${PIN_BASE} ${on ? "scale-[1.25]" : ""}`;
     // 一覧の順で先の地点、指している地点を上に重ねる。
     e.root.style.zIndex = String(on ? 1000 : placement === "none" ? 1 : 500 - i);
@@ -177,7 +206,7 @@ export function createFigureMarkers(
     const blocked = cornerBoxes(view);
     const pts = entries.map((e) => map.project([e.lng, e.lat]));
     // ピンはすべて障害物（札でピンを隠さない）。
-    const pins: Box[] = pts.map((p) => ({ x0: p.x - PIN_W / 2, x1: p.x + PIN_W / 2, y0: p.y - PIN_H, y1: p.y + 1 }));
+    const pins: Box[] = pts.map((p) => ({ x0: p.x - pinDim.w / 2, x1: p.x + pinDim.w / 2, y0: p.y - pinDim.h, y1: p.y + 1 }));
     const tags: Box[] = [];
     entries.forEach((e, i) => {
       const p = pts[i];
@@ -186,7 +215,7 @@ export function createFigureMarkers(
       let next: Placement = "none";
       if (inView) {
         for (const c of ["above", "right", "left", "below"] as const) {
-          const box = tagBox(c, p.x, p.y, e.width);
+          const box = tagBox(c, p.x, p.y, e.width, pinDim);
           const inside = box.x0 >= view.x0 && box.x1 <= view.x1 && box.y0 >= view.y0 && box.y1 <= view.y1;
           const free =
             !tags.some((b) => overlaps(b, box)) &&
@@ -242,8 +271,8 @@ export function createFigureMarkers(
     const shown = e.placement === "none" ? "above" : e.placement;
     // ピンと、その上（下）の札をよける。
     // 地点からカードの下端・上端までの距離（ピンと、その上・下の札をよける。指している間のピンは大きい）。
-    const up = shown === "above" ? PIN_H * 1.25 + GAP + TAG_H + 8 : PIN_H * 1.25 + 8;
-    const down = shown === "below" ? 6 + TAG_H + 8 : 12;
+    const up = shown === "above" ? pinDim.h * 1.25 + GAP + TAG_H + 8 : pinDim.h * 1.25 + 8;
+    const down = shown === "below" ? BELOW + TAG_H + 8 : 12;
     const fitsAbove = p.y - up - h >= MARGIN;
     const fitsBelow = p.y + down + h <= view.y1 - MARGIN;
     const dy = fitsAbove || !fitsBelow ? -(up + h / 2) : down + h / 2;
