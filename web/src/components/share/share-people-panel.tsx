@@ -247,12 +247,14 @@ export function SharePeoplePanel({
         <PrincipalAvatar kind={c.kind} name={c.primary} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13.5px] font-medium">{c.primary}</p>
-          <p className="truncate text-xs text-muted-foreground">
+          {/* 同名の相手を見分けられるよう、共有中でもメール等は消さずに状態を横に添える。 */}
+          <p className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+            <span className="min-w-0 truncate">{c.secondary}</span>
             {existing ? (
-              <StatusDot>{ROLE_LABEL[existing.role]}で共有中</StatusDot>
-            ) : (
-              c.secondary
-            )}
+              <span className="shrink-0">
+                <StatusDot>{ROLE_LABEL[existing.role]}で共有中</StatusDot>
+              </span>
+            ) : null}
           </p>
         </div>
         {existing && existing.role === addRole ? (

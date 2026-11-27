@@ -574,6 +574,8 @@ export function ShareLinksPanel({
                   variant="ghost"
                   size="sm"
                   onClick={() => setFormOpen(false)}
+                  // ダイアログ自体の「閉じる」と読み上げが重ならないように名前を分ける。
+                  aria-label="作成フォームを閉じる"
                   className="-my-1 h-7"
                 >
                   閉じる

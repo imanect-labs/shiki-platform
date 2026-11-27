@@ -68,7 +68,7 @@ test("共有ダイアログ: 高さは検索・タブ・作成フォーム・共
   await share.getByTestId("share-tab-links").click();
   await expect(share.getByTestId("link-create")).toBeVisible();
   expect(await height(share)).toBe(base);
-  await page.keyboard.press("Escape");
+  await share.getByRole("button", { name: "閉じる", exact: true }).click();
   await expect(share).toBeHidden();
 
   // 共有相手が 25 人いるとき（一覧の取得だけを差し替える）。
@@ -150,7 +150,8 @@ test("共有ダイアログ: 発行済みリンクが作成フォームより上
   await share.getByTestId("link-audience-organization").click();
   await share.getByTestId("link-create").click();
   await expect(share.getByTestId("link-item")).toHaveCount(1, { timeout: 10_000 });
-  await page.keyboard.press("Escape");
+  // 発行と同時にトーストが出て、Esc は手前のトーストを閉じるので、ダイアログは閉じるボタンで閉じる。
+  await share.getByRole("button", { name: "閉じる", exact: true }).click();
   await expect(share).toBeHidden();
 
   // 開き直すと、発行済みリンクが上にあり、作成フォームは畳まれている。
