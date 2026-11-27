@@ -198,6 +198,46 @@ test.describe("背景地図（map の renderMap）", () => {
     expect(outside).toEqual([]);
   });
 
+  test("全画面では地点の一覧のパネルを浮かべ、地点の詳しい表示へ移れる", async ({ page }) => {
+    await mockMapApi(page, true);
+    await page.goto("/reference/yui");
+    const section = page.getByTestId("yui-map");
+    await section.scrollIntoViewIfNeeded();
+    const figure = section.getByTestId("basemap-figure");
+    await expect(figure).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
+    await figure.getByRole("button", { name: "全画面で表示", exact: true }).click();
+    await expect(figure).toHaveAttribute("data-list", "panel");
+    const panel = figure.getByTestId("basemap-panel");
+    await expect(panel).toHaveAttribute("data-view", "list");
+    await expect(panel).toContainText("訪問の行程");
+    await expect(panel).toContainText("3 か所");
+    // 出典は全画面でも出ている。
+    await expect(figure.getByTestId("basemap-attribution")).toContainText("© OpenStreetMap contributors");
+    // 行を押すと、その地点の詳しい表示（名前・説明・位置・前後への移動）へ。地図にもその地点のカードが出る。
+    await panel.getByTestId("basemap-legend").getByRole("button", { name: /本社/ }).click();
+    await expect(panel).toHaveAttribute("data-view", "detail");
+    await expect(panel.getByTestId("basemap-panel-title")).toHaveText("本社");
+    await expect(panel).toContainText("10:00 から打ち合わせ");
+    await expect(panel).toContainText("3 / 3");
+    await expect(panel).toContainText("34.69370, 135.50230");
+    await expect(panel.getByRole("button", { name: "次の地点" })).toBeDisabled();
+    await expect(figure.getByTestId("basemap-card")).toContainText("本社");
+    await panel.getByRole("button", { name: "前の地点" }).click();
+    await expect(panel.getByTestId("basemap-panel-title")).toHaveText("梅田スカイビル");
+    await expect(figure.getByTestId("basemap-card")).toContainText("梅田スカイビル");
+    await panel.getByRole("button", { name: "この地点へ寄る" }).click();
+    await panel.getByRole("button", { name: "一覧", exact: true }).click();
+    await expect(panel).toHaveAttribute("data-view", "list");
+    // パネルは畳める（地図の左上のボタンで戻す）。
+    await panel.getByRole("button", { name: "一覧を隠す" }).click();
+    await expect(figure.getByTestId("basemap-panel")).toHaveCount(0);
+    await figure.getByRole("button", { name: /一覧を表示/ }).click();
+    await expect(figure.getByTestId("basemap-panel")).toBeVisible();
+    // 全画面を抜けると、地図の下端のカードの列に戻る。
+    await figure.getByRole("button", { name: "全画面を終了", exact: true }).click();
+    await expect(figure).toHaveAttribute("data-list", "overlay");
+  });
+
   test("画面から離れた地図は破棄し、戻ると作り直す", async ({ page }) => {
     await mockMapApi(page, true);
     await page.goto("/reference/yui");

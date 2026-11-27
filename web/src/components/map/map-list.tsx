@@ -1,4 +1,4 @@
-// 地図と連動する地点の一覧（全画面では地図の横の一覧、会話やノートの中では地図の下端に重ねたカードの列）。
+// 会話・ノートの中の地図の下端に重ねる、地点のカードの列（全画面のパネルは map-panel.tsx）。
 // 行・カードに乗せる／キーボードで移ると地図の札とカードが連動し、押すとその地点を選ぶ。
 "use client";
 
@@ -37,53 +37,6 @@ function itemHandlers(i: number, p: MapListProps) {
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
-
-/// 全画面の地図の横に出す一覧（地図アプリの検索結果の並び）。
-export function MapSideList(p: MapListProps) {
-  const ref = React.useRef<HTMLDivElement>(null);
-  // 地図の札から選んだ・指した地点が一覧の見える所に来るようにする（一覧の中だけを動かす）。
-  React.useEffect(() => {
-    const box = ref.current;
-    const el = p.active === null ? null : box?.querySelector<HTMLElement>(`[data-index="${p.active}"]`);
-    if (!box || !el) return;
-    const top = el.offsetTop - 8;
-    const bottom = el.offsetTop + el.offsetHeight + 8;
-    if (top < box.scrollTop) box.scrollTo({ top });
-    else if (bottom > box.scrollTop + box.clientHeight) box.scrollTo({ top: bottom - box.clientHeight });
-  }, [p.active]);
-  return (
-    <div className="flex min-h-0 w-[320px] shrink-0 flex-col border-l border-border/50 bg-background">
-      <div className="px-5 pb-2 pt-5 text-[15px] font-semibold text-foreground">{p.markers.length} か所</div>
-      <div
-        ref={ref}
-        role="list"
-        aria-label="地点の一覧"
-        className="relative min-h-0 flex-1 overflow-y-auto px-2 pb-3"
-        data-testid="basemap-legend"
-      >
-        {p.markers.map((mk, i) => (
-          <div role="listitem" key={`${i}-${mk.label}`}>
-            <button
-              type="button"
-              {...itemHandlers(i, p)}
-              className={cn(
-                "flex w-full min-w-0 flex-col items-start rounded-xl px-3 py-2.5 text-left transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                p.active === i ? "bg-accent" : "hover:bg-accent/60",
-              )}
-            >
-              <span className="w-full truncate text-[14px] font-semibold leading-snug text-foreground">{mk.label}</span>
-              {mk.desc ? (
-                <span className="mt-0.5 w-full text-[12.5px] leading-snug text-muted-foreground">{mk.desc}</span>
-              ) : null}
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 
 /// 会話・ノートの中の地図の下端に重ねる、横に流れるカードの列。
 /// - 左右はスクロール（トラックパッド・横スクロール・タッチ）と、端の矢印ボタンで送る。

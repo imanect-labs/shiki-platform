@@ -3,7 +3,7 @@
 // - 背景地図は shiki-server が配る PMTiles から読む。ブラウザは shiki 以外へ接続しない
 //   （スタイルは glyphs・sprite を持たず、文字は端末のフォントで描く）。
 // - 地点は点と名前の札（map-markers.ts）、道順は Yui と同じく地点を直線で結ぶ。
-// - 地点の一覧は、会話・ノートの中では地図の下端に重ねたカードの列、全画面では地図の横に出す（map-list.tsx）。
+// - 地点の一覧は、会話・ノートの中では地図の下端に重ねたカードの列（map-list.tsx）、全画面では地図に浮かべたパネル（map-panel.tsx）。
 // - 画面に近づいてから地図を作り、画面から十分離れたら破棄する（WebGL の文脈を溜めない）。
 // - ページのスクロールを奪わない（Ctrl/⌘＋スクロール・2 本指で操作。全画面では通常操作）。
 // - 地図データが無い・読み込めない・WebGL が使えないときは Yui の背景なしの図に戻す。
@@ -11,7 +11,7 @@
 
 import * as React from "react";
 import { useTheme } from "next-themes";
-import { Loader2, Maximize2, Minimize2, Minus, Plus, Scan } from "lucide-react";
+import { Loader2, Maximize2, Minimize2, Minus, PanelLeftOpen, Plus, Scan } from "lucide-react";
 import type { MapFigure } from "@imanect/yui";
 import { YuiFigure } from "@imanect/yui/react";
 import type { Map as MlMap } from "maplibre-gl";
@@ -19,8 +19,9 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 import { loadBasemapConfig, loadBasemapStyle, peekBasemapConfig, type BasemapConfig } from "@/lib/basemap";
 import { cn } from "@/lib/utils";
-import { MapCardCarousel, MapSideList } from "./map-list";
-import { createFigureMarkers, type FigureMarkers } from "./map-markers";
+import { MapCardCarousel } from "./map-list";
+import { MapPanel } from "./map-panel";
+import { createFigureMarkers, type FigureMarkers, type Insets } from "./map-markers";
 import { initialView, routeFeature } from "./yui-map-data";
 
 /// ピン・名前・道順の色。背景地図（青い水域・緑の森・淡い道路）のどれとも紛れない朱色にし、
@@ -36,6 +37,8 @@ const FONT_FAMILY =
 
 /// 全地点を収めるときの余白（地点のまわりに出す札の大きさと、左上の件数・右上の操作ボタンの分）。
 const FIT_PADDING = { top: 56, bottom: 44, left: 96, right: 104 };
+/// 全画面で下からパネルを出すとき、その上に置く出典の行の高さ。
+const ATTRIBUTION_H = 20;
 /// 地図の下端に重ねたカードの列の高さ（測る前の見込み）。
 const OVERLAY_GUESS = 128;
 
@@ -93,22 +96,46 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   const mapRef = React.useRef<MlMap | null>(null);
   const markersRef = React.useRef<FigureMarkers | null>(null);
   // 指している地点（札・一覧に乗せている）と、押して選んだ地点。カードは指している方を優先する。
-  const [hover, setHover] = React.useState<number | null>(null);
+  const [hover, setHoverState] = React.useState<number | null>(null);
+  // 全画面の出入りの直後は、止まったままのポインタの下を札・行が通り過ぎて「指した」ことになるので、
+  // しばらく指す操作を受け付けない（離れたことは届かないことがあり、指したまま残る）。
+  const hoverLockUntilRef = React.useRef(0);
+  const setHover = React.useCallback((i: number | null) => {
+    if (i !== null && performance.now() < hoverLockUntilRef.current) return;
+    setHoverState(i);
+  }, []);
   const [selected, setSelected] = React.useState<number | null>(null);
   const active = hover ?? selected;
   // 離れた地点がまだ指している地点のときだけ外す（地図の札から一覧の行へ一気に移ると、
   // 行に入った後で札から離れたことが届くため）。
-  const leave = React.useCallback((i: number) => setHover((cur) => (cur === i ? null : cur)), []);
-  // 会話・ノートの中では地点のカードの列を地図の下端に重ねる（全画面では地図の横の一覧）。
-  // 地点はその列の上に収め、札・カードも列に隠れない所に置く。
+  const leave = React.useCallback((i: number) => setHoverState((cur) => (cur === i ? null : cur)), []);
+  // 選ぶ地点が変わったら指している地点を外す（押した行・カードが表示の切り替えで消えると、
+  // 離れたことが届かず前の地点を指したままになる）。
+  React.useEffect(() => setHoverState(null), [selected]);
+  // 会話・ノートの中では地点のカードの列を地図の下端に重ね、全画面では地点の一覧のパネルを浮かべる。
+  // 地点はそれらを除いた範囲に収め、札・カードも隠れない所に置く。
   const overlayRef = React.useRef<HTMLDivElement>(null);
   const [overlayHeight, setOverlayHeight] = React.useState(OVERLAY_GUESS);
-  const inset = fullscreen ? 0 : overlayHeight;
-  const insetRef = React.useRef(inset);
-  insetRef.current = inset;
-  /// 地図の作成・全地点への合わせ直しで使う余白（その時点の重なりの高さで決める）。
-  const fitPaddingRef = React.useRef(() => ({ ...FIT_PADDING, bottom: Math.max(FIT_PADDING.bottom, insetRef.current + 24) }));
+  const panelRef = React.useRef<HTMLElement>(null);
+  const [panelOpen, setPanelOpen] = React.useState(true);
+  const [panelInsets, setPanelInsets] = React.useState<Insets>({ left: 0, bottom: 0 });
+  const insets: Insets = fullscreen
+    ? panelOpen
+      ? panelInsets
+      : { left: 0, bottom: 0 }
+    : { left: 0, bottom: overlayHeight };
+  const insetsRef = React.useRef(insets);
+  insetsRef.current = insets;
+  /// 地図の作成・全地点への合わせ直しで使う余白（その時点の重なりの大きさで決める）。
+  const fitPaddingRef = React.useRef(() => ({
+    ...FIT_PADDING,
+    left: Math.max(FIT_PADDING.left, insetsRef.current.left + 64),
+    bottom: Math.max(FIT_PADDING.bottom, insetsRef.current.bottom + 24),
+  }));
   const fitPadding = () => fitPaddingRef.current();
+  /// 全画面の出入りの後、利用者が自分で地図を動かすまでは、パネル・カードの列の大きさが変わるたびに
+  /// 全地点に合わせ直す（大きさが決まる前に合わせると、地点がパネルの下に入る）。
+  const refitPendingRef = React.useRef(false);
   const titleId = React.useId();
 
   // 地図データがあるか（無ければ背景なしの図）。
@@ -233,6 +260,10 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         m.on("click", (e) => {
           if (e.originalEvent.target === m.getCanvas()) setSelected(null);
         });
+        // 利用者が自分で動かしたら（ドラッグ・ホイール・ボタン・地点へ寄る）、以後は勝手に合わせ直さない。
+        m.on("movestart", (e) => {
+          if ((e as { originalEvent?: Event }).originalEvent) refitPendingRef.current = false;
+        });
         m.once("idle", () => {
           window.clearTimeout(timeout);
           if (!disposed && !failed) setPhase("ready");
@@ -244,13 +275,13 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       window.clearTimeout(timeout);
       markersRef.current?.remove();
       markersRef.current = null;
-      setHover(null);
+      setHoverState(null);
       setSelected(null);
       map?.remove();
       mapRef.current = null;
       setPhase((p) => (p === "fallback" ? p : "idle"));
     };
-  }, [config, keepAlive, theme, figure, leave]);
+  }, [config, keepAlive, theme, figure, leave, setHover]);
 
   // 指している・選んでいる地点を札とカードに映す。
   React.useEffect(() => {
@@ -265,9 +296,33 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     ro.observe(el);
     return () => ro.disconnect();
   }, [fullscreen, phase]);
+  // 全画面のパネルの大きさを測る（広い画面は左に浮かべ、狭い画面は下から出す）。
   React.useEffect(() => {
-    markersRef.current?.setBottomInset(inset);
-  }, [inset, phase]);
+    const el = panelRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const box = el.parentElement;
+      if (!box) return;
+      const side = el.offsetWidth < box.clientWidth * 0.7;
+      const next = side
+        ? { left: el.offsetLeft + el.offsetWidth + 8, bottom: 0 }
+        : { left: 0, bottom: box.clientHeight - el.offsetTop + 8 + ATTRIBUTION_H };
+      setPanelInsets((cur) => (cur.left === next.left && cur.bottom === next.bottom ? cur : next));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.parentElement) ro.observe(el.parentElement);
+    return () => ro.disconnect();
+  }, [fullscreen, panelOpen, phase]);
+  React.useEffect(() => {
+    markersRef.current?.setInsets(insets);
+    // 全画面の出入りの後で、まだ利用者が地図を動かしていなければ、全地点に合わせ直す。
+    const m = mapRef.current;
+    if (!refitPendingRef.current || !m) return;
+    m.resize();
+    const v = initialView(figure);
+    if (v.kind === "bounds") m.fitBounds(v.bounds, { padding: fitPaddingRef.current(), maxZoom: v.maxZoom, animate: false });
+  }, [insets.left, insets.bottom, phase, figure]); // eslint-disable-line react-hooks/exhaustive-deps
   // 左上の件数・右上の操作ボタンの大きさ（札とカードがその下に潜らないように）。
   const countRef = React.useRef<HTMLDivElement>(null);
   const controlsRef = React.useRef<HTMLDivElement>(null);
@@ -280,7 +335,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       return [el.parentElement.clientWidth - el.offsetLeft + 4, el.offsetTop + el.offsetHeight + 4];
     };
     markersRef.current?.setCorners({ topLeft: size(countRef.current), topRight: box(controlsRef.current) });
-  }, [phase, fullscreen, canFullscreen]);
+  }, [phase, fullscreen, canFullscreen, panelOpen]);
 
   // 全画面の出入り。全画面の間はスクロールで拡大縮小できるようにする。
   React.useEffect(() => {
@@ -288,11 +343,14 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     const onChange = () => {
       const on = document.fullscreenElement === frameRef.current;
       setFullscreen(on);
+      hoverLockUntilRef.current = performance.now() + 800;
+      setHoverState(null);
       const m = mapRef.current;
       if (!m) return;
       if (on) m.cooperativeGestures.disable();
       else m.cooperativeGestures.enable();
       // 大きさが変わったら全地点に合わせ直す（全画面で余白だらけ・小さく固まって見えないように）。
+      refitPendingRef.current = true;
       requestAnimationFrame(() => {
         m.resize();
         const v = initialView(figure);
@@ -310,7 +368,10 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
 
   const ready = phase === "ready";
   const animate = !prefersReducedMotion();
-  const zoomBy = (d: number) => mapRef.current?.zoomTo(mapRef.current.getZoom() + d, { animate });
+  const zoomBy = (d: number) => {
+    refitPendingRef.current = false;
+    mapRef.current?.zoomTo(mapRef.current.getZoom() + d, { animate });
+  };
   const fitAll = () => {
     const m = mapRef.current;
     if (!m) return;
@@ -328,13 +389,30 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
     const m = mapRef.current;
     const mk = figure.markers[i];
     if (!m || !mk) return;
+    refitPendingRef.current = false;
     setSelected(i);
-    // 見えていないとき（画面の外・カードの列の下）だけ寄せる（見えているなら、ほかの地点との位置関係を崩さない）。
+    // 見えていないとき（画面の外・カードの列やパネルの下）だけ寄せる（見えているなら、ほかの地点との位置関係を崩さない）。
     const pt = m.project([mk.lng, mk.lat]);
     const canvas = m.getCanvas();
-    const hidden = pt.x < 0 || pt.x > canvas.clientWidth || pt.y < 0 || pt.y > canvas.clientHeight - inset - 8;
-    // 寄せる先は、カードの列を除いた範囲の真ん中。
-    if (hidden) m.easeTo({ center: [mk.lng, mk.lat], offset: [0, -inset / 2], animate });
+    const hidden =
+      pt.x < insets.left + 8 || pt.x > canvas.clientWidth - 8 || pt.y < 8 || pt.y > canvas.clientHeight - insets.bottom - 8;
+    // 寄せる先は、カードの列・パネルを除いた範囲の真ん中。
+    if (hidden) m.easeTo({ center: [mk.lng, mk.lat], offset: [insets.left / 2, -insets.bottom / 2], animate });
+  };
+  /// その地点へ寄る（拡大して、パネルを除いた範囲の真ん中に）。
+  const zoomTo = (i: number) => {
+    const m = mapRef.current;
+    const mk = figure.markers[i];
+    if (!m || !mk) return;
+    refitPendingRef.current = false;
+    setSelected(i);
+    m.easeTo({
+      center: [mk.lng, mk.lat],
+      zoom: Math.max(m.getZoom(), 16),
+      offset: [insets.left / 2, -insets.bottom / 2],
+      animate,
+      duration: 900,
+    });
   };
 
   const listProps = {
@@ -352,8 +430,10 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
       className={cn(
         "max-w-full truncate text-[10px] leading-4 text-muted-foreground",
         // 全画面では地図の右下に重ねる。会話の中ではカードの列の下に置く（列に隠れない）。
-        fullscreen ? "absolute bottom-0 right-0 z-20 rounded-tl-lg bg-background/75 px-2 py-0.5 backdrop-blur" : "px-3 text-right",
+        fullscreen ? "absolute right-0 z-20 rounded-tl-lg bg-background/75 px-2 py-0.5 backdrop-blur" : "px-3 text-right",
       )}
+      // 全画面で下からパネルを出しているときは、その上に出す（隠さない）。
+      style={fullscreen ? { bottom: Math.max(0, insets.bottom - ATTRIBUTION_H) } : undefined}
       data-testid="basemap-attribution"
     >
       {config?.attribution.map((a, i) => (
@@ -368,7 +448,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
   );
 
   return (
-    <div className="min-w-0" data-testid="basemap-figure" data-state={phase} data-list={fullscreen ? "side" : "overlay"}>
+    <div className="min-w-0" data-testid="basemap-figure" data-state={phase} data-list={fullscreen ? "panel" : "overlay"}>
       {figure.title ? (
         <div id={titleId} className="mb-2 text-[14px] font-semibold leading-snug text-foreground">
           {figure.title}
@@ -384,16 +464,16 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
         className={cn(
           "flex overflow-hidden bg-background",
           fullscreen
-            ? "h-screen w-screen flex-row"
+            ? "h-screen w-screen"
             : "flex-col rounded-2xl border border-border/50 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.04)]",
         )}
       >
         <div
           className={cn(
             "relative min-w-0 bg-secondary/40",
-            // 会話・ノートの中は高さを決め打ち（カードの列の分も含む）、全画面は残りの幅を埋める。
+            // 会話・ノートの中は高さを決め打ち（カードの列の分も含む）、全画面は画面いっぱい（一覧は地図の上に浮かべる）。
             fullscreen
-              ? "h-full flex-1"
+              ? "h-full w-full"
               : figure.markers.length > DENSE_MARKERS
                 ? "h-[460px] sm:h-[540px]"
                 : "h-[400px] sm:h-[460px]",
@@ -410,7 +490,7 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
               地図を読み込んでいます…
             </div>
           ) : null}
-          {fullscreen ? null : (
+          {!fullscreen ? (
             <div
               ref={countRef}
               className="pointer-events-none absolute left-3 top-3 z-20 rounded-full bg-background/90 px-3 py-1 text-[12px] font-semibold tabular-nums text-foreground shadow-[0_2px_10px_rgba(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10"
@@ -418,8 +498,36 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
             >
               {figure.markers.length} か所
             </div>
+          ) : panelOpen ? (
+            <MapPanel
+              ref={panelRef}
+              {...listProps}
+              title={figure.title}
+              onClear={() => setSelected(null)}
+              onZoomTo={zoomTo}
+              onCollapse={() => setPanelOpen(false)}
+            />
+          ) : (
+            // 畳んだパネルを開くボタン（地図の左上）。
+            <div ref={countRef} className="absolute left-4 top-4 z-30">
+              <button
+                type="button"
+                onClick={() => setPanelOpen(true)}
+                className="flex h-10 items-center gap-2 rounded-full bg-background/95 pl-3 pr-4 text-[13px] font-semibold text-foreground shadow-[0_6px_24px_rgba(0,0,0,0.16)] ring-1 ring-black/5 backdrop-blur-xl transition-colors hover:bg-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:ring-white/10"
+              >
+                <PanelLeftOpen className="size-4" />
+                一覧を表示
+                <span className="tabular-nums text-muted-foreground">{figure.markers.length} か所</span>
+              </button>
+            </div>
           )}
-          <div ref={controlsRef} className="absolute right-3 top-3 z-20 flex flex-col overflow-hidden rounded-xl bg-background/90 shadow-[0_2px_10px_rgba(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10">
+          <div
+            ref={controlsRef}
+            className={cn(
+              "absolute z-20 flex flex-col overflow-hidden bg-background/90 shadow-[0_2px_10px_rgba(0,0,0,0.12)] ring-1 ring-black/5 backdrop-blur-md dark:ring-white/10",
+              fullscreen ? "right-4 top-4 rounded-2xl shadow-[0_6px_24px_rgba(0,0,0,0.16)]" : "right-3 top-3 rounded-xl",
+            )}
+          >
             <MapButton label="拡大" onClick={() => zoomBy(1)} disabled={!ready}>
               <Plus className="size-4" />
             </MapButton>
@@ -454,9 +562,6 @@ export function BasemapMap({ figure, fallbackClassName }: { figure: MapFigure; f
             </div>
           )}
         </div>
-        {/* 全画面では地図の横に一覧を出す。ノートの本文（prose）の ol/li の装飾を受けないよう、
-            要素ではなく role で一覧にする。 */}
-        {fullscreen ? <MapSideList {...listProps} /> : null}
       </div>
     </div>
   );
