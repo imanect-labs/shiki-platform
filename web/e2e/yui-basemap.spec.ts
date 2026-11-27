@@ -136,14 +136,21 @@ test.describe("背景地図（map の renderMap）", () => {
     await expect(attribution).toContainText("© OpenMapTiles");
     // 地点の一覧（番号・名前）と操作ボタン。
     await expect(figure.getByTestId("basemap-legend").getByRole("listitem")).toHaveCount(3);
-    await expect(figure.getByTestId("basemap-legend").getByRole("listitem").first()).toContainText("1.大阪駅");
+    await expect(figure.getByTestId("basemap-legend").getByRole("listitem").first()).toContainText("大阪駅");
+    // 地図の上の札（名前）が地点の数だけある。
+    await expect(figure.getByTestId("basemap-tag")).toHaveCount(3);
     for (const name of ["拡大", "縮小", "全地点を表示", "全画面で表示"]) {
       await expect(figure.getByRole("button", { name, exact: true })).toBeEnabled();
     }
-    // 一覧から地点を選ぶと吹き出しが開く（名前は文字として入る）。
+    // 一覧から地点を選ぶとカードが開く（名前は文字として入る）。
     await figure.getByTestId("basemap-legend").getByRole("listitem").nth(2).getByRole("button").click();
-    await expect(figure.locator(".maplibregl-popup")).toContainText("3. 本社");
-    await expect(figure.locator(".maplibregl-popup")).toContainText("10:00 から打ち合わせ");
+    const card = figure.getByTestId("basemap-card");
+    await expect(card).toContainText("本社");
+    await expect(card).toContainText("10:00 から打ち合わせ");
+    // 地図の上の札に乗せると、その地点のカードに替わる（一覧から外れても選んだ地点に戻る）。
+    await figure.getByTestId("basemap-tag").first().hover();
+    await expect(card).toContainText("大阪駅");
+    await expect(card).toContainText("集合場所");
 
     // 地図の上でホイールを回してもページがスクロールする（地図はスクロールを奪わない）。
     const box = await figure.getByTestId("basemap-canvas").boundingBox();
