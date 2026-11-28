@@ -78,6 +78,8 @@ async-trait.workspace = true
 
 [dev-dependencies]
 shiki-testenv.workspace = true
+# リクエスト span の属性・親子をメモリ上の exporter で確かめる（server/http_util_tests.rs）。
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 # collab WS 結合テスト（collab_ws_it.rs）: 実 WS クライアント＋yrs クライアント文書。

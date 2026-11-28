@@ -4,6 +4,10 @@
 //!   Tempo/Prometheus へ collector 経由）。
 //! - リクエスト span に trace_id を載せ、ログ行にも trace_id を注入して突合可能にする。
 //! - `otlp_endpoint` 未設定や collector 未起動でも**起動を妨げない**（ログのみ）。
+//! - 受信した W3C `traceparent` はリクエスト span の親として継続する（`server::http_util`）。
+//! - サンプラは [`sampler::LocalDecisionSampler`]: 外部の親の sampled フラグには従わず、
+//!   api 側の root サンプラで決める（既定は全量）。比率は OTel 標準の環境変数
+//!   `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`（例: `traceidratio` / `0.1`）で変える。
 
 use std::{sync::OnceLock, time::Instant};
 
@@ -23,6 +27,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 use crate::config::{LogFormat, TelemetryConfig};
+
+mod sampler;
+pub(crate) use sampler::LocalDecisionSampler;
 
 /// プロセス終了時に span/metric をフラッシュするためのガード。
 pub struct TelemetryGuard {
@@ -73,6 +80,7 @@ pub fn init(cfg: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
             .with_endpoint(endpoint)
             .build()?;
         let tracer_provider = SdkTracerProvider::builder()
+            .with_sampler(LocalDecisionSampler::from_env())
             .with_batch_exporter(span_exporter)
             .with_resource(resource.clone())
             .build();
