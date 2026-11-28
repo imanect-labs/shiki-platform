@@ -17,7 +17,7 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{
     propagation::TraceContextPropagator,
-    trace::{InMemorySpanExporter, SdkTracerProvider, SpanData},
+    trace::{InMemorySpanExporter, Sampler, SdkTracerProvider, SpanData},
 };
 use tower::ServiceExt;
 use tower_http::trace::TraceLayer;
@@ -48,10 +48,16 @@ fn router() -> Router {
 }
 
 /// 1 リクエストを OTel 有効の subscriber 下で処理し、(応答 status, 本文, 出た span) を返す。
+/// サンプラは本番と同じ [`telemetry::LocalDecisionSampler`]（root は全量）。
 async fn call(req: Request<Body>) -> (StatusCode, String, Vec<SpanData>) {
+    call_with_root(req, Sampler::AlwaysOn).await
+}
+
+async fn call_with_root(req: Request<Body>, root: Sampler) -> (StatusCode, String, Vec<SpanData>) {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
+        .with_sampler(telemetry::LocalDecisionSampler::new(root))
         .with_simple_exporter(exporter.clone())
         .build();
     let subscriber = tracing_subscriber::registry()
@@ -178,6 +184,23 @@ async fn unsampled_traceparent_does_not_drop_the_span() {
     );
     assert!(span.span_context.is_sampled());
     assert!(matches!(span.status, Status::Error { .. }));
+}
+
+#[tokio::test]
+async fn sampled_traceparent_cannot_force_recording() {
+    // api 側が記録しない方針（root=AlwaysOff）なら、外部が flags=01 を送っても記録しない。
+    // trace_id の継続（監査ログ用 extension）は記録の有無と関係なく効く。
+    let req = Request::get("/items/1")
+        .header(
+            "traceparent",
+            format!("00-{REMOTE_TRACE_ID}-{REMOTE_SPAN_ID}-01"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let (status, body, spans) = call_with_root(req, Sampler::AlwaysOff).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(spans.is_empty());
+    assert_eq!(body, REMOTE_TRACE_ID);
 }
 
 #[tokio::test]

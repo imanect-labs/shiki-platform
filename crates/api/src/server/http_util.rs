@@ -6,8 +6,8 @@ use axum::extract::{MatchedPath, Request};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method};
 use axum::response::Response;
 use opentelemetry::propagation::Extractor;
-use opentelemetry::trace::{SpanContext, TraceContextExt};
 use tower_http::cors::CorsLayer;
+use tower_http::trace::{DefaultOnResponse, OnResponse};
 use tracing::field::Empty;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -89,26 +89,10 @@ fn span_name(method: &str, route: Option<&str>) -> String {
 }
 
 /// 受信ヘッダから親のトレース文脈を取り出す（global propagator 経由）。
-///
-/// trace_id・親 span id は継続するが、**sampled フラグは信用しない**。ブラウザなど外部の
-/// クライアントが `traceparent` の flags を `00` にすると、ParentBased サンプラが従って
-/// 5xx を含むリクエストの span が記録されなくなるため、受信した親は常に sampled として扱う
-/// （記録するかどうかは api 側の方針で決め、上流に下げさせない）。
+/// sampled フラグはそのまま渡し、従うかどうかはサンプラ（`telemetry::LocalDecisionSampler`）
+/// が決める（外部の親のフラグは無視する）。
 fn extract_parent(headers: &HeaderMap) -> opentelemetry::Context {
-    let cx =
-        opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(headers)));
-    let remote = cx.span().span_context().clone();
-    if !remote.is_valid() {
-        return cx;
-    }
-    let sampled = SpanContext::new(
-        remote.trace_id(),
-        remote.span_id(),
-        remote.trace_flags().with_sampled(true),
-        true,
-        remote.trace_state().clone(),
-    );
-    opentelemetry::Context::new().with_remote_span_context(sampled)
+    opentelemetry::global::get_text_map_propagator(|p| p.extract(&HeaderExtractor(headers)))
 }
 
 struct HeaderExtractor<'a>(&'a HeaderMap);
@@ -125,7 +109,10 @@ impl Extractor for HeaderExtractor<'_> {
 
 /// 応答の status を span に記録する。5xx は span の status を ERROR にする
 /// （semconv: server span では 4xx は ERROR にしない）。
-pub(super) fn record_response(res: &Response, _latency: Duration, span: &tracing::Span) {
+/// 既定の応答ログ（`tower_http::trace` の DEBUG「finished processing request」、
+/// latency・status 付き）もこれまでどおり出す。
+pub(super) fn record_response(res: &Response, latency: Duration, span: &tracing::Span) {
+    DefaultOnResponse::new().on_response(res, latency, span);
     let status = res.status();
     span.record("http.response.status_code", i64::from(status.as_u16()));
     if status.is_server_error() {
