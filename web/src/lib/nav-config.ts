@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   type LucideIcon,
   MessageSquareText,
+  MessagesSquare,
   Search,
   Settings,
   Share2,
@@ -48,6 +49,14 @@ export const DRIVE_ICON: LucideIcon = FolderOpen;
 export const SKILLS_NAV: NavLeaf = { key: "skills", label: "スキル", href: "/skills", icon: Sparkles };
 export const APPS_NAV: NavLeaf = { key: "apps", label: "アプリ", href: "/apps", icon: LayoutGrid };
 
+/// 職員間メッセージ（Phase 14）。チャンネル／DM の入口。
+export const MESSAGES_NAV: NavLeaf = {
+  key: "messages",
+  label: "メッセージ",
+  href: "/messages",
+  icon: MessagesSquare,
+};
+
 /// ワークフロー（Phase 10）。dnd エディタと実行履歴の入口。
 export const WORKFLOWS_NAV: NavLeaf = {
   key: "workflows",
@@ -75,12 +84,38 @@ export function isEditorRoute(pathname: string): boolean {
   return /^\/(notes|slides|csv|office|pdf)\//.test(pathname);
 }
 
+/// シェルのサイドバーを一時的に畳むルートか判定する。
+///
+/// 没入エディタ（編集が主役）に加え、メッセージ画面も自前で 3 ペインを持つため、左端のサイドバーを
+/// 開いたままだと 4 列になって本文が痩せる。畳むのは一時的で、離脱時に「入った時の状態」へ戻る
+/// （手動 pref は書き換えない）。
+export function collapsesSidebar(pathname: string): boolean {
+  return isEditorRoute(pathname) || isActivePath(MESSAGES_NAV.href, pathname);
+}
+
+/// PC の上部の現在地バーを出さないルートか判定する（ページがクロームを登録していれば出す）。
+///
+/// 没入エディタに加え、メッセージ画面も各ペインが自前のヘッダを持つため、汎用バーを重ねると
+/// 「双子のバー」になる。
+export function hidesShellHeader(pathname: string): boolean {
+  return isEditorRoute(pathname) || isActivePath(MESSAGES_NAV.href, pathname);
+}
+
+/// スマホの浮いた操作（左上のメニュー）をページ自身のヘッダに置くルートか判定する。
+///
+/// メッセージ画面はペインごとに上端のバーを持つので、浮いたボタンを重ねると本文の上に 4rem の空きができる。
+/// このルートではメニューのボタンをページのヘッダに置き、ドロワへの導線を保つ（MobileMenuButton）。
+export function ownsMobileChrome(pathname: string): boolean {
+  return isActivePath(MESSAGES_NAV.href, pathname);
+}
+
 /// パスからヘッダのページタイトルを解決する（現在地表示）。
 export function resolvePageTitle(pathname: string): string {
   if (pathname === "/") return "ホーム";
   if (pathname.startsWith("/c/")) return "チャット";
   if (pathname === "/settings") return "設定";
   if (pathname === "/search") return "文書検索";
+  if (isActivePath(MESSAGES_NAV.href, pathname)) return "メッセージ";
   if (pathname.startsWith("/pdf/")) return "PDF";
   if (pathname.startsWith("/file/")) return "ファイル";
   if (isActivePath(SKILLS_NAV.href, pathname)) return "スキル";
@@ -100,6 +135,7 @@ export function resolvePageIcon(pathname: string): LucideIcon {
   if (pathname.startsWith("/c/")) return MessageSquareText;
   if (pathname === "/settings") return Settings;
   if (pathname === "/search") return Search;
+  if (isActivePath(MESSAGES_NAV.href, pathname)) return MESSAGES_NAV.icon;
   if (pathname.startsWith("/pdf/")) return FileText;
   if (pathname.startsWith("/file/")) return FileIcon;
   if (isActivePath(SKILLS_NAV.href, pathname)) return SKILLS_NAV.icon;

@@ -12,6 +12,7 @@ function assertUploadScope(expected: number) {
 }
 
 export type NodeResponse = components["schemas"]["NodeResponse"];
+export type ChannelShareEntry = components["schemas"]["ChannelShareEntry"];
 export type ChildrenResponse = components["schemas"]["ChildrenResponse"];
 export type CrumbResponse = components["schemas"]["CrumbResponse"];
 export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"];
@@ -435,6 +436,20 @@ export function unshareNode(nodeId: string, target: ShareTarget, role: ShareRole
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target, role }),
   }).then(okEmpty);
+}
+
+// --- 資料のチャンネル共有（閲覧だけ・owner かつチャンネルの参加者・design §4.14） ---
+
+export function listChannelShares(nodeId: string): Promise<ChannelShareEntry[]> {
+  return apiFetch(`/nodes/${nodeId}/channel-shares`).then((r) => okJson<ChannelShareEntry[]>(r));
+}
+
+export function shareWithChannel(nodeId: string, channelId: string): Promise<void> {
+  return apiFetch(`/nodes/${nodeId}/channel-shares/${channelId}`, { method: "PUT" }).then(okEmpty);
+}
+
+export function unshareFromChannel(nodeId: string, channelId: string): Promise<void> {
+  return apiFetch(`/nodes/${nodeId}/channel-shares/${channelId}`, { method: "DELETE" }).then(okEmpty);
 }
 
 // --- 共有リンク（複数発行・個別失効/延長・#342） --------------------------

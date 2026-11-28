@@ -64,9 +64,34 @@ pub fn with_yui_guide(base: &str) -> String {
     )
 }
 
+/// 道具（`ui_reference`）を持たない呼び出し側（職員間メッセージのエージェントなど）向けの、
+/// 図と UI の書き方一式（共通の決まり → 種類の早見 → 種類ごとの書き方）。
+///
+/// 置き場ごとの決まり（どのボタンを使ってよいか等）は呼び出し側が前に足す。
+pub fn yui_inline_reference() -> String {
+    let reference = &*super::yui_reference::REFERENCE;
+    format!(
+        "{}\n\n種類の早見:\n{}{}",
+        reference.rules.trim_end(),
+        reference.index.trim_end(),
+        super::yui_reference::classic_kind_guides()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_reference_carries_every_indexed_kind() {
+        let out = yui_inline_reference();
+        assert!(out.contains("種類の早見"));
+        for kind in ["bar", "calc", "app", "compare"] {
+            assert!(out.contains(&format!("`{kind}`")), "{kind}");
+        }
+        // 道具を読みに行かずに書けるよう、書き方そのものが入っている。
+        assert!(out.contains("種類ごとの書き方"));
+    }
 
     #[test]
     fn appends_guide_after_base_prompt() {

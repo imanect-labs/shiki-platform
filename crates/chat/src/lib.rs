@@ -88,7 +88,9 @@ pub use store::{
     BranchTarget, ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext,
     ThreadOrigin, YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
-pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
+pub use worker::{
+    parse_timezone, with_yui_guide, yui_inline_reference, ChatWorker, WorkerConfig, WorkerDeps,
+};
 pub use workflow_search_tool::{SearchWorkflowsTool, WorkflowDirectory};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;

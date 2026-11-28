@@ -207,6 +207,10 @@
                 "relation": "member"
               },
               {
+                "type": "channel",
+                "relation": "member"
+              },
+              {
                 "type": "workflow"
               }
             ]
@@ -354,6 +358,10 @@
               },
               {
                 "type": "organization",
+                "relation": "member"
+              },
+              {
+                "type": "channel",
                 "relation": "member"
               },
               {
@@ -729,6 +737,123 @@
               },
               {
                 "type": "role",
+                "relation": "member"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "channel",
+      "relations": {
+        "parent": {
+          "this": {}
+        },
+        "admin": {
+          "this": {}
+        },
+        "member": {
+          "union": {
+            "child": [
+              {
+                "this": {}
+              },
+              {
+                "computedUserset": {
+                  "relation": "admin"
+                }
+              }
+            ]
+          }
+        },
+        "org_reader": {
+          "this": {}
+        },
+        "poster": {
+          "this": {}
+        },
+        "can_read": {
+          "union": {
+            "child": [
+              {
+                "computedUserset": {
+                  "relation": "member"
+                }
+              },
+              {
+                "computedUserset": {
+                  "relation": "org_reader"
+                }
+              }
+            ]
+          }
+        },
+        "can_join": {
+          "computedUserset": {
+            "relation": "org_reader"
+          }
+        },
+        "can_post": {
+          "intersection": {
+            "child": [
+              {
+                "computedUserset": {
+                  "relation": "poster"
+                }
+              },
+              {
+                "computedUserset": {
+                  "relation": "member"
+                }
+              }
+            ]
+          }
+        },
+        "can_manage": {
+          "computedUserset": {
+            "relation": "admin"
+          }
+        }
+      },
+      "metadata": {
+        "relations": {
+          "parent": {
+            "directly_related_user_types": [
+              {
+                "type": "organization"
+              }
+            ]
+          },
+          "admin": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "member": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              }
+            ]
+          },
+          "org_reader": {
+            "directly_related_user_types": [
+              {
+                "type": "organization",
+                "relation": "member"
+              }
+            ]
+          },
+          "poster": {
+            "directly_related_user_types": [
+              {
+                "type": "user"
+              },
+              {
+                "type": "channel",
                 "relation": "member"
               }
             ]

@@ -269,6 +269,12 @@ pages = ["web/src/app/reference/**"]
 crates = []
 e2e = ["answer-images.spec.ts", "answer-links.spec.ts", "help-citations-gallery.spec.ts", "markdown-gallery.spec.ts", "tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
 
+# 職員間メッセージ（Phase 14）。チャンネル・DM・スレッド・検索・パーソナルエージェント・監査担当者の閲覧。
+[scenario.messages]
+pages = ["web/src/app/(auth)/messages/**", "web/src/app/(admin)/admin/messaging/**"]
+crates = ["shiki-messaging"]
+e2e = ["messages.spec.ts"]
+
 [scenario.bug_reports]
 pages = ["web/src/app/(auth)/bug-reports/**", "web/src/app/(admin)/admin/bug-reports/**"]
 crates = ["shiki-bug-report"]

@@ -22,6 +22,7 @@ mod shutdown;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
+mod wiring_messaging;
 mod wiring_office;
 mod wiring_websearch;
 /// ランタイムを組んで `run` を走らせ、停止は有限時間で打ち切る（shutdown.rs・B-OPS-1）。
@@ -334,8 +335,20 @@ async fn run() -> anyhow::Result<()> {
     };
     // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
     api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
+    let (messaging, messaging_agent) = wiring_messaging::wire_messaging(
+        &config,
+        &db,
+        &authz,
+        &storage,
+        chat.as_ref(),
+        search.as_ref(),
+        llm.as_ref(),
+    )
+    .await;
     let state = AppState {
         bug_report,
+        messaging: Some(messaging),
+        messaging_agent,
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),
         config: Arc::new(config),
         // 生 PgPool は StorageService 等のチョークポイントにのみ渡し、AppState には

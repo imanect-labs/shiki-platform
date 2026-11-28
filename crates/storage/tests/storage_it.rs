@@ -6115,3 +6115,268 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
         "{orgs:?}"
     );
 }
+
+/// 添付の一括メタデータ取得（職員間メッセージの file_ref・Task 14.6）。
+/// 読めるものだけを返し、他人のファイル・削除済み・存在しない id は含めない。
+#[tokio::test]
+async fn readable_files_metadata_returns_only_readable_files() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let other = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    for c in [&owner, &other] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("member tuple seed");
+    }
+    let mine = upload(&service, &http, &owner, None, "mine.txt", b"mine")
+        .await
+        .expect("upload");
+    let gone = upload(&service, &http, &owner, None, "gone.txt", b"gone")
+        .await
+        .expect("upload");
+    let theirs = upload(&service, &http, &other, None, "theirs.txt", b"theirs")
+        .await
+        .expect("upload");
+    service
+        .soft_delete_file(&owner, gone.id, None)
+        .await
+        .expect("delete");
+
+    // 空・重複は問題にならない。
+    assert!(service
+        .readable_files_metadata(&owner, &[], "test")
+        .await
+        .unwrap()
+        .is_empty());
+    let ids = [mine.id, mine.id, gone.id, theirs.id, Uuid::new_v4()];
+    let got = service
+        .readable_files_metadata(&owner, &ids, "test")
+        .await
+        .unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].id, mine.id);
+    assert_eq!(got[0].name, "mine.txt");
+    let got = service
+        .readable_files_metadata(&other, &ids, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        got.iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![theirs.id]
+    );
+}
+
+/// 資料のチャンネル共有（`channel#member` の viewer・design §4.14）。owner かつチャンネルの参加者だけが
+/// 共有でき、参加者は読めて非参加者は読めない。解除・一覧・監査も確かめる。
+#[tokio::test]
+async fn sharing_with_a_channel_reaches_its_members_only() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let member = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let outsider = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    for c in [&owner, &member, &outsider] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("member tuple seed");
+    }
+    let channel = Uuid::new_v4();
+    let channel_obj = owner.ns().channel(&channel.to_string());
+    let file = upload(&service, &http, &owner, None, "議事録.txt", b"minutes")
+        .await
+        .expect("upload");
+
+    // 参加していないチャンネルへは共有できない。
+    assert!(matches!(
+        service
+            .share_node_with_channel(&owner, file.id, channel, None)
+            .await,
+        Err(StorageError::Forbidden)
+    ));
+    for c in [&owner, &member] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &channel_obj)
+            .await
+            .expect("channel member seed");
+    }
+    // owner でなければ共有できない（参加者でも）。
+    assert!(matches!(
+        service
+            .share_node_with_channel(&member, file.id, channel, None)
+            .await,
+        Err(StorageError::Forbidden)
+    ));
+    service
+        .share_node_with_channel(&owner, file.id, channel, Some("trace-ch"))
+        .await
+        .expect("share with channel");
+    assert!(service.get_metadata(&member, file.id, None).await.is_ok());
+    assert!(service
+        .get_metadata(&outsider, file.id, None)
+        .await
+        .is_err());
+    assert_eq!(
+        service
+            .list_channel_shares(&owner, file.id, None)
+            .await
+            .unwrap(),
+        vec![channel]
+    );
+    // ユーザー・ロールの共有一覧には混ざらない。
+    assert!(service
+        .list_shares(&owner, file.id, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(audit_count(&pool, &org, "node.share", "allow").await, 1);
+
+    // チャンネルの資料の一覧: 参加者には共有したファイル・フォルダが出る。参加者でなければ一覧できない。
+    let folder = service
+        .create_folder(&owner, None, "提案資料", None)
+        .await
+        .expect("folder");
+    service
+        .share_node_with_channel(&owner, folder.id, channel, None)
+        .await
+        .expect("share folder with channel");
+    let listed: Vec<Uuid> = service
+        .channel_shared_nodes(&member, channel)
+        .await
+        .expect("list channel files")
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert!(
+        listed.contains(&file.id) && listed.contains(&folder.id),
+        "{listed:?}"
+    );
+    assert!(matches!(
+        service.channel_shared_nodes(&outsider, channel).await,
+        Err(StorageError::Forbidden)
+    ));
+    service
+        .unshare_node_from_channel(&owner, folder.id, channel, None)
+        .await
+        .expect("unshare folder");
+
+    service
+        .unshare_node_from_channel(&owner, file.id, channel, None)
+        .await
+        .expect("unshare from channel");
+    assert!(service.get_metadata(&member, file.id, None).await.is_err());
+    assert!(service
+        .list_channel_shares(&owner, file.id, None)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(audit_count(&pool, &org, "node.unshare", "allow").await, 2);
+    // 解除した資料は一覧から消える。
+    assert!(service
+        .channel_shared_nodes(&member, channel)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// チャンネル共有の付与・解除は、同じノード・チャンネルの操作とセッションのロックで直列化する。
+/// 小さいプール（2 接続）で同時に投げても詰まらず、最後に解除すれば参加者は読めない。
+#[tokio::test]
+async fn concurrent_channel_share_changes_are_serialized() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        authz,
+        http,
+        store,
+        ..
+    } = ctx;
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let owner = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let member = make_ctx(&org, &format!("ituser{}", Uuid::new_v4().simple()));
+    let channel = Uuid::new_v4();
+    let channel_obj = owner.ns().channel(&channel.to_string());
+    for c in [&owner, &member] {
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&org))
+            .await
+            .expect("org member seed");
+        authz
+            .write_tuple(&c.subject(), Relation::Member, &channel_obj)
+            .await
+            .expect("channel member seed");
+    }
+    let file = upload(&service, &http, &owner, None, "並行.txt", b"race")
+        .await
+        .expect("upload");
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let small = PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&db_url)
+        .await
+        .unwrap();
+    let svc = Arc::new(StorageService::new(
+        small,
+        store,
+        authz.clone(),
+        Duration::from_secs(300),
+        Duration::from_secs(900),
+        5 * 1024 * 1024 * 1024,
+    ));
+    let mut tasks = Vec::new();
+    for i in 0..8 {
+        let svc = svc.clone();
+        let owner = owner.clone();
+        tasks.push(tokio::spawn(async move {
+            if i % 2 == 0 {
+                svc.share_node_with_channel(&owner, file.id, channel, None)
+                    .await
+            } else {
+                svc.unshare_node_from_channel(&owner, file.id, channel, None)
+                    .await
+            }
+        }));
+    }
+    let all = tokio::time::timeout(Duration::from_secs(30), async move {
+        let mut out = Vec::new();
+        for t in tasks {
+            out.push(t.await);
+        }
+        out
+    })
+    .await
+    .expect("共有・解除が詰まらずに終わる");
+    for r in all {
+        r.unwrap().unwrap();
+    }
+    // ロックが外れていて、最後の解除のとおりになる。
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        svc.unshare_node_from_channel(&owner, file.id, channel, None),
+    )
+    .await
+    .expect("ロックが残っていない")
+    .unwrap();
+    assert!(service.get_metadata(&member, file.id, None).await.is_err());
+    assert!(service
+        .list_channel_shares(&owner, file.id, None)
+        .await
+        .unwrap()
+        .is_empty());
+}

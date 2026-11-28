@@ -1,5 +1,6 @@
 import {
   Bell,
+  Bot,
   KeyRound,
   MessageSquare,
   MonitorSmartphone,
@@ -43,7 +44,10 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
   },
   {
     label: "AI",
-    items: [{ label: "パーソナライズ", href: "/settings/ai", icon: Sparkles }],
+    items: [
+      { label: "パーソナライズ", href: "/settings/ai", icon: Sparkles },
+      { label: "メッセージのエージェント", href: "/settings/agent", icon: Bot },
+    ],
   },
   {
     label: "連携",

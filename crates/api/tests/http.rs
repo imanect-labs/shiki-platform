@@ -497,6 +497,8 @@ fn state_with(sessions: Arc<dyn SessionStore>, internal_base_url: Option<String>
     ));
     AppState {
         bug_report: None,
+        messaging: None,
+        messaging_agent: None,
         config: Arc::new(config),
         insights: std::sync::Arc::new(api::insights::InsightsService::new(db.clone())),
         db: api::state::ReadinessProbe::new(db),
@@ -1369,6 +1371,10 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
 
 #[path = "http/bug_reports.rs"]
 mod bug_reports;
+#[path = "http/messaging.rs"]
+mod messaging_http;
+#[path = "http/messaging_routes.rs"]
+mod messaging_routes;
 
 #[path = "http/version_backup.rs"]
 mod version_backup;
